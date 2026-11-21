@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { MailboxSummary } from "@/lib/api";
-import { actionTargets, buildMailboxTree, mailboxLabel } from "@/lib/mailboxes";
+import {
+  actionTargets,
+  buildMailboxTree,
+  mailboxLabel,
+  moveBy,
+  moveTo,
+  sortAccounts,
+  withSortOrder,
+} from "@/lib/mailboxes";
 
 function mailbox(
   id: string,
@@ -13,6 +21,7 @@ function mailbox(
     path: id,
     name: id,
     specialUse: null,
+    sortOrder: null,
     lastSyncedAt: null,
     totalCount: 0,
     unreadCount: 0,
@@ -95,5 +104,89 @@ describe("actionTargets", () => {
   it("アーカイブ用のフォルダがあればそれを使う", () => {
     const mailboxes = [...gmail, mailbox("archive", { specialUse: "archive" })];
     expect(actionTargets(mailboxes, "label").archive?.id).toBe("archive");
+  });
+});
+
+describe("フォルダの並び替え", () => {
+  it("並び替えた順に並べ、順番の無いフォルダは後ろに既定の順で並べる", () => {
+    const tree = buildMailboxTree([
+      mailbox("inbox", { specialUse: "inbox", sortOrder: 2 }),
+      mailbox("work", { sortOrder: 0 }),
+      mailbox("trash", { specialUse: "trash", sortOrder: 1 }),
+      mailbox("zeta"),
+      mailbox("sent", { specialUse: "sent" }),
+      mailbox("alpha"),
+    ]);
+    expect(shape(tree)).toEqual([
+      "work",
+      "trash",
+      "inbox",
+      "sent",
+      "alpha",
+      "zeta",
+    ]);
+  });
+
+  it("並び順は同じ親を持つフォルダの中で決まる", () => {
+    const tree = buildMailboxTree([
+      mailbox("b", { sortOrder: 0 }),
+      mailbox("a", { sortOrder: 1 }),
+      mailbox("a/y", { parentId: "a", sortOrder: 0 }),
+      mailbox("a/x", { parentId: "a", sortOrder: 1 }),
+    ]);
+    expect(shape(tree)).toEqual(["b", ["a", ["a/y", "a/x"]]]);
+  });
+
+  it("ドラッグした項目を、落とした項目の位置へ動かす", () => {
+    expect(moveTo(["a", "b", "c", "d"], "a", "c")).toEqual([
+      "b",
+      "c",
+      "a",
+      "d",
+    ]);
+    expect(moveTo(["a", "b", "c", "d"], "d", "b")).toEqual([
+      "a",
+      "d",
+      "b",
+      "c",
+    ]);
+    expect(moveTo(["a", "b"], "a", "a")).toBeNull();
+    expect(moveTo(["a", "b"], "a", "x")).toBeNull();
+  });
+
+  it("キーボードでは 1 つずつ動かし、端では動かさない", () => {
+    expect(moveBy(["a", "b", "c"], "b", -1)).toEqual(["b", "a", "c"]);
+    expect(moveBy(["a", "b", "c"], "b", 1)).toEqual(["a", "c", "b"]);
+    expect(moveBy(["a", "b", "c"], "a", -1)).toBeNull();
+    expect(moveBy(["a", "b", "c"], "c", 1)).toBeNull();
+    expect(moveBy(["a", "b", "c"], "x", 1)).toBeNull();
+  });
+
+  it("並べた順に表示順を振り直し、対象外はそのままにする", () => {
+    const items = [
+      { id: "a", sortOrder: null },
+      { id: "b", sortOrder: 5 },
+      { id: "c", sortOrder: null },
+    ];
+    expect(withSortOrder(items, ["b", "a"])).toEqual([
+      { id: "a", sortOrder: 1 },
+      { id: "b", sortOrder: 0 },
+      { id: "c", sortOrder: null },
+    ]);
+  });
+
+  it("アカウントは並び替えた順、残りは追加した順に並べる", () => {
+    const sorted = sortAccounts([
+      { id: "old", sortOrder: null, createdAt: "2026-01-01T00:00:00Z" },
+      { id: "second", sortOrder: 1, createdAt: "2026-02-01T00:00:00Z" },
+      { id: "new", sortOrder: null, createdAt: "2026-03-01T00:00:00Z" },
+      { id: "first", sortOrder: 0, createdAt: "2026-04-01T00:00:00Z" },
+    ]);
+    expect(sorted.map((account) => account.id)).toEqual([
+      "first",
+      "second",
+      "old",
+      "new",
+    ]);
   });
 });

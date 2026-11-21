@@ -41,6 +41,8 @@ import {
   type OutgoingMail,
   oauthProviderOf,
   type SearchParams,
+  saveAccountOrder,
+  saveMailboxOrder,
   searchMessages,
   sendFocus,
   startOAuthLogin,
@@ -56,7 +58,12 @@ import {
   storeDraft,
 } from "@/lib/compose";
 import { subscribeEvents } from "@/lib/events";
-import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
+import {
+  mailboxLabel,
+  showsRecipients,
+  sortAccounts,
+  withSortOrder,
+} from "@/lib/mailboxes";
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
@@ -75,6 +82,7 @@ const emptySearch: SearchParams = {
 };
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
 const DRAFT_NOTICE =
   "書きかけのメールがあります。送信するか破棄すると、新しいメールを作成できます。";
 
@@ -189,6 +197,17 @@ export function MailApp({ user }: { user: User }) {
       // 一覧は次の通知や操作でまた取得する。
     }
   }, []);
+
+  /** 並び順の保存は、操作した順に 1 つずつ送る。失敗したらサーバーの順に戻す。 */
+  const orderQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveOrder = (save: () => Promise<void>) => {
+    setActionError(null);
+    orderQueueRef.current = orderQueueRef.current.then(save).catch(() => {
+      setActionError(ORDER_ERROR);
+      void loadAccounts();
+      void loadMailboxes();
+    });
+  };
 
   const loadOutgoing = useCallback(async () => {
     try {
@@ -766,6 +785,16 @@ export function MailApp({ user }: { user: User }) {
           selectedAccountId={selectedAccountId}
           selectedMailboxId={selectedMailboxId}
           onSelect={handleSelectFolder}
+          onReorderAccounts={(ids) => {
+            setAccounts(
+              (current) => current && sortAccounts(withSortOrder(current, ids)),
+            );
+            saveOrder(() => saveAccountOrder(ids));
+          }}
+          onReorderMailboxes={(ids) => {
+            setMailboxes((current) => current && withSortOrder(current, ids));
+            saveOrder(() => saveMailboxOrder(ids));
+          }}
           onAdd={() => {
             setSidebarOpen(false);
             setAddOpen(true);
