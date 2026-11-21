@@ -6,6 +6,7 @@ import "gen-interface-jp/700.css";
 import "gen-interface-jp/display-600.css";
 import "gen-interface-jp/display-700.css";
 import "./globals.css";
+import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
   title: "Mail",
@@ -14,8 +15,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="ja" className="h-full font-sans antialiased">
-      <body className="flex min-h-full flex-col">{children}</body>
+    // next-themes が描画前に html の class を書き換えるため、差分の警告を抑える。
+    <html
+      lang="ja"
+      className="h-full font-sans antialiased"
+      suppressHydrationWarning
+    >
+      <body className="flex min-h-full flex-col">
+        <ThemeProvider>{children}</ThemeProvider>
+      </body>
     </html>
   );
 }
