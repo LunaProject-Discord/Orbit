@@ -1,8 +1,17 @@
-import type { OutgoingMessage } from "@mail/core";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  attachmentKey,
+  type OutgoingMessage,
+  readAttachmentMeta,
+  sweepAttachments,
+  writeAttachment,
+} from "@mail/core";
 import type { ImapFlow } from "imapflow";
 import { describe, expect, it } from "vitest";
 import { GraphClient } from "./graph-client.js";
-import { buildMime, envelopeOf } from "./mime.js";
+import { buildMime, envelopeOf, missingAttachments } from "./mime.js";
 import { applyImapOperation } from "./outbox-imap.js";
 import { savesSentCopy } from "./send.js";
 import { sendViaGraph } from "./send-graph.js";
@@ -51,6 +60,72 @@ describe("buildMime", () => {
       from: "me@example.com",
       to: ["yamada@example.com", "cc@example.com", "hidden@example.com"],
     });
+  });
+});
+
+describe("添付ファイルと書式付きの本文", () => {
+  it("HTML 版と添付ファイルを入れ、無くなった添付を見つける", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mail-attachments-"));
+    const previous = process.env.ATTACHMENTS_DIR;
+    process.env.ATTACHMENTS_DIR = dir;
+    try {
+      const userId = "0192f1c8-aaaa-7bbb-8ccc-0000000000aa";
+      const stored = await writeAttachment(
+        dir,
+        userId,
+        { filename: "../資料 1.pdf", contentType: "application/pdf; x=1" },
+        new Blob(["PDF の中身"]).stream(),
+        1024,
+      );
+      if (stored === "too_large") throw new Error("想定外");
+      expect(stored).toMatchObject({
+        filename: ".._資料 1.pdf",
+        contentType: "application/pdf",
+        size: 13,
+      });
+      const file = { ...stored, storageKey: attachmentKey(userId, stored.id) };
+      const withFile = {
+        ...message,
+        html: "<div>承知<b>しました</b>。</div>",
+        attachments: [file],
+      };
+      expect(await missingAttachments(withFile)).toEqual([]);
+      const mime = (await buildMime(withFile, { keepBcc: false })).toString();
+      expect(mime).toContain("multipart/mixed");
+      expect(mime).toContain("multipart/alternative");
+      expect(mime).toContain("Content-Type: text/html; charset=utf-8");
+      expect(mime).toContain("Content-Type: application/pdf;");
+      expect(mime).toContain(Buffer.from("PDF の中身").toString("base64"));
+
+      // 上限を超える内容は受け取らず、途中まで書いたファイルも残さない。
+      expect(
+        await writeAttachment(
+          dir,
+          userId,
+          { filename: "big.bin", contentType: "" },
+          new Blob(["x".repeat(2000)]).stream(),
+          1024,
+        ),
+      ).toBe("too_large");
+      // 他人のものは見つからない扱いになる。
+      expect(
+        await readAttachmentMeta(
+          dir,
+          "0192f1c8-aaaa-7bbb-8ccc-0000000000bb",
+          stored.id,
+        ),
+      ).toBeNull();
+      expect(() => attachmentKey(userId, "../../etc/passwd")).toThrow();
+
+      // 期限を過ぎたものだけが消える。
+      expect(await sweepAttachments(dir, 60_000)).toBe(0);
+      expect(await sweepAttachments(dir, 60_000, Date.now() + 120_000)).toBe(1);
+      expect(await missingAttachments(withFile)).toEqual([".._資料 1.pdf"]);
+    } finally {
+      if (previous === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

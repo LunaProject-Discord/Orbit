@@ -1,4 +1,9 @@
-import { loadEncryptionKey, loadMicrosoftOAuthConfig } from "@mail/core";
+import {
+  attachmentsDir,
+  loadEncryptionKey,
+  loadMicrosoftOAuthConfig,
+  sweepAttachments,
+} from "@mail/core";
 import { createDb } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
 
@@ -24,7 +29,17 @@ console.log(
 
 // 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。
 
+// 送信用に受け取った添付ファイルは、7 日たったら消す (送信済みのものも、送らなかったものも)。
+const ATTACHMENT_KEEP_MS = 7 * 24 * 60 * 60_000;
+const sweep = () =>
+  sweepAttachments(attachmentsDir(), ATTACHMENT_KEEP_MS).catch((error) => {
+    console.error("古い添付ファイルを消せませんでした。", error);
+  });
+void sweep();
+const sweepTimer = setInterval(sweep, 60 * 60_000);
+
 async function shutdown() {
+  clearInterval(sweepTimer);
   await manager.stop();
   await pool.end();
   process.exit(0);

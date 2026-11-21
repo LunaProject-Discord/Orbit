@@ -92,7 +92,16 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 
 ### メールの送信
 
-新規作成、返信、全員に返信、転送ができます (本文はテキストのみ。添付ファイルは今後対応します)。
+新規作成、返信、全員に返信、転送ができます。本文には太字・斜体・下線・箇条書き・リンクを使え、
+テキスト版と HTML 版の両方を入れて送ります。ファイルを添付できます。
+
+作成画面は、広い画面では右下に開く窓で、開いたままほかのメールを読めます。書きかけの内容は
+ブラウザーの中 (その端末) に自動で保存し、再読み込みしても続きから書けます。
+
+添付ファイルは、作成画面で選んだ時点で `POST /v1/attachments` がサーバーの `ATTACHMENTS_DIR`
+(既定はリポジトリ直下の `data/attachments`) に置き、送信のときにワーカーが読みます。API サーバーとワーカーの
+両方から同じディレクトリが見える必要があります。置いてから 7 日たったファイルは、ワーカーが消します。
+上限は 1 通あたり合計 25 MB、20 件です。Microsoft のアカウントでは、Microsoft Graph の制限に収まるよう合計 3 MB までにしています。
 
 1. `POST /v1/messages/send` が送信待ちキューに積み、すぐに応答します。
 2. 同期ワーカーが、IMAP のアカウントは SMTP で、Microsoft のアカウントは Microsoft Graph (`sendMail`) で送ります。
@@ -121,6 +130,7 @@ SMTP は、`smtpSecure` が有効なら最初から TLS、無効なら STARTTLS 
 | `GET /v1/accounts/:id/mailboxes` | フォルダ一覧 |
 | `GET /v1/messages` | メッセージ一覧 (`accountId` 省略で全アカウントの受信トレイ、`cursor` でページ送り) |
 | `GET /v1/messages/:id` | メッセージの本文と添付ファイルの情報 |
+| `POST /v1/attachments` / `DELETE /v1/attachments/:id` | 送信するメールに付けるファイルの受け取り (本文がファイルの内容、名前は `X-Filename`) / 取り消し |
 | `POST /v1/messages/send` | メールの送信 (新規、返信、転送)。受け付けると 202 を返し、実際の送信は同期ワーカーが行う |
 | `GET /v1/messages/outgoing` | まだ送り終えていないメール (送信待ち、送信中、失敗) の一覧 |
 | `DELETE /v1/messages/outgoing/:id` | 送信待ちのメールの取り消し、または失敗したメールの破棄 |

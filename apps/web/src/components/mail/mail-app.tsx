@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AccountSidebar } from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
-import { ComposeDialog } from "@/components/mail/compose-dialog";
+import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
@@ -37,7 +37,9 @@ import {
   type ComposeDraft,
   type ComposeMode,
   draftFromOutgoing,
+  loadStoredDraft,
   newDraft,
+  storeDraft,
 } from "@/lib/compose";
 import { subscribeEvents } from "@/lib/events";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
@@ -107,6 +109,8 @@ export function MailApp({ user }: { user: User }) {
   const [draftDirty, setDraftDirty] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeNotice, setComposeNotice] = useState<string | null>(null);
+  /** 下書きをこの端末に保存した時刻。 */
+  const [draftSavedAt, setDraftSavedAt] = useState<Date | null>(null);
   /** 表示中のメールへの返信・転送の依頼 (ショートカットキー用)。 */
   const [composeRequest, setComposeRequest] = useState<{
     count: number;
@@ -172,6 +176,29 @@ export function MailApp({ user }: { user: User }) {
     void loadAccounts();
     void loadOutgoing();
   }, [loadAccounts, loadOutgoing]);
+
+  // 前回この端末で書きかけていたメールがあれば、続きから書けるようにする。
+  useEffect(() => {
+    const stored = loadStoredDraft();
+    if (!stored) return;
+    setDraft(stored);
+    setDraftDirty(true);
+  }, []);
+
+  // 書きかけのメールを、入力が止まったらこの端末に保存する。
+  useEffect(() => {
+    if (!draft || !draftDirty) return;
+    const timer = setTimeout(() => {
+      if (storeDraft(draft)) setDraftSavedAt(new Date());
+    }, 800);
+    // 保存を待っている間にページを閉じたり再読み込みしたりしても、内容を失わない。
+    const flush = () => storeDraft(draft);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [draft, draftDirty]);
 
   useEffect(() => {
     const queue = createActionQueue();
@@ -259,6 +286,7 @@ export function MailApp({ user }: { user: User }) {
       if (!next) return;
       setDraft(next);
       setDraftDirty(false);
+      setDraftSavedAt(null);
       setComposeNotice(null);
     }
     setComposeOpen(true);
@@ -287,6 +315,8 @@ export function MailApp({ user }: { user: User }) {
   };
 
   function clearDraft() {
+    storeDraft(null);
+    setDraftSavedAt(null);
     setDraft(null);
     setDraftDirty(false);
     setComposeNotice(null);
@@ -299,6 +329,7 @@ export function MailApp({ user }: { user: User }) {
       setComposeOpen(true);
       return;
     }
+    setDraftSavedAt(null);
     setDraft(draftFromOutgoing(mail));
     // 内容は下書きに移したので、閉じただけで消えないよう書きかけとして扱う。
     setDraftDirty(true);
@@ -617,11 +648,12 @@ export function MailApp({ user }: { user: User }) {
           );
         }}
       />
-      <ComposeDialog
+      <ComposeWindow
         draft={draft}
         open={composeOpen}
         accounts={accounts ?? []}
         notice={composeNotice}
+        savedAt={draftSavedAt}
         onOpenChange={(open) => {
           setComposeOpen(open);
           if (!open) {

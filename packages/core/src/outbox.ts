@@ -40,6 +40,16 @@ export type DeletePayload = { targets: OutboxTarget[] };
 /** メールアドレス 1 件分 (packages/db の Address と同じ形)。 */
 export type MailAddress = { name?: string; address: string };
 
+/** 送信するメールの添付ファイル。実体は添付ファイルの置き場 (attachment-store) にある。 */
+export type OutgoingAttachment = {
+  id: string;
+  /** 置き場の中の位置 (attachmentKey の戻り値)。 */
+  storageKey: string;
+  filename: string;
+  contentType: string;
+  size: number;
+};
+
 /**
  * 送信するメール 1 通。Message-ID と日時は受け付けた時点で決めておき、
  * やり直しても、送信済みフォルダへ保存するときも、同じ内容のメールになるようにする。
@@ -51,6 +61,9 @@ export type OutgoingMessage = {
   bcc: MailAddress[];
   subject: string;
   text: string;
+  /** 書式付きの本文。あれば、テキストと HTML の両方を入れたメールにする。 */
+  html?: string | null;
+  attachments?: OutgoingAttachment[];
   /** <...> の形の Message-ID。 */
   messageId: string;
   /** ISO 8601 の日時。 */

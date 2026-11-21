@@ -1,4 +1,9 @@
-import type { OutgoingMessage } from "@mail/core";
+import {
+  attachmentExists,
+  attachmentPath,
+  attachmentsDir,
+  type OutgoingMessage,
+} from "@mail/core";
 import MailComposer from "nodemailer/lib/mail-composer";
 
 /**
@@ -10,6 +15,7 @@ export function buildMime(
   message: OutgoingMessage,
   options: { keepBcc: boolean },
 ): Promise<Buffer> {
+  const dir = attachmentsDir();
   const node = new MailComposer({
     from: message.from,
     to: message.to,
@@ -17,6 +23,12 @@ export function buildMime(
     bcc: message.bcc,
     subject: message.subject,
     text: message.text,
+    ...(message.html ? { html: message.html } : {}),
+    attachments: (message.attachments ?? []).map((file) => ({
+      filename: file.filename,
+      contentType: file.contentType,
+      path: attachmentPath(dir, file.storageKey),
+    })),
     messageId: message.messageId,
     date: new Date(message.date),
     ...(message.inReplyTo ? { inReplyTo: message.inReplyTo } : {}),
@@ -43,4 +55,18 @@ export function envelopeOf(message: OutgoingMessage): {
       ),
     ],
   };
+}
+
+/** 置き場から無くなっている添付ファイルの名前。送信や保存の前に確かめる。 */
+export async function missingAttachments(
+  message: OutgoingMessage,
+): Promise<string[]> {
+  const dir = attachmentsDir();
+  const missing: string[] = [];
+  for (const file of message.attachments ?? []) {
+    if (!(await attachmentExists(dir, file.storageKey))) {
+      missing.push(file.filename);
+    }
+  }
+  return missing;
 }

@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { zValidator } from "@hono/zod-validator";
 import {
+  attachmentKey,
+  attachmentsDir,
   CHANNEL_CHANGES,
   CHANNEL_OUTBOX,
   type ChangeNotification,
+  MAX_ATTACHMENT_COUNT,
+  MAX_ATTACHMENTS_BYTES,
+  MAX_GRAPH_ATTACHMENTS_BYTES,
+  type OutgoingAttachment,
   type OutgoingMessage,
+  readAttachmentMeta,
   type SendPayload,
 } from "@mail/core";
 import { changes, mailAccounts, messages, outbox } from "@mail/db";
@@ -35,6 +42,10 @@ const sendBody = z.object({
   bcc: z.array(address).max(MAX_RECIPIENTS).default([]),
   subject: z.string().max(998).regex(noControl).default(""),
   text: z.string().max(1_000_000),
+  /** 書式付きの本文。あれば、テキストと HTML の両方を入れたメールにする。 */
+  html: z.string().max(2_000_000).optional(),
+  /** POST /v1/attachments で受け取ったファイルの ID。 */
+  attachmentIds: z.array(z.uuid()).max(MAX_ATTACHMENT_COUNT).default([]),
   mode: z.enum(["new", "reply", "forward"]).default("new"),
   /** 返信・転送の元になったメッセージ。返信では In-Reply-To / References を引き継ぐ。 */
   sourceMessageId: z.uuid().optional(),
@@ -66,6 +77,7 @@ async function notifyOutgoing(
  */
 export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
   const app = new Hono<AppEnv>();
+  const dir = attachmentsDir();
 
   app.post("/send", zValidator("json", sendBody), async (c) => {
     const body = c.req.valid("json");
@@ -83,6 +95,7 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
         id: mailAccounts.id,
         email: mailAccounts.email,
         displayName: mailAccounts.displayName,
+        protocol: mailAccounts.protocol,
       })
       .from(mailAccounts)
       .where(
@@ -93,6 +106,26 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
       );
     if (!account) {
       return c.json({ error: "account_not_found" }, 404);
+    }
+
+    // 添付ファイルは、本人が受け取り済みのものだけを使える。
+    const attachments: OutgoingAttachment[] = [];
+    for (const attachmentId of new Set(body.attachmentIds)) {
+      const meta = await readAttachmentMeta(dir, user.id, attachmentId);
+      if (!meta) {
+        return c.json({ error: "attachment_not_found", id: attachmentId }, 400);
+      }
+      attachments.push({
+        ...meta,
+        storageKey: attachmentKey(user.id, attachmentId),
+      });
+    }
+    const limit =
+      account.protocol === "graph"
+        ? MAX_GRAPH_ATTACHMENTS_BYTES
+        : MAX_ATTACHMENTS_BYTES;
+    if (attachments.reduce((sum, file) => sum + file.size, 0) > limit) {
+      return c.json({ error: "attachments_too_large", limit }, 400);
     }
 
     let inReplyTo: string | null = null;
@@ -130,6 +163,8 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
       bcc: body.bcc,
       subject: body.subject.trim(),
       text: body.text,
+      html: body.html?.trim() ? body.html : null,
+      attachments,
       messageId: `<${randomUUID()}@${domain}>`,
       date: new Date().toISOString(),
       inReplyTo,
@@ -210,6 +245,13 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
           bcc: message.bcc,
           subject: message.subject,
           text: message.text,
+          html: message.html ?? null,
+          attachments: (message.attachments ?? []).map((file) => ({
+            id: file.id,
+            filename: file.filename,
+            contentType: file.contentType,
+            size: file.size,
+          })),
         };
       }),
     });

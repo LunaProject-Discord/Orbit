@@ -1,6 +1,6 @@
 import type { AppendPayload, OutboxOperation, OutboxTarget } from "@mail/core";
 import type { ImapFlow } from "imapflow";
-import { buildMime } from "./mime.js";
+import { buildMime, missingAttachments } from "./mime.js";
 import type { OutboxResult } from "./outbox.js";
 
 function groupByMailbox(targets: OutboxTarget[]): Map<string, OutboxTarget[]> {
@@ -104,6 +104,13 @@ async function appendSentCopy(
     if (!isRejected(error)) throw error;
   } finally {
     lock.release();
+  }
+  if ((await missingAttachments(message)).length > 0) {
+    return {
+      ok: false,
+      reason:
+        "添付ファイルが残っていないため、送信済みフォルダへ保存できませんでした。",
+    };
   }
   try {
     const raw = await buildMime(message, { keepBcc: true });

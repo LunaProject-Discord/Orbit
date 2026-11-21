@@ -8,3 +8,6 @@ next-env.d.ts
 .env
 .env.*
 !.env.example
+
+# 送信用に受け取った添付ファイルの置き場 (ATTACHMENTS_DIR の既定値)
+/data

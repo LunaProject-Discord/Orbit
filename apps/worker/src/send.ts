@@ -15,6 +15,7 @@ import {
 } from "@mail/db";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
+import { missingAttachments } from "./mime.js";
 import { lockAccount } from "./outbox.js";
 
 /** 一時的な失敗でやり直す回数の上限。超えたら失敗として利用者に知らせる。 */
@@ -101,7 +102,14 @@ export async function processSends(
     const payload = row.payload as unknown as SendPayload;
     let outcome: SendOutcome;
     try {
-      outcome = await send(payload.message);
+      const missing = await missingAttachments(payload.message);
+      outcome =
+        missing.length > 0
+          ? {
+              status: "failed",
+              reason: `添付ファイルが見つかりません。添付し直してから送ってください: ${missing.join(", ")}`,
+            }
+          : await send(payload.message);
     } catch (error) {
       outcome = {
         status: "failed",
