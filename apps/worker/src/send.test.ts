@@ -11,7 +11,12 @@ import {
 import type { ImapFlow } from "imapflow";
 import { describe, expect, it } from "vitest";
 import { GraphClient } from "./graph-client.js";
-import { buildMime, envelopeOf, missingAttachments } from "./mime.js";
+import {
+  buildMime,
+  envelopeOf,
+  htmlDocument,
+  missingAttachments,
+} from "./mime.js";
 import { applyImapOperation } from "./outbox-imap.js";
 import { savesSentCopy } from "./send.js";
 import { sendViaGraph } from "./send-graph.js";
@@ -60,6 +65,34 @@ describe("buildMime", () => {
       from: "me@example.com",
       to: ["yamada@example.com", "cc@example.com", "hidden@example.com"],
     });
+  });
+});
+
+describe("書式付きの本文", () => {
+  it("テキストと HTML の両方を入れ、HTML は 1 つの文書にする", async () => {
+    const mime = (
+      await buildMime(
+        { ...message, html: "<div>OK <b>bold</b></div>" },
+        { keepBcc: false },
+      )
+    ).toString();
+    expect(mime).toContain("multipart/alternative");
+    // テキスト版が先、HTML 版が後 (HTML を表示できるメールソフトは後ろを選ぶ)。
+    expect(mime.indexOf("Content-Type: text/plain")).toBeGreaterThan(0);
+    expect(mime.indexOf("Content-Type: text/html")).toBeGreaterThan(
+      mime.indexOf("Content-Type: text/plain"),
+    );
+    expect(htmlDocument("<div>OK <b>bold</b></div>")).toMatch(
+      /^<!DOCTYPE html><html><head><meta charset="utf-8"><\/head><body [^>]*><div>OK <b>bold<\/b><\/div><\/body><\/html>$/,
+    );
+    expect(mime).toContain("<!DOCTYPE html>");
+    expect(mime).toContain("<b>bold</b></div></body></html>");
+  });
+
+  it("書式が無ければ、テキストだけのメールにする", async () => {
+    const mime = (await buildMime(message, { keepBcc: false })).toString();
+    expect(mime).not.toContain("multipart/alternative");
+    expect(mime).not.toContain("text/html");
   });
 });
 
