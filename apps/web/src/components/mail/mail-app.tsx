@@ -199,7 +199,10 @@ export function MailApp({ user }: { user: User }) {
   const noAccounts = accounts !== null && accounts.length === 0;
 
   return (
-    <div className="flex h-dvh min-h-0 flex-1 overflow-hidden">
+    // 高さは画面に固定し、一覧と本文をそれぞれの枠の中でスクロールさせる。
+    // body は縦並びの flex なので、ここに flex-1 を付けると高さの指定が効かず、
+    // メールの件数に合わせてページ全体が伸びてしまう。
+    <div className="flex h-dvh shrink-0 overflow-hidden">
       {sidebarOpen && (
         <button
           type="button"
@@ -241,11 +244,11 @@ export function MailApp({ user }: { user: User }) {
         />
       </aside>
 
-      <main className="flex min-w-0 flex-1">
+      <main className="flex min-h-0 min-w-0 flex-1">
         <section
           aria-label="メール一覧"
           className={cn(
-            "min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
+            "min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
             selectedMessageId ? "hidden" : "flex",
           )}
         >
@@ -263,7 +266,9 @@ export function MailApp({ user }: { user: User }) {
             </Button>
             <h1 className="truncate font-semibold text-lg">{title}</h1>
           </header>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
+              枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
             {noAccounts ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
                 <InboxIcon
@@ -301,7 +306,7 @@ export function MailApp({ user }: { user: User }) {
         <section
           aria-label="メールの内容"
           className={cn(
-            "min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
+            "relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
             selectedMessageId ? "flex" : "hidden",
           )}
         >
