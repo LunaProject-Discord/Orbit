@@ -17,6 +17,8 @@ function message(id: string, overrides: Partial<MessageSummary> = {}) {
     seen: false,
     flagged: false,
     answered: false,
+    threadCount: 1,
+    threadMessageIds: [id],
     ...overrides,
   } satisfies MessageSummary;
 }
@@ -87,5 +89,71 @@ describe("applyActions", () => {
       ],
     );
     expect(result).toHaveLength(1);
+  });
+
+  it("会話の一部だけへの操作は、結果が決まる向きだけを重ねる", () => {
+    const thread = message("b", {
+      seen: true,
+      flagged: true,
+      threadCount: 3,
+      threadMessageIds: ["a", "b"],
+    });
+    const flags = (input: { seen?: boolean; flagged?: boolean }) =>
+      applyActions(
+        [thread],
+        [
+          {
+            idempotencyKey: "1",
+            messageIds: ["a"],
+            action: "set_flags",
+            ...input,
+          },
+        ],
+      )[0];
+    // 1 通を未読にすれば会話は未読になるが、1 通のスターを外しても会話のスターは残る。
+    expect(flags({ seen: false })?.seen).toBe(false);
+    expect(flags({ flagged: false })?.flagged).toBe(true);
+    const unread = applyActions(
+      [{ ...thread, seen: false }],
+      [
+        {
+          idempotencyKey: "1",
+          messageIds: ["a"],
+          action: "set_flags",
+          seen: true,
+        },
+        {
+          idempotencyKey: "2",
+          messageIds: ["a", "b"],
+          action: "set_flags",
+          flagged: false,
+        },
+      ],
+    )[0];
+    expect(unread?.seen).toBe(false);
+    expect(unread?.flagged).toBe(false);
+  });
+
+  it("会話の一部を移動しても、残りがあれば行は残す", () => {
+    const thread = message("b", {
+      threadCount: 3,
+      threadMessageIds: ["a", "b"],
+    });
+    const move = (messageIds: string[]) =>
+      applyActions(
+        [thread],
+        [
+          {
+            idempotencyKey: "1",
+            messageIds,
+            action: "move",
+            destination: "archive",
+          },
+        ],
+      );
+    expect(move(["a"])).toEqual([
+      { ...thread, threadCount: 2, threadMessageIds: ["b"] },
+    ]);
+    expect(move(["a", "b"])).toEqual([]);
   });
 });
