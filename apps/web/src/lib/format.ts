@@ -1,9 +1,15 @@
 import type { Address } from "@/lib/api";
 
-const timeFormat = new Intl.DateTimeFormat("ja-JP", {
-  hour: "2-digit",
-  minute: "2-digit",
-});
+/** 日時の出し方 (設定で変えられる)。 */
+export type DateStyle = {
+  /** auto は今日なら時刻だけ、datetime は常に日付と時刻。 */
+  listDate: "auto" | "datetime";
+  /** 時刻を 12 時間制 (午前 / 午後) で出す。 */
+  hour12: boolean;
+};
+
+const defaultStyle: DateStyle = { listDate: "auto", hour12: false };
+
 const dayFormat = new Intl.DateTimeFormat("ja-JP", {
   month: "numeric",
   day: "numeric",
@@ -13,27 +19,54 @@ const yearFormat = new Intl.DateTimeFormat("ja-JP", {
   month: "numeric",
   day: "numeric",
 });
-const fullFormat = new Intl.DateTimeFormat("ja-JP", {
-  dateStyle: "long",
-  timeStyle: "short",
-});
 
-/** 一覧用の短い日時。今日なら時刻、今年なら月日、それ以外は年月日。 */
-export function formatListDate(value: string, now = new Date()): string {
+function formatsFor(hour12: boolean) {
+  return {
+    time: new Intl.DateTimeFormat("ja-JP", {
+      hour: hour12 ? "numeric" : "2-digit",
+      minute: "2-digit",
+      hour12,
+    }),
+    full: new Intl.DateTimeFormat("ja-JP", {
+      dateStyle: "long",
+      timeStyle: "short",
+      hour12,
+    }),
+  };
+}
+const formats = { h12: formatsFor(true), h24: formatsFor(false) };
+const formatsOf = (style: DateStyle) =>
+  style.hour12 ? formats.h12 : formats.h24;
+
+/**
+ * 一覧用の短い日時。今日なら時刻、今年なら月日、それ以外は年月日。
+ * 設定で「常に日付と時刻」にしていれば、日付の後ろに時刻も付ける。
+ */
+export function formatListDate(
+  value: string,
+  now = new Date(),
+  style: DateStyle = defaultStyle,
+): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
+  const time = formatsOf(style).time.format(date);
+  const withTime = style.listDate === "datetime";
   if (date.toDateString() === now.toDateString()) {
-    return timeFormat.format(date);
+    return withTime ? `${dayFormat.format(date)} ${time}` : time;
   }
-  if (date.getFullYear() === now.getFullYear()) {
-    return dayFormat.format(date);
-  }
-  return yearFormat.format(date);
+  const day =
+    date.getFullYear() === now.getFullYear()
+      ? dayFormat.format(date)
+      : yearFormat.format(date);
+  return withTime ? `${day} ${time}` : day;
 }
 
-export function formatFullDate(value: string): string {
+export function formatFullDate(
+  value: string,
+  style: DateStyle = defaultStyle,
+): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : fullFormat.format(date);
+  return Number.isNaN(date.getTime()) ? "" : formatsOf(style).full.format(date);
 }
 
 export function addressLabel(address: Address | undefined): string {

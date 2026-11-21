@@ -5,6 +5,7 @@
  */
 
 import type { AccountColorName } from "@/lib/account-colors";
+import type { AccountIconName } from "@/lib/account-icons";
 import { reportReachable } from "@/lib/offline/network";
 
 export const API_URL = (
@@ -157,6 +158,8 @@ export type Account = {
   sortOrder: number | null;
   /** 画面でアカウントを見分ける色の名前。選んでいなければ null (並び順から決まる)。 */
   color: AccountColorName | null;
+  /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
+  icon: AccountIconName | null;
   createdAt: string;
 };
 
@@ -534,10 +537,14 @@ export async function updateAccountSignature(
   return account;
 }
 
-/** アカウントの表示名や色を変える。指定した項目だけが変わる。 */
+/** アカウントの表示名、色、アイコンを変える。指定した項目だけが変わる。 */
 export async function updateAccount(
   id: string,
-  patch: { displayName?: string | null; color?: AccountColorName | null },
+  patch: {
+    displayName?: string | null;
+    color?: AccountColorName | null;
+    icon?: AccountIconName | null;
+  },
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
     `/v1/accounts/${id}`,

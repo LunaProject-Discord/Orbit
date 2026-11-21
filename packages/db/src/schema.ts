@@ -212,6 +212,8 @@ export const mailAccounts = pgTable(
     sortOrder: integer(),
     /** 画面でアカウントを見分ける色の名前 (sky など)。選んでいなければ null で、並び順から決まる。 */
     color: text(),
+    /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
+    icon: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
