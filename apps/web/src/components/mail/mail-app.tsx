@@ -15,6 +15,7 @@ import {
   listAccounts,
   listMessages,
   type MessageSummary,
+  startMicrosoftLogin,
   type User,
 } from "@/lib/api";
 import { subscribeEvents } from "@/lib/events";
@@ -228,6 +229,13 @@ export function MailApp({ user }: { user: User }) {
           onDelete={(account) => {
             setSidebarOpen(false);
             setDeleteTarget(account);
+          }}
+          onReauth={(account) => {
+            startMicrosoftLogin(account.id)
+              .then((url) => window.location.assign(url))
+              .catch(() => {
+                // 失敗してもサイドバーの表示はそのままなので、もう一度押せる。
+              });
           }}
           onSignOut={() => void signOut()}
         />

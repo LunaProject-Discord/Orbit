@@ -1,5 +1,13 @@
 import { zValidator } from "@hono/zod-validator";
-import { CHANNEL_ACCOUNTS, encryptCredentials } from "@mail/core";
+import {
+  CHANNEL_ACCOUNTS,
+  createMicrosoftAuthorizeUrl,
+  encryptCredentials,
+  exchangeMicrosoftCode,
+  fetchMicrosoftProfile,
+  MicrosoftOAuthError,
+  openMicrosoftState,
+} from "@mail/core";
 import { changes, mailAccounts, mailboxes } from "@mail/db";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -26,6 +34,16 @@ const createAccountBody = z.object({
   password: z.string().min(1).max(1024),
 });
 
+const microsoftAuthorizeBody = z.object({
+  /** 再ログインするアカウントの ID。ログイン画面にそのメールアドレスを入れておく。 */
+  accountId: z.uuid().optional(),
+});
+
+const microsoftCompleteBody = z.object({
+  code: z.string().min(1).max(8192),
+  state: z.string().min(1).max(4096),
+});
+
 const idParam = z.object({ id: z.uuid() });
 
 /** クライアントへ返す形。認証情報は暗号文であっても返さない。 */
@@ -35,6 +53,7 @@ const publicColumns = {
   displayName: mailAccounts.displayName,
   provider: mailAccounts.provider,
   authType: mailAccounts.authType,
+  protocol: mailAccounts.protocol,
   imapHost: mailAccounts.imapHost,
   imapPort: mailAccounts.imapPort,
   imapSecure: mailAccounts.imapSecure,
@@ -51,6 +70,7 @@ export function accountRoutes({
   db,
   encryptionKey,
   allowPrivateMailHosts,
+  microsoft,
 }: RouteDeps) {
   const app = new Hono<AppEnv>();
 
@@ -143,6 +163,151 @@ export function accountRoutes({
     }
     return c.json({ account }, 201);
   });
+
+  // Microsoft アカウント (Exchange Online、Outlook.com) の追加。
+  // 1. authorize でログイン画面の URL を受け取り、ブラウザをそこへ移動する。
+  // 2. ログイン後に Web へ戻ってきた code と state を complete に渡す。
+  // complete はログイン済みの利用者しか呼べず、state を始めた本人かも確かめるので、
+  // 他人に踏ませたリンクで自分のアプリに他人のメールボックスを紐づけることはできない。
+  app.post(
+    "/microsoft/authorize",
+    zValidator("json", microsoftAuthorizeBody),
+    async (c) => {
+      if (!microsoft) {
+        return c.json({ error: "microsoft_not_configured" }, 503);
+      }
+      const { accountId } = c.req.valid("json");
+      const user = c.var.user;
+      let loginHint: string | undefined;
+      if (accountId) {
+        const [row] = await db
+          .select({ email: mailAccounts.email })
+          .from(mailAccounts)
+          .where(
+            and(
+              eq(mailAccounts.id, accountId),
+              eq(mailAccounts.userId, user.id),
+              eq(mailAccounts.protocol, "graph"),
+            ),
+          );
+        if (!row) {
+          return c.json({ error: "not_found" }, 404);
+        }
+        loginHint = row.email;
+      }
+      const url = createMicrosoftAuthorizeUrl({
+        config: microsoft.config,
+        redirectUri: microsoft.redirectUri,
+        userId: user.id,
+        encryptionKey,
+        loginHint,
+      });
+      return c.json({ url });
+    },
+  );
+
+  app.post(
+    "/microsoft/complete",
+    zValidator("json", microsoftCompleteBody),
+    async (c) => {
+      if (!microsoft) {
+        return c.json({ error: "microsoft_not_configured" }, 503);
+      }
+      const body = c.req.valid("json");
+      const user = c.var.user;
+      const opened = openMicrosoftState({
+        state: body.state,
+        userId: user.id,
+        encryptionKey,
+      });
+      if (!opened) {
+        return c.json({ error: "invalid_state" }, 400);
+      }
+
+      let refreshToken: string;
+      let profile: Awaited<ReturnType<typeof fetchMicrosoftProfile>>;
+      try {
+        const tokens = await exchangeMicrosoftCode(microsoft.config, {
+          code: body.code,
+          verifier: opened.verifier,
+          redirectUri: microsoft.redirectUri,
+        });
+        if (!tokens.refreshToken) {
+          return c.json({ error: "no_refresh_token" }, 422);
+        }
+        refreshToken = tokens.refreshToken;
+        profile = await fetchMicrosoftProfile(tokens.accessToken);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "";
+        console.error("Microsoft のログインを完了できませんでした。", detail);
+        return c.json(
+          {
+            error:
+              error instanceof MicrosoftOAuthError
+                ? "oauth_failed"
+                : "connection_failed",
+            detail,
+          },
+          422,
+        );
+      }
+
+      const credentialsEncrypted = encryptCredentials(
+        { type: "oauth2", refreshToken },
+        encryptionKey,
+        user.id,
+      );
+      const result = await db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select({ id: mailAccounts.id, protocol: mailAccounts.protocol })
+          .from(mailAccounts)
+          .where(
+            and(
+              eq(mailAccounts.userId, user.id),
+              // Microsoft のアドレスは大文字と小文字を区別しない。
+              sql`lower(${mailAccounts.email}) = ${profile.email.toLowerCase()}`,
+            ),
+          );
+        // 同じアドレスを IMAP で追加済みなら、二重に取り込まないよう断る。
+        if (existing && existing.protocol !== "graph") return null;
+
+        // 追加済みの Microsoft アカウントなら再ログイン。認証情報を入れ替えて同期を再開する。
+        const [row] = existing
+          ? await tx
+              .update(mailAccounts)
+              .set({ credentialsEncrypted, status: "active", lastError: null })
+              .where(eq(mailAccounts.id, existing.id))
+              .returning(publicColumns)
+          : await tx
+              .insert(mailAccounts)
+              .values({
+                userId: user.id,
+                email: profile.email,
+                displayName: profile.displayName,
+                provider: "microsoft",
+                authType: "oauth2",
+                protocol: "graph",
+                username: profile.email,
+                credentialsEncrypted,
+              })
+              .onConflictDoNothing()
+              .returning(publicColumns);
+        if (!row) return null;
+        await tx.insert(changes).values({
+          userId: user.id,
+          entity: "account",
+          entityId: row.id,
+          op: "upsert",
+        });
+        await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${row.id})`);
+        return { account: row, created: !existing };
+      });
+      if (!result) {
+        return c.json({ error: "account_exists" }, 409);
+      }
+      return c.json({ account: result.account }, result.created ? 201 : 200);
+    },
+  );
 
   app.delete("/:id", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");

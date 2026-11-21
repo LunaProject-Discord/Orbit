@@ -46,7 +46,7 @@ export class AccountSync {
   constructor(
     private readonly db: Database,
     private readonly encryptionKey: Buffer,
-    private readonly account: AccountRow,
+    readonly account: AccountRow,
   ) {}
 
   private log(message: string, error?: unknown) {
@@ -132,7 +132,10 @@ export class AccountSync {
       this.account.userId,
     );
     if (credentials.type !== "password") {
-      throw new Error("OAuth2 のアカウントにはまだ対応していません。");
+      throw new Error("IMAP の OAuth2 にはまだ対応していません。");
+    }
+    if (!this.account.imapHost || !this.account.imapPort) {
+      throw new Error("IMAP サーバーが設定されていません。");
     }
     return new ImapFlow({
       host: this.account.imapHost,

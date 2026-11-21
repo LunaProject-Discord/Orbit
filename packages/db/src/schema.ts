@@ -142,6 +142,12 @@ export const mailProvider = pgEnum("mail_provider", [
 
 export const mailAuthType = pgEnum("mail_auth_type", ["oauth2", "password"]);
 
+/**
+ * サーバーとの通信方式。imap は IMAP / SMTP、graph は Microsoft Graph
+ * (Exchange Online、Outlook.com)。
+ */
+export const mailProtocol = pgEnum("mail_protocol", ["imap", "graph"]);
+
 export const mailAccountStatus = pgEnum("mail_account_status", [
   "active",
   "auth_required",
@@ -161,11 +167,13 @@ export const mailAccounts = pgTable(
     displayName: text(),
     provider: mailProvider().notNull(),
     authType: mailAuthType().notNull(),
-    imapHost: text().notNull(),
-    imapPort: integer().notNull(),
+    protocol: mailProtocol().notNull().default("imap"),
+    /** IMAP / SMTP の接続先。protocol が imap のときだけ入る。 */
+    imapHost: text(),
+    imapPort: integer(),
     imapSecure: boolean().notNull().default(true),
-    smtpHost: text().notNull(),
-    smtpPort: integer().notNull(),
+    smtpHost: text(),
+    smtpPort: integer(),
     smtpSecure: boolean().notNull().default(false),
     username: text().notNull(),
     /** リフレッシュトークンまたはパスワードを AES-GCM で暗号化したもの。平文は保存しない。 */
@@ -189,7 +197,10 @@ export const mailboxSpecialUse = pgEnum("mailbox_special_use", [
   "flagged",
 ]);
 
-/** IMAP のフォルダ (Gmail ではラベル)。差分同期用の IMAP 状態を持つ。 */
+/**
+ * フォルダ (Gmail ではラベル)。差分同期用の状態を持つ。
+ * path は IMAP ではフォルダのパス、Microsoft Graph ではフォルダの ID。
+ */
 export const mailboxes = pgTable(
   "mailboxes",
   {
@@ -204,6 +215,8 @@ export const mailboxes = pgTable(
     uidValidity: bigint({ mode: "bigint" }),
     uidNext: bigint({ mode: "bigint" }),
     highestModseq: bigint({ mode: "bigint" }),
+    /** Microsoft Graph の差分取得の続き (deltaLink)。IMAP では使わない。 */
+    syncState: text(),
     lastSyncedAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -223,9 +236,9 @@ export const messages = pgTable(
     accountId: uuid()
       .notNull()
       .references(() => mailAccounts.id, { onDelete: "cascade" }),
-    /** プロバイダ固有の不変 ID (Gmail の X-GM-MSGID など)。無ければ null。 */
+    /** プロバイダ固有の不変 ID (Gmail の X-GM-MSGID、Microsoft Graph の不変 ID など)。無ければ null。 */
     providerMessageId: text(),
-    /** スレッドをまとめるキー (Gmail の X-GM-THRID、または References から算出)。 */
+    /** スレッドをまとめるキー (Gmail の X-GM-THRID、Graph の conversationId、または References から算出)。 */
     threadKey: text().notNull(),
     messageIdHeader: text(),
     inReplyTo: text(),
@@ -263,21 +276,25 @@ export const messages = pgTable(
   ],
 );
 
-/** メッセージがどのフォルダに、どの IMAP UID で存在するか。 */
+/**
+ * メッセージがどのフォルダに存在するか。IMAP ではフォルダ内の UID を持つ。
+ * Microsoft Graph には UID が無いので null (メッセージは messages.providerMessageId で特定する)。
+ */
 export const messageMailboxes = pgTable(
   "message_mailboxes",
   {
     mailboxId: uuid()
       .notNull()
       .references(() => mailboxes.id, { onDelete: "cascade" }),
-    uid: bigint({ mode: "bigint" }).notNull(),
     messageId: uuid()
       .notNull()
       .references(() => messages.id, { onDelete: "cascade" }),
+    uid: bigint({ mode: "bigint" }),
     modseq: bigint({ mode: "bigint" }),
   },
   (t) => [
-    primaryKey({ columns: [t.mailboxId, t.uid] }),
+    primaryKey({ columns: [t.mailboxId, t.messageId] }),
+    uniqueIndex("message_mailboxes_mailbox_uid_idx").on(t.mailboxId, t.uid),
     index("message_mailboxes_message_idx").on(t.messageId),
   ],
 );

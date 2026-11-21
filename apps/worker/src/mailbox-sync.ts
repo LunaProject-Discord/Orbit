@@ -5,7 +5,15 @@ import {
   messageMailboxes,
   messages,
 } from "@mail/db";
-import { and, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  notInArray,
+} from "drizzle-orm";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
 import { recordChanges } from "./changes.js";
 import {
@@ -127,7 +135,11 @@ export async function syncMailbox(
     .from(messageMailboxes)
     .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
     .where(eq(messageMailboxes.mailboxId, mailbox.id));
-  const localByUid = new Map(local.map((row) => [Number(row.uid), row]));
+  const localByUid = new Map(
+    local.flatMap((row) =>
+      row.uid === null ? [] : [[Number(row.uid), row] as const],
+    ),
+  );
 
   const found =
     remote.exists > 0 ? await client.search({ all: true }, { uid: true }) : [];
@@ -427,6 +439,7 @@ export async function fetchBodies(
     .where(
       and(
         eq(messageMailboxes.mailboxId, mailboxId),
+        isNotNull(messageMailboxes.uid),
         isNull(messages.bodyFetchedAt),
       ),
     )

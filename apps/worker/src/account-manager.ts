@@ -1,14 +1,16 @@
-import { CHANNEL_ACCOUNTS } from "@mail/core";
+import { CHANNEL_ACCOUNTS, type MicrosoftOAuthConfig } from "@mail/core";
 import { type Database, mailAccounts } from "@mail/db";
 import { inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";
+import { GraphAccountSync } from "./graph-account-sync.js";
 
 const RECONCILE_MS = 60_000;
 
 /** 接続に関わる設定をまとめた値。これが変わったら接続し直す。 */
 function connectionKey(row: typeof mailAccounts.$inferSelect) {
   return [
+    row.protocol,
     row.imapHost,
     row.imapPort,
     row.imapSecure,
@@ -23,7 +25,7 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
  */
 export class AccountManager {
-  private running = new Map<string, { sync: AccountSync; key: string }>();
+  private running = new Map<string, { sync: AccountSync | GraphAccountSync }>();
   private listener: pg.Client | null = null;
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
@@ -33,6 +35,8 @@ export class AccountManager {
     private readonly db: Database,
     private readonly connectionString: string,
     private readonly encryptionKey: Buffer,
+    /** Microsoft Graph のアカウント用。未設定ならそれらのアカウントはエラーになる。 */
+    private readonly microsoft: MicrosoftOAuthConfig | null,
   ) {}
 
   async start() {
@@ -88,15 +92,25 @@ export class AccountManager {
     for (const [id, entry] of this.running) {
       const row = wanted.get(id);
       // 削除されたものと、接続設定が変わったものは止める (後者は下で起動し直す)。
-      if (!row || connectionKey(row) !== entry.key) {
+      // 比較相手は同期側が持つ行。リフレッシュトークンの更新で認証情報が変わっても、
+      // 同期側が自分の行を差し替えているので、接続し直しにはならない。
+      if (!row || connectionKey(row) !== connectionKey(entry.sync.account)) {
         entry.sync.stop();
         this.running.delete(id);
       }
     }
     for (const row of rows) {
       if (this.running.has(row.id)) continue;
-      const sync = new AccountSync(this.db, this.encryptionKey, row);
-      const entry = { sync, key: connectionKey(row) };
+      const sync =
+        row.protocol === "graph"
+          ? new GraphAccountSync(
+              this.db,
+              this.encryptionKey,
+              row,
+              this.microsoft,
+            )
+          : new AccountSync(this.db, this.encryptionKey, row);
+      const entry = { sync };
       this.running.set(row.id, entry);
       sync.run().finally(() => {
         if (this.running.get(row.id) === entry) this.running.delete(row.id);
