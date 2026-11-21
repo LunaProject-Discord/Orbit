@@ -24,6 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary } from "@/lib/api";
 import { addressLabel, formatListDate } from "@/lib/format";
+import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
 
 /** 一覧を外から操作するための窓口。 */
@@ -33,6 +34,24 @@ export type MessageListHandle = {
 };
 
 /** 高さを測る前の 1 行の見積もり (差出人、件名、本文 2 行)。 */
+/** 行の間隔の設定ごとの、行の上下の余白とチェックボックスの位置。 */
+const rowPadding = {
+  compact: "py-1.5",
+  standard: "py-3",
+  comfortable: "py-4",
+} as const;
+const checkboxTop = {
+  compact: "top-2",
+  standard: "top-3.5",
+  comfortable: "top-4.5",
+} as const;
+const previewClamp = {
+  0: "hidden",
+  1: "line-clamp-1",
+  2: "line-clamp-2",
+  3: "line-clamp-3",
+} as const;
+
 const ESTIMATED_ROW_HEIGHT = 88;
 /** 見えている範囲の前後に余分に描画しておく行数。 */
 const OVERSCAN = 8;
@@ -149,6 +168,7 @@ export function MessageList({
 
   // 見えている範囲の行だけを描画する (仮想化)。行の高さは本文の行数などで変わるので、
   // 描画した行を実測して位置を決める。
+  const preferences = usePreferences();
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scrollRef.current,
@@ -230,7 +250,9 @@ export function MessageList({
           const preview = message.excerpt || message.snippet;
           const location = locationLabel?.(message);
           const checked = checkedIds.has(message.id);
-          const mark = accountMark?.(message);
+          const mark = preferences.showAccountMark
+            ? accountMark?.(message)
+            : undefined;
           return (
             <ContextMenu key={message.id}>
               <ContextMenuTrigger
@@ -256,7 +278,10 @@ export function MessageList({
                     onClick={(event) =>
                       onToggleCheck(message.id, event.shiftKey)
                     }
-                    className="absolute top-3.5 left-4 z-10"
+                    className={cn(
+                      "absolute left-4 z-10",
+                      checkboxTop[preferences.density],
+                    )}
                   />
                 )}
                 <button
@@ -270,7 +295,8 @@ export function MessageList({
                   }}
                   aria-current={selectedId === message.id ? "true" : undefined}
                   className={cn(
-                    "flex w-full select-none flex-col gap-0.5 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                    "flex w-full select-none flex-col gap-0.5 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                    rowPadding[preferences.density],
                     selecting && "pl-11",
                     selectedId === message.id && "bg-muted",
                     checked && "bg-primary/10 hover:bg-primary/15",
@@ -307,19 +333,19 @@ export function MessageList({
                     )}
                     {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
                     <span className="flex-1" />
-                    {message.answered && (
+                    {preferences.showListIcons && message.answered && (
                       <ReplyIcon
                         className="size-3.5 shrink-0 text-muted-foreground"
                         aria-label="返信済み"
                       />
                     )}
-                    {message.flagged && (
+                    {preferences.showListIcons && message.flagged && (
                       <StarIcon
                         className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
                         aria-label="スター付き"
                       />
                     )}
-                    {message.hasAttachments && (
+                    {preferences.showListIcons && message.hasAttachments && (
                       <PaperclipIcon
                         className="size-3.5 shrink-0 text-muted-foreground"
                         aria-label="添付ファイルあり"
@@ -340,7 +366,11 @@ export function MessageList({
                       dateTime={message.receivedAt}
                       className="shrink-0 text-muted-foreground text-xs tabular-nums"
                     >
-                      {formatListDate(message.receivedAt)}
+                      {formatListDate(
+                        message.receivedAt,
+                        new Date(),
+                        preferences,
+                      )}
                     </time>
                   </span>
                   <span
@@ -358,8 +388,13 @@ export function MessageList({
                       "(件名なし)"
                     )}
                   </span>
-                  {preview && (
-                    <span className="line-clamp-2 text-muted-foreground text-xs">
+                  {preview && preferences.previewLines > 0 && (
+                    <span
+                      className={cn(
+                        "text-muted-foreground text-xs",
+                        previewClamp[preferences.previewLines],
+                      )}
+                    >
                       <Highlighted text={preview} terms={highlightTerms} />
                     </span>
                   )}
