@@ -7,9 +7,22 @@ import {
 import MailComposer from "nodemailer/lib/mail-composer";
 
 /**
+ * 書式付きの本文を、1 つの HTML 文書にする。
+ * 文字コードと既定の書体を決めておくと、相手のメールソフトによる見た目の差が小さくなる。
+ */
+export function htmlDocument(body: string): string {
+  return (
+    '<!DOCTYPE html><html><head><meta charset="utf-8"></head>' +
+    `<body style="font-family:sans-serif;font-size:14px;line-height:1.6">${body}</body></html>`
+  );
+}
+
+/**
  * 送信するメールを RFC 5322 の形式に組み立てる。
  * keepBcc が true なら Bcc ヘッダーを残す (送信済みフォルダへの保存と、
  * Bcc の宛先をヘッダーから読む Microsoft Graph 用)。SMTP で送る分には残さない。
+ * 書式付きの本文があれば、テキストと HTML の両方を入れる (multipart/alternative)。
+ * HTML を表示しないメールソフトでは、テキストのほうが表示される。
  */
 export function buildMime(
   message: OutgoingMessage,
@@ -23,7 +36,7 @@ export function buildMime(
     bcc: message.bcc,
     subject: message.subject,
     text: message.text,
-    ...(message.html ? { html: message.html } : {}),
+    ...(message.html ? { html: htmlDocument(message.html) } : {}),
     attachments: (message.attachments ?? []).map((file) => ({
       filename: file.filename,
       contentType: file.contentType,
