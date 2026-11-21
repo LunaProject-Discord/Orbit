@@ -12,6 +12,7 @@ import { attachmentRoutes } from "./routes/attachments.js";
 import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
+import { searchRoutes } from "./routes/search.js";
 import { sendRoutes } from "./routes/send.js";
 import { syncRoutes } from "./routes/sync.js";
 import { webhookRoutes } from "./routes/webhooks.js";
@@ -95,6 +96,8 @@ export function createApp({
   authed.route("/attachments", attachmentRoutes({ db, hub }));
   // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) を登録する。
   authed.route("/messages", sendRoutes(deps));
+  // 検索 (/messages/search) も /messages/:id より先に登録する。
+  authed.route("/messages", searchRoutes(deps));
   authed.route("/messages", messageRoutes({ db, hub }));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);

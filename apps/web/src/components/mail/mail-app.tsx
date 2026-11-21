@@ -17,6 +17,7 @@ import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
+import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
 import { SignatureDialog } from "@/components/mail/signature-dialog";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,8 @@ import {
   type MessageSummary,
   type OutgoingMail,
   oauthProviderOf,
+  type SearchParams,
+  searchMessages,
   sendFocus,
   startOAuthLogin,
   type User,
@@ -54,13 +57,22 @@ import {
 } from "@/lib/compose";
 import { subscribeEvents } from "@/lib/events";
 import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
+import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 
 const PAGE_SIZE = 50;
 /** 表示中のフォルダをサーバーへ知らせる間隔。 */
 const FOCUS_INTERVAL_MS = 30_000;
+/** 検索欄の入力が止まってから検索を始めるまでの時間。 */
+const SEARCH_DELAY_MS = 300;
 const LIST_ERROR = "メールを読み込めませんでした。";
+const SEARCH_ERROR = "検索できませんでした。";
+const emptySearch: SearchParams = {
+  text: "",
+  filters: emptyFilters,
+  scope: "all",
+};
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
 const DRAFT_NOTICE =
@@ -117,6 +129,15 @@ export function MailApp({ user }: { user: User }) {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  /** 検索欄の内容。 */
+  const [searchInput, setSearchInput] = useState<SearchParams>(emptySearch);
+  /** 実行中の検索 (入力が止まってから反映する)。null なら通常の一覧を表示する。 */
+  const [search, setSearch] = useState<SearchParams | null>(null);
+  const searchRef = useRef<SearchParams | null>(null);
+  searchRef.current = search;
+  /** 検索結果で目立たせる語 (サーバーが検索欄の入力から求める)。 */
+  const [searchTerms, setSearchTerms] = useState<string[]>([]);
 
   /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
   const listRequest = useRef(0);
@@ -177,9 +198,21 @@ export function MailApp({ user }: { user: User }) {
     }
   }, []);
 
+  /** 一覧を 1 ページ取得する。検索中は検索結果、そうでなければ表示中のフォルダ。 */
+  const fetchPage = useCallback(
+    async ({ accountId, mailboxId }: Selection, cursor: string | null) => {
+      const params = { accountId, mailboxId, cursor, limit: PAGE_SIZE };
+      const active = searchRef.current;
+      if (!active) return { page: await listMessages(params), terms: null };
+      const page = await searchMessages({ ...active, ...params });
+      return { page, terms: page.terms };
+    },
+    [],
+  );
+
   /** 先頭ページを取得する。reset が true なら一覧を空にしてから読み込む。 */
   const loadFirstPage = useCallback(
-    async ({ accountId, mailboxId }: Selection, reset: boolean) => {
+    async (selection: Selection, reset: boolean) => {
       const request = ++listRequest.current;
       if (reset) {
         setMessages(null);
@@ -187,13 +220,10 @@ export function MailApp({ user }: { user: User }) {
         setListError(null);
       }
       try {
-        const page = await listMessages({
-          accountId,
-          mailboxId,
-          limit: PAGE_SIZE,
-        });
+        const { page, terms } = await fetchPage(selection, null);
         if (request !== listRequest.current) return;
         setListError(null);
+        setSearchTerms(terms ?? []);
         // まだサーバーへ送れていない操作を、取得した一覧に重ねる。
         const fetched = applyActions(
           page.messages,
@@ -212,10 +242,10 @@ export function MailApp({ user }: { user: User }) {
         );
       } catch {
         if (request !== listRequest.current) return;
-        setListError(LIST_ERROR);
+        setListError(searchRef.current ? SEARCH_ERROR : LIST_ERROR);
       }
     },
-    [],
+    [fetchPage],
   );
 
   useEffect(() => {
@@ -314,12 +344,23 @@ export function MailApp({ user }: { user: User }) {
     if (input.action !== "set_flags") clearSelection();
   }
 
+  // 検索欄の入力が止まったら検索する。入力も条件も無くなったら、すぐに通常の一覧へ戻す。
+  useEffect(() => {
+    if (!isSearchActive(searchInput)) {
+      setSearch(null);
+      return;
+    }
+    const timer = setTimeout(() => setSearch(searchInput), SEARCH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: search は読み込み直すきっかけとして使う (中身は searchRef から読む)
   useEffect(() => {
     void loadFirstPage(
       { accountId: selectedAccountId, mailboxId: selectedMailboxId },
       true,
     );
-  }, [selectedAccountId, selectedMailboxId, loadFirstPage]);
+  }, [selectedAccountId, selectedMailboxId, search, loadFirstPage]);
 
   // 画面を開いている間、表示中のフォルダをサーバーへ知らせ続ける。サーバーはその間、
   // 表示中のフォルダを短い間隔で同期する。画面が隠れている間は知らせない (通常の間隔に戻る)。
@@ -463,12 +504,7 @@ export function MailApp({ user }: { user: User }) {
     const request = listRequest.current;
     setLoadingMore(true);
     try {
-      const page = await listMessages({
-        accountId: selectedAccountId,
-        mailboxId: selectedMailboxId,
-        cursor: nextCursor,
-        limit: PAGE_SIZE,
-      });
+      const { page } = await fetchPage(selectionRef.current, nextCursor);
       if (request !== listRequest.current) return;
       const fetched = applyActions(
         page.messages,
@@ -484,7 +520,9 @@ export function MailApp({ user }: { user: User }) {
       setNextCursor(page.nextCursor);
       setListError(null);
     } catch {
-      if (request === listRequest.current) setListError(LIST_ERROR);
+      if (request === listRequest.current) {
+        setListError(searchRef.current ? SEARCH_ERROR : LIST_ERROR);
+      }
     } finally {
       setLoadingMore(false);
     }
@@ -496,6 +534,9 @@ export function MailApp({ user }: { user: User }) {
   ) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
+    // フォルダを選んだら検索を終えて、そのフォルダの一覧を表示する。
+    setSearchInput(emptySearch);
+    setSearch(null);
     clearSelection();
     anchorRef.current = null;
     setSelectedAccountId(accountId);
@@ -517,6 +558,17 @@ export function MailApp({ user }: { user: User }) {
   /** フォルダを表示している間は、どのアカウントのフォルダかを添える。 */
   const subtitle = selectedMailbox ? accountName : null;
   const noAccounts = accounts !== null && accounts.length === 0;
+  const searching = search !== null;
+  /** 検索結果の各行に出す、メールのある場所。アカウントを選んでいなければアカウント名も添える。 */
+  const locationLabel = (message: MessageSummary): string | null => {
+    const mailbox = mailboxes?.find((item) => item.id === message.mailboxId);
+    if (!mailbox) return null;
+    const account = selectedAccountId
+      ? null
+      : accounts?.find((item) => item.id === message.accountId);
+    const name = account ? account.displayName || account.email : null;
+    return name ? `${name} · ${mailboxLabel(mailbox)}` : mailboxLabel(mailbox);
+  };
 
   // 開いているメールを含む行。会話に新しいメールが届いて行の代表が替わっても、同じ行を指す。
   const selectedMessage =
@@ -542,6 +594,23 @@ export function MailApp({ user }: { user: User }) {
     if (command === "compose") {
       event.preventDefault();
       handleNewMail();
+      return;
+    }
+    if (command === "search") {
+      const input = document.getElementById(SEARCH_INPUT_ID);
+      if (!(input instanceof HTMLInputElement)) return;
+      event.preventDefault();
+      const focus = () => {
+        input.focus();
+        input.select();
+      };
+      if (input.offsetParent !== null) {
+        focus();
+      } else {
+        // スマホ幅でメールを開いているときは一覧が隠れているので、一覧へ戻ってから移動する。
+        setSelectedMessageId(null);
+        requestAnimationFrame(focus);
+      }
       return;
     }
     const list = messages ?? [];
@@ -787,6 +856,18 @@ export function MailApp({ user }: { user: User }) {
               )}
             </header>
           )}
+          {!noAccounts && accounts !== null && (
+            <SearchBar
+              value={searchInput}
+              onChange={setSearchInput}
+              placeholder={
+                accountName
+                  ? `${accountName} から検索`
+                  : "すべてのアカウントから検索"
+              }
+              folderLabel={selectedMailbox ? title : "受信トレイ"}
+            />
+          )}
           <OutgoingList
             outgoing={outgoing}
             onEdit={handleEditOutgoing}
@@ -832,10 +913,16 @@ export function MailApp({ user }: { user: User }) {
                 onToggleCheck={handleToggleCheck}
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
-                showRecipients={showsRecipients(selectedMailbox)}
-                {...(selectedMailbox?.lastSyncedAt
-                  ? { emptyText: "このフォルダにメールはありません。" }
-                  : {})}
+                showRecipients={!searching && showsRecipients(selectedMailbox)}
+                {...(searching
+                  ? {
+                      emptyText: "条件に合うメールは見つかりませんでした。",
+                      highlightTerms: searchTerms,
+                      locationLabel,
+                    }
+                  : selectedMailbox?.lastSyncedAt
+                    ? { emptyText: "このフォルダにメールはありません。" }
+                    : {})}
                 onSelect={handleSelectMessage}
                 onAction={performAction}
                 onLoadMore={() => void handleLoadMore()}
