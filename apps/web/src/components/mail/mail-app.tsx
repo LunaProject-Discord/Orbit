@@ -30,8 +30,9 @@ import {
   type MessageDetail,
   type MessageSummary,
   type OutgoingMail,
+  oauthProviderOf,
   sendFocus,
-  startMicrosoftLogin,
+  startOAuthLogin,
   type User,
 } from "@/lib/api";
 import {
@@ -595,7 +596,9 @@ export function MailApp({ user }: { user: User }) {
             setDeleteTarget(account);
           }}
           onReauth={(account) => {
-            startMicrosoftLogin(account.id)
+            const provider = oauthProviderOf(account);
+            if (!provider) return;
+            startOAuthLogin(provider, account.id)
               .then((url) => window.location.assign(url))
               .catch(() => {
                 // 失敗してもサイドバーの表示はそのままなので、もう一度押せる。

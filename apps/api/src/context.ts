@@ -1,4 +1,4 @@
-import type { MicrosoftOAuthConfig } from "@mail/core";
+import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from "@mail/core";
 import type { Database } from "@mail/db";
 import { createMiddleware } from "hono/factory";
 import type { Auth } from "./auth.js";
@@ -14,6 +14,7 @@ export type RouteDeps = {
   encryptionKey: Buffer;
   allowPrivateMailHosts: boolean;
   microsoft: { config: MicrosoftOAuthConfig; redirectUri: string } | null;
+  google: { config: GoogleOAuthConfig; redirectUri: string } | null;
 };
 
 /** ログイン済みであることを確かめ、利用者を c.var.user に入れる。 */

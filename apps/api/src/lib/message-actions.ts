@@ -17,6 +17,7 @@ import {
 } from "@mail/db";
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import { type MailboxRole, planLabelMove } from "./label-store.js";
 
 const common = {
   /** 端末が操作ごとに付ける一意な ID。同じ値で再送されても二重に実行しない。 */
@@ -57,13 +58,15 @@ type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type Placement = OutboxTarget & {
   accountId: string;
   protocol: "imap" | "graph";
+  /** フォルダの役割 (受信トレイ、ごみ箱など)。 */
+  role: MailboxRole;
 };
 
 /** 操作の対象。Graph のメッセージはフォルダに依らず ID で指すので、1 通につき 1 件にまとめる。 */
 function toTargets(placements: Placement[]): OutboxTarget[] {
   const seen = new Set<string>();
   const targets: OutboxTarget[] = [];
-  for (const { accountId: _, protocol, ...target } of placements) {
+  for (const { accountId: _, role: __, protocol, ...target } of placements) {
     if (protocol === "graph") {
       if (seen.has(target.messageId)) continue;
       seen.add(target.messageId);
@@ -129,6 +132,7 @@ export async function enqueueMessageAction(
           mailboxPath: mailboxes.path,
           uid: messageMailboxes.uid,
           uidValidity: mailboxes.uidValidity,
+          role: mailboxes.specialUse,
         })
         .from(messages)
         .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
@@ -157,13 +161,20 @@ export async function enqueueMessageAction(
       }));
 
     // 移動先をアカウントごとに決める。1 つでも決まらなければ全体を受け付けない。
-    const destinations = new Map<string, { mailboxId: string; path: string }>();
+    const destinations = new Map<
+      string,
+      { mailboxId: string; path: string; role: MailboxRole }
+    >();
     if (action.action === "move") {
+      const wanted = action.destination as NonNullable<
+        typeof action.destination
+      >;
       const found = await tx
         .select({
           accountId: mailboxes.accountId,
           mailboxId: mailboxes.id,
           path: mailboxes.path,
+          role: mailboxes.specialUse,
         })
         .from(mailboxes)
         .where(
@@ -171,17 +182,21 @@ export async function enqueueMessageAction(
             inArray(mailboxes.accountId, accountIds),
             action.mailboxId
               ? eq(mailboxes.id, action.mailboxId)
-              : eq(
+              : inArray(
                   mailboxes.specialUse,
-                  action.destination as NonNullable<typeof action.destination>,
+                  // Gmail にはアーカイブ用のフォルダが無く、受信トレイから外したメールは
+                  // 「すべてのメール」に残る。アーカイブ先が無ければそれを使う。
+                  wanted === "archive" ? ["archive", "all"] : [wanted],
                 ),
           ),
         );
       for (const row of found) {
-        if (!destinations.has(row.accountId)) {
+        const current = destinations.get(row.accountId);
+        if (!current || (current.role === "all" && row.role === "archive")) {
           destinations.set(row.accountId, {
             mailboxId: row.mailboxId,
             path: row.path,
+            role: row.role,
           });
         }
       }
@@ -191,16 +206,53 @@ export async function enqueueMessageAction(
       }
     }
 
+    const labelAccounts = new Set(
+      (
+        await tx
+          .select({ id: mailAccounts.id })
+          .from(mailAccounts)
+          .where(
+            and(
+              inArray(mailAccounts.id, accountIds),
+              eq(mailAccounts.provider, "gmail"),
+              eq(mailAccounts.protocol, "imap"),
+            ),
+          )
+      ).map((row) => row.id),
+    );
+
     const accepted = new Set<string>();
     for (const accountId of accountIds) {
       const destination = destinations.get(accountId);
+      let sources = placements.filter((row) => row.accountId === accountId);
+      /** 手元の DB から移動元を外さないメッセージ (ラベルが付くだけのもの)。 */
+      const keptLocally = new Set<string>();
+      if (destination && labelAccounts.has(accountId)) {
+        // Gmail ではフォルダがラベルなので、移動元にする所在をメールごとに選ぶ。
+        const byMessage = new Map<string, Placement[]>();
+        for (const row of sources) {
+          const rows = byMessage.get(row.messageId);
+          if (rows) rows.push(row);
+          else byMessage.set(row.messageId, [row]);
+        }
+        sources = [];
+        for (const [messageId, rows] of byMessage) {
+          // すでにそのラベルが付いているものは動かさない。
+          // (「すべてのメール」にはどのメールも入っているので、アーカイブは別扱い。)
+          if (
+            destination.role !== "all" &&
+            rows.some((row) => row.mailboxId === destination.mailboxId)
+          ) {
+            continue;
+          }
+          const plan = planLabelMove(rows, destination.role);
+          sources.push(...plan.sources);
+          if (!plan.removeLocally) keptLocally.add(messageId);
+        }
+      }
       const targets = toTargets(
-        placements.filter(
-          (row) =>
-            row.accountId === accountId &&
-            // すでに移動先にあるものは動かさない。
-            row.mailboxId !== destination?.mailboxId,
-        ),
+        // すでに移動先にあるものは動かさない。
+        sources.filter((row) => row.mailboxId !== destination?.mailboxId),
       );
       if (targets.length === 0) continue;
 
@@ -217,7 +269,16 @@ export async function enqueueMessageAction(
           },
         };
       } else if (action.action === "move" && destination) {
-        operation = { kind: "move", payload: { targets, destination } };
+        operation = {
+          kind: "move",
+          payload: {
+            targets,
+            destination: {
+              mailboxId: destination.mailboxId,
+              path: destination.path,
+            },
+          },
+        };
       } else {
         operation = { kind: "delete", payload: { targets } };
       }
@@ -250,7 +311,11 @@ export async function enqueueMessageAction(
           .where(inArray(messages.id, ids));
         await recordChanges(tx, userId, "upsert", ids);
       } else {
-        await removePlacements(tx, userId, targets);
+        await removePlacements(
+          tx,
+          userId,
+          targets.filter((target) => !keptLocally.has(target.messageId)),
+        );
       }
       // コミット時に同期ワーカーへ届き、すぐにプロバイダへ反映される。
       await tx.execute(sql`select pg_notify(${CHANNEL_OUTBOX}, ${accountId})`);

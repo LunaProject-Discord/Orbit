@@ -155,11 +155,16 @@ export type CreateAccountInput = {
   email: string;
   displayName?: string;
   provider: Account["provider"];
-  imap: ServerSettings;
-  smtp: ServerSettings;
-  username: string;
+  /** 接続先。provider が gmail か icloud なら省略でき、サーバーが決まった値を使う。 */
+  imap?: ServerSettings;
+  smtp?: ServerSettings;
+  /** 省略するとメールアドレスを使う。 */
+  username?: string;
   password: string;
 };
+
+/** ログイン画面へ移動して追加するサービス (OAuth2)。 */
+export type OAuthProvider = "google" | "microsoft";
 
 export type MessageSummary = {
   id: string;
@@ -363,27 +368,45 @@ export async function createAccount(
 }
 
 /**
- * Microsoft のログイン画面の URL を取得する。
+ * Google または Microsoft のログイン画面の URL を取得する。
  * accountId を渡すと、そのアカウントの再ログインになる。
  */
-export async function startMicrosoftLogin(accountId?: string): Promise<string> {
+export async function startOAuthLogin(
+  provider: OAuthProvider,
+  accountId?: string,
+): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
-    "/v1/accounts/microsoft/authorize",
+    `/v1/accounts/${provider}/authorize`,
     { method: "POST", body: accountId ? { accountId } : {} },
   );
   return url;
 }
 
-/** Microsoft のログイン画面から戻ってきた code と state を渡して、アカウントを追加する。 */
-export async function completeMicrosoftLogin(
+/** ログイン画面から戻ってきた code と state を渡して、アカウントを追加する。 */
+export async function completeOAuthLogin(
+  provider: OAuthProvider,
   code: string,
   state: string,
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
-    "/v1/accounts/microsoft/complete",
+    `/v1/accounts/${provider}/complete`,
     { method: "POST", body: { code, state } },
   );
   return account;
+}
+
+/**
+ * アカウントのログインし直しに使うサービス。パスワードで追加したアカウントは null
+ * (ログイン画面へ移動する方法では直せない)。
+ */
+export function oauthProviderOf(
+  account: Pick<Account, "protocol" | "provider" | "authType">,
+): OAuthProvider | null {
+  if (account.protocol === "graph") return "microsoft";
+  if (account.provider === "gmail" && account.authType === "oauth2") {
+    return "google";
+  }
+  return null;
 }
 
 export async function deleteAccount(id: string): Promise<void> {

@@ -19,7 +19,7 @@ export class FolderWatcher {
   private wakeRetry: (() => void) | null = null;
 
   constructor(
-    private readonly createClient: () => ImapFlow,
+    private readonly createClient: () => Promise<ImapFlow>,
     private readonly onChange: (path: string) => void,
     private readonly log: (message: string) => void,
   ) {}
@@ -49,20 +49,24 @@ export class FolderWatcher {
     let retry = MIN_RETRY_MS;
     let warned = false;
     while (generation === this.generation) {
-      const client = this.createClient();
-      this.client = client;
-      const closed = new Promise<void>((resolve) =>
-        client.on("close", resolve),
-      );
-      // 切断時のエラーは close で拾う。リスナーが無いと例外になるので受けておく。
-      client.on("error", () => {});
       const changed = () => {
         if (generation === this.generation) this.onChange(path);
       };
-      client.on("exists", changed);
-      client.on("expunge", changed);
-      client.on("flags", changed);
+      let client: ImapFlow | null = null;
       try {
+        // OAuth2 のアカウントでは、ここでアクセストークンを取得する (失敗することがある)。
+        const created = await this.createClient();
+        client = created;
+        if (generation !== this.generation) return;
+        this.client = created;
+        const closed = new Promise<void>((resolve) =>
+          created.on("close", resolve),
+        );
+        // 切断時のエラーは close で拾う。リスナーが無いと例外になるので受けておく。
+        created.on("error", () => {});
+        created.on("exists", changed);
+        created.on("expunge", changed);
+        created.on("flags", changed);
         await client.connect();
         // 読み取り専用で開く。コマンドの合間は ImapFlow が自動で IDLE に入る。
         await client.mailboxOpen(path, { readOnly: true });
@@ -83,7 +87,7 @@ export class FolderWatcher {
         }
       } finally {
         if (generation === this.generation) this.connected = false;
-        client.close();
+        client?.close();
       }
       if (generation !== this.generation) return;
       await new Promise<void>((resolve) => {

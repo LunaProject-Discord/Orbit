@@ -5,8 +5,7 @@ export type ImapSettings = {
   port: number;
   secure: boolean;
   username: string;
-  password: string;
-};
+} & ({ password: string } | { accessToken: string });
 
 export type ImapVerifyResult =
   | { ok: true }
@@ -20,7 +19,10 @@ export async function verifyImap(
     host: settings.host,
     port: settings.port,
     secure: settings.secure,
-    auth: { user: settings.username, pass: settings.password },
+    auth:
+      "accessToken" in settings
+        ? { user: settings.username, accessToken: settings.accessToken }
+        : { user: settings.username, pass: settings.password },
     logger: false,
     verifyOnly: true,
     connectionTimeout: 15_000,

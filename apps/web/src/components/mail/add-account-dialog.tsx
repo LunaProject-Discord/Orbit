@@ -1,5 +1,7 @@
 "use client";
 
+import { cn } from "cn";
+import { ChevronLeftIcon, MailIcon } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,10 +20,14 @@ import {
   ApiError,
   createAccount,
   NetworkError,
-  startMicrosoftLogin,
+  type OAuthProvider,
+  startOAuthLogin,
 } from "@/lib/api";
 
-function messageOf(error: unknown): string {
+/** 画面の段階。choose はサービスの選択、icloud と manual は入力フォーム。 */
+type Step = "choose" | "icloud" | "manual";
+
+function messageOf(error: unknown, step: Step): string {
   if (error instanceof NetworkError) {
     return "サーバーに接続できませんでした。ネットワークの状態を確認してください。";
   }
@@ -29,17 +35,25 @@ function messageOf(error: unknown): string {
     const body = (error.body ?? {}) as { host?: string; detail?: string };
     switch (error.code) {
       case "auth_failed":
-        return "メールサーバーにログインできませんでした。ユーザー名とパスワードを確認してください。";
+        return step === "icloud"
+          ? "iCloud にログインできませんでした。メールアドレスとアプリ用パスワードを確認してください (Apple Account のパスワードではログインできません)。"
+          : "メールサーバーにログインできませんでした。ユーザー名とパスワードを確認してください。";
       case "connection_failed":
-        return `IMAP サーバーに接続できませんでした。ホスト名、ポート、TLS の設定を確認してください。${
-          body.detail ? ` (${body.detail})` : ""
-        }`;
+        return step === "icloud"
+          ? `iCloud のメールサーバーに接続できませんでした。時間をおいてもう一度お試しください。${
+              body.detail ? ` (${body.detail})` : ""
+            }`
+          : `IMAP サーバーに接続できませんでした。ホスト名、ポート、TLS の設定を確認してください。${
+              body.detail ? ` (${body.detail})` : ""
+            }`;
       case "account_exists":
         return "このメールアドレスはすでに追加されています。";
       case "host_not_allowed":
         return `このホストには接続できません${body.host ? `: ${body.host}` : ""}。`;
       case "microsoft_not_configured":
         return "このサーバーでは Microsoft アカウントの追加が設定されていません。サーバーの管理者に確認してください。";
+      case "google_not_configured":
+        return "このサーバーでは Google でのログインが設定されていません。サーバーの管理者に確認するか、「その他のメール」からアプリ パスワードで追加してください。";
       case "host_not_found":
         return `ホストが見つかりません${body.host ? `: ${body.host}` : ""}。ホスト名を確認してください。`;
     }
@@ -63,6 +77,21 @@ const initialForm = {
   smtpSecure: false,
 };
 
+const descriptions: Record<Step, string> = {
+  choose:
+    "追加したアカウントはサーバーが常時同期し、すべての端末に同じ状態で届きます。",
+  icloud:
+    "iCloud メールのアドレスと、このアプリ専用に作ったアプリ用パスワードを入力してください。",
+  manual:
+    "メールサービスが案内している IMAP と SMTP の設定を入力してください。",
+};
+
+const titles: Record<Step, string> = {
+  choose: "メールアカウントを追加",
+  icloud: "iCloud のアカウントを追加",
+  manual: "その他のメールを追加",
+};
+
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -71,22 +100,25 @@ type Props = {
 
 export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
   const id = useId();
+  const [step, setStep] = useState<Step>("choose");
   const [form, setForm] = useState(initialForm);
   /** ユーザー名を手で変えるまでは、メールアドレスと同じ値にする。 */
   const [usernameEdited, setUsernameEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [redirecting, setRedirecting] = useState(false);
+  /** ログイン画面へ移動中のサービス。 */
+  const [redirecting, setRedirecting] = useState<OAuthProvider | null>(null);
+  const busy = submitting || redirecting !== null;
 
-  async function handleMicrosoft() {
+  async function handleOAuth(provider: OAuthProvider) {
     setError(null);
-    setRedirecting(true);
+    setRedirecting(provider);
     try {
-      // Microsoft のログイン画面へ移動する。ログイン後は /oauth/microsoft に戻ってくる。
-      window.location.assign(await startMicrosoftLogin());
+      // ログイン画面へ移動する。ログイン後は /oauth/google などに戻ってくる。
+      window.location.assign(await startOAuthLogin(provider));
     } catch (cause) {
-      setError(messageOf(cause));
-      setRedirecting(false);
+      setError(messageOf(cause, step));
+      setRedirecting(null);
     }
   }
 
@@ -95,13 +127,22 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     value: (typeof initialForm)[K],
   ) => setForm((current) => ({ ...current, [key]: value }));
 
+  function reset() {
+    setStep("choose");
+    setForm(initialForm);
+    setUsernameEdited(false);
+    setError(null);
+  }
+
+  function goTo(next: Step) {
+    if (busy) return;
+    setError(null);
+    setStep(next);
+  }
+
   function handleOpenChange(next: boolean) {
-    if (submitting || redirecting) return;
-    if (!next) {
-      setForm(initialForm);
-      setUsernameEdited(false);
-      setError(null);
-    }
+    if (busy) return;
+    if (!next) reset();
     onOpenChange(next);
   }
 
@@ -111,167 +152,293 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     setSubmitting(true);
     try {
       const email = form.email.trim();
-      const account = await createAccount({
+      const common = {
         email,
         ...(form.displayName.trim()
           ? { displayName: form.displayName.trim() }
           : {}),
-        provider: "generic",
-        imap: {
-          host: form.imapHost.trim(),
-          port: Number(form.imapPort),
-          secure: form.imapSecure,
-        },
-        smtp: {
-          host: form.smtpHost.trim(),
-          port: Number(form.smtpPort),
-          secure: form.smtpSecure,
-        },
-        username: usernameEdited ? form.username : email,
-        password: form.password,
-      });
+      };
+      const account = await createAccount(
+        step === "icloud"
+          ? {
+              ...common,
+              provider: "icloud",
+              // アプリ用パスワードは 4 文字ごとにハイフンで区切って表示される。
+              // 空白を入れて書き写しても通るよう、空白だけ取り除く。
+              password: form.password.replace(/\s+/g, ""),
+            }
+          : {
+              ...common,
+              provider: "generic",
+              imap: {
+                host: form.imapHost.trim(),
+                port: Number(form.imapPort),
+                secure: form.imapSecure,
+              },
+              smtp: {
+                host: form.smtpHost.trim(),
+                port: Number(form.smtpPort),
+                secure: form.smtpSecure,
+              },
+              username: usernameEdited ? form.username : email,
+              password: form.password,
+            },
+      );
       setSubmitting(false);
-      setForm(initialForm);
-      setUsernameEdited(false);
+      reset();
       onCreated(account);
       onOpenChange(false);
     } catch (cause) {
-      setError(messageOf(cause));
+      setError(messageOf(cause, step));
       setSubmitting(false);
     }
   }
 
+  const alert = error && (
+    <p role="alert" className="text-destructive text-sm">
+      {error}
+    </p>
+  );
+  const emailField = (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={`${id}-email`}>メールアドレス</Label>
+      <Input
+        id={`${id}-email`}
+        type="email"
+        required
+        autoComplete="off"
+        placeholder={step === "icloud" ? "name@icloud.com" : undefined}
+        value={form.email}
+        onChange={(event) => set("email", event.target.value)}
+      />
+    </div>
+  );
+  const displayNameField = (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={`${id}-display-name`}>表示名 (任意)</Label>
+      <Input
+        id={`${id}-display-name`}
+        maxLength={200}
+        autoComplete="off"
+        value={form.displayName}
+        onChange={(event) => set("displayName", event.target.value)}
+      />
+    </div>
+  );
+  const footer = (
+    <DialogFooter>
+      <Button
+        type="button"
+        variant="outline"
+        disabled={busy}
+        onClick={() => goTo("choose")}
+      >
+        <ChevronLeftIcon data-icon="inline-start" />
+        戻る
+      </Button>
+      <Button type="submit" disabled={busy}>
+        {submitting ? "接続を確認中…" : "追加"}
+      </Button>
+    </DialogFooter>
+  );
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+      <DialogContent
+        showCloseButton={false}
+        className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-[520px]"
+      >
         <DialogHeader>
-          <DialogTitle>メールアカウントを追加</DialogTitle>
-          <DialogDescription>
-            追加すると受信トレイの同期が始まります。
-          </DialogDescription>
+          <DialogTitle className="font-semibold text-lg">
+            {titles[step]}
+          </DialogTitle>
+          <DialogDescription>{descriptions[step]}</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            disabled={submitting || redirecting}
-            onClick={() => void handleMicrosoft()}
-          >
-            {redirecting
-              ? "Microsoft のログイン画面へ移動中…"
-              : "Microsoft アカウントでログイン"}
-          </Button>
-          <p className="text-muted-foreground text-xs">
-            Microsoft 365 (Exchange Online) と Outlook.com
-            のアカウントを追加できます。
-          </p>
-        </div>
-        <div className="flex items-center gap-3 text-muted-foreground text-xs">
-          <span className="h-px flex-1 bg-border" />
-          または IMAP サーバーを設定
-          <span className="h-px flex-1 bg-border" />
-        </div>
-        <p className="text-muted-foreground text-sm">
-          iCloud や Gmail
-          では、通常のパスワードではなくアプリ用パスワードを使ってください。
-        </p>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor={`${id}-email`}>メールアドレス</Label>
-              <Input
-                id={`${id}-email`}
-                type="email"
-                required
-                autoComplete="off"
-                value={form.email}
-                onChange={(event) => set("email", event.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor={`${id}-display-name`}>表示名 (任意)</Label>
-              <Input
-                id={`${id}-display-name`}
-                maxLength={200}
-                autoComplete="off"
-                value={form.displayName}
-                onChange={(event) => set("displayName", event.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor={`${id}-username`}>ユーザー名</Label>
-              <Input
-                id={`${id}-username`}
-                required
-                autoComplete="off"
-                value={usernameEdited ? form.username : form.email}
-                onChange={(event) => {
-                  setUsernameEdited(true);
-                  set("username", event.target.value);
-                }}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor={`${id}-password`}>パスワード</Label>
-              <Input
-                id={`${id}-password`}
-                type="password"
-                required
-                autoComplete="new-password"
-                value={form.password}
-                onChange={(event) => set("password", event.target.value)}
-              />
-            </div>
-          </div>
 
-          <ServerFields
-            idPrefix={`${id}-imap`}
-            legend="受信 (IMAP)"
-            host={form.imapHost}
-            port={form.imapPort}
-            secure={form.imapSecure}
-            hostPlaceholder="imap.example.com"
-            secureLabel="TLS で接続する (ポート 993)"
-            onHost={(value) => set("imapHost", value)}
-            onPort={(value) => set("imapPort", value)}
-            onSecure={(value) => set("imapSecure", value)}
-          />
-          <ServerFields
-            idPrefix={`${id}-smtp`}
-            legend="送信 (SMTP)"
-            host={form.smtpHost}
-            port={form.smtpPort}
-            secure={form.smtpSecure}
-            hostPlaceholder="smtp.example.com"
-            secureLabel="最初から TLS で接続する (ポート 465)"
-            onHost={(value) => set("smtpHost", value)}
-            onPort={(value) => set("smtpPort", value)}
-            onSecure={(value) => set("smtpSecure", value)}
-          />
+        {step === "choose" && (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ProviderTile
+                name="Gmail"
+                note={
+                  redirecting === "google"
+                    ? "ログイン画面へ移動中…"
+                    : "Google でログイン"
+                }
+                tone="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                disabled={busy}
+                onClick={() => void handleOAuth("google")}
+              />
+              <ProviderTile
+                name="Microsoft"
+                note={
+                  redirecting === "microsoft"
+                    ? "ログイン画面へ移動中…"
+                    : "Microsoft 365 / Outlook.com"
+                }
+                tone="bg-violet-500/10 text-violet-600 dark:text-violet-400"
+                disabled={busy}
+                onClick={() => void handleOAuth("microsoft")}
+              />
+              <ProviderTile
+                name="iCloud"
+                note="アプリ用パスワード"
+                tone="bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                disabled={busy}
+                onClick={() => goTo("icloud")}
+              />
+              <ProviderTile
+                name="その他のメール"
+                note="IMAP / SMTP を手動で設定"
+                tone="bg-muted"
+                disabled={busy}
+                onClick={() => goTo("manual")}
+              />
+            </div>
+            {alert}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => handleOpenChange(false)}
+              >
+                キャンセル
+              </Button>
+            </DialogFooter>
+          </>
+        )}
 
-          {error && (
-            <p role="alert" className="text-destructive text-sm">
-              {error}
-            </p>
-          )}
+        {step === "icloud" && (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {emailField}
+              {displayNameField}
+              <div className="flex flex-col gap-2 sm:col-span-2">
+                <Label htmlFor={`${id}-password`}>アプリ用パスワード</Label>
+                <Input
+                  id={`${id}-password`}
+                  type="password"
+                  required
+                  autoComplete="off"
+                  placeholder="xxxx-xxxx-xxxx-xxxx"
+                  value={form.password}
+                  onChange={(event) => set("password", event.target.value)}
+                />
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  Apple Account のパスワードではログインできません。
+                  <a
+                    href="https://account.apple.com/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-foreground underline underline-offset-2"
+                  >
+                    account.apple.com
+                  </a>{" "}
+                  にサインインし、「サインインとセキュリティ」の「アプリ用パスワード」で作成してください
+                  (2 ファクタ認証が必要です)。
+                </p>
+              </div>
+            </div>
+            {alert}
+            {footer}
+          </form>
+        )}
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={submitting || redirecting}
-              onClick={() => handleOpenChange(false)}
-            >
-              キャンセル
-            </Button>
-            <Button type="submit" disabled={submitting || redirecting}>
-              {submitting ? "接続を確認中…" : "追加"}
-            </Button>
-          </DialogFooter>
-        </form>
+        {step === "manual" && (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {emailField}
+              {displayNameField}
+              <div className="flex flex-col gap-2">
+                <Label htmlFor={`${id}-username`}>ユーザー名</Label>
+                <Input
+                  id={`${id}-username`}
+                  required
+                  autoComplete="off"
+                  value={usernameEdited ? form.username : form.email}
+                  onChange={(event) => {
+                    setUsernameEdited(true);
+                    set("username", event.target.value);
+                  }}
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor={`${id}-password`}>パスワード</Label>
+                <Input
+                  id={`${id}-password`}
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  value={form.password}
+                  onChange={(event) => set("password", event.target.value)}
+                />
+              </div>
+            </div>
+
+            <ServerFields
+              idPrefix={`${id}-imap`}
+              legend="受信 (IMAP)"
+              host={form.imapHost}
+              port={form.imapPort}
+              secure={form.imapSecure}
+              hostPlaceholder="imap.example.com"
+              secureLabel="TLS で接続する (ポート 993)"
+              onHost={(value) => set("imapHost", value)}
+              onPort={(value) => set("imapPort", value)}
+              onSecure={(value) => set("imapSecure", value)}
+            />
+            <ServerFields
+              idPrefix={`${id}-smtp`}
+              legend="送信 (SMTP)"
+              host={form.smtpHost}
+              port={form.smtpPort}
+              secure={form.smtpSecure}
+              hostPlaceholder="smtp.example.com"
+              secureLabel="最初から TLS で接続する (ポート 465)"
+              onHost={(value) => set("smtpHost", value)}
+              onPort={(value) => set("smtpPort", value)}
+              onSecure={(value) => set("smtpSecure", value)}
+            />
+            {alert}
+            {footer}
+          </form>
+        )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ProviderTile(props: {
+  name: string;
+  note: string;
+  /** アイコンの背景と文字の色。 */
+  tone: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={props.disabled}
+      onClick={props.onClick}
+      className="flex items-center gap-3 rounded-lg border p-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-60"
+    >
+      <span
+        className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-md",
+          props.tone,
+        )}
+      >
+        <MailIcon className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium text-sm">{props.name}</span>
+        <span className="block text-muted-foreground text-xs">
+          {props.note}
+        </span>
+      </span>
+    </button>
   );
 }
 
