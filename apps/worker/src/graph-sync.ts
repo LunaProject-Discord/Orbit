@@ -298,6 +298,7 @@ export async function syncGraphFolder(
 
 /**
  * 本文をまだ取得していないメッセージを、フォルダに関係なく新しい順に 1 回分だけ取得する。
+ * preferMailboxId (利用者が開いているフォルダ) に未取得のものがあれば、そちらを先に取得する。
  * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
  */
 export async function fetchGraphBodies(
@@ -305,19 +306,43 @@ export async function fetchGraphBodies(
   client: GraphClient,
   account: SyncAccount,
   signal?: AbortSignal,
+  preferMailboxId?: string | null,
 ): Promise<boolean> {
-  const pending = await db
-    .select({
-      messageId: messages.id,
-      providerMessageId: messages.providerMessageId,
-      snippet: messages.snippet,
-    })
-    .from(messages)
-    .where(
-      and(eq(messages.accountId, account.id), isNull(messages.bodyFetchedAt)),
-    )
-    .orderBy(desc(messages.receivedAt))
-    .limit(BODY_BATCH + 1);
+  const columns = {
+    messageId: messages.id,
+    providerMessageId: messages.providerMessageId,
+    snippet: messages.snippet,
+  };
+  let pending = preferMailboxId
+    ? await db
+        .select(columns)
+        .from(messages)
+        .innerJoin(
+          messageMailboxes,
+          eq(messageMailboxes.messageId, messages.id),
+        )
+        .where(
+          and(
+            eq(messageMailboxes.mailboxId, preferMailboxId),
+            eq(messages.accountId, account.id),
+            isNull(messages.bodyFetchedAt),
+          ),
+        )
+        .orderBy(desc(messages.receivedAt))
+        .limit(BODY_BATCH)
+    : [];
+  // 開いているフォルダの分が終わっても、他のフォルダの分が残っているかもしれない。
+  const preferred = pending.length > 0;
+  if (!preferred) {
+    pending = await db
+      .select(columns)
+      .from(messages)
+      .where(
+        and(eq(messages.accountId, account.id), isNull(messages.bodyFetchedAt)),
+      )
+      .orderBy(desc(messages.receivedAt))
+      .limit(BODY_BATCH + 1);
+  }
   const batch = pending.slice(0, BODY_BATCH);
   if (batch.length === 0) return false;
 
@@ -356,5 +381,5 @@ export async function fetchGraphBodies(
   await db.transaction((tx) =>
     recordChanges(tx, account.userId, "message", "upsert", done),
   );
-  return pending.length > BODY_BATCH;
+  return preferred || pending.length > BODY_BATCH;
 }

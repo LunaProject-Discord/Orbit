@@ -46,7 +46,7 @@ function chunk<T>(items: T[], size: number): T[][] {
   return result;
 }
 
-const STATUS_QUERY = {
+export const STATUS_QUERY = {
   messages: true,
   uidNext: true,
   uidValidity: true,
@@ -71,8 +71,15 @@ export async function syncMailboxList(
   return listed;
 }
 
-/** フォルダごとの同期状態と、DB にあるメッセージの数 (path をキーにする)。 */
-export async function loadMailboxStates(db: Database, accountId: string) {
+/**
+ * フォルダごとの同期状態と、DB にあるメッセージの数 (path をキーにする)。
+ * mailboxId を渡すと、そのフォルダだけを調べる。
+ */
+export async function loadMailboxStates(
+  db: Database,
+  accountId: string,
+  mailboxId?: string,
+) {
   const rows = await db
     .select({
       id: mailboxes.id,
@@ -88,7 +95,12 @@ export async function loadMailboxStates(db: Database, accountId: string) {
     .from(mailboxes)
     .leftJoin(messageMailboxes, eq(messageMailboxes.mailboxId, mailboxes.id))
     .leftJoin(messages, eq(messages.id, messageMailboxes.messageId))
-    .where(eq(mailboxes.accountId, accountId))
+    .where(
+      and(
+        eq(mailboxes.accountId, accountId),
+        mailboxId ? eq(mailboxes.id, mailboxId) : undefined,
+      ),
+    )
     .groupBy(mailboxes.id);
   return new Map(rows.map((row) => [row.path, row]));
 }

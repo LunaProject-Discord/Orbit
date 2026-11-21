@@ -41,6 +41,8 @@ type Options = {
   /** アクセストークンを返す。force が true なら必ず取り直す。 */
   getToken: (force: boolean) => Promise<string>;
   fetchFn?: typeof fetch;
+  /** 制限 (429) を受けたときに呼ばれる。呼び出し側が確認の間隔を延ばすのに使う。 */
+  onThrottle?: () => void;
   /** 待ち時間の実装 (テストで差し替える)。 */
   sleep?: (ms: number) => Promise<void>;
 };
@@ -53,8 +55,10 @@ export class GraphClient {
   private readonly getToken: Options["getToken"];
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly onThrottle: (() => void) | undefined;
 
   constructor(options: Options) {
+    this.onThrottle = options.onThrottle;
     this.getToken = options.getToken;
     this.fetchFn = options.fetchFn ?? fetch;
     this.sleep =
@@ -106,6 +110,7 @@ export class GraphClient {
         await this.getToken(true);
         continue;
       }
+      if (response.status === 429) this.onThrottle?.();
       const retryable = [429, 503, 504].includes(response.status);
       if (retryable && attempt < MAX_RETRIES) {
         const retryAfter = Number(response.headers.get("retry-after"));

@@ -1,3 +1,4 @@
+import { CHANNEL_GRAPH_PUSH } from "@mail/core";
 import type { Database } from "@mail/db";
 import { sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -7,9 +8,11 @@ import type { Auth } from "./auth.js";
 import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import { accountRoutes } from "./routes/accounts.js";
+import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
 import { syncRoutes } from "./routes/sync.js";
+import { webhookRoutes } from "./routes/webhooks.js";
 
 export type AppOptions = {
   db: Database;
@@ -59,12 +62,26 @@ export function createApp({
   // ログイン、ログアウト、セッション取得は Better Auth が処理する。
   v1.on(["GET", "POST"], "/auth/*", (c) => auth.handler(c.req.raw));
 
+  // Microsoft Graph から直接呼ばれる。ログインの代わりに、通知に付く合言葉で確かめる。
+  v1.route(
+    "/",
+    webhookRoutes({
+      encryptionKey,
+      notify: async (payload) => {
+        await db.execute(
+          sql`select pg_notify(${CHANNEL_GRAPH_PUSH}, ${JSON.stringify(payload)})`,
+        );
+      },
+    }),
+  );
+
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
   authed.get("/me", (c) => c.json({ user: c.var.user }));
   const deps = { db, encryptionKey, allowPrivateMailHosts, microsoft };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
+  authed.route("/focus", focusRoutes(deps));
   authed.route("/messages", messageRoutes(deps));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);

@@ -1,6 +1,9 @@
 import {
   decryptCredentials,
   encryptCredentials,
+  type GraphLifecycleEvent,
+  graphClientState,
+  graphWebhookUrl,
   type MicrosoftOAuthConfig,
   MicrosoftOAuthError,
   refreshMicrosoftToken,
@@ -9,6 +12,13 @@ import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import { GraphClient, GraphError } from "./graph-client.js";
+import {
+  ensureSubscription,
+  MAX_SLOWDOWN,
+  type PushState,
+  pollInterval,
+  RENEW_BEFORE_MS,
+} from "./graph-push.js";
 import {
   fetchGraphBodies,
   syncGraphFolder,
@@ -21,11 +31,20 @@ import { applyGraphOperation } from "./outbox-graph.js";
 const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 /**
- * 差分を確認する間隔。Graph には IMAP IDLE のような常時接続が無く、
- * 即時の通知 (変更通知の Webhook) には公開された HTTPS の受け口が要るため、
- * まずは短い間隔の確認で新着や既読の変化を拾う。
+ * 利用者が画面を開いているとみなす時間。端末は 30 秒ごとに知らせてくるので、
+ * 知らせが 2 回続けて届かなければ、開いていない扱いに戻す。
  */
-const POLL_MS = 15_000;
+const PRESENCE_TTL_MS = 75_000;
+/** 制限 (429) を受けて延ばした間隔を、この時間だけ制限なしで過ごせたら半分に戻す。 */
+const SLOWDOWN_DECAY_MS = 5 * 60_000;
+/** 変更通知の購読に失敗したとき、次に試すまでの時間 (その間は定期的な確認だけで同期する)。 */
+const PUSH_RETRY_MS = 60 * 60_000;
+/**
+ * 購読の延長と再認可を続けて行わない間隔。Graph は同じ購読への更新を
+ * 10 分以内に繰り返さないよう求めている。
+ * https://learn.microsoft.com/graph/change-notifications-lifecycle-events
+ */
+const PUSH_RENEW_GAP_MS = 15 * 60_000;
 /** フォルダ一覧を取り直す間隔。 */
 const FOLDER_SYNC_MS = 10 * 60_000;
 /**
@@ -52,8 +71,12 @@ function describeError(error: Error & { query?: unknown }): string {
 
 /**
  * Microsoft Graph を使うアカウント (Exchange Online、Outlook.com) 1 件分の同期。
- * 全フォルダを差分取得で同期し、一定間隔で差分を確認し続ける
- * (受信トレイは短い間隔、他のフォルダは長めの間隔)。
+ * 全フォルダを差分取得で同期し、状況に応じた間隔で差分を確認し続ける。
+ * - 受信トレイと、利用者が開いているフォルダ: 画面を開いている間は 5 秒、そうでなければ 15 秒
+ * - 他のフォルダ: 2 分 (移動などの操作や変更通知の直後はすぐ)
+ * - API に公開された HTTPS の URL があれば変更通知 (Webhook) を購読し、届いたらすぐ確認する。
+ *   通知が実際に届いている間は、定期的な確認を取りこぼしに備えた長い間隔に落とす
+ * - 制限 (429) を受けたら間隔を倍に延ばし、しばらく制限なしで過ごせたら戻す
  */
 export class GraphAccountSync {
   /** 接続設定の比較に使う、現在の行。リフレッシュトークンを更新すると差し替わる。 */
@@ -65,16 +88,37 @@ export class GraphAccountSync {
   private refreshToken: string | null = null;
   private accessToken: { value: string; expiresAt: number } | null = null;
   private refreshing: Promise<string> | null = null;
-  private outboxRequested = false;
+  /** 待たずに次の周回を始める (操作が積まれた、開いたフォルダが変わった、変更通知が届いた)。 */
+  private wakeRequested = false;
+  private presentUntil = 0;
+  /** 利用者が開いているフォルダ (mailboxes.id)。受信トレイなら null。 */
+  private focusMailboxId: string | null = null;
+  private slowdown = 1;
+  private slowdownAt = 0;
+  private push: PushState;
+  /** 変更通知が届いた。全フォルダの差分を確認する。 */
+  private pushPending = false;
+  /** 変更通知が実際に届いたことがある。届くまでは定期的な確認の間隔を落とさない。 */
+  private pushTrusted = false;
+  private pushRenewRequested = false;
+  private pushRecreate = false;
+  private pushRetryAt = 0;
+  private pushRenewedAt = 0;
 
   constructor(
     private readonly db: Database,
     private readonly encryptionKey: Buffer,
     account: AccountRow,
     private readonly oauth: MicrosoftOAuthConfig | null,
+    /** 変更通知 (Webhook) の受け口の URL。公開された HTTPS の URL が無ければ null。 */
+    private readonly webhookBaseUrl: string | null = null,
     private readonly fetchFn: typeof fetch = fetch,
   ) {
     this.account = account;
+    this.push = {
+      subscriptionId: account.pushSubscriptionId,
+      expiresAt: account.pushExpiresAt,
+    };
   }
 
   private log(message: string) {
@@ -114,8 +158,91 @@ export class GraphAccountSync {
 
   /** 送信待ちキューに操作が積まれた。次の確認を待たずに、すぐに反映する。 */
   notifyOutbox() {
-    this.outboxRequested = true;
+    this.requestWake();
+  }
+
+  /** 利用者が画面を開いている。mailboxId は開いているフォルダ (受信トレイなら null)。 */
+  notifyFocus(mailboxId: string | null) {
+    const wasPresent = Date.now() < this.presentUntil;
+    this.presentUntil = Date.now() + PRESENCE_TTL_MS;
+    if (wasPresent && mailboxId === this.focusMailboxId) return;
+    // 開いた直後のフォルダは、次の確認を待たずに同期する。
+    this.focusMailboxId = mailboxId;
+    this.requestWake();
+  }
+
+  /** Microsoft Graph から変更通知が届いた。lifecycle は購読の状態の知らせ。 */
+  notifyPush(lifecycle: GraphLifecycleEvent | null) {
+    if (lifecycle === "reauthorizationRequired") {
+      this.pushRenewRequested = true;
+    } else if (lifecycle === "subscriptionRemoved") {
+      this.pushRecreate = true;
+    } else {
+      // メールの変更、または通知の取りこぼし (missed)。どちらも差分を確認すれば追いつく。
+      this.pushPending = true;
+      if (lifecycle === null) this.pushTrusted = true;
+    }
+    this.requestWake();
+  }
+
+  private requestWake() {
+    this.wakeRequested = true;
     this.wake?.();
+  }
+
+  /**
+   * 変更通知 (Webhook) の購読を作り、期限が近づいたら延ばす。
+   * 失敗しても同期は止めず、定期的な確認だけで続ける (しばらくしてから試し直す)。
+   */
+  private async maintainPush(client: GraphClient, signal: AbortSignal) {
+    if (!this.webhookBaseUrl) return;
+    const now = Date.now();
+    if (now < this.pushRetryAt) return;
+    if (this.pushRecreate) {
+      this.push = { subscriptionId: null, expiresAt: null };
+    }
+    const expiresAt = this.push.expiresAt?.getTime() ?? 0;
+    const alive = this.push.subscriptionId !== null && expiresAt > now;
+    const due =
+      !alive || expiresAt - now < RENEW_BEFORE_MS || this.pushRenewRequested;
+    if (!due) return;
+    if (alive && now - this.pushRenewedAt < PUSH_RENEW_GAP_MS) return;
+    try {
+      const created = !alive;
+      this.push = await ensureSubscription(client, {
+        state: this.push,
+        notificationUrl: graphWebhookUrl(this.webhookBaseUrl, this.account.id),
+        clientState: graphClientState(this.encryptionKey, this.account.id),
+        signal,
+      });
+      this.pushRenewedAt = now;
+      this.pushRenewRequested = false;
+      this.pushRecreate = false;
+      await this.savePush();
+      if (created) this.log("変更通知 (Webhook) の購読を開始しました");
+    } catch (error) {
+      if (!(error instanceof GraphError)) throw error;
+      // 受け口に外から届かない、権限が無いなど。定期的な確認だけで同期を続ける。
+      this.log(
+        `変更通知 (Webhook) を購読できませんでした。定期的な確認で同期を続けます: ${error.message}`,
+      );
+      this.pushRetryAt = now + PUSH_RETRY_MS;
+      this.pushTrusted = false;
+      if (!alive) {
+        this.push = { subscriptionId: null, expiresAt: null };
+        await this.savePush();
+      }
+    }
+  }
+
+  private async savePush() {
+    await this.db
+      .update(mailAccounts)
+      .set({
+        pushSubscriptionId: this.push.subscriptionId,
+        pushExpiresAt: this.push.expiresAt,
+      })
+      .where(eq(mailAccounts.id, this.account.id));
   }
 
   private sleep(ms: number) {
@@ -223,6 +350,10 @@ export class GraphAccountSync {
     const client = new GraphClient({
       getToken: (force) => this.getToken(force),
       fetchFn: this.fetchFn,
+      onThrottle: () => {
+        this.slowdown = Math.min(this.slowdown * 2, MAX_SLOWDOWN);
+        this.slowdownAt = Date.now();
+      },
     });
     let healthy = false;
     let foldersSyncedAt = 0;
@@ -231,6 +362,17 @@ export class GraphAccountSync {
     let queue: string[] = [];
 
     while (!this.stopped) {
+      this.wakeRequested = false;
+      const pushed = this.pushPending;
+      this.pushPending = false;
+      if (
+        this.slowdown > 1 &&
+        Date.now() - this.slowdownAt >= SLOWDOWN_DECAY_MS
+      ) {
+        this.slowdown /= 2;
+        this.slowdownAt = Date.now();
+      }
+
       if (Date.now() - foldersSyncedAt >= FOLDER_SYNC_MS) {
         await syncGraphFolders(this.db, client, this.account, signal);
         foldersSyncedAt = Date.now();
@@ -249,28 +391,63 @@ export class GraphAccountSync {
       if (!inbox) {
         throw new Error("受信トレイが見つかりませんでした。");
       }
+      /** フォルダ 1 つを同期する。消されていたら、フォルダ一覧を取り直させる。 */
+      const syncFolder = async (folder: (typeof folders)[number]) => {
+        try {
+          const result = await syncGraphFolder(
+            this.db,
+            client,
+            this.account,
+            folder,
+            signal,
+          );
+          if (result.added > 0 || result.removed > 0) {
+            const name = folder.id === inbox.id ? "受信トレイ" : folder.name;
+            this.log(
+              `${name} を同期しました (追加 ${result.added} 件、削除 ${result.removed} 件)`,
+            );
+          }
+          return result.added > 0 || result.removed > 0;
+        } catch (error) {
+          if (
+            folder.id === inbox.id ||
+            !(error instanceof GraphError && error.notFound)
+          ) {
+            throw error;
+          }
+          foldersSyncedAt = 0;
+          return false;
+        }
+      };
 
       // 既読や移動などの操作を先に反映してから、差分を確認する。
-      this.outboxRequested = false;
       const outbox = await processOutbox(
         this.db,
         this.account.id,
         (operation) => applyGraphOperation(client, operation, signal),
         (message) => this.log(message),
       );
+      const operated = outbox.done > 0 || outbox.failed > 0;
 
-      const nextPollAt = Date.now() + POLL_MS;
-      const result = await syncGraphFolder(
-        this.db,
-        client,
-        this.account,
-        inbox,
-        signal,
-      );
-      if (result.added > 0 || result.removed > 0) {
-        this.log(
-          `受信トレイを同期しました (追加 ${result.added} 件、削除 ${result.removed} 件)`,
-        );
+      const present = Date.now() < this.presentUntil;
+      const pushActive =
+        this.webhookBaseUrl !== null &&
+        this.pushTrusted &&
+        this.push.subscriptionId !== null &&
+        (this.push.expiresAt?.getTime() ?? 0) > Date.now();
+      const nextPollAt =
+        Date.now() +
+        pollInterval({
+          present,
+          pushTrusted: pushActive,
+          slowdown: this.slowdown,
+        });
+
+      const inboxChanged = await syncFolder(inbox);
+      if (inboxChanged && pushActive && !pushed && !operated) {
+        // 通知が届いているはずなのに、定期的な確認で先に変化を見つけた。
+        // 通知が届かなくなっているおそれがあるので、次に届くまで短い間隔に戻す。
+        this.pushTrusted = false;
       }
       if (!healthy) {
         healthy = true;
@@ -278,17 +455,29 @@ export class GraphAccountSync {
         this.log("Microsoft Graph に接続しました");
         await this.setStatus("active");
       }
+      await this.maintainPush(client, signal);
 
-      // 受信トレイ以外のフォルダ。移動などを反映した直後は、移動先にすぐ現れるよう
-      // 間隔を待たずに確認する。
+      // 利用者が開いているフォルダは、受信トレイと同じ間隔で確認する。
+      const focused = present
+        ? folders.find(
+            (folder) =>
+              folder.id === this.focusMailboxId && folder.id !== inbox.id,
+          )
+        : undefined;
+      if (focused) {
+        await syncFolder(focused);
+        queue = queue.filter((id) => id !== focused.id);
+      }
+
+      // 他のフォルダ。移動などを反映した直後や変更通知の直後は、間隔を待たずに確認する。
       if (
-        outbox.done > 0 ||
-        outbox.failed > 0 ||
-        Date.now() - othersQueuedAt >= OTHER_POLL_MS
+        operated ||
+        pushed ||
+        Date.now() - othersQueuedAt >= OTHER_POLL_MS * this.slowdown
       ) {
         othersQueuedAt = Date.now();
         queue = folders
-          .filter((folder) => folder.id !== inbox.id)
+          .filter((folder) => folder.id !== inbox.id && folder !== focused)
           .sort(
             (a, b) => syncPriority(a.specialUse) - syncPriority(b.specialUse),
           )
@@ -297,42 +486,31 @@ export class GraphAccountSync {
       // 受信トレイの次の確認時刻までに終わらなかった分は、次の周回で続ける
       // (周回ごとに少なくとも 1 つは進める)。
       for (let first = true; queue.length > 0 && !this.stopped; first = false) {
-        if (!first && Date.now() >= nextPollAt) break;
+        if (!first && (Date.now() >= nextPollAt || this.wakeRequested)) break;
         const id = queue.shift();
         const folder = folders.find((item) => item.id === id);
-        if (!folder) continue;
-        try {
-          const other = await syncGraphFolder(
-            this.db,
-            client,
-            this.account,
-            folder,
-            signal,
-          );
-          if (other.added > 0 || other.removed > 0) {
-            this.log(
-              `${folder.name} を同期しました (追加 ${other.added} 件、削除 ${other.removed} 件)`,
-            );
-          }
-        } catch (error) {
-          if (!(error instanceof GraphError && error.notFound)) throw error;
-          // フォルダが消されていた。次の周回でフォルダ一覧を取り直す。
-          foldersSyncedAt = 0;
-        }
+        if (folder) await syncFolder(folder);
       }
 
       // 本文の取得は時間がかかるので、次の差分確認の時刻が来たら中断して同期を優先する。
       while (
         !this.stopped &&
-        !this.outboxRequested &&
+        !this.wakeRequested &&
         Date.now() < nextPollAt &&
-        (await fetchGraphBodies(this.db, client, this.account, signal))
+        (await fetchGraphBodies(
+          this.db,
+          client,
+          this.account,
+          signal,
+          focused?.id ?? inbox.id,
+        ))
       ) {
         // 続きを取得する
       }
       if (this.stopped) break;
-      const wait = nextPollAt - Date.now();
-      if (wait > 0 && !this.outboxRequested) await this.sleep(wait);
+      // 確認し残したフォルダがあれば、待たずに次の周回で続ける。
+      const wait = queue.length > 0 ? 0 : nextPollAt - Date.now();
+      if (wait > 0 && !this.wakeRequested) await this.sleep(wait);
     }
   }
 }

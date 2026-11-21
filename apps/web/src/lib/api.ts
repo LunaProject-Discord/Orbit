@@ -394,6 +394,20 @@ export async function listAllMailboxes(
   return mailboxes;
 }
 
+/**
+ * 表示中のフォルダをサーバーへ知らせる。サーバーは知らせが届いている間、
+ * そのフォルダとアカウントを短い間隔で同期する。
+ */
+export async function sendFocus(
+  accountId: string | null,
+  mailboxId: string | null,
+): Promise<void> {
+  await apiFetch("/v1/focus", {
+    method: "POST",
+    body: { accountId, mailboxId },
+  });
+}
+
 /** 操作をサーバーへ送る。サーバーはすぐに反映して応答し、メールサーバーへは後から反映する。 */
 export async function sendMessageAction(action: MessageAction): Promise<void> {
   await apiFetch("/v1/messages/actions", { method: "POST", body: action });

@@ -1,4 +1,8 @@
-import { loadEncryptionKey, loadMicrosoftOAuthConfig } from "@mail/core";
+import {
+  graphWebhookBaseUrl,
+  loadEncryptionKey,
+  loadMicrosoftOAuthConfig,
+} from "@mail/core";
 import { createDb } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
 
@@ -14,6 +18,8 @@ const manager = new AccountManager(
   databaseUrl,
   encryptionKey,
   loadMicrosoftOAuthConfig(process.env),
+  // API が公開された HTTPS の URL で動いていれば、Microsoft Graph の変更通知を使う。
+  graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
 );
 await manager.start();
 console.log(

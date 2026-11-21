@@ -1,18 +1,21 @@
 import { decryptCredentials } from "@mail/core";
-import { type Database, mailAccounts } from "@mail/db";
-import { eq } from "drizzle-orm";
+import { type Database, mailAccounts, mailboxes } from "@mail/db";
+import { and, eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
 import { recordChanges } from "./changes.js";
+import { FolderWatcher } from "./folder-watcher.js";
 import {
   isSelectable,
   type MailboxStatus,
   needsSync,
+  type SpecialUse,
   syncPriority,
 } from "./mailbox-list.js";
 import {
   fetchBodies,
   loadMailboxStates,
   mailboxesWithPendingBodies,
+  STATUS_QUERY,
   syncMailbox,
   syncMailboxList,
 } from "./mailbox-sync.js";
@@ -34,6 +37,16 @@ const FOLDER_POLL_MS = 2 * 60_000;
  * その間は受信トレイの通知を受け取れないので、これを過ぎたら受信トレイを確認しに戻る。
  */
 const BACKGROUND_SLICE_MS = 15_000;
+/**
+ * 利用者が画面を開いているとみなす時間。端末は 30 秒ごとに知らせてくるので、
+ * 知らせが 2 回続けて届かなければ、開いていない扱いに戻す。
+ */
+const PRESENCE_TTL_MS = 75_000;
+/**
+ * 開いているフォルダ用の接続 (IDLE) を張れないときに、そのフォルダの状態を確認する間隔。
+ * フォルダを開かずに件数や変更番号 (STATUS) を見るだけなので、短くしても負荷は小さい。
+ */
+const FOCUS_POLL_MS = 10_000;
 /** 多くのサーバーは 30 分ほどで IDLE を切るので、その前に張り直す。 */
 const MAX_IDLE_MS = 25 * 60_000;
 /** 最後のコマンドから IDLE に入るまでの待ち時間。 */
@@ -59,6 +72,8 @@ type Status = AccountRow["status"];
 /**
  * メールアカウント 1 件分の同期。IMAP に常時接続して全フォルダを同期する。
  * 受信トレイは IDLE で新着や既読の変化をすぐに受け取り、他のフォルダは定期的に確認する。
+ * 利用者が受信トレイ以外のフォルダを開いている間は、そのフォルダ用にもう 1 本接続を張って
+ * IDLE で変化を受け取る (張れなければ 10 秒ごとの確認に切り替える)。
  * 切断されたら間隔を空けて再接続する。
  */
 export class AccountSync {
@@ -69,6 +84,12 @@ export class AccountSync {
   private foldersDue = true;
   /** 変更番号の無いサーバー向けに、次の確認では全フォルダを開いて突き合わせる。 */
   private forceFolders = false;
+  /** 利用者が開いているフォルダ (受信トレイ以外)。開いていなければ null。 */
+  private focus: { mailboxId: string; path: string } | null = null;
+  private focusUntil = 0;
+  /** 開いているフォルダを同期する。forced は、変化の通知を受けたので必ず突き合わせる。 */
+  private focusDue: "check" | "forced" | null = null;
+  private readonly watcher: FolderWatcher;
   private wake: (() => void) | null = null;
   private backoff = MIN_BACKOFF_MS;
 
@@ -76,7 +97,13 @@ export class AccountSync {
     private readonly db: Database,
     private readonly encryptionKey: Buffer,
     readonly account: AccountRow,
-  ) {}
+  ) {
+    this.watcher = new FolderWatcher(
+      () => this.createClient(),
+      () => this.requestFocusSync("forced"),
+      (message) => this.log(message),
+    );
+  }
 
   private log(message: string, error?: unknown) {
     const detail = error instanceof Error ? `: ${error.message}` : "";
@@ -114,7 +141,59 @@ export class AccountSync {
   stop() {
     this.stopped = true;
     this.wake?.();
+    this.watcher.close();
     this.client?.close();
+  }
+
+  /** 利用者が画面を開いている。mailboxId は開いているフォルダ (受信トレイなら null)。 */
+  notifyFocus(mailboxId: string | null) {
+    this.focusUntil = Date.now() + PRESENCE_TTL_MS;
+    if (mailboxId === (this.focus?.mailboxId ?? null)) return;
+    void this.setFocus(mailboxId);
+  }
+
+  private async setFocus(mailboxId: string | null) {
+    let focus: typeof this.focus = null;
+    if (mailboxId) {
+      try {
+        const [row] = await this.db
+          .select({ path: mailboxes.path, specialUse: mailboxes.specialUse })
+          .from(mailboxes)
+          .where(
+            and(
+              eq(mailboxes.id, mailboxId),
+              eq(mailboxes.accountId, this.account.id),
+            ),
+          );
+        // 受信トレイは同期用の接続が IDLE しているので、別に見張る必要は無い。
+        if (row && row.specialUse !== "inbox" && row.path !== INBOX) {
+          focus = { mailboxId, path: row.path };
+        }
+      } catch (error) {
+        this.log("開いているフォルダを確認できませんでした", error);
+      }
+    }
+    if (this.stopped || Date.now() > this.focusUntil) focus = null;
+    this.focus = focus;
+    this.watcher.watch(focus?.path ?? null);
+    // 開いた直後のフォルダは、定期的な確認を待たずに同期する。
+    if (focus) this.requestFocusSync("forced");
+  }
+
+  private requestFocusSync(kind: "check" | "forced") {
+    if (this.focusDue !== "forced") this.focusDue = kind;
+    this.wake?.();
+  }
+
+  /** 画面が閉じられた (知らせが途絶えた) ら見張りをやめ、IDLE できない間は定期的に確認させる。 */
+  private tickFocus() {
+    if (!this.focus) return;
+    if (Date.now() > this.focusUntil) {
+      this.focus = null;
+      this.watcher.close();
+      return;
+    }
+    if (!this.watcher.active) this.requestFocusSync("check");
   }
 
   /** 送信待ちキューに操作が積まれた。すぐに反映する。 */
@@ -225,7 +304,10 @@ export class AccountSync {
     const force = this.forceFolders;
     const deadline = Date.now() + BACKGROUND_SLICE_MS;
     const shouldStop = () =>
-      this.stopped || this.syncRequested || Date.now() > deadline;
+      this.stopped ||
+      this.syncRequested ||
+      this.focusDue !== null ||
+      Date.now() > deadline;
     const listed = await syncMailboxList(this.db, client, this.account, true);
     const states = await loadMailboxStates(this.db, this.account.id);
     const targets = listed
@@ -268,16 +350,71 @@ export class AccountSync {
   }
 
   /**
+   * 利用者が開いているフォルダを同期する。変化の通知を受けた場合 (forced) は必ず開いて
+   * 突き合わせ、定期的な確認 (check) では件数や変更番号が変わったときだけ開く。
+   */
+  private async syncFocused(client: ImapFlow, kind: "check" | "forced") {
+    const focus = this.focus;
+    if (!focus) return;
+    if (kind === "check") {
+      let status: MailboxStatus;
+      try {
+        const result = await client.status(focus.path, STATUS_QUERY);
+        if (!result) return;
+        status = result;
+      } catch (error) {
+        const err = error as Error & { responseStatus?: string };
+        if (err.responseStatus !== "NO" && err.responseStatus !== "BAD") {
+          throw error;
+        }
+        return;
+      }
+      const state = (
+        await loadMailboxStates(this.db, this.account.id, focus.mailboxId)
+      ).get(focus.path);
+      if (!state || !needsSync(state, status, false)) return;
+    }
+    const lock = await this.openMailbox(client, focus.path);
+    if (!lock) return;
+    try {
+      const result = await syncMailbox(
+        this.db,
+        client,
+        this.account,
+        focus.path,
+        () => this.stopped || this.syncRequested,
+      );
+      if (result.added > 0 || result.removed > 0) {
+        this.log(
+          `${focus.path} を同期しました (追加 ${result.added} 件、削除 ${result.removed} 件)`,
+        );
+      }
+      // 取り込みを途中で切り上げた場合は、受信トレイを確認してから続ける。
+      if (!result.complete) this.requestFocusSync("forced");
+    } finally {
+      lock.release();
+    }
+  }
+
+  /**
    * 本文をまだ取得していないメッセージの本文を、フォルダごとに取得する。
    * 時間がかかるので、新しい変化が来たら中断して同期を優先する。
    */
   private async fetchPendingBodies(client: ImapFlow) {
     const deadline = Date.now() + BACKGROUND_SLICE_MS;
     const interrupted = () =>
-      this.stopped || this.syncRequested || this.foldersDue;
+      this.stopped ||
+      this.syncRequested ||
+      this.foldersDue ||
+      this.focusDue !== null;
+    // 利用者が開いているフォルダを最初に、あとは決まった順に取得する。
+    const rank = (mailbox: { id: string; specialUse: SpecialUse | null }) =>
+      mailbox.id === this.focus?.mailboxId
+        ? -1
+        : syncPriority(mailbox.specialUse);
     const pending = (
       await mailboxesWithPendingBodies(this.db, this.account.id)
-    ).sort((a, b) => syncPriority(a.specialUse) - syncPriority(b.specialUse));
+    ).sort((a, b) => rank(a) - rank(b));
     for (const mailbox of pending) {
       if (interrupted()) return;
       // 受信トレイを開いている間は通知が届くので、時間で区切らなくてよい。
@@ -334,6 +471,7 @@ export class AccountSync {
       this.foldersDue = true;
       this.wake?.();
     }, FOLDER_POLL_MS);
+    const focusPoll = setInterval(() => this.tickFocus(), FOCUS_POLL_MS);
     try {
       await client.connect();
       if (this.stopped) return;
@@ -361,21 +499,26 @@ export class AccountSync {
           this.backoff = MIN_BACKOFF_MS;
           await this.setStatus("active");
         }
-        if (this.foldersDue && !this.syncRequested) {
+        if (this.focusDue && !this.syncRequested) {
+          const kind = this.focusDue;
+          this.focusDue = null;
+          await this.syncFocused(client, kind);
+        }
+        if (this.foldersDue && !this.syncRequested && !this.focusDue) {
           // 確認中に次の時刻が来た場合に取りこぼさないよう、先に下ろしておく。
           this.foldersDue = false;
           if (!(await this.syncOtherFolders(client))) this.foldersDue = true;
         }
-        if (!this.syncRequested && !this.foldersDue) {
-          await this.fetchPendingBodies(client);
-        }
-        if (this.stopped || this.syncRequested || this.foldersDue) continue;
+        const pending = () =>
+          this.syncRequested || this.foldersDue || this.focusDue !== null;
+        if (!pending()) await this.fetchPendingBodies(client);
+        if (this.stopped || pending()) continue;
 
         // IDLE で通知を受けるフォルダを受信トレイに戻す。
         if (client.mailbox === false || client.mailbox.path !== INBOX) {
           await client.mailboxOpen(INBOX);
         }
-        if (this.syncRequested || this.foldersDue) continue;
+        if (pending()) continue;
         await Promise.race([
           closed,
           new Promise<void>((resolve) => {
@@ -389,6 +532,7 @@ export class AccountSync {
     } finally {
       clearInterval(periodic);
       clearInterval(folderPoll);
+      clearInterval(focusPoll);
       this.wake = null;
       this.client = null;
       client.close();

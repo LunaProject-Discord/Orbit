@@ -181,6 +181,9 @@ export const mailAccounts = pgTable(
     credentialsEncrypted: text().notNull(),
     status: mailAccountStatus().notNull().default("active"),
     lastError: text(),
+    /** Microsoft Graph の変更通知 (Webhook) の購読 ID と期限。購読していなければ null。 */
+    pushSubscriptionId: text(),
+    pushExpiresAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

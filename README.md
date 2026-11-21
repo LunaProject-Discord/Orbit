@@ -71,11 +71,15 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 設定すると、アカウントの追加画面の「Microsoft アカウントでログイン」から追加できます。
 組織のアカウントでは、テナントの設定によって管理者の同意が必要な場合があります。
 
-- 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行い、15 秒ごとに差分を確認します。
-  変更通知 (Webhook) による即時反映は今後対応します。
+- 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行います。確認の間隔は状況に応じて変わります
+  (下の「更新の速さ」を参照)。
+- `API_PUBLIC_URL` が公開された HTTPS の URL (localhost や IP アドレスではないもの) なら、
+  [変更通知 (Webhook)](https://learn.microsoft.com/graph/change-notifications-delivery-webhooks) を自動で購読し、
+  通知が届いたらすぐに差分を確認します。Microsoft Graph から `POST {API_PUBLIC_URL}/v1/webhooks/microsoft` に
+  届く必要があります。購読は 6 日の期限で作り、期限の 2 日前に自動で延長します。購読に失敗した場合は
+  ワーカーのログに理由を出し、定期的な確認だけで同期を続けます (1 時間後に試し直します)。
 - メッセージは [不変 ID](https://learn.microsoft.com/graph/outlook-immutable-id) で識別します。
-- フォルダはサブフォルダも含めて取り込みます。受信トレイは 15 秒ごと、他のフォルダは 2 分ごと
-  (移動などの操作を反映した直後はすぐ) に差分を確認します。
+- フォルダはサブフォルダも含めて取り込みます。
 - 現時点では添付ファイルの一覧と返信済みの印は取り込みません。
 - リフレッシュトークンが失効した場合 (長期間の未使用、パスワード変更、同意の取り消しなど) は、
   サイドバーに「再ログインが必要です」と表示されます。「Microsoft にログインし直す」から復旧できます。
@@ -96,6 +100,27 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 アーカイブ、削除 (ごみ箱へ移動)、フォルダへの移動ができます。操作はまず画面と DB に反映し、
 送信待ちキュー (outbox) から同期ワーカーがメールサーバーへ反映します (送信は今後追加します)。
 
+### 更新の速さ
+
+同期ワーカーは、状況に応じて確認の方法と間隔を切り替えます。画面を開いている端末は、表示中のフォルダを
+30 秒ごとに `POST /v1/focus` で知らせます (知らせが 75 秒途絶えると、開いていない扱いに戻ります)。
+
+| 対象 | IMAP | Microsoft Graph |
+| --- | --- | --- |
+| 受信トレイ | IDLE で即時 | 画面を開いている間は 5 秒ごと、それ以外は 15 秒ごと |
+| 画面で開いているフォルダ | もう 1 本接続を張って IDLE で即時。張れないとき (同時接続数の上限など) は 10 秒ごとに STATUS で確認 | 受信トレイと同じ間隔 |
+| 他のフォルダ | 2 分ごとに STATUS で確認 | 2 分ごと |
+| 移動などの操作の直後 | すぐに全フォルダを確認 | すぐに全フォルダを確認 |
+
+Microsoft Graph では、さらに次のように調整します。
+
+- 変更通知 (Webhook) が実際に届いている間は、通知を受けてすぐに確認し、定期的な確認は取りこぼしに備えた間隔
+  (画面を開いている間は 1 分、それ以外は 5 分) に落とします。定期的な確認のほうが先に変化を見つけた場合は、
+  通知が届いていないとみなして元の間隔に戻します。
+- 制限 (429) を受けたら `Retry-After` に従って待ち、確認の間隔を倍に延ばします (最大 8 倍)。
+  5 分間制限を受けなければ半分に戻します。Outlook の制限は 1 つのメールボックスにつき 10 分で 10,000 回、
+  同時 4 件です ([Microsoft Graph の制限](https://learn.microsoft.com/graph/throttling-limits#outlook-service-limits))。
+
 ## API (v1)
 
 | メソッドとパス | 内容 |
@@ -111,6 +136,8 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 | `GET /v1/mailboxes` | 全アカウントのフォルダ一覧 (親フォルダの `parentId`、未読数、件数付き) |
 | `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り) |
 | `GET /v1/messages/:id` | メッセージの本文と添付ファイルの情報 |
+| `POST /v1/focus` | 画面で表示中のフォルダを知らせる (`accountId`、`mailboxId`。その間は短い間隔で同期する) |
+| `POST /v1/webhooks/microsoft` | Microsoft Graph の変更通知の受け口 (ログイン不要。購読時の合言葉で確かめる) |
 | `GET /v1/sync?since=` | 変更番号より後の変更履歴 |
 | `GET /v1/events` | 変更の通知 (SSE) |
 

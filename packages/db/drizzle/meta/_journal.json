@@ -29,6 +29,13 @@
       "when": 1795240362730,
       "tag": "0003_mailbox_parent",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795241623147,
+      "tag": "0004_graph_push_subscription",
+      "breakpoints": true
     }
   ]
 }

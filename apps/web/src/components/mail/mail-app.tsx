@@ -24,6 +24,7 @@ import {
   type MailboxSummary,
   type MessageAction,
   type MessageSummary,
+  sendFocus,
   startMicrosoftLogin,
   type User,
 } from "@/lib/api";
@@ -31,6 +32,8 @@ import { subscribeEvents } from "@/lib/events";
 import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
 
 const PAGE_SIZE = 50;
+/** 表示中のフォルダをサーバーへ知らせる間隔。 */
+const FOCUS_INTERVAL_MS = 30_000;
 const LIST_ERROR = "メールを読み込めませんでした。";
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
@@ -211,6 +214,24 @@ export function MailApp({ user }: { user: User }) {
       true,
     );
   }, [selectedAccountId, selectedMailboxId, loadFirstPage]);
+
+  // 画面を開いている間、表示中のフォルダをサーバーへ知らせ続ける。サーバーはその間、
+  // 表示中のフォルダを短い間隔で同期する。画面が隠れている間は知らせない (通常の間隔に戻る)。
+  useEffect(() => {
+    const send = () => {
+      if (document.visibilityState !== "visible") return;
+      sendFocus(selectedAccountId, selectedMailboxId).catch(() => {
+        // 届かなくても通常の間隔で同期されるので、次の機会に送り直すだけでよい。
+      });
+    };
+    send();
+    const timer = setInterval(send, FOCUS_INTERVAL_MS);
+    document.addEventListener("visibilitychange", send);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", send);
+    };
+  }, [selectedAccountId, selectedMailboxId]);
 
   // 表示中のフォルダがサーバーから無くなったら、受信トレイに戻す。
   useEffect(() => {
