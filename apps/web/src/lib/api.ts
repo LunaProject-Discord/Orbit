@@ -189,6 +189,8 @@ export type MessageSummary = {
    * 一覧の 1 行は会話 1 つを表し、既読やスターはこれらをまとめた値、操作もこれらが対象になる。
    */
   threadMessageIds: string[];
+  /** 下書きフォルダにある、このアプリの下書きの控えなら、その下書きの ID。 */
+  draftId?: string | null;
 };
 
 /** 会話 (スレッド) に含まれるメッセージ 1 通分。本文は含まない。 */

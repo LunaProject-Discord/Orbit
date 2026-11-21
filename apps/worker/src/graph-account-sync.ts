@@ -11,6 +11,8 @@ import {
 import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
+import { graphDraftRemote } from "./draft-graph.js";
+import { dbDraftStore, processDrafts } from "./draft-sync.js";
 import { GraphClient, GraphError } from "./graph-client.js";
 import {
   ensureSubscription,
@@ -455,7 +457,19 @@ export class GraphAccountSync {
         (operation) => applyGraphOperation(client, operation, signal),
         (message) => this.log(message),
       );
-      const operated = outbox.done > 0 || outbox.failed > 0;
+      // まだ Microsoft 側へ置いていない下書きを、下書きフォルダへ置く。
+      const draftSync = await processDrafts(
+        dbDraftStore(this.db, this.account),
+        this.account,
+        graphDraftRemote(client, signal),
+        (message) => this.log(message),
+      );
+      if (draftSync.saved > 0) {
+        this.log(`下書きを ${draftSync.saved} 件、Microsoft へ保存しました`);
+      }
+      // 置いた控えを、下書きフォルダの同期で取り込む。
+      const operated =
+        outbox.done > 0 || outbox.failed > 0 || draftSync.saved > 0;
 
       const present = Date.now() < this.presentUntil;
       const pushActive =
@@ -537,7 +551,9 @@ export class GraphAccountSync {
       }
       if (this.stopped) break;
       // 確認し残したフォルダがあれば、待たずに次の周回で続ける。
-      const wait = queue.length > 0 ? 0 : nextPollAt - Date.now();
+      // 書く手が止まるのを待っている下書きがあれば、その時刻に戻ってくる。
+      const wakeAt = Math.min(nextPollAt, draftSync.nextDueAt ?? nextPollAt);
+      const wait = queue.length > 0 ? 0 : wakeAt - Date.now();
       if (wait > 0 && !this.wakeRequested) await this.sleep(wait);
     }
   }

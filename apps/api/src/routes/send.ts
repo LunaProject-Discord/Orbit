@@ -18,6 +18,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { notifyAccountChanged } from "../lib/changes.js";
+import {
+  lockDraftAccount,
+  queueDraftCopyRemoval,
+} from "../lib/draft-remote.js";
 
 /** 1 通あたりの宛先の上限 (To / Cc / Bcc の合計)。 */
 const MAX_RECIPIENTS = 100;
@@ -185,12 +189,23 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
         return existing?.id ?? null;
       }
       // 送信したメールの下書きは、どの端末からも消す (ID は送信の idempotencyKey と同じ)。
-      // 付けていたファイルは送信に使うので残す。
-      await tx
-        .delete(drafts)
+      // 付けていたファイルは送信に使うので残す。メールサーバーに置いた控えも消す。
+      const [draft] = await tx
+        .select({ accountId: drafts.accountId })
+        .from(drafts)
         .where(
           and(eq(drafts.id, body.idempotencyKey), eq(drafts.userId, user.id)),
         );
+      if (draft) {
+        await lockDraftAccount(tx, draft.accountId);
+        const [removed] = await tx
+          .delete(drafts)
+          .where(
+            and(eq(drafts.id, body.idempotencyKey), eq(drafts.userId, user.id)),
+          )
+          .returning();
+        if (removed) await queueDraftCopyRemoval(tx, removed);
+      }
       await notifyAccountChanged(tx, user.id, account.id);
       // コミット時に同期ワーカーへ届き、すぐに送信される。
       await tx.execute(sql`select pg_notify(${CHANNEL_OUTBOX}, ${account.id})`);

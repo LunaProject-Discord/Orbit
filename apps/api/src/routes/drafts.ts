@@ -11,6 +11,11 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { notifyAccountChanged } from "../lib/changes.js";
+import {
+  lockDraftAccount,
+  notifyDraftSync,
+  queueDraftCopyRemoval,
+} from "../lib/draft-remote.js";
 import { decideDraftSave } from "../lib/draft-save.js";
 
 /** 1 通あたりの宛先の上限 (To / Cc / Bcc の合計)。送信と同じ値。 */
@@ -176,16 +181,42 @@ export function draftRoutes({ db }: Pick<RouteDeps, "db">) {
             .returning();
           if (!created) return { action: "conflict" as const, draft: null };
           await notifyAccountChanged(tx, user.id, account.id);
+          await notifyDraftSync(tx, account.id);
           return { action: "saved" as const, draft: created, status: 201 };
         }
         if (decision.action === "update") {
+          // 差出人のアカウントを変えたら、前のアカウントのメールサーバーに置いた控えは消し、
+          // 新しいアカウントのほうへ置き直す。
+          const moved = existing && existing.accountId !== account.id;
+          if (moved) {
+            await lockDraftAccount(tx, existing.accountId);
+            const [current] = await tx
+              .select()
+              .from(drafts)
+              .where(eq(drafts.id, id));
+            if (current) await queueDraftCopyRemoval(tx, current);
+          }
           const [updated] = await tx
             .update(drafts)
-            .set({ ...values, revision: decision.revision })
+            .set({
+              ...values,
+              revision: decision.revision,
+              ...(moved
+                ? {
+                    syncedRevision: null,
+                    remoteMessageId: null,
+                    remoteMailboxPath: null,
+                    remoteUid: null,
+                    remoteUidValidity: null,
+                    remoteProviderId: null,
+                  }
+                : {}),
+            })
             .where(eq(drafts.id, id))
             .returning();
           if (!updated) return { action: "gone" as const };
           await notifyAccountChanged(tx, user.id, account.id);
+          await notifyDraftSync(tx, account.id);
           return { action: "saved" as const, draft: updated, status: 200 };
         }
         return decision;
@@ -221,12 +252,21 @@ export function draftRoutes({ db }: Pick<RouteDeps, "db">) {
     const { id } = c.req.valid("param");
     const user = c.var.user;
     const deleted = await db.transaction(async (tx) => {
+      const [found] = await tx
+        .select({ accountId: drafts.accountId })
+        .from(drafts)
+        .where(and(eq(drafts.id, id), eq(drafts.userId, user.id)));
+      if (!found) return null;
+      // 同期ワーカーが控えを置いている途中なら、終わるのを待つ。
+      await lockDraftAccount(tx, found.accountId);
       const [row] = await tx
         .delete(drafts)
         .where(and(eq(drafts.id, id), eq(drafts.userId, user.id)))
         .returning();
-      if (row) await notifyAccountChanged(tx, user.id, row.accountId);
-      return row ?? null;
+      if (!row) return null;
+      await queueDraftCopyRemoval(tx, row);
+      await notifyAccountChanged(tx, user.id, row.accountId);
+      return row;
     });
     for (const file of deleted?.attachments ?? []) {
       await deleteAttachment(dir, user.id, file.id).catch(() => {});

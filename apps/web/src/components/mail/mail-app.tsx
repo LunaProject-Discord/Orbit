@@ -424,6 +424,13 @@ export function MailApp({ user }: { user: User }) {
 
   /** メールを開く。既読にするのは、会話を読み込んだ本文側が行う。 */
   function handleSelectMessage(id: string) {
+    // 下書きフォルダにある、このアプリの下書きの控えは、作成画面で続きを書く。
+    const draftId = messages?.find((item) => item.id === id)?.draftId;
+    const own = draftId ? drafts?.find((item) => item.id === draftId) : null;
+    if (own) {
+      handleOpenDraft(own);
+      return;
+    }
     setSelectedMessageId(id);
     anchorRef.current = id;
   }

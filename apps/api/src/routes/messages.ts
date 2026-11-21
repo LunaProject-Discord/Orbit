@@ -81,6 +81,14 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
         answered: messages.answered,
         threadCount,
         thread: threadInMailbox,
+        // 下書きフォルダにある控えなら、元の下書きの ID (開くと作成画面で続きを書ける)。
+        draftId: sql<string | null>`(
+          select d.id from drafts d
+          where d.account_id = ${messages.accountId}
+            and (d.remote_message_id = ${messages.messageIdHeader}
+              or d.remote_provider_id = ${messages.providerMessageId})
+          limit 1
+        )`,
       })
       .from(messages)
       .innerJoin(messageMailboxes, eq(messageMailboxes.messageId, messages.id))
