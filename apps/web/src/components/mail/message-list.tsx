@@ -1,8 +1,17 @@
 "use client";
 
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "cn";
 import { FolderIcon, PaperclipIcon, StarIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import {
+  type Ref,
+  type RefObject,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,7 +26,21 @@ import type { MessageSummary } from "@/lib/api";
 import { addressLabel, formatListDate } from "@/lib/format";
 import { highlightParts } from "@/lib/search";
 
+/** 一覧を外から操作するための窓口。 */
+export type MessageListHandle = {
+  /** その行が見える位置までスクロールする。まだ描画していない行でもよい。 */
+  scrollToMessage: (id: string) => void;
+};
+
+/** 高さを測る前の 1 行の見積もり (差出人、件名、本文 2 行)。 */
+const ESTIMATED_ROW_HEIGHT = 88;
+/** 見えている範囲の前後に余分に描画しておく行数。 */
+const OVERSCAN = 8;
+
 type Props = {
+  ref?: Ref<MessageListHandle>;
+  /** 一覧をスクロールさせている要素。見えている範囲の行だけを描画するのに使う。 */
+  scrollRef: RefObject<HTMLElement | null>;
   messages: MessageSummary[] | null;
   error: string | null;
   selectedId: string | null;
@@ -65,6 +88,8 @@ function Highlighted({ text, terms }: { text: string; terms: string[] }) {
 }
 
 export function MessageList({
+  ref,
+  scrollRef,
   messages,
   error,
   selectedId,
@@ -103,6 +128,42 @@ export function MessageList({
     observer.observe(target);
     return () => observer.disconnect();
   }, [autoLoad, count]);
+
+  // 一覧の上に出すもの (エラーの帯) の分だけ、行の並びはスクロール領域の先頭からずれる。
+  const listRef = useRef<HTMLUListElement>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const hasError = error !== null;
+  const hasRows = count > 0;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 帯や行の有無が変わったときに測り直す
+  useLayoutEffect(() => {
+    setScrollMargin(listRef.current?.offsetTop ?? 0);
+  }, [hasError, hasRows]);
+
+  // 見えている範囲の行だけを描画する (仮想化)。行の高さは本文の行数などで変わるので、
+  // 描画した行を実測して位置を決める。
+  const virtualizer = useVirtualizer({
+    count,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    getItemKey: (index) => messages?.[index]?.id ?? index,
+    overscan: OVERSCAN,
+    scrollMargin,
+    // 狭い画面でメールを開くと一覧は隠れ (display: none)、行の高さは 0 と測られる。
+    // それを覚えると戻ったときに行の位置がずれるので、隠れている間は前の高さのままにする。
+    measureElement: (element, _entry, instance) => {
+      const height = (element as HTMLElement).offsetHeight;
+      if (height > 0) return height;
+      const index = instance.indexFromElement(element);
+      return instance.measurementsCache[index]?.size ?? ESTIMATED_ROW_HEIGHT;
+    },
+  });
+
+  useImperativeHandle(ref, () => ({
+    scrollToMessage(id) {
+      const index = messages?.findIndex((message) => message.id === id) ?? -1;
+      if (index !== -1) virtualizer.scrollToIndex(index, { align: "auto" });
+    },
+  }));
 
   if (messages === null) {
     if (error) {
@@ -149,8 +210,14 @@ export function MessageList({
           {error}
         </p>
       )}
-      <ul>
-        {messages.map((message) => {
+      <ul
+        ref={listRef}
+        className="relative"
+        style={{ height: virtualizer.getTotalSize() }}
+      >
+        {virtualizer.getVirtualItems().map((row) => {
+          const message = messages[row.index];
+          if (!message) return null;
           const unread = !message.seen;
           const preview = message.excerpt || message.snippet;
           const location = locationLabel?.(message);
@@ -160,8 +227,15 @@ export function MessageList({
               <ContextMenuTrigger
                 render={
                   <li
-                    className="relative border-b"
+                    ref={virtualizer.measureElement}
+                    data-index={row.index}
                     data-message-id={message.id}
+                    aria-setsize={hasMore ? -1 : count}
+                    aria-posinset={row.index + 1}
+                    className="absolute top-0 left-0 w-full border-b"
+                    style={{
+                      transform: `translateY(${row.start - scrollMargin}px)`,
+                    }}
                   />
                 }
               >

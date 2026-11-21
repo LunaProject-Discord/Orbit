@@ -355,3 +355,21 @@ pnpm dlx shadcn@latest add <コンポーネント名>
 
 フォントは Gen Interface JP (見出しは Gen Interface JP Display) を `apps/web/src/app/globals.css` で設定しています。
 shadcn/ui の CLI がフォント設定を書き換えた場合は、`--font-sans` と `--font-heading` を元に戻してください。
+
+### 画面の URL
+
+表示中のアカウント、フォルダ、メール、検索、下書きの一覧、作成画面は URL に反映します。再読み込みやブックマーク、ブラウザーの「戻る」「進む」で同じ表示に戻れます。
+Web は静的ファイルとして出力する (Tauri / Capacitor にも同梱する) ので、ID をパスには入れず、すべて `?` 以降に置きます。読み書きは `apps/web/src/lib/route.ts` にまとめています。
+
+| URL | 表示 |
+| --- | --- |
+| `/` | すべての受信トレイ |
+| `/?account=<ID>` | そのアカウントの受信トレイ |
+| `/?account=<ID>&folder=<ID>` | フォルダ |
+| `…&message=<ID>` | メール (会話) を開いた状態 |
+| `…&q=<語>` | 検索。絞り込みは `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1`、表示中のフォルダだけを探すときは `in=folder` |
+| `/?view=drafts` | 下書きの一覧 |
+| `…&compose=<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `compose=new`) |
+
+フォルダの切り替えと、メールや作成画面を開く操作は履歴に積みます。メールからメールへの移動と検索欄の入力は、いまの履歴を書き換えます。
+ログインしていない状態で開いた URL は、ログイン後にそのまま開きます (`/login?next=`)。
