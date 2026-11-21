@@ -127,48 +127,42 @@ export function MessageView({
     return () => controller.abort();
   }, [messageId, refreshKey, onMissing]);
 
-  const backButton = (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={onBack}
-      className="-ml-2 self-start lg:hidden"
-    >
-      <ArrowLeftIcon />
-      一覧に戻る
-    </Button>
-  );
-
-  if (state.status === "loading") {
-    return (
-      <div className="flex flex-col gap-4 p-4 sm:p-6" aria-busy="true">
-        {backButton}
-        <output className="sr-only">メールを読み込み中</output>
-        <Skeleton className="h-7 w-2/3" />
-        <Skeleton className="h-4 w-1/2" />
-        <Skeleton className="h-40 w-full" />
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* 一覧の見出しと高さを揃えた、操作用のツールバー。 */}
+      <div className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:px-4">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="一覧に戻る"
+          onClick={onBack}
+          className="lg:hidden"
+        >
+          <ArrowLeftIcon />
+        </Button>
+        {state.status === "ready" && (
+          <MessageToolbar
+            message={state.message}
+            summary={summary}
+            onAction={onAction}
+          />
+        )}
       </div>
-    );
-  }
-
-  if (state.status === "error") {
-    return (
-      <div className="flex flex-col gap-4 p-4 sm:p-6">
-        {backButton}
-        <p role="alert" className="text-muted-foreground text-sm">
+      {state.status === "loading" ? (
+        <div className="flex flex-col gap-4 p-4 sm:p-6" aria-busy="true">
+          <output className="sr-only">メールを読み込み中</output>
+          <Skeleton className="h-7 w-2/3" />
+          <Skeleton className="h-4 w-1/2" />
+          <Skeleton className="h-40 w-full" />
+        </div>
+      ) : state.status === "error" ? (
+        <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
           メールを読み込めませんでした。
         </p>
-      </div>
-    );
-  }
-
-  return (
-    <MessageContent
-      message={state.message}
-      summary={summary}
-      onAction={onAction}
-      backButton={backButton}
-    />
+      ) : (
+        <MessageContent message={state.message} />
+      )}
+    </div>
   );
 }
 
@@ -239,7 +233,7 @@ function MessageToolbar({
     <div
       role="toolbar"
       aria-label="メールの操作"
-      className="-ml-2 flex flex-wrap items-center gap-1"
+      className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
     >
       <Button
         variant="ghost"
@@ -247,7 +241,9 @@ function MessageToolbar({
         onClick={() => act({ action: "set_flags", seen: !seen })}
       >
         {seen ? <MailIcon /> : <MailOpenIcon />}
-        {seen ? "未読にする" : "既読にする"}
+        <span className="sr-only sm:not-sr-only">
+          {seen ? "未読にする" : "既読にする"}
+        </span>
       </Button>
       <Button
         variant="ghost"
@@ -258,7 +254,9 @@ function MessageToolbar({
         <StarIcon
           className={flagged ? "fill-amber-400 text-amber-500" : undefined}
         />
-        {flagged ? "スターを外す" : "スターを付ける"}
+        <span className="sr-only sm:not-sr-only">
+          {flagged ? "スターを外す" : "スターを付ける"}
+        </span>
       </Button>
       {archive && archive.id !== currentMailboxId && (
         <Button
@@ -267,7 +265,7 @@ function MessageToolbar({
           onClick={() => act({ action: "move", mailboxId: archive.id })}
         >
           <ArchiveIcon />
-          アーカイブ
+          <span className="sr-only sm:not-sr-only">アーカイブ</span>
         </Button>
       )}
       {(trash || inTrash) && (
@@ -283,14 +281,16 @@ function MessageToolbar({
           }
         >
           <Trash2Icon />
-          {inTrash ? "完全に削除" : "削除"}
+          <span className="sr-only sm:not-sr-only">
+            {inTrash ? "完全に削除" : "削除"}
+          </span>
         </Button>
       )}
       {destinations.length > 0 && (
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
             <FolderInputIcon />
-            移動
+            <span className="sr-only sm:not-sr-only">移動</span>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             {destinations.map((mailbox) => (
@@ -311,17 +311,7 @@ function MessageToolbar({
   );
 }
 
-function MessageContent({
-  message,
-  summary,
-  onAction,
-  backButton,
-}: {
-  message: MessageDetail;
-  summary: MessageSummary | null;
-  onAction: Props["onAction"];
-  backButton: React.ReactNode;
-}) {
+function MessageContent({ message }: { message: MessageDetail }) {
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
   const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
   const showImages = imagesShownFor === message.id;
@@ -338,12 +328,6 @@ function MessageContent({
   return (
     <article className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 flex-col gap-3 border-b p-4 sm:p-6">
-        {backButton}
-        <MessageToolbar
-          message={message}
-          summary={summary}
-          onAction={onAction}
-        />
         <h2 className="font-semibold text-xl leading-snug">
           {message.subject || "(件名なし)"}
         </h2>
