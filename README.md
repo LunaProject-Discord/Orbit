@@ -160,7 +160,8 @@ Microsoft Graph では、さらに次のように調整します。
 | `DELETE /v1/accounts/:id` | メールアカウントと取り込んだメールの削除 |
 | `GET /v1/accounts/:id/mailboxes` | アカウント 1 件分のフォルダ一覧 |
 | `GET /v1/mailboxes` | 全アカウントのフォルダ一覧 (親フォルダの `parentId`、未読数、件数付き) |
-| `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り) |
+| `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り)。会話 (スレッド) ごとに 1 件にまとめ、フォルダ内で最も新しいメッセージを返す。`threadCount` は会話の通数、`threadMessageIds` は会話のうちそのフォルダにあるメッセージ |
+| `GET /v1/messages/:id/thread` | メッセージが属する会話の一覧 (古い順、本文なし)。`mailboxId` で表示中のフォルダを指定する。ごみ箱・迷惑メール・下書きにあるものは、表示中のフォルダでなければ含めない |
 | `GET /v1/messages/:id` | メッセージの本文と添付ファイルの情報 |
 | `POST /v1/focus` | 画面で表示中のフォルダを知らせる (`accountId`、`mailboxId`。その間は短い間隔で同期する) |
 | `POST /v1/webhooks/microsoft` | Microsoft Graph の変更通知の受け口 (ログイン不要。購読時の合言葉で確かめる) |

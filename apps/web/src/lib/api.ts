@@ -175,6 +175,32 @@ export type MessageSummary = {
   seen: boolean;
   flagged: boolean;
   answered: boolean;
+  /** 会話 (スレッド) に含まれるメッセージの数。ほかのフォルダにある自分の返信なども数える。 */
+  threadCount: number;
+  /**
+   * 会話のうち、このフォルダにあるメッセージ (このメッセージ自身を含む)。
+   * 一覧の 1 行は会話 1 つを表し、既読やスターはこれらをまとめた値、操作もこれらが対象になる。
+   */
+  threadMessageIds: string[];
+};
+
+/** 会話 (スレッド) に含まれるメッセージ 1 通分。本文は含まない。 */
+export type ThreadMessage = {
+  id: string;
+  accountId: string;
+  subject: string;
+  from: Address[];
+  to: Address[];
+  cc: Address[];
+  receivedAt: string;
+  snippet: string;
+  hasAttachments: boolean;
+  seen: boolean;
+  flagged: boolean;
+  answered: boolean;
+  draft: boolean;
+  /** このメッセージがあるフォルダ。 */
+  mailboxIds: string[];
 };
 
 export type Attachment = {
@@ -416,6 +442,23 @@ export async function getMessage(
     { signal },
   );
   return message;
+}
+
+/**
+ * メッセージが属する会話 (スレッド) を、古い順に取得する。
+ * mailboxId は表示中のフォルダ (そこにあるメッセージは、ごみ箱などでも会話に含まれる)。
+ */
+export async function getThread(
+  id: string,
+  mailboxId: string | null,
+  signal?: AbortSignal,
+): Promise<ThreadMessage[]> {
+  const query = mailboxId ? `?mailboxId=${mailboxId}` : "";
+  const { messages } = await apiJson<{ messages: ThreadMessage[] }>(
+    `/v1/messages/${id}/thread${query}`,
+    { signal },
+  );
+  return messages;
 }
 
 export async function listMailboxes(
