@@ -10,6 +10,8 @@ import {
   LinkIcon,
   ListIcon,
   Loader2Icon,
+  Maximize2Icon,
+  Minimize2Icon,
   MinusIcon,
   PaperclipIcon,
   SendIcon,
@@ -155,6 +157,25 @@ type Props = {
  * メールの作成画面 (新規、返信、転送)。
  * 広い画面では右下に浮かぶ窓で、開いたままほかのメールを読める。狭い画面では全画面になる。
  */
+const MAXIMIZED_KEY = "mail.compose-maximized.v1";
+
+function loadMaximized(): boolean {
+  try {
+    return window.localStorage.getItem(MAXIMIZED_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+function storeMaximized(maximized: boolean): void {
+  try {
+    if (maximized) window.localStorage.setItem(MAXIMIZED_KEY, "on");
+    else window.localStorage.removeItem(MAXIMIZED_KEY);
+  } catch {
+    // 保存できない環境では、次に開いたときに元の大きさに戻るだけ。
+  }
+}
+
 export function ComposeWindow({
   draft,
   open,
@@ -174,6 +195,8 @@ export function ComposeWindow({
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  /** 画面いっぱいに広げているか。次に開くときのために端末ごとに覚えておく。 */
+  const [maximized, setMaximized] = useState(loadMaximized);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [dragging, setDragging] = useState(false);
   /** Cc / Bcc の欄を開いた下書き (送信ごとの ID で覚える)。 */
@@ -459,6 +482,13 @@ export function ComposeWindow({
     }
   }
 
+  function toggleMaximized() {
+    setMaximized((current) => {
+      storeMaximized(!current);
+      return !current;
+    });
+  }
+
   function handleDrop(event: DragEvent<HTMLFormElement>) {
     if (event.dataTransfer.files.length === 0) return;
     event.preventDefault();
@@ -517,7 +547,13 @@ export function ComposeWindow({
   return (
     <section
       aria-label="メールの作成"
-      className="fixed inset-0 z-40 flex flex-col bg-popover text-popover-foreground sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0 sm:shadow-2xl"
+      data-maximized={maximized || undefined}
+      className={cn(
+        "fixed inset-0 z-40 flex flex-col bg-popover text-popover-foreground sm:shadow-2xl",
+        maximized
+          ? "sm:inset-4 sm:rounded-xl sm:border"
+          : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
+      )}
     >
       <form
         onSubmit={handleSubmit}
@@ -578,6 +614,17 @@ export function ComposeWindow({
             onClick={() => setMinimized(true)}
           >
             <MinusIcon />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={maximized ? "元の大きさに戻す" : "最大化"}
+            title={maximized ? "元の大きさに戻す" : "最大化"}
+            aria-pressed={maximized}
+            onClick={toggleMaximized}
+          >
+            {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
           </Button>
           <Button
             type="button"
