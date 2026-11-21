@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:19
+        env:
+          POSTGRES_USER: mail
+          POSTGRES_PASSWORD: mail
+          POSTGRES_DB: mail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mail -d mail"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://mail:mail@localhost:5432/mail
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: マイグレーションを適用
+        run: pnpm db:migrate
+      - name: 主キーが UUID v7 で採番されることを確認
+        run: |
+          version=$(psql "$DATABASE_URL" -qAtc "insert into users (email) values ('ci@example.com') returning uuid_extract_version(id)")
+          echo "UUID version: $version"
+          test "$version" = "7"
