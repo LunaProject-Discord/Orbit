@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "cn";
-import { PaperclipIcon, StarIcon } from "lucide-react";
+import { FolderIcon, PaperclipIcon, StarIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary } from "@/lib/api";
 import { addressLabel, formatListDate } from "@/lib/format";
+import { highlightParts } from "@/lib/search";
 
 type Props = {
   messages: MessageSummary[] | null;
@@ -25,12 +26,36 @@ type Props = {
   showRecipients?: boolean;
   /** 1 通も無いときの文言。 */
   emptyText?: string;
+  /** 検索結果で目立たせる語。 */
+  highlightTerms?: string[];
+  /** 検索結果で、メールのある場所 (アカウントとフォルダ) を各行に出すための関数。 */
+  locationLabel?: (message: MessageSummary) => string | null;
   onSelect: (id: string) => void;
   /** 右クリックメニューからの操作。 */
   onAction: (messageIds: string[], input: MessageActionInput) => void;
   onLoadMore: () => void;
   onRetry: () => void;
 };
+
+/** 検索した語に当たる部分を目立たせて表示する。 */
+function Highlighted({ text, terms }: { text: string; terms: string[] }) {
+  if (terms.length === 0) return text;
+  let offset = 0;
+  return highlightParts(text, terms).map((part) => {
+    const key = offset;
+    offset += part.text.length;
+    return part.match ? (
+      <mark
+        key={key}
+        className="rounded-[2px] bg-amber-200 text-inherit dark:bg-amber-500/40"
+      >
+        {part.text}
+      </mark>
+    ) : (
+      part.text
+    );
+  });
+}
 
 export function MessageList({
   messages,
@@ -40,6 +65,8 @@ export function MessageList({
   loadingMore,
   showRecipients = false,
   emptyText = "メールはまだありません。同期が終わるとここに表示されます。",
+  highlightTerms = [],
+  locationLabel,
   onSelect,
   onAction,
   onLoadMore,
@@ -115,6 +142,8 @@ export function MessageList({
       <ul>
         {messages.map((message) => {
           const unread = !message.seen;
+          const preview = message.excerpt || message.snippet;
+          const location = locationLabel?.(message);
           return (
             <ContextMenu key={message.id}>
               <ContextMenuTrigger
@@ -176,11 +205,27 @@ export function MessageList({
                       unread && "font-semibold",
                     )}
                   >
-                    {message.subject || "(件名なし)"}
+                    {message.subject ? (
+                      <Highlighted
+                        text={message.subject}
+                        terms={highlightTerms}
+                      />
+                    ) : (
+                      "(件名なし)"
+                    )}
                   </span>
-                  {message.snippet && (
+                  {preview && (
                     <span className="line-clamp-2 text-muted-foreground text-xs">
-                      {message.snippet}
+                      <Highlighted text={preview} terms={highlightTerms} />
+                    </span>
+                  )}
+                  {location && (
+                    <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
+                      <FolderIcon
+                        className="size-3 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{location}</span>
                     </span>
                   )}
                 </button>

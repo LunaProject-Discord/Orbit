@@ -273,10 +273,43 @@ export const messages = pgTable(
     flagged: boolean().notNull().default(false),
     answered: boolean().notNull().default(false),
     draft: boolean().notNull().default(false),
+    /**
+     * 検索用の文字列 (差出人、宛先、本文)。PostgreSQL が自動で作るので、書き込む側は意識しなくてよい。
+     * mail_addresses_text / mail_html_to_text はマイグレーション 0005 で定義している。
+     * 本文は、テキストが無ければ HTML からタグを除いたもの、取得前なら冒頭の抜粋を使う。
+     */
+    searchFrom: text()
+      .notNull()
+      .generatedAlwaysAs(sql`mail_addresses_text("from")`),
+    searchRecipients: text()
+      .notNull()
+      .generatedAlwaysAs(sql`mail_addresses_text("to" || "cc" || "bcc")`),
+    searchBody: text()
+      .notNull()
+      .generatedAlwaysAs(
+        sql`coalesce(nullif("body_text", ''), mail_html_to_text("body_html"), "snippet", '')`,
+      ),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
+    // 部分一致 (ILIKE '%語%') を速くする pg_trgm の索引。日本語にもそのまま使える。
+    index("messages_subject_trgm_idx").using(
+      "gin",
+      t.subject.op("gin_trgm_ops"),
+    ),
+    index("messages_search_from_trgm_idx").using(
+      "gin",
+      t.searchFrom.op("gin_trgm_ops"),
+    ),
+    index("messages_search_recipients_trgm_idx").using(
+      "gin",
+      t.searchRecipients.op("gin_trgm_ops"),
+    ),
+    index("messages_search_body_trgm_idx").using(
+      "gin",
+      t.searchBody.op("gin_trgm_ops"),
+    ),
     uniqueIndex("messages_account_provider_id_idx").on(
       t.accountId,
       t.providerMessageId,

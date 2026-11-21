@@ -19,6 +19,7 @@ describe("resolveShortcut", () => {
     expect(key("m")).toBe("toggleRead");
     expect(key("s")).toBe("toggleStar");
     expect(key("c")).toBe("compose");
+    expect(key("/")).toBe("search");
     expect(key("r")).toBe("reply");
     expect(key("R", { shiftKey: true })).toBe("replyAll");
     expect(key("f")).toBe("forward");

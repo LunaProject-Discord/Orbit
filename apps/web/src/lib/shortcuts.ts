@@ -11,6 +11,7 @@ export type ShortcutCommand =
   | "delete"
   | "move"
   | "compose"
+  | "search"
   | "reply"
   | "replyAll"
   | "forward";
@@ -71,6 +72,8 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       return "move";
     case "c":
       return "compose";
+    case "/":
+      return "search";
     case "r":
       return "reply";
     case "f":
