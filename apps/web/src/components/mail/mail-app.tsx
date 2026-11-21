@@ -20,7 +20,10 @@ import {
   NoticeToast,
   ToastRegion,
 } from "@/components/mail/failure-toast";
-import { MessageList } from "@/components/mail/message-list";
+import {
+  MessageList,
+  type MessageListHandle,
+} from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
 import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
@@ -194,6 +197,9 @@ export function MailApp({ user }: { user: User }) {
   const [mailboxes, setMailboxes] = useState<MailboxSummary[] | null>(null);
   const [messages, setMessages] = useState<MessageSummary[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  /** メール一覧をスクロールさせている要素と、一覧を操作する窓口。 */
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<MessageListHandle>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
@@ -1031,9 +1037,7 @@ export function MailApp({ user }: { user: User }) {
     const open = (message: MessageSummary | undefined) => {
       if (!message) return;
       handleSelectMessage(message.id);
-      document
-        .querySelector(`[data-message-id="${message.id}"]`)
-        ?.scrollIntoView({ block: "nearest" });
+      messageListRef.current?.scrollToMessage(message.id);
     };
 
     if (command === "next" || command === "previous") {
@@ -1251,7 +1255,10 @@ export function MailApp({ user }: { user: User }) {
           />
           {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
               枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div
+            ref={listScrollRef}
+            className="relative flex min-h-0 flex-1 flex-col overflow-y-auto"
+          >
             {noAccounts ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
                 <InboxIcon
@@ -1281,6 +1288,8 @@ export function MailApp({ user }: { user: User }) {
               />
             ) : (
               <MessageList
+                ref={messageListRef}
+                scrollRef={listScrollRef}
                 messages={messages}
                 error={listError}
                 selectedId={selectedMessage?.id ?? selectedMessageId}
