@@ -9,6 +9,7 @@ import {
   ItalicIcon,
   LinkIcon,
   ListIcon,
+  Loader2Icon,
   MinusIcon,
   PaperclipIcon,
   SendIcon,
@@ -40,11 +41,13 @@ import {
   type Account,
   ApiError,
   deleteAttachment,
+  forwardAttachments,
   NetworkError,
   sendMail,
   type UploadedAttachment,
   uploadAttachment,
 } from "@/lib/api";
+import { attachmentErrorMessage } from "@/lib/attachments";
 import {
   attachmentLimit,
   type ComposeDraft,
@@ -219,6 +222,49 @@ export function ComposeWindow({
     }
   }, [open, minimized, draftKey, mode]);
 
+  // 転送では、元のメールの添付ファイルを送信用に複製してもらう。
+  // サーバーがメールサーバーから取得し終えるまで待つので、その間は「取得中」として並べる。
+  const forwardPending = (draft?.forwardAttachments?.files.length ?? 0) > 0;
+  useEffect(() => {
+    const source = draftRef.current?.forwardAttachments;
+    if (!forwardPending || !draftKey || !source) return;
+    const controller = new AbortController();
+    const ids = source.files.map((file) => file.id);
+    forwardAttachments(source.messageId, ids, controller.signal)
+      .then((copied) => {
+        const latest = draftRef.current;
+        const wanted =
+          !controller.signal.aborted && latest?.idempotencyKey === draftKey
+            ? new Set(latest.forwardAttachments?.files.map((file) => file.id))
+            : new Set<string>();
+        // 待っている間に外されたものは、複製をサーバーから消す。
+        const kept = copied.filter((file, index) => {
+          if (wanted.has(ids[index] ?? "")) return true;
+          void deleteAttachment(file.id).catch(() => {});
+          return false;
+        });
+        if (!latest || latest.idempotencyKey !== draftKey) return;
+        if (controller.signal.aborted) return;
+        onChangeRef.current({
+          ...latest,
+          attachments: [...latest.attachments, ...kept],
+          forwardAttachments: null,
+        });
+      })
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        const latest = draftRef.current;
+        if (!latest || latest.idempotencyKey !== draftKey) return;
+        setError(
+          `元のメールの添付ファイルを付けられませんでした。${attachmentErrorMessage(
+            cause instanceof ApiError ? cause.code : null,
+          )}`,
+        );
+        onChangeRef.current({ ...latest, forwardAttachments: null });
+      });
+    return () => controller.abort();
+  }, [draftKey, forwardPending]);
+
   const addFiles = useCallback(
     (files: File[]) => {
       const current = draftRef.current;
@@ -306,7 +352,8 @@ export function ComposeWindow({
     onChange({ ...draft, [key]: value });
   const account = accounts.find((item) => item.id === draft.accountId);
   const limit = attachmentLimit(account ?? { protocol: "imap" });
-  const uploading = uploads.length > 0;
+  const pendingFiles = draft.forwardAttachments?.files ?? [];
+  const uploading = uploads.length > 0 || pendingFiles.length > 0;
 
   /** 差出人を変える。本文の署名も、選んだアカウントのものに入れ替える。 */
   function changeAccount(accountId: string) {
@@ -675,7 +722,7 @@ export function ComposeWindow({
             </div>
           )}
         >
-          {(draft.attachments.length > 0 || uploads.length > 0) && (
+          {(draft.attachments.length > 0 || uploading) && (
             <ul
               aria-label="添付ファイル"
               className="flex shrink-0 flex-wrap gap-2 px-4 pb-3"
@@ -697,6 +744,39 @@ export function ComposeWindow({
                     aria-label={`${file.filename} を外す`}
                     disabled={sending}
                     onClick={() => removeAttachment(file)}
+                  >
+                    <XIcon />
+                  </Button>
+                </li>
+              ))}
+              {pendingFiles.map((file) => (
+                <li
+                  key={file.id}
+                  className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
+                >
+                  <FileTypeIcon contentType={file.contentType} />
+                  <span className="truncate">{file.filename}</span>
+                  <output className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
+                    <Loader2Icon
+                      className="size-3 animate-spin"
+                      aria-hidden="true"
+                    />
+                    取得中
+                  </output>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`${file.filename} を外す`}
+                    onClick={() =>
+                      draft.forwardAttachments &&
+                      set("forwardAttachments", {
+                        ...draft.forwardAttachments,
+                        files: pendingFiles.filter(
+                          (item) => item.id !== file.id,
+                        ),
+                      })
+                    }
                   >
                     <XIcon />
                   </Button>

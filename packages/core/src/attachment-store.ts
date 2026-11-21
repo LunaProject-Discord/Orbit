@@ -1,19 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import {
   mkdir,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
 
 /**
- * 送信するメールの添付ファイルの置き場。
- * 作成画面で選んだファイルを API サーバーが受け取ってディスクに置き、
- * 同期ワーカーが送信するときに読む。両方から同じディレクトリが見える必要がある。
+ * 添付ファイルの置き場。API サーバーと同期ワーカーの両方から同じディレクトリが見える必要がある。
+ * - 送信するメールの添付: 作成画面で選んだファイルを API サーバーが受け取って置き、
+ *   同期ワーカーが送信するときに読む。
+ * - 受信したメールの添付: 開いたときに同期ワーカーがメールサーバーから取得して置き、
+ *   API サーバーが端末へ返す。原本はメールサーバーにあるので、ここにあるのは一時的な写し。
+ * どちらも、置いてから一定の時間が過ぎたら sweepAttachments が消す。
  */
 
 /** 1 通あたりの添付ファイルの合計の上限。 */
@@ -23,6 +28,8 @@ export const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
  * base64 にしても収まる大きさに抑える。
  */
 export const MAX_GRAPH_ATTACHMENTS_BYTES = 3 * 1024 * 1024;
+/** 受信したメールの添付ファイル 1 件の上限。これより大きいものは取得しない。 */
+export const MAX_RECEIVED_ATTACHMENT_BYTES = 150 * 1024 * 1024;
 /** 1 通あたりの添付ファイルの数の上限。 */
 export const MAX_ATTACHMENT_COUNT = 20;
 
@@ -135,6 +142,72 @@ export async function writeAttachment(
   return stored;
 }
 
+/**
+ * 受信したメールの添付ファイルの実体を置く。id は attachments.id。
+ * 書いている途中のものを API サーバーが読まないよう、別名で書いてから置き換える。
+ * 戻り値は大きさ。maxBytes を超えたら途中でやめて "too_large" を返す。
+ */
+export async function storeReceivedAttachment(
+  dir: string,
+  userId: string,
+  id: string,
+  body: AsyncIterable<Uint8Array>,
+  maxBytes = MAX_RECEIVED_ATTACHMENT_BYTES,
+): Promise<number | "too_large"> {
+  const path = join(dir, attachmentKey(userId, id));
+  const partial = `${path}.${randomUUID()}.part`;
+  await mkdir(join(dir, userId), { recursive: true });
+  const file = createWriteStream(partial, { flags: "wx", mode: 0o600 });
+  let size = 0;
+  try {
+    for await (const chunk of body) {
+      size += chunk.byteLength;
+      if (size > maxBytes) break;
+      if (!file.write(chunk)) {
+        await new Promise<void>((ok) => file.once("drain", ok));
+      }
+    }
+    await new Promise<void>((ok, fail) => {
+      file.once("error", fail);
+      file.end(ok);
+    });
+    if (size > maxBytes) {
+      await rm(partial, { force: true });
+      return "too_large";
+    }
+    await rename(partial, path);
+    return size;
+  } catch (error) {
+    file.destroy();
+    await rm(partial, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * 置き場にある受信メールの添付ファイルを、送信用の添付ファイルとして複製する (転送用)。
+ * 元の実体が無ければ null。
+ */
+export async function copyToOutgoingAttachment(
+  dir: string,
+  userId: string,
+  receivedId: string,
+  meta: { filename: string; contentType: string },
+  maxBytes: number,
+): Promise<StoredAttachment | "too_large" | null> {
+  const source = join(dir, attachmentKey(userId, receivedId));
+  const info = await stat(source).catch(() => null);
+  if (!info?.isFile()) return null;
+  if (info.size > maxBytes) return "too_large";
+  return writeAttachment(
+    dir,
+    userId,
+    meta,
+    Readable.toWeb(createReadStream(source)) as ReadableStream<Uint8Array>,
+    maxBytes,
+  );
+}
+
 /** 添付ファイルの情報。無ければ (他人のものも含めて) null。 */
 export async function readAttachmentMeta(
   dir: string,
@@ -197,7 +270,7 @@ export async function sweepAttachments(
       const info = await stat(path).catch(() => null);
       if (info?.isFile() && now - info.mtimeMs > maxAgeMs) {
         await rm(path, { force: true });
-        if (!name.endsWith(".json")) removed++;
+        if (!name.endsWith(".json") && !name.endsWith(".part")) removed++;
       }
     }
   }

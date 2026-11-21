@@ -1,4 +1,13 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { zValidator } from "@hono/zod-validator";
+import {
+  attachmentPath,
+  attachmentsDir,
+  sanitizeContentType,
+  sanitizeFilename,
+} from "@mail/core";
 import {
   attachments,
   mailAccounts,
@@ -11,10 +20,15 @@ import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import type { EventsHub } from "../lib/events-hub.js";
 import {
   enqueueMessageAction,
   messageActionBody,
 } from "../lib/message-actions.js";
+import {
+  ensureReceivedAttachment,
+  statusOfFetchError,
+} from "../lib/received-attachments.js";
 import {
   inConversation,
   isThreadHead,
@@ -37,8 +51,12 @@ const THREAD_LIMIT = 200;
 
 const cursorPattern = /^(\d{4}-[0-9T:.-]+Z)_([0-9a-f-]{36})$/;
 
-export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
+export function messageRoutes({
+  db,
+  hub,
+}: Pick<RouteDeps, "db"> & { hub: EventsHub }) {
   const app = new Hono<AppEnv>();
+  const dir = attachmentsDir();
 
   app.get("/", zValidator("query", listQuery), async (c) => {
     const query = c.req.valid("query");
@@ -241,6 +259,51 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
         .where(eq(attachments.messageId, id))
         .orderBy(asc(attachments.partId));
       return c.json({ message: { ...message, attachments: files } });
+    },
+  );
+
+  /**
+   * 受信メールの添付ファイルの実体。置き場に無ければ、同期ワーカーがメールサーバーから
+   * 取得し終えるのを待ってから返す。
+   * 中身は差出人が自由に決められるので、ブラウザーがこのアプリのページとして
+   * 開くことのないよう、必ず「ファイルとして保存」の扱いで返す。
+   */
+  app.get(
+    "/:id/attachments/:attachmentId",
+    zValidator("param", z.object({ id: z.uuid(), attachmentId: z.uuid() })),
+    async (c) => {
+      const { id, attachmentId } = c.req.valid("param");
+      const result = await ensureReceivedAttachment(
+        { db, hub, dir },
+        c.var.user.id,
+        id,
+        attachmentId,
+      );
+      if (!result.ok) {
+        return c.json(
+          { error: result.error },
+          statusOfFetchError(result.error),
+        );
+      }
+      const { attachment } = result;
+      const path = attachmentPath(dir, attachment.storageKey);
+      const info = await stat(path).catch(() => null);
+      if (!info) return c.json({ error: "fetch_failed" }, 502);
+      const filename = encodeURIComponent(
+        sanitizeFilename(attachment.filename ?? ""),
+      ).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16)}`);
+      return c.body(
+        Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>,
+        200,
+        {
+          "Content-Type": sanitizeContentType(attachment.contentType),
+          "Content-Length": String(info.size),
+          "Content-Disposition": `attachment; filename*=UTF-8''${filename}`,
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "sandbox; default-src 'none'",
+          "Cache-Control": "private, max-age=3600",
+        },
+      );
     },
   );
 

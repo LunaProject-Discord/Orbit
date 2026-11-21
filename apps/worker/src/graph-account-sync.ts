@@ -10,6 +10,10 @@ import {
 } from "@mail/core";
 import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
+import {
+  AttachmentRequests,
+  graphAttachmentDownloader,
+} from "./attachment-fetch.js";
 import { recordChanges } from "./changes.js";
 import { graphDraftRemote } from "./draft-graph.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -109,6 +113,7 @@ export class GraphAccountSync {
   private pushRetryAt = 0;
   private pushRenewedAt = 0;
   private sending: Promise<void> = Promise.resolve();
+  private readonly attachmentRequests: AttachmentRequests;
 
   constructor(
     private readonly db: Database,
@@ -124,6 +129,23 @@ export class GraphAccountSync {
       subscriptionId: account.pushSubscriptionId,
       expiresAt: account.pushExpiresAt,
     };
+    this.attachmentRequests = new AttachmentRequests(
+      db,
+      account.id,
+      graphAttachmentDownloader(
+        new GraphClient({
+          getToken: (force) => this.getToken(force),
+          fetchFn: this.fetchFn,
+        }),
+        this.abort.signal,
+      ),
+      (message) => this.log(message),
+    );
+  }
+
+  /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期の周期とは別に、すぐ取得する。 */
+  notifyAttachment(attachmentId: string) {
+    if (!this.stopped) this.attachmentRequests.request(attachmentId);
   }
 
   private log(message: string) {

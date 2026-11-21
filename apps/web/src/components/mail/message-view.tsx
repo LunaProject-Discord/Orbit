@@ -17,7 +17,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { MessageAttachments } from "@/components/mail/message-attachments";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -29,19 +29,25 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageActionInput } from "@/lib/actions";
 import {
   ApiError,
+  type Attachment,
+  fetchAttachment,
   getMessage,
   getThread,
   type MessageDetail,
   type MessageSummary,
   type ThreadMessage,
 } from "@/lib/api";
+import {
+  normalizeContentId,
+  replaceCidReferences,
+  splitAttachments,
+} from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
 import {
   addressFull,
   addressLabel,
   formatFullDate,
   formatListDate,
-  formatSize,
 } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 
@@ -604,6 +610,67 @@ function MessageToolbar({
   );
 }
 
+/** 本文に埋め込む画像 1 枚の上限。これより大きいものは埋め込まない。 */
+const MAX_EMBEDDED_IMAGE_BYTES = 10 * 1024 * 1024;
+
+function toDataUrl(blob: Blob, type: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(new Blob([blob], { type }));
+  });
+}
+
+/**
+ * 本文に埋め込まれた画像 (cid: で参照される添付ファイル) を取得する。
+ * 本文の iframe はこのアプリとは別の扱い (sandbox) で、API を呼べないので、
+ * こちらで取得して data: の URL にしてから本文に差し込む。
+ * 戻り値は Content-ID から URL への対応。取得できた分から順に増える。
+ */
+function useEmbeddedImages(
+  messageId: string,
+  embedded: Attachment[],
+): ReadonlyMap<string, string> {
+  const [state, setState] = useState<{
+    key: string;
+    urls: ReadonlyMap<string, string>;
+  }>({ key: "", urls: new Map() });
+  // 同期で同じメールを取得し直しても、画像は取得し直さない。
+  const key = `${messageId}:${embedded.map((file) => file.id).join(",")}`;
+  const embeddedRef = useRef(embedded);
+  embeddedRef.current = embedded;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    for (const file of embeddedRef.current) {
+      if (file.contentId === null || file.size > MAX_EMBEDDED_IMAGE_BYTES) {
+        continue;
+      }
+      const contentId = normalizeContentId(file.contentId);
+      fetchAttachment(messageId, file.id, controller.signal)
+        .then((blob) => toDataUrl(blob, file.contentType.toLowerCase()))
+        .then((url) => {
+          if (controller.signal.aborted) return;
+          setState((current) => ({
+            key,
+            urls: new Map(current.key === key ? current.urls : []).set(
+              contentId,
+              url,
+            ),
+          }));
+        })
+        // 取得できなかった画像は、表示されないままにする。
+        .catch(() => {});
+    }
+    return () => controller.abort();
+  }, [messageId, key]);
+
+  return state.key === key ? state.urls : EMPTY_URLS;
+}
+
+const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
+
 /**
  * 会話の中に並べる本文用の iframe。中身の高さに合わせて伸ばし、スクロールは会話全体で行う。
  * 高さを測るために allow-same-origin を付けるが、allow-scripts は付けないので、
@@ -660,40 +727,39 @@ function MessageContent({
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
   const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
   const showImages = imagesShownFor === message.id;
+  const { embedded, listed } = useMemo(
+    () => splitAttachments(message.bodyHtml, message.attachments),
+    [message.bodyHtml, message.attachments],
+  );
+  const embeddedUrls = useEmbeddedImages(message.id, embedded);
   const srcDoc = useMemo(
-    () => (message.bodyHtml ? buildSrcDoc(message.bodyHtml, showImages) : null),
-    [message.bodyHtml, showImages],
+    () =>
+      message.bodyHtml
+        ? buildSrcDoc(
+            replaceCidReferences(message.bodyHtml, embeddedUrls),
+            showImages,
+          )
+        : null,
+    [message.bodyHtml, embeddedUrls, showImages],
   );
   const imagesBlocked =
     !showImages &&
     message.bodyHtml !== null &&
     hasRemoteImages(message.bodyHtml);
-  const files = message.attachments.filter((file) => !file.inline);
 
   return (
     <article className={cn("flex flex-col", !inThread && "min-h-0 flex-1")}>
+      {/* 会話の中では、件名と差出人は会話側の見出しに出ている。 */}
       <header
         className={cn(
-          "flex shrink-0 flex-col gap-3",
-          // 会話の中では、添付ファイルの一覧だけを出す (件名と差出人は会話側の見出しにある)。
-          inThread ? "px-4 pb-3 sm:px-6" : "border-b p-4 sm:p-6",
-          inThread && files.length === 0 && "hidden",
+          "flex shrink-0 flex-col gap-3 border-b p-4 sm:p-6",
+          inThread && "hidden",
         )}
       >
-        <h2
-          className={cn(
-            "font-semibold text-xl leading-snug",
-            inThread && "hidden",
-          )}
-        >
+        <h2 className="font-semibold text-xl leading-snug">
           {message.subject || "(件名なし)"}
         </h2>
-        <dl
-          className={cn(
-            "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm",
-            inThread && "hidden",
-          )}
-        >
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
           <dt className="text-muted-foreground">差出人</dt>
           <dd className="min-w-0 break-words">
             {message.from.length > 0
@@ -723,23 +789,6 @@ function MessageContent({
             </time>
           </dd>
         </dl>
-        {files.length > 0 && (
-          <ul aria-label="添付ファイル" className="flex flex-wrap gap-2">
-            {files.map((file) => (
-              <li key={file.id}>
-                <Badge variant="outline" className="h-auto max-w-full py-1">
-                  <PaperclipIcon aria-hidden="true" />
-                  <span className="truncate">
-                    {file.filename || "(名前なし)"}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {formatSize(file.size)}
-                  </span>
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        )}
       </header>
 
       {message.bodyFetchedAt === null ? (
@@ -797,6 +846,11 @@ function MessageContent({
           本文はありません。
         </p>
       )}
+      <MessageAttachments
+        messageId={message.id}
+        files={listed}
+        inThread={inThread}
+      />
     </article>
   );
 }

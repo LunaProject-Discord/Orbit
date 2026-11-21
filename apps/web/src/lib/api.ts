@@ -182,6 +182,8 @@ export type MessageSummary = {
   seen: boolean;
   flagged: boolean;
   answered: boolean;
+  /** 検索結果でだけ入る。語が件名にも snippet にも無いときの、本文の該当箇所。 */
+  excerpt?: string | null;
   /** 会話 (スレッド) に含まれるメッセージの数。ほかのフォルダにある自分の返信なども数える。 */
   threadCount: number;
   /**
@@ -510,6 +512,70 @@ export async function listMessages(
   return apiJson<MessagePage>(`/v1/messages?${query}`, { signal });
 }
 
+/** 検索欄の入力以外の絞り込み条件。 */
+export type SearchFilters = {
+  from: string;
+  to: string;
+  subject: string;
+  /** 期間の始まりと終わり (YYYY-MM-DD、どちらもその日を含む)。空なら指定なし。 */
+  since: string;
+  until: string;
+  hasAttachment: boolean;
+  unread: boolean;
+  flagged: boolean;
+};
+
+export type SearchParams = {
+  /** 検索欄の入力。from: や is:unread などの書き方も使える。 */
+  text: string;
+  filters: SearchFilters;
+  /** all は全フォルダ (ごみ箱と迷惑メールを除く)、folder は表示中のフォルダだけ。 */
+  scope: "all" | "folder";
+};
+
+export type SearchPage = MessagePage & {
+  /** 一覧で目立たせる語。 */
+  terms: string[];
+};
+
+/** サーバーに同期済みのメールを検索する。結果は新しい順で、続きは cursor で取得する。 */
+export async function searchMessages(
+  params: SearchParams & {
+    accountId?: string | null;
+    /** scope が folder のときに探すフォルダ。省略すると受信トレイ。 */
+    mailboxId?: string | null;
+    cursor?: string | null;
+    limit?: number;
+  },
+  signal?: AbortSignal,
+): Promise<SearchPage> {
+  const { filters } = params;
+  const query = new URLSearchParams({
+    q: params.text,
+    scope: params.scope,
+    limit: String(params.limit ?? 50),
+  });
+  if (params.accountId) query.set("accountId", params.accountId);
+  if (params.mailboxId) query.set("mailboxId", params.mailboxId);
+  if (params.cursor) query.set("cursor", params.cursor);
+  if (filters.from.trim()) query.set("from", filters.from.trim());
+  if (filters.to.trim()) query.set("to", filters.to.trim());
+  if (filters.subject.trim()) query.set("subject", filters.subject.trim());
+  if (filters.since) query.set("since", filters.since);
+  if (filters.until) query.set("until", filters.until);
+  if (filters.hasAttachment) query.set("hasAttachment", "true");
+  if (filters.unread) query.set("unread", "true");
+  if (filters.flagged) query.set("flagged", "true");
+  try {
+    // 日付の条件は、この端末のタイムゾーンでの 0 時を区切りにしてもらう。
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (timeZone) query.set("timeZone", timeZone);
+  } catch {
+    // 取得できなければ、サーバーの既定 (UTC) で区切られる。
+  }
+  return apiJson<SearchPage>(`/v1/messages/search?${query}`, { signal });
+}
+
 export async function getMessage(
   id: string,
   signal?: AbortSignal,
@@ -671,4 +737,36 @@ export function uploadAttachment(
 /** 作成画面で外した添付ファイルを、サーバーからも消す。 */
 export async function deleteAttachment(id: string): Promise<void> {
   await apiFetch(`/v1/attachments/${id}`, { method: "DELETE" });
+}
+
+/**
+ * 受信したメールの添付ファイルの実体を取得する。
+ * サーバーがまだ持っていなければ、メールサーバーから取得し終えるまで待つ。
+ */
+export async function fetchAttachment(
+  messageId: string,
+  attachmentId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await apiFetch(
+    `/v1/messages/${messageId}/attachments/${attachmentId}`,
+    { signal },
+  );
+  return response.blob();
+}
+
+/**
+ * 受信したメールの添付ファイルを、送信用の添付ファイルとして複製してもらう (転送用)。
+ * 戻り値は、sendMail の attachmentIds に指定できる添付ファイル。
+ */
+export async function forwardAttachments(
+  messageId: string,
+  attachmentIds: string[],
+  signal?: AbortSignal,
+): Promise<UploadedAttachment[]> {
+  const { attachments } = await apiJson<{ attachments: UploadedAttachment[] }>(
+    "/v1/attachments/forward",
+    { method: "POST", body: { messageId, attachmentIds }, signal },
+  );
+  return attachments;
 }

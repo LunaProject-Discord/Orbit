@@ -34,3 +34,34 @@ export type GraphPushNotification = {
   accountId: string;
   lifecycle: GraphLifecycleEvent | null;
 };
+
+/**
+ * API → ワーカー: 受信メールの添付ファイルの実体を取得してほしい。
+ * 実体はメールサーバーに置いたままにしてあり、開いたときにだけ取得して置き場に保存する。
+ */
+export const CHANNEL_ATTACHMENT_FETCH = "mail_attachment_fetch";
+
+/** CHANNEL_ATTACHMENT_FETCH の payload。 */
+export type AttachmentFetchNotification = {
+  accountId: string;
+  /** attachments.id */
+  attachmentId: string;
+};
+
+/** ワーカー → API: 添付ファイルの取得が終わった (失敗も含む)。 */
+export const CHANNEL_ATTACHMENT_READY = "mail_attachment_ready";
+
+/** 取得できなかった理由。画面に出す文言は端末側で決める。 */
+export type AttachmentFetchError =
+  /** アカウントが同期されていない (再ログインが必要、など)。 */
+  | "account_unavailable"
+  /** メールや添付ファイルがサーバーから無くなっていた。 */
+  | "not_found"
+  | "too_large"
+  | "fetch_failed";
+
+/** CHANNEL_ATTACHMENT_READY の payload。error が null なら置き場に保存済み。 */
+export type AttachmentReadyNotification = {
+  attachmentId: string;
+  error: AttachmentFetchError | null;
+};

@@ -57,6 +57,17 @@ export type StructureInfo = {
   attachments: AttachmentInfo[];
 };
 
+/**
+ * 添付ファイルの元の大きさの見積もり。BODYSTRUCTURE の大きさは転送用に変換したあとの
+ * ものなので、base64 (76 文字ごとに改行) なら元の大きさに直す。
+ * 正確な大きさは、実体を取得したときに入れ直す。
+ */
+export function decodedSize(size: number, encoding: string | undefined) {
+  return encoding?.toLowerCase() === "base64"
+    ? Math.floor((size * 57) / 78)
+    : size;
+}
+
 /** BODYSTRUCTURE から、本文に使うパートと添付ファイルの一覧を求める。 */
 export function analyzeStructure(
   root: MessageStructureObject | undefined,
@@ -93,7 +104,7 @@ export function analyzeStructure(
       partId,
       filename: filename ? clean(filename) : null,
       contentType: type,
-      size: node.size ?? 0,
+      size: decodedSize(node.size ?? 0, node.encoding),
       contentId: node.id ? clean(node.id) : null,
       inline: disposition === "inline" || (!disposition && Boolean(node.id)),
     });
