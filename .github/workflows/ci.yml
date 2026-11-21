@@ -39,6 +39,6 @@ jobs:
         run: pnpm db:migrate
       - name: 主キーが UUID v7 で採番されることを確認
         run: |
-          version=$(psql "$DATABASE_URL" -Atc "insert into users (email) values ('ci@example.com') returning uuid_extract_version(id)")
+          version=$(psql "$DATABASE_URL" -qAtc "insert into users (email) values ('ci@example.com') returning uuid_extract_version(id)")
           echo "UUID version: $version"
           test "$version" = "7"
