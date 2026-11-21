@@ -8,6 +8,7 @@ import "gen-interface-jp/display-700.css";
 import "./globals.css";
 import { AuthGate, AuthProvider } from "@/components/auth-provider";
 import { OfflineBoot } from "@/components/offline-boot";
+import { PreferencesEffect } from "@/components/preferences-effect";
 import { ScrollbarHover } from "@/components/scrollbar-hover";
 import { ThemeProvider } from "@/components/theme-provider";
 
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col">
         <OfflineBoot />
+        <PreferencesEffect />
         <ScrollbarHover />
         <ThemeProvider>
           <AuthProvider>

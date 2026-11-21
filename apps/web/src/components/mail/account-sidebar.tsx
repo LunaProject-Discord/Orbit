@@ -37,10 +37,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { accountColor } from "@/lib/account-colors";
+import { AccountMark } from "@/lib/account-icons";
 import {
   type Account,
   type MailboxSummary,
@@ -304,17 +303,6 @@ export function AccountSidebar({
         <span className="flex-1 font-heading font-semibold text-xl tracking-tight">
           Mail
         </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="設定"
-          title="設定"
-          aria-current={special === "settings" ? "page" : undefined}
-          onClick={() => onSelectSpecial("settings")}
-          className={cn("-mr-1", special === "settings" && "bg-sidebar-accent")}
-        >
-          <SettingsIcon />
-        </Button>
       </div>
       {onCompose && (
         <div className="shrink-0 px-3 pb-2">
@@ -407,7 +395,7 @@ export function AccountSidebar({
                   tree={trees.get(account.id) ?? []}
                   collapsed={collapsed}
                   onToggle={toggle}
-                  color={accountColor(accounts, account.id)}
+                  accounts={accounts}
                   selected={folderView && selectedAccountId === account.id}
                   selectedMailboxId={selectedMailboxId}
                   onSelect={onSelect}
@@ -441,7 +429,17 @@ export function AccountSidebar({
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
         </div>
-        <ThemeToggle />
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label="設定"
+          title="設定"
+          aria-current={special === "settings" ? "page" : undefined}
+          onClick={() => onSelectSpecial("settings")}
+          className={cn(special === "settings" && "bg-sidebar-accent")}
+        >
+          <SettingsIcon />
+        </Button>
       </div>
     </div>
   );
@@ -451,7 +449,7 @@ type MoveHandler = (data: SortData, ids: string[], id: string) => void;
 
 function AccountItem({
   account,
-  color,
+  accounts,
   accountIds,
   tree,
   collapsed,
@@ -464,8 +462,8 @@ function AccountItem({
   onReauth,
 }: {
   account: Account;
-  /** アカウントの色の点に付けるクラス。 */
-  color: string;
+  /** 色を決めるのに使う、すべてのアカウント。 */
+  accounts: Account[];
   accountIds: string[];
   tree: MailboxNode[];
   collapsed: ReadonlySet<string>;
@@ -500,26 +498,23 @@ function AccountItem({
       )}
     >
       <div className="flex items-start">
-        <ToggleButton
+        <AccountToggle
           open={open}
           label={`${name} のフォルダ`}
-          onClick={() => onToggle(account.id)}
-          className="mt-1.5"
-        />
+          // フォルダが無いアカウントは開閉できないので、印だけを出す。
+          onClick={tree.length > 0 ? () => onToggle(account.id) : null}
+        >
+          {problem ? (
+            <CircleAlertIcon
+              className="size-4 text-destructive"
+              aria-hidden="true"
+            />
+          ) : (
+            <AccountMark accounts={accounts} account={account} />
+          )}
+        </AccountToggle>
         <SidebarItem
-          icon={
-            problem ? (
-              <CircleAlertIcon className="text-destructive" />
-            ) : (
-              // アイコンと同じ幅の枠の中央に、アカウントの色の点を置く。
-              <span
-                aria-hidden="true"
-                className="mt-0.5 flex size-4 shrink-0 items-center justify-center"
-              >
-                <span className={cn("size-2 rounded-full", color)} />
-              </span>
-            )
-          }
+          icon={null}
           label={name}
           sublabel={account.displayName ? account.email : undefined}
           problem={
@@ -576,6 +571,45 @@ function AccountItem({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * アカウントの印 (アイコンか色の点)。印の上にポインターを置くか、キーボードで選ぶと
+ * 開閉の矢印に入れ替わり、押すとフォルダを折りたたむ / 開く。
+ */
+function AccountToggle(props: {
+  open: boolean;
+  label: string;
+  /** null なら開閉できない (印だけを出す)。 */
+  onClick: (() => void) | null;
+  children: React.ReactNode;
+}) {
+  const frame = "mt-1 flex size-6 shrink-0 items-center justify-center";
+  if (!props.onClick) return <span className={frame}>{props.children}</span>;
+  return (
+    <button
+      type="button"
+      aria-expanded={props.open}
+      aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
+      title={props.open ? "折りたたむ" : "開く"}
+      onClick={props.onClick}
+      className={cn(
+        frame,
+        "group/toggle relative rounded-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50",
+      )}
+    >
+      <span className="flex transition-opacity group-hover/toggle:opacity-0 group-focus-visible/toggle:opacity-0">
+        {props.children}
+      </span>
+      <ChevronRightIcon
+        aria-hidden="true"
+        className={cn(
+          "absolute size-3.5 text-muted-foreground opacity-0 transition-[opacity,transform] group-hover/toggle:opacity-100 group-focus-visible/toggle:opacity-100",
+          props.open && "rotate-90",
+        )}
+      />
+    </button>
   );
 }
 

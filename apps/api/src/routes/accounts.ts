@@ -75,6 +75,30 @@ const ACCOUNT_COLOR_NAMES = [
   "slate",
 ] as const;
 
+/** アカウントに付けられるアイコンの名前。画面側 (apps/web の account-icons.tsx) と揃える。 */
+const ACCOUNT_ICON_NAMES = [
+  "mail",
+  "user",
+  "users",
+  "briefcase",
+  "building",
+  "home",
+  "graduation-cap",
+  "heart",
+  "star",
+  "shopping-cart",
+  "wallet",
+  "code",
+  "gamepad",
+  "globe",
+  "book",
+  "music",
+  "camera",
+  "plane",
+  "wrench",
+  "bell",
+] as const;
+
 const updateAccountBody = z
   .object({
     /** 署名 (書式付き)。null か空なら署名なしにする。 */
@@ -83,6 +107,8 @@ const updateAccountBody = z
     displayName: z.string().max(200).nullable().optional(),
     /** 画面でアカウントを見分ける色。null なら並び順から決める。 */
     color: z.enum(ACCOUNT_COLOR_NAMES).nullable().optional(),
+    /** 画面でアカウントに付けるアイコン。null なら色の点を出す。 */
+    icon: z.enum(ACCOUNT_ICON_NAMES).nullable().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -111,6 +137,7 @@ const publicColumns = {
   signatureHtml: mailAccounts.signatureHtml,
   sortOrder: mailAccounts.sortOrder,
   color: mailAccounts.color,
+  icon: mailAccounts.icon,
   createdAt: mailAccounts.createdAt,
 };
 
@@ -602,6 +629,7 @@ export function accountRoutes({
               ? { displayName: body.displayName?.trim() || null }
               : {}),
             ...(body.color !== undefined ? { color: body.color } : {}),
+            ...(body.icon !== undefined ? { icon: body.icon } : {}),
           })
           .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, user.id)))
           .returning(publicColumns);

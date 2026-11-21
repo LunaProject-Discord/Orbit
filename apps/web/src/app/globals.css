@@ -7,10 +7,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Gen Interface JP", ui-sans-serif, system-ui, sans-serif;
-  --font-heading:
-    "Gen Interface JP Display", "Gen Interface JP", ui-sans-serif, system-ui,
-    sans-serif;
+  /* 設定でフォントを変えられるよう、実際の値は :root の変数に置く。 */
+  --font-sans: var(--app-font);
+  --font-heading: var(--app-font-heading);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -72,6 +71,10 @@
 }
 
 :root {
+  --app-font: "Gen Interface JP", ui-sans-serif, system-ui, sans-serif;
+  --app-font-heading:
+    "Gen Interface JP Display", "Gen Interface JP", ui-sans-serif, system-ui,
+    sans-serif;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -189,4 +192,18 @@
       scrollbar-color: var(--scrollbar-thumb) transparent;
     }
   }
+}
+
+/* 設定で動きを止めたとき。切り替えの効果を、ほぼ一瞬で終わらせる。 */
+html[data-motion="off"] *,
+html[data-motion="off"] *::before,
+html[data-motion="off"] *::after {
+  /* biome-ignore lint/complexity/noImportantStyles: 部品ごとの指定より優先して止める */
+  transition-duration: 0.01ms !important;
+  /* biome-ignore lint/complexity/noImportantStyles: 部品ごとの指定より優先して止める */
+  animation-duration: 0.01ms !important;
+  /* biome-ignore lint/complexity/noImportantStyles: 部品ごとの指定より優先して止める */
+  animation-iteration-count: 1 !important;
+  /* biome-ignore lint/complexity/noImportantStyles: 部品ごとの指定より優先して止める */
+  scroll-behavior: auto !important;
 }
