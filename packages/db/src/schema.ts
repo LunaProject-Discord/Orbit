@@ -32,14 +32,78 @@ export type Address = { name?: string; address: string };
 // ユーザーと端末
 // ---------------------------------------------------------------------------
 
-/** アプリの利用者。全データはこの ID で分離する。認証用テーブルは認証導入時に追加する。 */
+/**
+ * アプリの利用者。全データはこの ID で分離する。
+ * users / sessions / auth_accounts / verifications は Better Auth が読み書きするため、
+ * 列名 (プロパティ名) は Better Auth の既定に合わせている。
+ */
 export const users = pgTable("users", {
   id: id(),
   email: text().notNull().unique(),
-  displayName: text(),
+  name: text().notNull(),
+  emailVerified: boolean().notNull().default(false),
+  image: text(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
+
+/** ログインセッション。token を Bearer トークンとして各クライアントが保持する。 */
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    token: text().notNull().unique(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    ipAddress: text(),
+    userAgent: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)],
+);
+
+/**
+ * ログイン手段 (メール + パスワードなら providerId = "credential")。
+ * 外部メールアカウントの mail_accounts とは別物。
+ */
+export const authAccounts = pgTable(
+  "auth_accounts",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text().notNull(),
+    providerId: text().notNull(),
+    accessToken: text(),
+    refreshToken: text(),
+    idToken: text(),
+    accessTokenExpiresAt: timestamp({ withTimezone: true }),
+    refreshTokenExpiresAt: timestamp({ withTimezone: true }),
+    scope: text(),
+    /** パスワードのハッシュ (Better Auth が scrypt で生成)。 */
+    password: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("auth_accounts_user_idx").on(t.userId)],
+);
+
+export const verifications = pgTable(
+  "verifications",
+  {
+    id: id(),
+    identifier: text().notNull(),
+    value: text().notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("verifications_identifier_idx").on(t.identifier)],
+);
 
 export const devicePlatform = pgEnum("device_platform", [
   "web",

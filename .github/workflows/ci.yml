@@ -34,11 +34,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm build
       - name: マイグレーションを適用
         run: pnpm db:migrate
       - name: 主キーが UUID v7 で採番されることを確認
         run: |
-          version=$(psql "$DATABASE_URL" -qAtc "insert into users (email) values ('ci@example.com') returning uuid_extract_version(id)")
+          version=$(psql "$DATABASE_URL" -qAtc "insert into users (email, name) values ('ci@example.com', 'CI') returning uuid_extract_version(id)")
           echo "UUID version: $version"
           test "$version" = "7"

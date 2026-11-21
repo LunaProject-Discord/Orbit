@@ -1,24 +1,24 @@
-import { createDb, mailAccounts } from "@mail/db";
-import { count } from "drizzle-orm";
+import { loadEncryptionKey } from "@mail/core";
+import { createDb } from "@mail/db";
+import { AccountManager } from "./account-manager.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL が設定されていません。");
 }
+const encryptionKey = loadEncryptionKey(process.env.CREDENTIALS_ENCRYPTION_KEY);
 
 const { db, pool } = createDb(databaseUrl);
-
-// IMAP の常時接続と送信キューの処理はここに追加していく。
-// 現時点では DB に接続できることだけを確認して待機する。
-const [row] = await db.select({ accounts: count() }).from(mailAccounts);
+const manager = new AccountManager(db, databaseUrl, encryptionKey);
+await manager.start();
 console.log(
-  `同期ワーカーを起動しました (登録アカウント: ${row?.accounts ?? 0} 件)`,
+  `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
 );
 
-const keepAlive = setInterval(() => {}, 60_000);
+// 送信キュー (outbox) の処理は今後ここに追加する。
 
 async function shutdown() {
-  clearInterval(keepAlive);
+  await manager.stop();
   await pool.end();
   process.exit(0);
 }

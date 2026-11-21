@@ -6,6 +6,7 @@ import "gen-interface-jp/700.css";
 import "gen-interface-jp/display-600.css";
 import "gen-interface-jp/display-700.css";
 import "./globals.css";
+import { AuthGate, AuthProvider } from "@/components/auth-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
@@ -22,7 +23,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body className="flex min-h-full flex-col">
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            <AuthGate>{children}</AuthGate>
+          </AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
