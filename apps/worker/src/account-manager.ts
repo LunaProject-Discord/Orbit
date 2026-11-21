@@ -1,6 +1,10 @@
 import {
   CHANNEL_ACCOUNTS,
+  CHANNEL_FOCUS,
+  CHANNEL_GRAPH_PUSH,
   CHANNEL_OUTBOX,
+  type FocusNotification,
+  type GraphPushNotification,
   type MicrosoftOAuthConfig,
 } from "@mail/core";
 import { type Database, mailAccounts } from "@mail/db";
@@ -11,6 +15,17 @@ import { GraphAccountSync } from "./graph-account-sync.js";
 import { accountsWithPendingOutbox } from "./outbox.js";
 
 const RECONCILE_MS = 60_000;
+
+function parsePayload<T extends { accountId: string }>(
+  payload: string | undefined,
+): T | null {
+  try {
+    const value = JSON.parse(payload ?? "") as T;
+    return typeof value?.accountId === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 /** 接続に関わる設定をまとめた値。これが変わったら接続し直す。 */
 function connectionKey(row: typeof mailAccounts.$inferSelect) {
@@ -31,7 +46,8 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * 同期対象のアカウントごとに AccountSync を起動・停止する。
  * API サーバーからの NOTIFY (アカウントの追加・削除) ですぐに反映し、
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
- * 送信待ちキューに操作が積まれた通知も受け取り、該当のアカウントへ伝える。
+ * 送信待ちキューに操作が積まれた通知、利用者が開いているフォルダの通知、
+ * Microsoft Graph の変更通知も受け取り、該当のアカウントへ伝える。
  */
 export class AccountManager {
   private running = new Map<string, { sync: AccountSync | GraphAccountSync }>();
@@ -46,6 +62,8 @@ export class AccountManager {
     private readonly encryptionKey: Buffer,
     /** Microsoft Graph のアカウント用。未設定ならそれらのアカウントはエラーになる。 */
     private readonly microsoft: MicrosoftOAuthConfig | null,
+    /** Microsoft Graph の変更通知 (Webhook) の受け口。公開された HTTPS の URL が無ければ null。 */
+    private readonly graphWebhookBaseUrl: string | null = null,
     /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
     private readonly allowInsecureSmtp = false,
   ) {}
@@ -78,6 +96,23 @@ export class AccountManager {
         }
         return;
       }
+      if (message.channel === CHANNEL_FOCUS) {
+        const payload = parsePayload<FocusNotification>(message.payload);
+        if (payload) {
+          this.running
+            .get(payload.accountId)
+            ?.sync.notifyFocus(payload.mailboxId ?? null);
+        }
+        return;
+      }
+      if (message.channel === CHANNEL_GRAPH_PUSH) {
+        const payload = parsePayload<GraphPushNotification>(message.payload);
+        const sync = payload && this.running.get(payload.accountId)?.sync;
+        if (sync instanceof GraphAccountSync) {
+          sync.notifyPush(payload?.lifecycle ?? null);
+        }
+        return;
+      }
       this.reconcile();
     });
     client.on("error", retry);
@@ -86,6 +121,8 @@ export class AccountManager {
       .connect()
       .then(() => client.query(`LISTEN ${CHANNEL_ACCOUNTS}`))
       .then(() => client.query(`LISTEN ${CHANNEL_OUTBOX}`))
+      .then(() => client.query(`LISTEN ${CHANNEL_FOCUS}`))
+      .then(() => client.query(`LISTEN ${CHANNEL_GRAPH_PUSH}`))
       // 待ち受けを始めるまでの間に届いた通知は失われるので、ここで追いつく。
       .then(() => this.reconcile())
       .catch(retry);
@@ -129,6 +166,7 @@ export class AccountManager {
               this.encryptionKey,
               row,
               this.microsoft,
+              this.graphWebhookBaseUrl,
             )
           : new AccountSync(
               this.db,

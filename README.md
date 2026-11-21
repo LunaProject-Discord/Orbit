@@ -71,22 +71,32 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 設定すると、アカウントの追加画面の「Microsoft アカウントでログイン」から追加できます。
 組織のアカウントでは、テナントの設定によって管理者の同意が必要な場合があります。
 
-- 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行い、15 秒ごとに差分を確認します。
-  変更通知 (Webhook) による即時反映は今後対応します。
+- 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行います。確認の間隔は状況に応じて変わります
+  (下の「更新の速さ」を参照)。
+- `API_PUBLIC_URL` が公開された HTTPS の URL (localhost や IP アドレスではないもの) なら、
+  [変更通知 (Webhook)](https://learn.microsoft.com/graph/change-notifications-delivery-webhooks) を自動で購読し、
+  通知が届いたらすぐに差分を確認します。Microsoft Graph から `POST {API_PUBLIC_URL}/v1/webhooks/microsoft` に
+  届く必要があります。購読は 6 日の期限で作り、期限の 2 日前に自動で延長します。購読に失敗した場合は
+  ワーカーのログに理由を出し、定期的な確認だけで同期を続けます (1 時間後に試し直します)。
 - メッセージは [不変 ID](https://learn.microsoft.com/graph/outlook-immutable-id) で識別します。
-- 現時点では添付ファイルの一覧、返信済みの印、サブフォルダは取り込みません。
+- フォルダはサブフォルダも含めて取り込みます。
+- 現時点では添付ファイルの一覧と返信済みの印は取り込みません。
 - リフレッシュトークンが失効した場合 (長期間の未使用、パスワード変更、同意の取り消しなど) は、
   サイドバーに「再ログインが必要です」と表示されます。「Microsoft にログインし直す」から復旧できます。
 
 ## 同期の仕組み
 
 1. API がアカウントを保存すると、PostgreSQL の `NOTIFY` で同期ワーカーに伝わります。
-2. ワーカーはアカウントごとに IMAP へ常時接続し (Microsoft アカウントでは Microsoft Graph を定期的に確認し)、受信トレイを DB に取り込みます
-   (先に一覧、続いて本文を新しい順に取得)。以降は IMAP IDLE で新着・既読・削除の通知を受けて差分を反映します。
+2. ワーカーはアカウントごとに IMAP へ常時接続し (Microsoft アカウントでは Microsoft Graph を定期的に確認し)、全フォルダを DB に取り込みます
+   (先に一覧、続いて本文を取得)。以降、受信トレイは IMAP IDLE で新着・既読・削除の通知を受けて差分を反映します。
+   IDLE で通知を受けられるのは 1 つのフォルダだけなので、他のフォルダは 2 分ごとに件数や変更番号 (STATUS) を確認し、
+   変化のあったフォルダだけを開いて突き合わせます。
 3. ワーカーは変更を `changes` テーブルに記録して `NOTIFY` し、API が SSE (`GET /v1/events`) で各端末に知らせます。
    端末は `GET /v1/sync?since=<変更番号>` や一覧 API で取り直します。
 
-現時点で同期するのは受信トレイのみです。メールを開くと既読になり、既読 / 未読の切り替え、スター、
+フォルダはサブフォルダも含めて同期し、サイドバーにアカウントごとのツリーで表示します。送信済み、下書き、ごみ箱、
+迷惑メール、アーカイブなどの役割は、IMAP では SPECIAL-USE (無ければフォルダ名)、Microsoft Graph では既定フォルダ名
+(`sentitems` など) で判定します。メールを開くと既読になり、既読 / 未読の切り替え、スター、
 アーカイブ、削除 (ごみ箱へ移動)、フォルダへの移動ができます。操作はまず画面と DB に反映し、
 送信待ちキュー (outbox) から同期ワーカーがメールサーバーへ反映します。
 
@@ -116,6 +126,27 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 SMTP は、`smtpSecure` が有効なら最初から TLS、無効なら STARTTLS を必須にして接続します。
 `ALLOW_PRIVATE_MAIL_HOSTS=true` (開発用) のときだけ、TLS の無い SMTP サーバーにも接続します。
 
+### 更新の速さ
+
+同期ワーカーは、状況に応じて確認の方法と間隔を切り替えます。画面を開いている端末は、表示中のフォルダを
+30 秒ごとに `POST /v1/focus` で知らせます (知らせが 75 秒途絶えると、開いていない扱いに戻ります)。
+
+| 対象 | IMAP | Microsoft Graph |
+| --- | --- | --- |
+| 受信トレイ | IDLE で即時 | 画面を開いている間は 5 秒ごと、それ以外は 15 秒ごと |
+| 画面で開いているフォルダ | もう 1 本接続を張って IDLE で即時。張れないとき (同時接続数の上限など) は 10 秒ごとに STATUS で確認 | 受信トレイと同じ間隔 |
+| 他のフォルダ | 2 分ごとに STATUS で確認 | 2 分ごと |
+| 移動などの操作の直後 | すぐに全フォルダを確認 | すぐに全フォルダを確認 |
+
+Microsoft Graph では、さらに次のように調整します。
+
+- 変更通知 (Webhook) が実際に届いている間は、通知を受けてすぐに確認し、定期的な確認は取りこぼしに備えた間隔
+  (画面を開いている間は 1 分、それ以外は 5 分) に落とします。定期的な確認のほうが先に変化を見つけた場合は、
+  通知が届いていないとみなして元の間隔に戻します。
+- 制限 (429) を受けたら `Retry-After` に従って待ち、確認の間隔を倍に延ばします (最大 8 倍)。
+  5 分間制限を受けなければ半分に戻します。Outlook の制限は 1 つのメールボックスにつき 10 分で 10,000 回、
+  同時 4 件です ([Microsoft Graph の制限](https://learn.microsoft.com/graph/throttling-limits#outlook-service-limits))。
+
 ## API (v1)
 
 | メソッドとパス | 内容 |
@@ -127,9 +158,12 @@ SMTP は、`smtpSecure` が有効なら最初から TLS、無効なら STARTTLS 
 | `POST /v1/accounts/microsoft/authorize` | Microsoft のログイン画面の URL を取得 (`accountId` を渡すと再ログイン) |
 | `POST /v1/accounts/microsoft/complete` | ログイン後に戻ってきた `code` と `state` を渡して、Microsoft アカウントを追加 |
 | `DELETE /v1/accounts/:id` | メールアカウントと取り込んだメールの削除 |
-| `GET /v1/accounts/:id/mailboxes` | フォルダ一覧 |
-| `GET /v1/messages` | メッセージ一覧 (`accountId` 省略で全アカウントの受信トレイ、`cursor` でページ送り) |
+| `GET /v1/accounts/:id/mailboxes` | アカウント 1 件分のフォルダ一覧 |
+| `GET /v1/mailboxes` | 全アカウントのフォルダ一覧 (親フォルダの `parentId`、未読数、件数付き) |
+| `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り) |
 | `GET /v1/messages/:id` | メッセージの本文と添付ファイルの情報 |
+| `POST /v1/focus` | 画面で表示中のフォルダを知らせる (`accountId`、`mailboxId`。その間は短い間隔で同期する) |
+| `POST /v1/webhooks/microsoft` | Microsoft Graph の変更通知の受け口 (ログイン不要。購読時の合言葉で確かめる) |
 | `POST /v1/attachments` / `DELETE /v1/attachments/:id` | 送信するメールに付けるファイルの受け取り (本文がファイルの内容、名前は `X-Filename`) / 取り消し |
 | `POST /v1/messages/send` | メールの送信 (新規、返信、転送)。受け付けると 202 を返し、実際の送信は同期ワーカーが行う |
 | `GET /v1/messages/outgoing` | まだ送り終えていないメール (送信待ち、送信中、失敗) の一覧 |

@@ -1,6 +1,6 @@
 import { type Database, mailboxes, messageMailboxes, messages } from "@mail/db";
-import { and, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
-import { recordChanges, type Tx } from "./changes.js";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { recordChanges } from "./changes.js";
 import {
   type GraphClient,
   GraphError,
@@ -13,7 +13,11 @@ import {
   toMessageValues,
   wellKnownFolders,
 } from "./graph-parse.js";
-import type { SyncAccount } from "./mailbox-sync.js";
+import {
+  applyMailboxList,
+  removePlacements,
+  type SyncAccount,
+} from "./mailbox-store.js";
 import { clean, makeSnippet } from "./message-parse.js";
 import { loadPendingGuard } from "./outbox.js";
 
@@ -21,25 +25,52 @@ const BODY_BATCH = 20;
 /** 本文を同時に取得する数。Outlook の制限 (1 メールボックスあたり同時 4 件) より少なくする。 */
 const BODY_CONCURRENCY = 3;
 
-type GraphFolder = { id: string; displayName?: string | null };
+type GraphFolder = {
+  id: string;
+  displayName?: string | null;
+  parentFolderId?: string | null;
+  childFolderCount?: number | null;
+};
+
+const FOLDER_QUERY =
+  "$select=id,displayName,parentFolderId,childFolderCount&$top=100";
+
+/** フォルダを、サブフォルダも含めてすべて取得する。 */
+export async function listGraphFolders(
+  client: GraphClient,
+  signal?: AbortSignal,
+): Promise<GraphFolder[]> {
+  const folders: GraphFolder[] = [];
+  const queue = [`/me/mailFolders?${FOLDER_QUERY}`];
+  for (let url = queue.shift(); url; url = queue.shift()) {
+    let next: string | undefined = url;
+    while (next) {
+      const page: GraphPage<GraphFolder> = await client.get(next, signal);
+      for (const folder of page.value) {
+        folders.push(folder);
+        if ((folder.childFolderCount ?? 0) > 0) {
+          queue.push(
+            `/me/mailFolders/${encodeURIComponent(folder.id)}/childFolders?${FOLDER_QUERY}`,
+          );
+        }
+      }
+      next = page["@odata.nextLink"];
+    }
+  }
+  return folders;
+}
 
 /**
- * フォルダ一覧を DB に反映する。path には Graph のフォルダ ID を入れる
- * (フォルダの ID は名前を変えても変わらない)。
- * 現時点では最上位のフォルダだけを対象にする。
+ * フォルダ一覧 (サブフォルダを含む) を DB に反映する。path には Graph のフォルダ ID を
+ * 入れる (フォルダの ID は名前を変えても変わらない)。
  */
 export async function syncGraphFolders(
   db: Database,
   client: GraphClient,
   account: SyncAccount,
+  signal?: AbortSignal,
 ) {
-  const folders: GraphFolder[] = [];
-  let url: string | undefined = "/me/mailFolders?$select=id,displayName";
-  while (url) {
-    const page: GraphPage<GraphFolder> = await client.get(url);
-    folders.push(...page.value);
-    url = page["@odata.nextLink"];
-  }
+  const folders = await listGraphFolders(client, signal);
 
   // 受信トレイなどの役割は、既定フォルダ名で引いた ID と突き合わせて決める。
   const specialUse = new Map<string, (typeof wellKnownFolders)[number][1]>();
@@ -47,6 +78,7 @@ export async function syncGraphFolders(
     try {
       const folder = await client.get<GraphFolder>(
         `/me/mailFolders/${name}?$select=id`,
+        signal,
       );
       specialUse.set(folder.id, use);
     } catch (error) {
@@ -55,88 +87,22 @@ export async function syncGraphFolders(
     }
   }
 
-  await db.transaction(async (tx) => {
-    const existing = await tx
-      .select({ id: mailboxes.id, path: mailboxes.path })
-      .from(mailboxes)
-      .where(eq(mailboxes.accountId, account.id));
-    const known = new Map(existing.map((row) => [row.path, row.id]));
-    const upserted: string[] = [];
-
-    for (const folder of folders) {
-      const values = {
-        name: clean(folder.displayName),
-        specialUse: specialUse.get(folder.id) ?? null,
-      };
-      const [row] = await tx
-        .insert(mailboxes)
-        .values({ accountId: account.id, path: folder.id, ...values })
-        .onConflictDoUpdate({
-          target: [mailboxes.accountId, mailboxes.path],
-          set: values,
-        })
-        .returning({ id: mailboxes.id });
-      if (row && !known.has(folder.id)) upserted.push(row.id);
-      known.delete(folder.id);
-    }
-
-    const removed = [...known.values()];
-    if (removed.length > 0) {
-      await removePlacements(tx, account, removed, null);
-      await tx.delete(mailboxes).where(inArray(mailboxes.id, removed));
-    }
-    await recordChanges(tx, account.userId, "mailbox", "upsert", upserted);
-    await recordChanges(tx, account.userId, "mailbox", "delete", removed);
-  });
-}
-
-/**
- * フォルダからメッセージの所在を外し、どのフォルダにも無くなったメッセージを消す。
- * messageIds が null ならフォルダ内の全メッセージが対象。
- */
-async function removePlacements(
-  tx: Tx,
-  account: SyncAccount,
-  mailboxIds: string[],
-  messageIds: string[] | null,
-) {
-  if (messageIds?.length === 0) return 0;
-  const removed = await tx
-    .delete(messageMailboxes)
-    .where(
-      and(
-        inArray(messageMailboxes.mailboxId, mailboxIds),
-        messageIds
-          ? inArray(messageMailboxes.messageId, messageIds)
-          : undefined,
-      ),
-    )
-    .returning({ messageId: messageMailboxes.messageId });
-  const ids = [...new Set(removed.map((row) => row.messageId))];
-  if (ids.length === 0) return 0;
-  const deleted = await tx
-    .delete(messages)
-    .where(
-      and(
-        inArray(messages.id, ids),
-        notInArray(
-          messages.id,
-          tx
-            .select({ id: messageMailboxes.messageId })
-            .from(messageMailboxes)
-            .where(inArray(messageMailboxes.messageId, ids)),
-        ),
-      ),
-    )
-    .returning({ id: messages.id });
-  await recordChanges(
-    tx,
-    account.userId,
-    "message",
-    "delete",
-    deleted.map((row) => row.id),
+  const ids = new Set(folders.map((folder) => folder.id));
+  await applyMailboxList(
+    db,
+    account,
+    folders.map((folder) => ({
+      path: folder.id,
+      name: clean(folder.displayName),
+      delimiter: null,
+      specialUse: specialUse.get(folder.id) ?? null,
+      // 最上位のフォルダの親 (メールボックスの根) は一覧に無いので、親なしになる。
+      parentPath:
+        folder.parentFolderId && ids.has(folder.parentFolderId)
+          ? folder.parentFolderId
+          : null,
+    })),
   );
-  return ids.length;
 }
 
 /** 差分取得 1 ページ分を DB に反映する。 */
@@ -331,32 +297,52 @@ export async function syncGraphFolder(
 }
 
 /**
- * 本文をまだ取得していないメッセージを、新しい順に 1 回分だけ取得する。
+ * 本文をまだ取得していないメッセージを、フォルダに関係なく新しい順に 1 回分だけ取得する。
+ * preferMailboxId (利用者が開いているフォルダ) に未取得のものがあれば、そちらを先に取得する。
  * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
  */
 export async function fetchGraphBodies(
   db: Database,
   client: GraphClient,
   account: SyncAccount,
-  mailboxId: string,
   signal?: AbortSignal,
+  preferMailboxId?: string | null,
 ): Promise<boolean> {
-  const pending = await db
-    .select({
-      messageId: messages.id,
-      providerMessageId: messages.providerMessageId,
-      snippet: messages.snippet,
-    })
-    .from(messageMailboxes)
-    .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
-    .where(
-      and(
-        eq(messageMailboxes.mailboxId, mailboxId),
-        isNull(messages.bodyFetchedAt),
-      ),
-    )
-    .orderBy(desc(messages.receivedAt))
-    .limit(BODY_BATCH + 1);
+  const columns = {
+    messageId: messages.id,
+    providerMessageId: messages.providerMessageId,
+    snippet: messages.snippet,
+  };
+  let pending = preferMailboxId
+    ? await db
+        .select(columns)
+        .from(messages)
+        .innerJoin(
+          messageMailboxes,
+          eq(messageMailboxes.messageId, messages.id),
+        )
+        .where(
+          and(
+            eq(messageMailboxes.mailboxId, preferMailboxId),
+            eq(messages.accountId, account.id),
+            isNull(messages.bodyFetchedAt),
+          ),
+        )
+        .orderBy(desc(messages.receivedAt))
+        .limit(BODY_BATCH)
+    : [];
+  // 開いているフォルダの分が終わっても、他のフォルダの分が残っているかもしれない。
+  const preferred = pending.length > 0;
+  if (!preferred) {
+    pending = await db
+      .select(columns)
+      .from(messages)
+      .where(
+        and(eq(messages.accountId, account.id), isNull(messages.bodyFetchedAt)),
+      )
+      .orderBy(desc(messages.receivedAt))
+      .limit(BODY_BATCH + 1);
+  }
   const batch = pending.slice(0, BODY_BATCH);
   if (batch.length === 0) return false;
 
@@ -395,5 +381,5 @@ export async function fetchGraphBodies(
   await db.transaction((tx) =>
     recordChanges(tx, account.userId, "message", "upsert", done),
   );
-  return pending.length > BODY_BATCH;
+  return preferred || pending.length > BODY_BATCH;
 }

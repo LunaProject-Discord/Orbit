@@ -1,5 +1,6 @@
 import {
   attachmentsDir,
+  graphWebhookBaseUrl,
   loadEncryptionKey,
   loadMicrosoftOAuthConfig,
   sweepAttachments,
@@ -19,6 +20,8 @@ const manager = new AccountManager(
   databaseUrl,
   encryptionKey,
   loadMicrosoftOAuthConfig(process.env),
+  // API が公開された HTTPS の URL で動いていれば、Microsoft Graph の変更通知を使う。
+  graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
   // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
   process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
 );
