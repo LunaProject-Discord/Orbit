@@ -72,6 +72,23 @@ export function hasRemoteImages(html: string): boolean {
 }
 
 /**
+ * 本文の iframe の中のスクロールバー。アプリ側 (globals.css) と同じ見た目にする。
+ * iframe の中ではスクリプトを動かさないので、太くなるのはつまみに乗ったときだけ。
+ * 本文の背景は白に固定しているので、色も明るい画面用に固定する。
+ */
+const BODY_SCROLLBAR_STYLE = [
+  "<style>@media (hover:hover) and (pointer:fine){",
+  "@supports selector(::-webkit-scrollbar){",
+  "::-webkit-scrollbar{width:12px;height:12px;background:transparent}",
+  "::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}",
+  "::-webkit-scrollbar-thumb{min-height:32px;min-width:32px;border:solid transparent;border-width:2px 2px 2px 6px;border-radius:999px;background-color:rgb(0 0 0/.28);background-clip:content-box}",
+  "::-webkit-scrollbar-thumb:horizontal{border-width:6px 2px 2px}",
+  "::-webkit-scrollbar-thumb:hover,::-webkit-scrollbar-thumb:active{border-width:2px;background-color:rgb(0 0 0/.5)}}",
+  "@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:rgb(0 0 0/.28) transparent}}",
+  "}</style>",
+].join("");
+
+/**
  * メール本文の HTML を iframe に入れるための文書。
  * CSP で外部への通信をすべて止め、開封を知らせる追跡画像なども読み込ませない。
  * allowRemoteImages が true のときだけ、https の画像の読み込みを許可する
@@ -92,6 +109,7 @@ export function buildSrcDoc(
     '<base target="_blank">',
     '<meta charset="utf-8">',
     `<style>html{background:#fff;color:#111}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>`,
+    BODY_SCROLLBAR_STYLE,
     "</head><body>",
     html,
     "</body></html>",

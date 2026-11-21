@@ -9,7 +9,13 @@ import {
   PlusIcon,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AccountSidebar } from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
@@ -30,6 +36,11 @@ import { OutgoingList } from "@/components/mail/outgoing-list";
 import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
 import { SettingsView } from "@/components/mail/settings-view";
+import {
+  SidebarFoldButton,
+  SidebarRail,
+  useSidebarPeek,
+} from "@/components/mail/sidebar-rail";
 import { SignatureDialog } from "@/components/mail/signature-dialog";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
@@ -127,6 +138,7 @@ import {
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
+import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
 
 const PAGE_SIZE = 50;
@@ -259,6 +271,17 @@ export function MailApp({ user }: { user: User }) {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // 広い画面で左のサイドバーを折りたたんでいるか。スマホ幅では使わない (引き出し式のまま)。
+  const [sidebarFolded, setSidebarFolded] = useState(false);
+  useLayoutEffect(() => {
+    setSidebarFolded(loadSidebarFolded());
+  }, []);
+  const toggleSidebarFolded = () => {
+    storeSidebarFolded(!sidebarFolded);
+    setSidebarFolded(!sidebarFolded);
+  };
+  const asideRef = useRef<HTMLElement>(null);
+  const sidebarPeek = useSidebarPeek(asideRef, sidebarFolded);
 
   /** 検索欄の内容。 */
   const [searchInput, setSearchInput] = useState<SearchParams>(
@@ -1441,6 +1464,11 @@ export function MailApp({ user }: { user: User }) {
       handleNewMail();
       return;
     }
+    if (command === "toggleSidebar") {
+      event.preventDefault();
+      toggleSidebarFolded();
+      return;
+    }
     if (command === "search") {
       const input = document.getElementById(SEARCH_INPUT_ID);
       if (!(input instanceof HTMLInputElement)) return;
@@ -1598,56 +1626,103 @@ export function MailApp({ user }: { user: User }) {
         />
       )}
       <aside
+        ref={asideRef}
         id="mail-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r transition-transform md:static md:z-auto md:w-64 md:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] transition-transform md:translate-x-0",
+          // 折りたたみ中は細い帯の幅だけを確保し、サイドバーは一覧の上に重ねて出す。
+          sidebarFolded
+            ? "md:relative md:w-12 md:max-w-none md:shrink-0"
+            : "md:static md:z-auto md:w-64",
           sidebarOpen
             ? "translate-x-0"
             : "invisible -translate-x-full md:visible",
         )}
       >
-        <AccountSidebar
-          user={user}
-          accounts={accounts}
-          mailboxes={mailboxes}
-          selectedAccountId={selectedAccountId}
-          selectedMailboxId={selectedMailboxId}
-          onSelect={handleSelectFolder}
-          onReorderAccounts={(ids) => {
-            setAccounts(
-              (current) => current && sortAccounts(withSortOrder(current, ids)),
-            );
-            saveOrder(() => saveAccountOrder(ids));
-          }}
-          onReorderMailboxes={(ids) => {
-            setMailboxes((current) => current && withSortOrder(current, ids));
-            saveOrder(() => saveMailboxOrder(ids));
-          }}
-          draftCount={visibleDrafts?.length ?? 0}
-          draftsSelected={draftsSelected}
-          onSelectDrafts={handleSelectDrafts}
-          special={special}
-          onSelectSpecial={handleSelectSpecial}
-          outgoingCount={outgoing.length + queuedSends.length}
-          outgoingFailed={
-            outgoing.some((mail) => mail.status === "failed") ||
-            queuedSends.some((item) => item.error !== null)
-          }
-          onCompose={
-            canCompose
-              ? () => {
-                  setSidebarOpen(false);
-                  handleNewMail();
-                }
-              : null
-          }
-          onAdd={() => {
-            setSidebarOpen(false);
-            setAddOpen(true);
-          }}
-          onReauth={handleReauth}
-          syncStatus={syncStatus}
-        />
+        {sidebarFolded && (
+          <SidebarRail
+            className="hidden md:flex"
+            accounts={accounts}
+            mailboxes={mailboxes}
+            selectedAccountId={selectedAccountId}
+            folderView={!draftsSelected && special === null}
+            draftCount={visibleDrafts?.length ?? 0}
+            draftsSelected={draftsSelected}
+            special={special}
+            outgoingCount={outgoing.length + queuedSends.length}
+            outgoingFailed={
+              outgoing.some((mail) => mail.status === "failed") ||
+              queuedSends.some((item) => item.error !== null)
+            }
+            onSelect={handleSelectFolder}
+            onSelectDrafts={handleSelectDrafts}
+            onSelectSpecial={handleSelectSpecial}
+            onCompose={canCompose ? handleNewMail : null}
+            onToggleFold={toggleSidebarFolded}
+            inert={sidebarPeek}
+          />
+        )}
+        <div
+          className={cn(
+            "h-full border-r",
+            sidebarFolded &&
+              "md:absolute md:inset-y-0 md:left-0 md:w-64 md:shadow-xl md:transition-[opacity,translate,visibility] md:duration-150",
+            sidebarFolded &&
+              !sidebarPeek &&
+              "md:pointer-events-none md:invisible md:-translate-x-2 md:opacity-0",
+          )}
+        >
+          <AccountSidebar
+            headerStart={
+              <SidebarFoldButton
+                folded={sidebarFolded}
+                onToggle={toggleSidebarFolded}
+                className="-ml-2 hidden md:inline-flex"
+              />
+            }
+            user={user}
+            accounts={accounts}
+            mailboxes={mailboxes}
+            selectedAccountId={selectedAccountId}
+            selectedMailboxId={selectedMailboxId}
+            onSelect={handleSelectFolder}
+            onReorderAccounts={(ids) => {
+              setAccounts(
+                (current) =>
+                  current && sortAccounts(withSortOrder(current, ids)),
+              );
+              saveOrder(() => saveAccountOrder(ids));
+            }}
+            onReorderMailboxes={(ids) => {
+              setMailboxes((current) => current && withSortOrder(current, ids));
+              saveOrder(() => saveMailboxOrder(ids));
+            }}
+            draftCount={visibleDrafts?.length ?? 0}
+            draftsSelected={draftsSelected}
+            onSelectDrafts={handleSelectDrafts}
+            special={special}
+            onSelectSpecial={handleSelectSpecial}
+            outgoingCount={outgoing.length + queuedSends.length}
+            outgoingFailed={
+              outgoing.some((mail) => mail.status === "failed") ||
+              queuedSends.some((item) => item.error !== null)
+            }
+            onCompose={
+              canCompose
+                ? () => {
+                    setSidebarOpen(false);
+                    handleNewMail();
+                  }
+                : null
+            }
+            onAdd={() => {
+              setSidebarOpen(false);
+              setAddOpen(true);
+            }}
+            onReauth={handleReauth}
+            syncStatus={syncStatus}
+          />
+        </div>
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1">
