@@ -1,5 +1,5 @@
 {
-  "id": "071cb39e-7250-4844-aaae-51d73def236e",
+  "id": "7c7d1f1d-df39-4cf9-8810-e6ffeaf33044",
   "prevId": "c592f9a0-eb1e-4547-aa26-db849bac0f6a",
   "version": "7",
   "dialect": "postgresql",
@@ -531,6 +531,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "signature_html": {
+          "name": "signature_html",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1033,36 +1039,6 @@
           "notNull": true,
           "default": false
         },
-        "search_from": {
-          "name": "search_from",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "mail_addresses_text(\"from\")",
-            "type": "stored"
-          }
-        },
-        "search_recipients": {
-          "name": "search_recipients",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "mail_addresses_text(\"to\" || \"cc\" || \"bcc\")",
-            "type": "stored"
-          }
-        },
-        "search_body": {
-          "name": "search_body",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "coalesce(nullif(\"body_text\", ''), mail_html_to_text(\"body_html\"), \"snippet\", '')",
-            "type": "stored"
-          }
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1079,70 +1055,6 @@
         }
       },
       "indexes": {
-        "messages_subject_trgm_idx": {
-          "name": "messages_subject_trgm_idx",
-          "columns": [
-            {
-              "expression": "subject",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
-        "messages_search_from_trgm_idx": {
-          "name": "messages_search_from_trgm_idx",
-          "columns": [
-            {
-              "expression": "search_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
-        "messages_search_recipients_trgm_idx": {
-          "name": "messages_search_recipients_trgm_idx",
-          "columns": [
-            {
-              "expression": "search_recipients",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
-        "messages_search_body_trgm_idx": {
-          "name": "messages_search_body_trgm_idx",
-          "columns": [
-            {
-              "expression": "search_body",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
         "messages_account_provider_id_idx": {
           "name": "messages_account_provider_id_idx",
           "columns": [

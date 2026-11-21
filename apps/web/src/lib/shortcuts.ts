@@ -3,6 +3,7 @@ export type ShortcutCommand =
   | "next"
   | "previous"
   | "close"
+  | "select"
   | "markRead"
   | "markUnread"
   | "toggleRead"
@@ -58,6 +59,8 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
     case "u":
     case "Escape":
       return "close";
+    case "x":
+      return "select";
     case "m":
       return "toggleRead";
     case "s":

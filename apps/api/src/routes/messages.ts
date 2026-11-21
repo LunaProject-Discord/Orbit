@@ -6,7 +6,8 @@ import {
   messageMailboxes,
   messages,
 } from "@mail/db";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
@@ -14,6 +15,12 @@ import {
   enqueueMessageAction,
   messageActionBody,
 } from "../lib/message-actions.js";
+import {
+  inConversation,
+  isThreadHead,
+  threadCount,
+  threadInMailbox,
+} from "../lib/threads.js";
 
 const listQuery = z.object({
   /** 省略すると、全アカウントの受信トレイをまとめて返す。 */
@@ -24,6 +31,9 @@ const listQuery = z.object({
   /** 前のページの nextCursor。 */
   cursor: z.string().max(100).optional(),
 });
+
+/** 1 つの会話として返すメッセージの上限。 */
+const THREAD_LIMIT = 200;
 
 const cursorPattern = /^(\d{4}-[0-9T:.-]+Z)_([0-9a-f-]{36})$/;
 
@@ -51,6 +61,9 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
       );
     }
 
+    // 会話ごとに 1 行にまとめ、表示中のフォルダで最も新しいメッセージを代表にする。
+    conditions.push(isThreadHead);
+
     const rows = await db
       .select({
         id: messages.id,
@@ -66,6 +79,8 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
         seen: messages.seen,
         flagged: messages.flagged,
         answered: messages.answered,
+        threadCount,
+        thread: threadInMailbox,
       })
       .from(messages)
       .innerJoin(messageMailboxes, eq(messageMailboxes.messageId, messages.id))
@@ -75,7 +90,14 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
       .orderBy(desc(messages.receivedAt), desc(messages.id))
       .limit(query.limit + 1);
 
-    const page = rows.slice(0, query.limit);
+    // 既読・スター・添付は、会話のうち表示中のフォルダにある分をまとめた値にする。
+    const page = rows.slice(0, query.limit).map(({ thread, ...row }) => ({
+      ...row,
+      seen: thread.seen,
+      flagged: thread.flagged,
+      hasAttachments: thread.hasAttachments,
+      threadMessageIds: thread.ids,
+    }));
     const last = page.at(-1);
     const nextCursor =
       rows.length > query.limit && last
@@ -99,6 +121,67 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
     }
     return c.json({ messageIds: result.messageIds });
   });
+
+  /**
+   * メッセージが属する会話 (スレッド) の一覧を、古い順に返す。本文は含めない。
+   * mailboxId は表示中のフォルダで、そこにあるメッセージは、ごみ箱などであっても会話に含める。
+   */
+  app.get(
+    "/:id/thread",
+    zValidator("param", z.object({ id: z.uuid() })),
+    zValidator("query", z.object({ mailboxId: z.uuid().optional() })),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const { mailboxId } = c.req.valid("query");
+      const [origin] = await db
+        .select({
+          accountId: messages.accountId,
+          threadKey: messages.threadKey,
+        })
+        .from(messages)
+        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+        .where(
+          and(eq(messages.id, id), eq(mailAccounts.userId, c.var.user.id)),
+        );
+      if (!origin) {
+        return c.json({ error: "not_found" }, 404);
+      }
+      const t = alias(messages, "t");
+      const rows = await db
+        .select({
+          id: t.id,
+          accountId: t.accountId,
+          subject: t.subject,
+          from: t.from,
+          to: t.to,
+          cc: t.cc,
+          receivedAt: t.receivedAt,
+          snippet: t.snippet,
+          hasAttachments: t.hasAttachments,
+          seen: t.seen,
+          flagged: t.flagged,
+          answered: t.answered,
+          draft: t.draft,
+          mailboxIds: sql<string[]>`(
+            select coalesce(json_agg(tm.mailbox_id), '[]'::json)
+            from message_mailboxes tm where tm.message_id = t.id
+          )`,
+        })
+        .from(t)
+        .where(
+          and(
+            eq(t.accountId, origin.accountId),
+            eq(t.threadKey, origin.threadKey),
+            // 開いたメッセージ自身は、どのフォルダにあっても含める。
+            or(eq(t.id, id), inConversation(mailboxId ?? null)),
+          ),
+        )
+        // 多すぎる会話は新しい方から上限まで。
+        .orderBy(desc(t.receivedAt), desc(t.id))
+        .limit(THREAD_LIMIT);
+      return c.json({ messages: rows.reverse() });
+    },
+  );
 
   app.get(
     "/:id",

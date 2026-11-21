@@ -43,3 +43,15 @@ jobs:
           version=$(psql "$DATABASE_URL" -qAtc "insert into users (email, name) values ('ci@example.com', 'CI') returning uuid_extract_version(id)")
           echo "UUID version: $version"
           test "$version" = "7"
+
+  # 本番用のイメージ (deploy/compose.yml が使うもの) がビルドできることを確認する。
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 設定ファイルを用意
+        run: bash deploy/setup.sh mail.example.com
+      - name: Compose の構成を検証
+        run: docker compose -f deploy/compose.yml config --quiet
+      - name: イメージをビルド
+        run: docker compose -f deploy/compose.yml build

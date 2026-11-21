@@ -5,6 +5,7 @@ import { FolderIcon, PaperclipIcon, StarIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -30,7 +31,13 @@ type Props = {
   highlightTerms?: string[];
   /** 検索結果で、メールのある場所 (アカウントとフォルダ) を各行に出すための関数。 */
   locationLabel?: (message: MessageSummary) => string | null;
+  /** チェックを付けた行 (複数選択)。 */
+  checkedIds: ReadonlySet<string>;
+  /** 選択中。各行にチェックボックスを出し、行を押すとチェックを切り替える。 */
+  selecting: boolean;
   onSelect: (id: string) => void;
+  /** 行のチェックを切り替える。range が true なら、直前に操作した行からこの行までを選ぶ。 */
+  onToggleCheck: (id: string, range: boolean) => void;
   /** 右クリックメニューからの操作。 */
   onAction: (messageIds: string[], input: MessageActionInput) => void;
   onLoadMore: () => void;
@@ -67,7 +74,10 @@ export function MessageList({
   emptyText = "メールはまだありません。同期が終わるとここに表示されます。",
   highlightTerms = [],
   locationLabel,
+  checkedIds,
+  selecting,
   onSelect,
+  onToggleCheck,
   onAction,
   onLoadMore,
   onRetry,
@@ -144,20 +154,43 @@ export function MessageList({
           const unread = !message.seen;
           const preview = message.excerpt || message.snippet;
           const location = locationLabel?.(message);
+          const checked = checkedIds.has(message.id);
           return (
             <ContextMenu key={message.id}>
               <ContextMenuTrigger
                 render={
-                  <li className="border-b" data-message-id={message.id} />
+                  <li
+                    className="relative border-b"
+                    data-message-id={message.id}
+                  />
                 }
               >
+                {selecting && (
+                  <Checkbox
+                    checked={checked}
+                    aria-label={`${message.subject || "(件名なし)"} を選択`}
+                    // Shift を押しているかを知るため、切り替えは onClick で受ける。
+                    onClick={(event) =>
+                      onToggleCheck(message.id, event.shiftKey)
+                    }
+                    className="absolute top-3.5 left-4 z-10"
+                  />
+                )}
                 <button
                   type="button"
-                  onClick={() => onSelect(message.id)}
+                  onClick={(event) => {
+                    // Shift / Ctrl (Cmd) を押しながら、または選択中は、開かずにチェックを切り替える。
+                    if (event.shiftKey) onToggleCheck(message.id, true);
+                    else if (selecting || event.ctrlKey || event.metaKey) {
+                      onToggleCheck(message.id, false);
+                    } else onSelect(message.id);
+                  }}
                   aria-current={selectedId === message.id ? "true" : undefined}
                   className={cn(
-                    "flex w-full flex-col gap-0.5 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                    "flex w-full select-none flex-col gap-0.5 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                    selecting && "pl-11",
                     selectedId === message.id && "bg-muted",
+                    checked && "bg-primary/10 hover:bg-primary/15",
                   )}
                 >
                   <span className="flex items-center gap-2">
@@ -169,7 +202,7 @@ export function MessageList({
                     )}
                     <span
                       className={cn(
-                        "min-w-0 flex-1 truncate text-sm",
+                        "min-w-0 truncate text-sm",
                         unread ? "font-semibold" : "text-muted-foreground",
                       )}
                     >
@@ -180,6 +213,17 @@ export function MessageList({
                           : "(宛先なし)"
                         : addressLabel(message.from[0])}
                     </span>
+                    {message.threadCount > 1 && (
+                      <span
+                        role="img"
+                        className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
+                        aria-label={`${message.threadCount} 通のやり取り`}
+                      >
+                        {message.threadCount}
+                      </span>
+                    )}
+                    {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
+                    <span className="flex-1" />
                     {message.flagged && (
                       <StarIcon
                         className="size-3.5 shrink-0 fill-amber-400 text-amber-500"

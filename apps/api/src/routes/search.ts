@@ -249,6 +249,9 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
       .slice(0, query.limit)
       .map(({ excerpt: text, excerptPosition, ...message }) => ({
         ...message,
+        // 検索結果は会話にまとめず、当てはまったメールを 1 通ずつ返す。
+        threadCount: 1,
+        threadMessageIds: [message.id],
         excerpt: text
           ? `${excerptPosition > EXCERPT_BEFORE + 1 ? "…" : ""}${text.replace(/\s+/g, " ").trim()}`
           : null,

@@ -26,6 +26,7 @@ export type AppOptions = {
   encryptionKey: Buffer;
   allowPrivateMailHosts: boolean;
   microsoft: RouteDeps["microsoft"];
+  google: RouteDeps["google"];
 };
 
 export function createApp({
@@ -36,6 +37,7 @@ export function createApp({
   encryptionKey,
   allowPrivateMailHosts,
   microsoft,
+  google,
 }: AppOptions) {
   const app = new Hono();
 
@@ -81,7 +83,13 @@ export function createApp({
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
   authed.get("/me", (c) => c.json({ user: c.var.user }));
-  const deps = { db, encryptionKey, allowPrivateMailHosts, microsoft };
+  const deps = {
+    db,
+    encryptionKey,
+    allowPrivateMailHosts,
+    microsoft,
+    google,
+  };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/focus", focusRoutes(deps));

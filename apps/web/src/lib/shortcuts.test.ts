@@ -27,7 +27,8 @@ describe("resolveShortcut", () => {
     expect(key("a")).toBe("archive");
     expect(key("Delete")).toBe("delete");
     expect(key("v")).toBe("move");
-    expect(key("x")).toBeNull();
+    expect(key("x")).toBe("select");
+    expect(key("z")).toBeNull();
   });
 
   it("Shift との組み合わせは、割り当てたものだけを受け付ける", () => {
