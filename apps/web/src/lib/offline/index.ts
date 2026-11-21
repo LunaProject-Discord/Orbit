@@ -206,8 +206,6 @@ export function listDrafts(signal?: AbortSignal): Promise<ServerDraft[]> {
   );
 }
 
-type ListParams = ListScope & { cursor?: string | null; limit?: number };
-
 const scopeOf = (params: Partial<ListScope>): ListScope => ({
   accountId: params.accountId ?? null,
   mailboxId: params.mailboxId ?? null,
@@ -244,7 +242,8 @@ export async function cachedMessages(
 
 /** メールを検索する。サーバーに届かなければ、端末に保存してあるメールから探す。 */
 export async function searchMessages(
-  params: api.SearchParams & ListParams,
+  params: api.SearchParams &
+    Partial<ListScope> & { cursor?: string | null; limit?: number },
   signal?: AbortSignal,
 ): Promise<SearchPage> {
   try {

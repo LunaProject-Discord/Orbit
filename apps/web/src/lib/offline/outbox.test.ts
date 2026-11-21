@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, NetworkError, type SendMailInput } from "@/lib/api";
 import { SendOutbox } from "@/lib/offline/outbox";
-import { syncStatusLabel } from "@/lib/offline/status";
 import { MemoryStore } from "@/lib/offline/store";
 
 function input(id: string): SendMailInput {
@@ -108,25 +107,5 @@ describe("SendOutbox", () => {
     finish();
     await flushing;
     expect(outbox.items()).toEqual([]);
-  });
-});
-
-describe("syncStatusLabel", () => {
-  it("オフラインでは、接続後に行うことを示す", () => {
-    expect(
-      syncStatusLabel({ online: false, queuedSends: 1, pendingActions: 3 }),
-    ).toBe("オフライン · 接続後に 1 件を送信");
-    expect(
-      syncStatusLabel({ online: false, queuedSends: 0, pendingActions: 3 }),
-    ).toBe("オフライン · 未反映の操作 3 件");
-    expect(
-      syncStatusLabel({ online: false, queuedSends: 0, pendingActions: 0 }),
-    ).toBe("オフライン · 保存済みのメールを表示中");
-  });
-
-  it("オンラインで何も残っていなければ、同期済みと示す", () => {
-    expect(
-      syncStatusLabel({ online: true, queuedSends: 0, pendingActions: 0 }),
-    ).toBe("同期済み");
   });
 });

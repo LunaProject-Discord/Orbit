@@ -26,21 +26,21 @@ import {
   FilePenLineIcon,
   FolderIcon,
   InboxIcon,
-  LogOutIcon,
-  MailIcon,
   MailsIcon,
   OctagonAlertIcon,
+  PenSquareIcon,
   PlusIcon,
   SendIcon,
-  SignatureIcon,
+  SettingsIcon,
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { NotificationToggle } from "@/components/mail/notification-toggle";
+import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { accountColor } from "@/lib/account-colors";
 import {
   type Account,
   type MailboxSummary,
@@ -54,7 +54,8 @@ import {
   moveBy,
   moveTo,
 } from "@/lib/mailboxes";
-import type { NotificationStatus } from "@/lib/notifications";
+import type { SpecialView } from "@/lib/route";
+import type { SyncStatus } from "@/lib/sync-status";
 
 const statusLabel: Partial<Record<Account["status"], string>> = {
   auth_required: "再ログインが必要です",
@@ -193,19 +194,18 @@ type Props = {
   /** 下書きの一覧を表示している。その間はフォルダを選択中として扱わない。 */
   draftsSelected: boolean;
   onSelectDrafts: () => void;
+  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。その間もフォルダを選択中として扱わない。 */
+  special: SpecialView | null;
+  onSelectSpecial: (view: SpecialView) => void;
+  /** まだ送り終えていないメールの数と、その中に送信できなかったものがあるか。 */
+  outgoingCount: number;
+  outgoingFailed: boolean;
+  /** 新しいメールを書き始める。アカウントが無い間は null。 */
+  onCompose: (() => void) | null;
   onAdd: () => void;
-  onDelete: (account: Account) => void;
-  /** アカウントの署名を編集する。 */
-  onEditSignature: (account: Account) => void;
   /** 再ログインが必要な Google / Microsoft のアカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
-  onSignOut: () => void;
-  /** 新着メールの通知の状態と、その切り替え。 */
-  notificationStatus: NotificationStatus;
-  notificationBusy: boolean;
-  onNotificationChange: (enabled: boolean) => void;
-  /** 利用者の欄の上に出す、同期の状態の表示。 */
-  status?: React.ReactNode;
+  syncStatus: SyncStatus;
 };
 
 export function AccountSidebar({
@@ -220,16 +220,17 @@ export function AccountSidebar({
   draftCount,
   draftsSelected,
   onSelectDrafts,
+  special,
+  onSelectSpecial,
+  outgoingCount,
+  outgoingFailed,
+  onCompose,
   onAdd,
-  onDelete,
-  onEditSignature,
   onReauth,
-  onSignOut,
-  notificationStatus,
-  notificationBusy,
-  onNotificationChange,
-  status,
+  syncStatus,
 }: Props) {
+  /** フォルダの一覧を表示している (下書きやスター付きなどではない)。 */
+  const folderView = !draftsSelected && special === null;
   const { collapsed, toggle } = useCollapsed();
   const trees = useMemo(() => {
     const byAccount = new Map<string, MailboxSummary[]>();
@@ -295,15 +296,38 @@ export function AccountSidebar({
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 shrink-0 items-center px-4">
+      <div className="flex h-14 shrink-0 items-center justify-between px-4">
         <span className="font-heading font-semibold text-xl tracking-tight">
           Mail
         </span>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="設定"
+          title="設定"
+          aria-current={special === "settings" ? "page" : undefined}
+          onClick={() => onSelectSpecial("settings")}
+          className={cn("-mr-1", special === "settings" && "bg-sidebar-accent")}
+        >
+          <SettingsIcon />
+        </Button>
       </div>
+      {onCompose && (
+        <div className="shrink-0 px-3 pb-2">
+          <Button
+            onClick={onCompose}
+            title="新規作成 (C)"
+            className="w-full justify-center gap-2"
+          >
+            <PenSquareIcon />
+            新規作成
+          </Button>
+        </div>
+      )}
 
       <nav
         aria-label="メールアカウントとフォルダ"
-        className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-1"
+        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1"
         onClickCapture={(event) => {
           if (!draggedRef.current) return;
           event.preventDefault();
@@ -314,8 +338,14 @@ export function AccountSidebar({
           icon={<InboxIcon />}
           label="すべての受信トレイ"
           count={inboxUnread}
-          selected={!draftsSelected && selectedAccountId === null}
+          selected={folderView && selectedAccountId === null}
           onClick={() => onSelect(null, null)}
+        />
+        <SidebarItem
+          icon={<StarIcon />}
+          label="スター付き"
+          selected={special === "starred"}
+          onClick={() => onSelectSpecial("starred")}
         />
         <SidebarItem
           icon={<FilePenLineIcon />}
@@ -325,6 +355,23 @@ export function AccountSidebar({
           selected={draftsSelected}
           onClick={onSelectDrafts}
         />
+        <SidebarItem
+          icon={
+            outgoingFailed ? (
+              <CircleAlertIcon className="text-destructive" />
+            ) : (
+              <SendIcon />
+            )
+          }
+          label="送信待ち"
+          count={outgoingCount}
+          countLabel={
+            outgoingFailed ? "送信できなかったメールあり、件数" : "件数"
+          }
+          selected={special === "outgoing"}
+          onClick={() => onSelectSpecial("outgoing")}
+        />
+        <span className="h-2 shrink-0" aria-hidden="true" />
         {accounts === null ? (
           <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
             <Skeleton className="h-5 w-40" />
@@ -356,13 +403,12 @@ export function AccountSidebar({
                   tree={trees.get(account.id) ?? []}
                   collapsed={collapsed}
                   onToggle={toggle}
-                  selected={!draftsSelected && selectedAccountId === account.id}
+                  color={accountColor(accounts, account.id)}
+                  selected={folderView && selectedAccountId === account.id}
                   selectedMailboxId={selectedMailboxId}
                   onSelect={onSelect}
                   onMove={move}
                   onKeyboardMove={moveByKeyboard}
-                  onDelete={onDelete}
-                  onEditSignature={onEditSignature}
                   onReauth={onReauth}
                 />
               ))}
@@ -382,27 +428,16 @@ export function AccountSidebar({
         </span>
       </nav>
 
-      {status}
+      <SyncIndicator
+        status={syncStatus}
+        className="shrink-0 border-t px-3 py-2"
+      />
       <div className="flex shrink-0 items-center gap-2 border-t p-3">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
         </div>
-        <NotificationToggle
-          status={notificationStatus}
-          busy={notificationBusy}
-          onChange={onNotificationChange}
-        />
         <ThemeToggle />
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="ログアウト"
-          title="ログアウト"
-          onClick={onSignOut}
-        >
-          <LogOutIcon />
-        </Button>
       </div>
     </div>
   );
@@ -412,6 +447,7 @@ type MoveHandler = (data: SortData, ids: string[], id: string) => void;
 
 function AccountItem({
   account,
+  color,
   accountIds,
   tree,
   collapsed,
@@ -421,11 +457,11 @@ function AccountItem({
   onSelect,
   onMove,
   onKeyboardMove,
-  onDelete,
-  onEditSignature,
   onReauth,
 }: {
   account: Account;
+  /** アカウントの色の点に付けるクラス。 */
+  color: string;
   accountIds: string[];
   tree: MailboxNode[];
   collapsed: ReadonlySet<string>;
@@ -435,8 +471,6 @@ function AccountItem({
   onSelect: Props["onSelect"];
   onMove: MoveHandler;
   onKeyboardMove: MoveHandler;
-  onDelete: Props["onDelete"];
-  onEditSignature: Props["onEditSignature"];
   onReauth: Props["onReauth"];
 }) {
   const problem = statusLabel[account.status];
@@ -457,7 +491,7 @@ function AccountItem({
       ref={item.setNodeRef}
       style={item.style}
       className={cn(
-        "group/account relative",
+        "group/account relative mt-2",
         item.isDragging && "z-10 opacity-70",
       )}
     >
@@ -466,14 +500,20 @@ function AccountItem({
           open={open}
           label={`${name} のフォルダ`}
           onClick={() => onToggle(account.id)}
-          className="mt-2"
+          className="mt-1.5"
         />
         <SidebarItem
           icon={
             problem ? (
               <CircleAlertIcon className="text-destructive" />
             ) : (
-              <MailIcon />
+              // アイコンと同じ幅の枠の中央に、アカウントの色の点を置く。
+              <span
+                aria-hidden="true"
+                className="mt-0.5 flex size-4 shrink-0 items-center justify-center"
+              >
+                <span className={cn("size-2 rounded-full", color)} />
+              </span>
             )
           }
           label={name}
@@ -492,29 +532,10 @@ function AccountItem({
             selectedMailboxId === null
           }
           onClick={() => onSelect(account.id, null)}
-          className="min-w-0 flex-1 pr-16 pl-1"
+          className="min-w-0 flex-1 pl-1"
           handle={item.handle}
         />
       </div>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        aria-label={`${account.email} の署名を編集`}
-        title="署名を編集"
-        onClick={() => onEditSignature(account)}
-        className="absolute top-2 right-8 opacity-0 focus-visible:opacity-100 group-hover/account:opacity-100 pointer-coarse:opacity-100"
-      >
-        <SignatureIcon />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        aria-label={`${account.email} を削除`}
-        onClick={() => onDelete(account)}
-        className="absolute top-2 right-1.5 opacity-0 focus-visible:opacity-100 group-hover/account:opacity-100 pointer-coarse:opacity-100"
-      >
-        <Trash2Icon />
-      </Button>
       {account.status === "auth_required" && oauthProviderOf(account) && (
         <Button
           variant="outline"
@@ -715,7 +736,7 @@ function SidebarItem(props: {
       {...props.handle}
       className={cn(
         props.handle && "touch-manipulation select-none",
-        "flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
+        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
         props.selected &&
           "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
         props.className,

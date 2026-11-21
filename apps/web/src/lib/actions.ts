@@ -100,10 +100,10 @@ export type ActionQueue = {
   /** まだサーバーへ送れていない操作 (古い順)。 */
   pending: () => MessageAction[];
   enqueue: (action: MessageAction) => void;
-  /** 送信待ちの操作が増減したときに呼ばれる処理を登録する。戻り値の関数で解除する。 */
-  onChange: (listener: () => void) => () => void;
   /** サーバーに拒否されて取り消された操作を受け取る。戻り値の関数で解除する。 */
   onRejected: (listener: (action: MessageAction) => void) => () => void;
+  /** 送れていない操作の数が変わるたびに呼ぶ。戻り値の関数で解除する。 */
+  onChange: (listener: (count: number) => void) => () => void;
   stop: () => void;
 };
 
@@ -116,15 +116,16 @@ export function createActionQueue(
   let delay = MIN_DELAY;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(action: MessageAction) => void>();
-  const changeListeners = new Set<() => void>();
+
+  const changeListeners = new Set<(count: number) => void>();
 
   const save = () => {
-    for (const listener of changeListeners) listener();
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
     } catch {
       // 保存できなくても、このページを開いている間は送り続ける。
     }
+    for (const listener of changeListeners) listener(items.length);
   };
 
   const flush = async () => {
@@ -178,13 +179,13 @@ export function createActionQueue(
       save();
       void flush();
     },
-    onChange(listener) {
-      changeListeners.add(listener);
-      return () => changeListeners.delete(listener);
-    },
     onRejected(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
     },
     stop() {
       stopped = true;
