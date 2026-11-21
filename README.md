@@ -16,7 +16,7 @@
 
 - Node.js 22 以上
 - pnpm 10
-- Docker (ローカルの PostgreSQL 用)
+- Docker (ローカルの PostgreSQL 19 用)。主キーの UUID v7 に `uuidv7()` を使うため、PostgreSQL 18 以降が必要です
 
 ## セットアップ
 

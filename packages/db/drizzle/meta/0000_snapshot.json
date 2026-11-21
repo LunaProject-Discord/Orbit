@@ -1,5 +1,5 @@
 {
-  "id": "c001a121-b91f-432e-ae83-ffb702e7d77e",
+  "id": "6abcb76f-ad04-49d4-bfaa-699784d00143",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -13,7 +13,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "message_id": {
           "name": "message_id",
@@ -201,7 +201,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "user_id": {
           "name": "user_id",
@@ -289,7 +289,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "user_id": {
           "name": "user_id",
@@ -455,7 +455,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "account_id": {
           "name": "account_id",
@@ -668,7 +668,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "account_id": {
           "name": "account_id",
@@ -953,7 +953,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "account_id": {
           "name": "account_id",
@@ -1097,7 +1097,7 @@
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "uuidv7()"
         },
         "email": {
           "name": "email",

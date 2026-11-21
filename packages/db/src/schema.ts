@@ -15,7 +15,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-const id = () => uuid().primaryKey().defaultRandom();
+/** 主キーは時系列順に並ぶ UUID v7。PostgreSQL 18 以降の uuidv7() で採番する。 */
+const id = () => uuid().primaryKey().default(sql`uuidv7()`);
 const createdAt = () =>
   timestamp({ withTimezone: true }).notNull().defaultNow();
 const updatedAt = () =>

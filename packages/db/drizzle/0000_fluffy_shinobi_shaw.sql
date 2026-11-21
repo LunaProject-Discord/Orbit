@@ -8,7 +8,7 @@ CREATE TYPE "public"."mailbox_special_use" AS ENUM('inbox', 'sent', 'drafts', 't
 CREATE TYPE "public"."outbox_kind" AS ENUM('send', 'set_flags', 'move', 'delete', 'append');--> statement-breakpoint
 CREATE TYPE "public"."outbox_status" AS ENUM('pending', 'processing', 'done', 'failed');--> statement-breakpoint
 CREATE TABLE "attachments" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"message_id" uuid NOT NULL,
 	"filename" text,
 	"content_type" text NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE "changes" (
 );
 --> statement-breakpoint
 CREATE TABLE "devices" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"name" text NOT NULL,
 	"platform" "device_platform" NOT NULL,
@@ -39,7 +39,7 @@ CREATE TABLE "devices" (
 );
 --> statement-breakpoint
 CREATE TABLE "mail_accounts" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"email" text NOT NULL,
 	"display_name" text,
@@ -60,7 +60,7 @@ CREATE TABLE "mail_accounts" (
 );
 --> statement-breakpoint
 CREATE TABLE "mailboxes" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"account_id" uuid NOT NULL,
 	"path" text NOT NULL,
 	"name" text NOT NULL,
@@ -83,7 +83,7 @@ CREATE TABLE "message_mailboxes" (
 );
 --> statement-breakpoint
 CREATE TABLE "messages" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"account_id" uuid NOT NULL,
 	"provider_message_id" text,
 	"thread_key" text NOT NULL,
@@ -113,7 +113,7 @@ CREATE TABLE "messages" (
 );
 --> statement-breakpoint
 CREATE TABLE "outbox" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"account_id" uuid NOT NULL,
 	"kind" "outbox_kind" NOT NULL,
 	"payload" jsonb NOT NULL,
@@ -127,7 +127,7 @@ CREATE TABLE "outbox" (
 );
 --> statement-breakpoint
 CREATE TABLE "users" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"email" text NOT NULL,
 	"display_name" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
