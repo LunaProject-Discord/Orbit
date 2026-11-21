@@ -15,6 +15,11 @@ const syncQuery = z.object({
   limit: z.coerce.number().int().min(1).max(1000).default(500),
 });
 
+const eventsQuery = z.object({
+  /** 端末 (ブラウザーやアプリ) ごとの ID。接続している端末を数えるのに使う。 */
+  device: z.uuid().optional(),
+});
+
 export function syncRoutes({
   db,
   hub,
@@ -49,8 +54,9 @@ export function syncRoutes({
    * 変更があったこと (change) と新着メール (mail) を SSE で知らせる。
    * 変更の内容は GET /v1/sync で取得する。mail には通知に出す内容が入っている。
    */
-  app.get("/events", (c) => {
+  app.get("/events", zValidator("query", eventsQuery), (c) => {
     const userId = c.var.user.id;
+    const { device } = c.req.valid("query");
     return streamSSE(c, async (stream) => {
       const [row] = await db
         .select({ seq: max(changes.seq) })
@@ -61,22 +67,40 @@ export function syncRoutes({
         data: JSON.stringify({ seq: (row?.seq ?? 0n).toString() }),
       });
 
-      const unsubscribe = hub.subscribe(userId, (event) => {
-        const { type, ...data } = event;
-        stream
-          .writeSSE({ event: type, data: JSON.stringify(data) })
-          .catch(() => {});
+      // 端末の数が変わるたびに devices が届く。最初の値は、ここで直接送る。
+      const unsubscribe = hub.subscribe(
+        userId,
+        (event) => {
+          const { type, ...data } = event;
+          stream
+            .writeSSE({ event: type, data: JSON.stringify(data) })
+            .catch(() => {});
+        },
+        device,
+      );
+      await stream.writeSSE({
+        event: "devices",
+        data: JSON.stringify({ count: hub.deviceCount(userId) }),
       });
       await new Promise<void>((resolve) => {
         // プロキシに切られないよう、定期的に空のイベントを送る。
         const ping = setInterval(() => {
           stream.writeSSE({ event: "ping", data: "" }).catch(() => {});
         }, 25_000);
-        stream.onAbort(() => {
+        let done = false;
+        const cleanup = () => {
+          if (done) return;
+          done = true;
           clearInterval(ping);
           unsubscribe();
           resolve();
-        });
+        };
+        stream.onAbort(cleanup);
+        // 配信を始める前 (上の問い合わせの途中) に端末が接続を切っていると、切断の知らせは
+        // もう届かない。その場合はここで片付けないと、切れた接続が残り続ける。
+        const { signal } = c.req.raw;
+        signal.addEventListener("abort", cleanup, { once: true });
+        if (signal.aborted || stream.aborted) cleanup();
       });
     });
   });

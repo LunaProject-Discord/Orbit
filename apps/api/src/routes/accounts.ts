@@ -63,10 +63,28 @@ const microsoftCompleteBody = z.object({
 
 const idParam = z.object({ id: z.uuid() });
 
-const updateAccountBody = z.object({
-  /** 署名 (書式付き)。null か空なら署名なしにする。 */
-  signatureHtml: z.string().max(50_000).nullable(),
-});
+/** アカウントに付けられる色の名前。画面側 (apps/web の account-colors.ts) と揃える。 */
+const ACCOUNT_COLOR_NAMES = [
+  "sky",
+  "violet",
+  "emerald",
+  "amber",
+  "rose",
+  "teal",
+  "orange",
+  "slate",
+] as const;
+
+const updateAccountBody = z
+  .object({
+    /** 署名 (書式付き)。null か空なら署名なしにする。 */
+    signatureHtml: z.string().max(50_000).nullable().optional(),
+    /** 画面に出す名前。null か空ならメールアドレスを出す。 */
+    displayName: z.string().max(200).nullable().optional(),
+    /** 画面でアカウントを見分ける色。null なら並び順から決める。 */
+    color: z.enum(ACCOUNT_COLOR_NAMES).nullable().optional(),
+  })
+  .refine((body) => Object.values(body).some((value) => value !== undefined));
 
 const orderBody = z.object({
   /** 上から順に並べたいアカウントの ID。 */
@@ -92,6 +110,7 @@ const publicColumns = {
   lastError: mailAccounts.lastError,
   signatureHtml: mailAccounts.signatureHtml,
   sortOrder: mailAccounts.sortOrder,
+  color: mailAccounts.color,
   createdAt: mailAccounts.createdAt,
 };
 
@@ -563,7 +582,7 @@ export function accountRoutes({
     },
   );
 
-  /** アカウントの設定 (いまは署名) を変える。同期には影響しない。 */
+  /** アカウントの設定 (署名、表示名、色) を変える。指定した項目だけを変え、同期には影響しない。 */
   app.patch(
     "/:id",
     zValidator("param", idParam),
@@ -575,11 +594,19 @@ export function accountRoutes({
       const account = await db.transaction(async (tx) => {
         const [row] = await tx
           .update(mailAccounts)
-          .set({ signatureHtml: body.signatureHtml?.trim() || null })
+          .set({
+            ...(body.signatureHtml !== undefined
+              ? { signatureHtml: body.signatureHtml?.trim() || null }
+              : {}),
+            ...(body.displayName !== undefined
+              ? { displayName: body.displayName?.trim() || null }
+              : {}),
+            ...(body.color !== undefined ? { color: body.color } : {}),
+          })
           .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, user.id)))
           .returning(publicColumns);
         if (!row) return null;
-        // ほかの端末の作成画面にも、新しい署名が届くようにする。
+        // ほかの端末にも、新しい設定が届くようにする。
         const [change] = await tx
           .insert(changes)
           .values({

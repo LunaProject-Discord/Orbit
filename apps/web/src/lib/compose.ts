@@ -304,6 +304,18 @@ export function buildDraftFrom(
 }
 
 /**
+ * 本文の下の返信欄に書いた文章を、返信の下書きの先頭に入れる。
+ * 下書きの先頭にある「書き始める空行」は、書いた文章と入れ替える。
+ */
+export function withReplyText(draft: ComposeDraft, text: string): ComposeDraft {
+  if (text.trim() === "") return draft;
+  const rest = draft.html.startsWith(EMPTY_LINE)
+    ? draft.html.slice(EMPTY_LINE.length)
+    : draft.html;
+  return { ...draft, html: `${linesToHtml(text)}${rest}` };
+}
+
+/**
  * 本文の署名を入れ替える (差出人を変えたとき)。
  * 署名が入っていなければ、引用の前 (引用が無ければ末尾) に入れる。
  */

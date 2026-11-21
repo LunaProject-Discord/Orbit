@@ -177,3 +177,34 @@ describe("safeReturnPath", () => {
     expect(safeReturnPath("/login?next=/")).toBeNull();
   });
 });
+
+describe("フォルダ以外の表示", () => {
+  it("スター付き、送信待ち、設定を URL に残す", () => {
+    for (const special of ["starred", "outgoing", "settings"] as const) {
+      const query = buildRoute({ ...emptyRoute, special });
+      expect(query).toBe(`?view=${special}`);
+      expect(parseRoute(query)).toEqual({ ...emptyRoute, special });
+    }
+  });
+
+  it("スター付きの一覧で開いたメールも残す", () => {
+    const messageId = "0198f1c2-0000-7000-8000-000000000001";
+    const route = { ...emptyRoute, special: "starred" as const, messageId };
+    expect(buildRoute(route)).toBe(`?view=starred&message=${messageId}`);
+    expect(parseRoute(buildRoute(route))).toEqual(route);
+    // 設定ではメールを開かない。
+    expect(parseRoute(`?view=settings&message=${messageId}`).messageId).toBe(
+      null,
+    );
+  });
+
+  it("表示を切り替えたら履歴に積む", () => {
+    expect(
+      historyMode(emptyRoute, { ...emptyRoute, special: "settings" }),
+    ).toBe("push");
+  });
+
+  it("知らない view は、通常の一覧として扱う", () => {
+    expect(parseRoute("?view=unknown")).toEqual(emptyRoute);
+  });
+});

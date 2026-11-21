@@ -4,6 +4,8 @@
  * セッショントークンを localStorage に置いて Authorization ヘッダーで送る。
  */
 
+import type { AccountColorName } from "@/lib/account-colors";
+
 export const API_URL = (
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
 ).replace(/\/+$/, "");
@@ -150,6 +152,8 @@ export type Account = {
   signatureHtml: string | null;
   /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null。 */
   sortOrder: number | null;
+  /** 画面でアカウントを見分ける色の名前。選んでいなければ null (並び順から決まる)。 */
+  color: AccountColorName | null;
   createdAt: string;
 };
 
@@ -523,6 +527,18 @@ export async function updateAccountSignature(
   const { account } = await apiJson<{ account: Account }>(
     `/v1/accounts/${id}`,
     { method: "PATCH", body: { signatureHtml } },
+  );
+  return account;
+}
+
+/** アカウントの表示名や色を変える。指定した項目だけが変わる。 */
+export async function updateAccount(
+  id: string,
+  patch: { displayName?: string | null; color?: AccountColorName | null },
+): Promise<Account> {
+  const { account } = await apiJson<{ account: Account }>(
+    `/v1/accounts/${id}`,
+    { method: "PATCH", body: patch },
   );
   return account;
 }

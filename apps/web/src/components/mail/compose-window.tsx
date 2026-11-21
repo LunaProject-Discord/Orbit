@@ -39,6 +39,7 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from "@/components/ui/native-select";
+import { accountColor } from "@/lib/account-colors";
 import {
   type Account,
   ApiError,
@@ -60,24 +61,6 @@ import {
   sanitizeHtml,
 } from "@/lib/compose";
 import { formatSize } from "@/lib/format";
-
-/** アカウントを見分けるための色。一覧の順番で割り当てる。 */
-const ACCOUNT_COLORS = [
-  "bg-sky-500",
-  "bg-violet-500",
-  "bg-emerald-500",
-  "bg-amber-500",
-  "bg-rose-500",
-  "bg-teal-500",
-];
-
-export function accountColor(accounts: Account[], accountId: string): string {
-  const index = accounts.findIndex((account) => account.id === accountId);
-  return (
-    ACCOUNT_COLORS[(index < 0 ? 0 : index) % ACCOUNT_COLORS.length] ??
-    "bg-sky-500"
-  );
-}
 
 function sendErrorOf(error: unknown, limit: number): string {
   if (error instanceof NetworkError) {
