@@ -1,5 +1,10 @@
 import type { Address, messages } from "@mail/db";
-import { clean, makeSnippet, toDate } from "./message-parse.js";
+import {
+  type AttachmentInfo,
+  clean,
+  makeSnippet,
+  toDate,
+} from "./message-parse.js";
 
 type GraphRecipient = {
   emailAddress?: { name?: string | null; address?: string | null } | null;
@@ -152,4 +157,48 @@ export function toBody(body: GraphMessage["body"]): {
   return body?.contentType?.toLowerCase() === "html"
     ? { bodyText: null, bodyHtml: content }
     : { bodyText: content, bodyHtml: null };
+}
+
+/** Microsoft Graph の attachment。実体 (contentBytes) は一覧では受け取らない。 */
+export type GraphAttachment = {
+  "@odata.type"?: string | null;
+  id: string;
+  name?: string | null;
+  contentType?: string | null;
+  size?: number | null;
+  isInline?: boolean | null;
+  contentId?: string | null;
+};
+
+/**
+ * 添付ファイルの一覧で要求する項目。contentId は fileAttachment にしか無いので、
+ * 型を指定して要求する。
+ */
+export const ATTACHMENT_SELECT =
+  "id,name,contentType,size,isInline,microsoft.graph.fileAttachment/contentId";
+
+/**
+ * Graph の添付ファイルを attachments テーブルの値に変換する。partId には Graph の ID を入れる。
+ * OneDrive などへのリンク (referenceAttachment) は実体を持たないので除く。
+ */
+export function toAttachmentInfos(items: GraphAttachment[]): AttachmentInfo[] {
+  const result: AttachmentInfo[] = [];
+  for (const item of items) {
+    const kind = item["@odata.type"]?.toLowerCase() ?? "";
+    if (!item.id || kind.endsWith("referenceattachment")) continue;
+    const isItem = kind.endsWith("itemattachment");
+    const name = item.name ? clean(item.name) : null;
+    result.push({
+      partId: item.id,
+      // 添付されたメール (itemAttachment) は、.eml として保存できるようにする。
+      filename: isItem && name && !/\.eml$/i.test(name) ? `${name}.eml` : name,
+      contentType: isItem
+        ? "message/rfc822"
+        : clean(item.contentType).toLowerCase() || "application/octet-stream",
+      size: item.size ?? 0,
+      contentId: item.contentId ? clean(item.contentId) : null,
+      inline: item.isInline === true,
+    });
+  }
+  return result;
 }
