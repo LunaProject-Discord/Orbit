@@ -4,9 +4,7 @@
  * セッショントークンを localStorage に置いて Authorization ヘッダーで送る。
  */
 
-export const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
-).replace(/\/+$/, "");
+import { apiUrl } from "@/lib/server-url";
 
 const TOKEN_KEY = "mail.session-token";
 
@@ -25,6 +23,11 @@ function setToken(token: string | null) {
   } catch {
     // localStorage が使えない環境では保存を諦める (その場合は再読み込みでログアウトになる)。
   }
+}
+
+/** この端末のログイン情報を消す (接続先サーバーを替えたときなど)。サーバーには知らせない。 */
+export function forgetSession() {
+  setToken(null);
 }
 
 type UnauthorizedListener = () => void;
@@ -80,7 +83,7 @@ export async function apiFetch(
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    response = await fetch(`${apiUrl()}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -808,7 +811,7 @@ export function uploadAttachment(
   // fetch では送信の進み具合が分からないので、XMLHttpRequest を使う。
   const xhr = new XMLHttpRequest();
   const promise = new Promise<UploadedAttachment>((resolve, reject) => {
-    xhr.open("POST", `${API_URL}/v1/attachments`);
+    xhr.open("POST", `${apiUrl()}/v1/attachments`);
     const token = getToken();
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.setRequestHeader(

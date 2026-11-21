@@ -1,12 +1,14 @@
 "use client";
 
-import { type FormEvent, useId, useState } from "react";
+import Link from "next/link";
+import { type FormEvent, useEffect, useId, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, NetworkError } from "@/lib/api";
+import { apiUrl, isBundledApp } from "@/lib/server-url";
 
 function messageOf(error: unknown): string {
   if (error instanceof NetworkError) {
@@ -32,6 +34,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 同梱アプリでは、どのサーバーにログインするのかを見せて変更できるようにする。
+  // 静的に書き出した HTML と食い違わないよう、表示は読み込み後に決める。
+  const [server, setServer] = useState<string | null>(null);
+  useEffect(() => {
+    if (isBundledApp()) setServer(new URL(apiUrl()).host);
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -95,6 +103,17 @@ export default function LoginPage() {
             {submitting ? "ログイン中…" : "ログイン"}
           </Button>
         </form>
+        {server && (
+          <p className="mt-6 text-center text-muted-foreground text-sm">
+            接続先: <span className="break-all">{server}</span>{" "}
+            <Link
+              href="/server"
+              className="font-medium text-foreground underline underline-offset-4"
+            >
+              変更
+            </Link>
+          </p>
+        )}
       </div>
     </main>
   );

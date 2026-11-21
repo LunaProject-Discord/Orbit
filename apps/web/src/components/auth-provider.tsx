@@ -21,6 +21,7 @@ import {
   type User,
 } from "@/lib/api";
 import { releasePush } from "@/lib/notifications";
+import { hasServerUrl, isBundledApp } from "@/lib/server-url";
 
 type AuthState =
   | { status: "loading"; user: null }
@@ -33,6 +34,8 @@ type AuthContextValue = AuthState & {
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   retry: () => void;
+  /** 接続先サーバーを替えたあと、未ログインの状態からやり直す。 */
+  reset: () => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -52,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const check = useCallback(async (signal?: AbortSignal) => {
-    if (!getToken()) {
+    if (!hasServerUrl() || !getToken()) {
       setState({ status: "signed-out", user: null });
       return;
     }
@@ -101,6 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setState({ status: "loading", user: null });
         void check();
       },
+      reset: () => setState({ status: "signed-out", user: null }),
     }),
     [state, check],
   );
@@ -117,17 +121,24 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const onLoginPage = pathname === "/login" || pathname === "/login/";
+  /** 接続先サーバーの設定画面 (同梱アプリ用)。ログインの前後どちらでも開ける。 */
+  const onServerPage = pathname === "/server" || pathname === "/server/";
 
-  const redirectTo =
-    auth.status === "signed-out" && !onLoginPage
-      ? "/login"
-      : auth.status === "signed-in" && onLoginPage
-        ? "/"
-        : null;
+  const redirectTo = onServerPage
+    ? null
+    : auth.status === "signed-out" && !hasServerUrl()
+      ? "/server"
+      : auth.status === "signed-out" && !onLoginPage
+        ? "/login"
+        : auth.status === "signed-in" && onLoginPage
+          ? "/"
+          : null;
 
   useEffect(() => {
     if (redirectTo) router.replace(redirectTo);
   }, [redirectTo, router]);
+
+  if (onServerPage) return <>{children}</>;
 
   if (auth.status === "unreachable") {
     return (
@@ -136,9 +147,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <p className="text-muted-foreground text-sm">
           ネットワークの状態を確認して、もう一度お試しください。
         </p>
-        <Button variant="outline" onClick={auth.retry}>
-          再試行
-        </Button>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button variant="outline" onClick={auth.retry}>
+            再試行
+          </Button>
+          {isBundledApp() && (
+            <Button variant="ghost" onClick={() => router.push("/server")}>
+              接続先サーバーを変更
+            </Button>
+          )}
+        </div>
       </main>
     );
   }
