@@ -20,6 +20,7 @@ type Props = {
   placeholder: string;
   /** 表示中の一覧の名前。探す範囲の切り替えに使う。 */
   folderLabel: string;
+  className?: string;
 };
 
 /** 一覧の上の検索欄。語の入力と、差出人・件名・期間などの絞り込み条件を受け付ける。 */
@@ -28,6 +29,7 @@ export function SearchBar({
   onChange,
   placeholder,
   folderLabel,
+  className,
 }: Props) {
   const id = useId();
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -38,7 +40,12 @@ export function SearchBar({
     onChange({ ...value, filters: { ...filters, ...patch } });
 
   return (
-    <search className="flex shrink-0 flex-col gap-3 border-b px-4 py-3">
+    <search
+      className={cn(
+        "flex shrink-0 flex-col gap-3 border-b px-4 py-3",
+        className,
+      )}
+    >
       <div className="relative">
         <SearchIcon
           className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"

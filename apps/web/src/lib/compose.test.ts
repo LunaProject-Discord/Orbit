@@ -9,6 +9,7 @@ import {
   replaceSignature,
   resolveRecipients,
   sanitizeHtml,
+  withReplyText,
 } from "@/lib/compose";
 
 describe("parseAddressList", () => {
@@ -183,6 +184,22 @@ describe("buildDraftFrom", () => {
     expect(text).toContain("---------- 転送メッセージ ----------");
     expect(text).toContain("差出人: 山田 <yamada@example.com>");
     expect(text).toContain("明日の 10 時でいかがですか。\n\n<b>念のため</b>");
+  });
+});
+
+describe("withReplyText", () => {
+  it("書いた文章を、引用の前に入れる", () => {
+    const draft = withReplyText(build("reply"), "了解です。\n\n<よろしく>");
+    expect(
+      draft.html.startsWith(
+        '<div>了解です。</div><div><br></div><div>&lt;よろしく&gt;</div><div><br></div><div data-quote="">',
+      ),
+    ).toBe(true);
+  });
+
+  it("何も書いていなければ、下書きを変えない", () => {
+    const draft = build("reply");
+    expect(withReplyText(draft, "  \n")).toBe(draft);
   });
 });
 

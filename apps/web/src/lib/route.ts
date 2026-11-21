@@ -15,6 +15,8 @@ export type MailRoute = {
   mailboxId: string | null;
   /** 下書きの一覧を表示している。 */
   drafts: boolean;
+  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。null ならフォルダの一覧。 */
+  special: SpecialView | null;
   /** 開いているメール。 */
   messageId: string | null;
   /** 作成画面で開いている下書きの ID。まだ何も書いていない新規のメールは "new"。 */
@@ -23,10 +25,15 @@ export type MailRoute = {
   search: SearchParams | null;
 };
 
+/** フォルダに結び付かない表示。 */
+export type SpecialView = "starred" | "outgoing" | "settings";
+const SPECIAL_VIEWS: readonly string[] = ["starred", "outgoing", "settings"];
+
 export const emptyRoute: MailRoute = {
   accountId: null,
   mailboxId: null,
   drafts: false,
+  special: null,
   messageId: null,
   composeId: null,
   search: null,
@@ -53,8 +60,18 @@ export function parseRoute(query: string): MailRoute {
   const params = new URLSearchParams(query);
   const compose = params.get("compose");
   const composeId = compose === NEW_COMPOSE ? compose : idOf(params, "compose");
-  if (params.get("view") === "drafts") {
+  const view = params.get("view");
+  if (view === "drafts") {
     return { ...emptyRoute, drafts: true, composeId };
+  }
+  if (view && SPECIAL_VIEWS.includes(view)) {
+    return {
+      ...emptyRoute,
+      special: view as SpecialView,
+      // スター付きの一覧では、メールを開ける。
+      messageId: view === "starred" ? idOf(params, "message") : null,
+      composeId,
+    };
   }
   const search: SearchParams = {
     text: params.get("q") ?? "",
@@ -74,6 +91,7 @@ export function parseRoute(query: string): MailRoute {
     accountId: idOf(params, "account"),
     mailboxId: idOf(params, "folder"),
     drafts: false,
+    special: null,
     messageId: idOf(params, "message"),
     composeId,
     search: isSearchActive(search) ? search : null,
@@ -88,6 +106,11 @@ export function buildRoute(route: MailRoute): string {
   const params = new URLSearchParams();
   if (route.drafts) {
     params.set("view", "drafts");
+  } else if (route.special) {
+    params.set("view", route.special);
+    if (route.special === "starred" && route.messageId) {
+      params.set("message", route.messageId);
+    }
   } else {
     if (route.accountId) params.set("account", route.accountId);
     if (route.mailboxId) params.set("folder", route.mailboxId);
@@ -140,7 +163,8 @@ export function historyMode(current: MailRoute, next: MailRoute): HistoryMode {
   if (
     current.accountId !== next.accountId ||
     current.mailboxId !== next.mailboxId ||
-    current.drafts !== next.drafts
+    current.drafts !== next.drafts ||
+    current.special !== next.special
   ) {
     return "push";
   }

@@ -10,6 +10,7 @@ import {
   ImageOffIcon,
   MailIcon,
   MailOpenIcon,
+  MoreHorizontalIcon,
   PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
@@ -18,21 +19,28 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageAttachments } from "@/components/mail/message-attachments";
+import { QuickReply } from "@/components/mail/quick-reply";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { accountColor } from "@/lib/account-colors";
 import type { MessageActionInput } from "@/lib/actions";
 import {
+  type Account,
   ApiError,
   type Attachment,
   fetchAttachment,
   getMessage,
   getThread,
+  type MailboxSummary,
   type MessageDetail,
   type MessageSummary,
   type ThreadMessage,
@@ -98,13 +106,18 @@ type Props = {
    * 表示にはこちらを優先して使う。一覧に無ければ null。
    */
   summary: MessageSummary | null;
+  /** 見出しに、どのアカウントのどのフォルダのメールかを出すために使う。 */
+  accounts: Account[];
+  mailboxes: MailboxSummary[];
   onAction: (messageIds: string[], input: MessageActionInput) => void;
   /** 値が増えると、移動先のメニューを開く (ショートカットキー用)。 */
   moveRequest: number;
   /** count が増えると、表示中のメールへの返信・転送を始める (ショートカットキー用)。 */
   composeRequest: { count: number; mode: ReplyMode } | null;
-  /** 返信・全員に返信・転送を始める。 */
-  onCompose: (mode: ReplyMode, message: MessageDetail) => void;
+  /** 返信・全員に返信・転送を始める。text は、本文の下の返信欄に書いてあった文章。 */
+  onCompose: (mode: ReplyMode, message: MessageDetail, text?: string) => void;
+  /** 本文の下の返信欄から、そのまま返信を送る。送れたら true。 */
+  onQuickReply: (message: MessageDetail, text: string) => Promise<boolean>;
   onBack: () => void;
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
@@ -120,10 +133,13 @@ export function MessageView({
   messageId,
   refreshKey,
   summary,
+  accounts,
+  mailboxes,
   onAction,
   moveRequest,
   composeRequest,
   onCompose,
+  onQuickReply,
   onBack,
   onMissing,
 }: Props) {
@@ -213,19 +229,23 @@ export function MessageView({
   const replyTargetId = thread?.at(-1)?.id ?? null;
   const onComposeRef = useRef(onCompose);
   onComposeRef.current = onCompose;
-  const compose = (mode: ReplyMode) => {
-    if (!replyTargetId) return;
-    const loaded = details.current.get(replyTargetId);
-    if (loaded) {
-      onComposeRef.current(mode, loaded);
-      return;
-    }
-    // 本文を閉じていて未取得の場合は、取得してから始める。
-    getMessage(replyTargetId)
-      .then((message) => onComposeRef.current(mode, message))
-      .catch(() => {
-        // 取得できなければ始めない。もう一度押せばやり直せる。
-      });
+  /** 返信・転送の元にするメッセージの本文。未取得 (本文を閉じている) なら取得する。 */
+  const loadReplyTarget = async (): Promise<MessageDetail | null> => {
+    if (!replyTargetId) return null;
+    return (
+      details.current.get(replyTargetId) ??
+      // 取得できなければ始めない。もう一度押せばやり直せる。
+      (await getMessage(replyTargetId).catch(() => null))
+    );
+  };
+  const compose = (mode: ReplyMode, text?: string) => {
+    void loadReplyTarget().then((message) => {
+      if (message) onComposeRef.current(mode, message, text);
+    });
+  };
+  const quickReply = async (text: string) => {
+    const message = await loadReplyTarget();
+    return message ? onQuickReply(message, text) : false;
   };
   const composeRef = useRef(compose);
   composeRef.current = compose;
@@ -244,6 +264,50 @@ export function MessageView({
     details.current.set(message.id, message);
   };
   const first = thread?.[0];
+  const last = thread?.at(-1);
+
+  // 見出しの下に出す、メールのある場所 (アカウントとフォルダ)。
+  const account = accounts.find((item) => item.id === first?.accountId);
+  const mailbox = mailboxes.find(
+    (item) => item.id === (summary?.mailboxId ?? last?.mailboxIds[0] ?? null),
+  );
+  const place = [
+    account ? account.displayName || account.email : null,
+    mailbox ? mailboxLabel(mailbox) : null,
+    thread && thread.length > 1 ? `${thread.length} 通のやり取り` : null,
+  ].filter(Boolean);
+  const meta = place.length > 0 && (
+    <p className="flex items-center gap-2 text-muted-foreground text-xs">
+      {account && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "size-2 shrink-0 rounded-full",
+            accountColor(accounts, account.id),
+          )}
+        />
+      )}
+      <span className="min-w-0 truncate">{place.join(" · ")}</span>
+    </p>
+  );
+  // 返信の宛先になる相手。自分が送ったメールへの返信は、元の宛先へ送る。
+  const own = new Set(accounts.map((item) => item.email.toLowerCase()));
+  const sender = last?.from[0];
+  const replyTo =
+    sender && own.has(sender.address.toLowerCase())
+      ? (last?.to[0] ?? sender)
+      : sender;
+  const quickReplyBox = last && replyTo && !last.draft && (
+    <div className="shrink-0 px-4 pt-2 pb-4 sm:px-6">
+      <QuickReply
+        // 別のメールを開いたり、新しいメールが届いたりしたら、宛先が変わるので作り直す。
+        key={last.id}
+        recipient={addressLabel(replyTo)}
+        onSend={quickReply}
+        onExpand={(text) => compose("reply", text)}
+      />
+    </div>
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -282,20 +346,22 @@ export function MessageView({
           メールを読み込めませんでした。
         </p>
       ) : state.thread.length === 1 ? (
-        <LoadedMessage
-          id={first.id}
-          refreshKey={refreshKey}
-          onDetail={handleDetail}
-        />
+        <>
+          <LoadedMessage
+            id={first.id}
+            refreshKey={refreshKey}
+            meta={meta}
+            onDetail={handleDetail}
+          />
+          {quickReplyBox}
+        </>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <header className="flex flex-col gap-2 border-b p-4 sm:p-6">
             <h2 className="font-semibold text-xl leading-snug">
               {first.subject || "(件名なし)"}
             </h2>
-            <p className="text-muted-foreground text-xs">
-              {state.thread.length} 通のやり取り
-            </p>
+            {meta}
           </header>
           <ol>
             {state.thread.map((message) => (
@@ -315,6 +381,7 @@ export function MessageView({
               />
             ))}
           </ol>
+          {quickReplyBox}
         </div>
       )}
     </div>
@@ -337,10 +404,13 @@ function LoadedMessage({
   id,
   refreshKey,
   inThread = false,
+  meta,
   onDetail,
 }: {
   id: string;
   refreshKey: number;
+  /** 件名の下に出す、メールのある場所。 */
+  meta?: React.ReactNode;
   /** 会話の中の 1 通として表示する (件名と宛先の見出しは会話側で出す)。 */
   inThread?: boolean;
   onDetail: (message: MessageDetail) => void;
@@ -366,7 +436,9 @@ function LoadedMessage({
     return () => controller.abort();
   }, [id, refreshKey]);
 
-  if (message) return <MessageContent message={message} inThread={inThread} />;
+  if (message) {
+    return <MessageContent message={message} inThread={inThread} meta={meta} />;
+  }
   if (failed) {
     return (
       <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
@@ -520,19 +592,39 @@ function MessageToolbar({
       aria-label="メールの操作"
       className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
     >
-      <Button variant="ghost" size="sm" onClick={() => onCompose("reply")}>
+      {/* 狭い画面では、返信・転送・移動は右端の「その他」にまとめる。 */}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onCompose("reply")}
+        className="max-sm:hidden"
+      >
         <ReplyIcon />
-        <span className="sr-only sm:not-sr-only">返信</span>
+        返信
       </Button>
-      <Button variant="ghost" size="sm" onClick={() => onCompose("replyAll")}>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onCompose("replyAll")}
+        className="max-sm:hidden"
+      >
         <ReplyAllIcon />
-        <span className="sr-only sm:not-sr-only">全員に返信</span>
+        全員に返信
       </Button>
-      <Button variant="ghost" size="sm" onClick={() => onCompose("forward")}>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onCompose("forward")}
+        className="max-sm:hidden"
+      >
         <ForwardIcon />
-        <span className="sr-only sm:not-sr-only">転送</span>
+        転送
       </Button>
-      <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
+      <span
+        className="mx-1 h-5 w-px shrink-0 bg-border max-sm:hidden"
+        aria-hidden="true"
+      />
+      <span className="flex-1 sm:hidden" aria-hidden="true" />
       <Button
         variant="ghost"
         size="sm"
@@ -590,9 +682,13 @@ function MessageToolbar({
       )}
       {destinations.length > 0 && (
         <DropdownMenu open={moveOpen} onOpenChange={setMoveOpen}>
-          <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
+          <DropdownMenuTrigger
+            render={
+              <Button variant="ghost" size="sm" className="max-sm:hidden" />
+            }
+          >
             <FolderInputIcon />
-            <span className="sr-only sm:not-sr-only">移動</span>
+            移動
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             {destinations.map((mailbox) => (
@@ -606,6 +702,53 @@ function MessageToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       )}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="その他の操作"
+              className="sm:hidden"
+            />
+          }
+        >
+          <MoreHorizontalIcon />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onClick={() => onCompose("reply")}>
+            <ReplyIcon />
+            返信
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onCompose("replyAll")}>
+            <ReplyAllIcon />
+            全員に返信
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onCompose("forward")}>
+            <ForwardIcon />
+            転送
+          </DropdownMenuItem>
+          {destinations.length > 0 && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>移動</DropdownMenuLabel>
+                {destinations.map((mailbox) => (
+                  <DropdownMenuItem
+                    key={mailbox.id}
+                    onClick={() =>
+                      act({ action: "move", mailboxId: mailbox.id })
+                    }
+                  >
+                    <FolderInputIcon />
+                    <span className="truncate">{mailboxLabel(mailbox)}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
@@ -719,8 +862,10 @@ function ThreadBodyFrame({ srcDoc }: { srcDoc: string }) {
 function MessageContent({
   message,
   inThread = false,
+  meta,
 }: {
   message: MessageDetail;
+  meta?: React.ReactNode;
   /** 会話の中の 1 通として表示する (件名と差出人は会話側の見出しに出ている)。 */
   inThread?: boolean;
 }) {
@@ -759,6 +904,7 @@ function MessageContent({
         <h2 className="font-semibold text-xl leading-snug">
           {message.subject || "(件名なし)"}
         </h2>
+        {meta}
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
           <dt className="text-muted-foreground">差出人</dt>
           <dd className="min-w-0 break-words">

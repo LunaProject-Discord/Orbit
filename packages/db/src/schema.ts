@@ -210,6 +210,8 @@ export const mailAccounts = pgTable(
     signatureHtml: text(),
     /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null で、追加した順に並ぶ。 */
     sortOrder: integer(),
+    /** 画面でアカウントを見分ける色の名前 (sky など)。選んでいなければ null で、並び順から決まる。 */
+    color: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

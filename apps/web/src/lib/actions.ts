@@ -102,6 +102,8 @@ export type ActionQueue = {
   enqueue: (action: MessageAction) => void;
   /** サーバーに拒否されて取り消された操作を受け取る。戻り値の関数で解除する。 */
   onRejected: (listener: (action: MessageAction) => void) => () => void;
+  /** 送れていない操作の数が変わるたびに呼ぶ。戻り値の関数で解除する。 */
+  onChange: (listener: (count: number) => void) => () => void;
   stop: () => void;
 };
 
@@ -115,12 +117,15 @@ export function createActionQueue(
   let timer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(action: MessageAction) => void>();
 
+  const changeListeners = new Set<(count: number) => void>();
+
   const save = () => {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
     } catch {
       // 保存できなくても、このページを開いている間は送り続ける。
     }
+    for (const listener of changeListeners) listener(items.length);
   };
 
   const flush = async () => {
@@ -177,6 +182,10 @@ export function createActionQueue(
     onRejected(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
     },
     stop() {
       stopped = true;

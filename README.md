@@ -301,7 +301,7 @@ Microsoft Graph では、さらに次のように調整します。
 | `GET /v1/messages/outgoing` | まだ送り終えていないメール (送信待ち、送信中、失敗) の一覧 |
 | `DELETE /v1/messages/outgoing/:id` | 送信待ちのメールの取り消し、または失敗したメールの破棄 |
 | `GET /v1/sync?since=` | 変更番号より後の変更履歴 |
-| `GET /v1/events` | 変更の通知 (SSE) |
+| `GET /v1/events` | 変更の通知 (SSE)。`?device=<端末の ID>` を付けると、接続している端末の数 (`devices`) も届く |
 
 ## 検索
 
@@ -369,6 +369,9 @@ Web は静的ファイルとして出力する (Tauri / Capacitor にも同梱�
 | `…&message=<ID>` | メール (会話) を開いた状態 |
 | `…&q=<語>` | 検索。絞り込みは `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1`、表示中のフォルダだけを探すときは `in=folder` |
 | `/?view=drafts` | 下書きの一覧 |
+| `/?view=starred` | スター付きのメール (全アカウント・全フォルダ)。`&message=<ID>` でメールを開いた状態 |
+| `/?view=outgoing` | 送信待ちのメール |
+| `/?view=settings` | 設定 (表示、通知、メールアカウント、同期の状況、ショートカットキー) |
 | `…&compose=<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `compose=new`) |
 
 フォルダの切り替えと、メールや作成画面を開く操作は履歴に積みます。メールからメールへの移動と検索欄の入力は、いまの履歴を書き換えます。

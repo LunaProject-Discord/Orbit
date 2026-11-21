@@ -11,6 +11,8 @@ type Props = {
   onEdit: (mail: OutgoingMail) => void;
   /** 送信待ちなら取り消し、失敗していれば一覧から消す。 */
   onRemove: (mail: OutgoingMail) => void;
+  /** 一覧の枠いっぱいに表示する (送信待ちの表示)。1 通も無ければ、その旨を出す。 */
+  full?: boolean;
 };
 
 function recipients(mail: OutgoingMail): string {
@@ -23,10 +25,27 @@ function recipients(mail: OutgoingMail): string {
 }
 
 /** まだ送り終えていないメール (送信中、やり直し待ち、失敗) の一覧。 */
-export function OutgoingList({ outgoing, onEdit, onRemove }: Props) {
-  if (outgoing.length === 0) return null;
+export function OutgoingList({
+  outgoing,
+  onEdit,
+  onRemove,
+  full = false,
+}: Props) {
+  if (outgoing.length === 0) {
+    if (!full) return null;
+    return (
+      <div className="flex flex-1 items-center justify-center p-8 text-center">
+        <p className="text-muted-foreground text-sm">
+          送信待ちのメールはありません。送信したメールは、送り終えるまでここに表示されます。
+        </p>
+      </div>
+    );
+  }
   return (
-    <ul aria-label="送信中のメール" className="shrink-0 border-b">
+    <ul
+      aria-label="送信中のメール"
+      className={full ? "border-b" : "shrink-0 border-b"}
+    >
       {outgoing.map((mail) => {
         const failed = mail.status === "failed";
         // やり直しを待っている間は、理由を添えて取り消せるようにする。

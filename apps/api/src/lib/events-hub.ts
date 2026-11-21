@@ -11,10 +11,14 @@ import {
 } from "@mail/core";
 import pg from "pg";
 
-/** 端末へ伝える内容。change は変更があったこと、mail は新着メールの通知。 */
+/**
+ * 端末へ伝える内容。change は変更があったこと、mail は新着メールの通知、
+ * devices は同じ利用者で接続している端末の数が変わったこと。
+ */
 export type HubEvent =
   | { type: "change"; seq: string }
-  | { type: "mail"; notifications: PushMessage[] };
+  | { type: "mail"; notifications: PushMessage[] }
+  | { type: "devices"; count: number };
 
 type Listener = (event: HubEvent) => void;
 type AttachmentWaiter = (error: AttachmentFetchError | null) => void;
@@ -109,17 +113,46 @@ export class EventsHub {
     }, 3_000);
   }
 
-  subscribe(userId: string, listener: Listener): () => void {
+  /**
+   * 利用者の接続を登録する。deviceId は端末 (ブラウザーやアプリ) ごとの ID で、
+   * 同じ端末の複数のタブは 1 台として数える。接続している端末の数が変わると、
+   * その利用者の全接続へ devices を配る。
+   */
+  subscribe(userId: string, listener: Listener, deviceId?: string): () => void {
     let set = this.listeners.get(userId);
     if (!set) {
       set = new Set();
       this.listeners.set(userId, set);
     }
     set.add(listener);
+    if (deviceId) this.addDevice(userId, deviceId, 1);
     return () => {
       set.delete(listener);
       if (set.size === 0) this.listeners.delete(userId);
+      if (deviceId) this.addDevice(userId, deviceId, -1);
     };
+  }
+
+  /** 利用者ごとの、接続している端末と、その端末の接続の数。 */
+  private devices = new Map<string, Map<string, number>>();
+
+  /** いま接続している端末の数。 */
+  deviceCount(userId: string): number {
+    return this.devices.get(userId)?.size ?? 0;
+  }
+
+  private addDevice(userId: string, deviceId: string, delta: 1 | -1) {
+    const devices = this.devices.get(userId) ?? new Map<string, number>();
+    const before = devices.size;
+    const connections = (devices.get(deviceId) ?? 0) + delta;
+    if (connections > 0) devices.set(deviceId, connections);
+    else devices.delete(deviceId);
+    if (devices.size > 0) this.devices.set(userId, devices);
+    else this.devices.delete(userId);
+    if (devices.size === before) return;
+    for (const listener of this.listeners.get(userId) ?? []) {
+      listener({ type: "devices", count: devices.size });
+    }
   }
 
   /**

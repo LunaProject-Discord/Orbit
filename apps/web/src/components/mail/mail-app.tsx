@@ -5,7 +5,7 @@ import {
   InboxIcon,
   ListChecksIcon,
   MenuIcon,
-  PenLineIcon,
+  PenSquareIcon,
   PlusIcon,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
@@ -29,8 +29,11 @@ import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
 import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
+import { SettingsView } from "@/components/mail/settings-view";
 import { SignatureDialog } from "@/components/mail/signature-dialog";
+import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
+import { accountColor } from "@/lib/account-colors";
 import {
   type ActionQueue,
   applyActions,
@@ -64,6 +67,7 @@ import {
   saveMailboxOrder,
   searchMessages,
   sendFocus,
+  sendMail,
   startOAuthLogin,
   type User,
 } from "@/lib/api";
@@ -74,13 +78,16 @@ import {
   draftFromOutgoing,
   draftFromServer,
   draftSaveInput,
+  htmlToText,
   loadUnsavedDrafts,
   newDraft,
   removeUnsavedDraft,
+  sanitizeHtml,
   storeUnsavedDraft,
+  withReplyText,
 } from "@/lib/compose";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
-import { subscribeEvents } from "@/lib/events";
+import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import {
   mailboxLabel,
   showsRecipients,
@@ -104,11 +111,13 @@ import {
   type MailRoute,
   NEW_COMPOSE,
   parseRoute,
+  type SpecialView,
   sameSearch,
 } from "@/lib/route";
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
+import { deviceId, syncStatusOf } from "@/lib/sync-status";
 
 const PAGE_SIZE = 50;
 /** 表示中のフォルダをサーバーへ知らせる間隔。 */
@@ -132,6 +141,17 @@ const NOTIFICATION_BLOCKED =
   "ブラウザーの設定で通知が拒否されています。ブラウザーの設定で、このサイトの通知を許可してください。";
 /** 短い知らせを出しておく時間。 */
 const NOTICE_MS = 8_000;
+const QUICK_REPLY_SENT = "返信を送信しました。";
+const QUICK_REPLY_ERROR =
+  "返信を送信できませんでした。時間をおいて、もう一度お試しください。";
+const QUICK_REPLY_NO_RECIPIENT =
+  "返信の宛先が分かりません。作成画面で宛先を入力してください。";
+/** スター付きの一覧は、全アカウント・全フォルダからスターの付いたメールを探して作る。 */
+const starredSearch: SearchParams = {
+  text: "",
+  filters: { ...emptyFilters, flagged: true },
+  scope: "all",
+};
 const DRAFT_UPDATED_NOTICE = "ほかの端末での変更を反映しました。";
 const DRAFT_CONFLICT_NOTICE =
   "ほかの端末でこの下書きが変更されていたため、この端末の内容は別の下書きとして保存しました。";
@@ -273,6 +293,20 @@ export function MailApp({ user }: { user: User }) {
   const [drafts, setDrafts] = useState<ServerDraft[] | null>(null);
   /** 下書きの一覧を表示している。 */
   const [draftsSelected, setDraftsSelected] = useState(initialRoute.drafts);
+  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。null ならフォルダか下書きの一覧。 */
+  const [special, setSpecial] = useState<SpecialView | null>(
+    initialRoute.special,
+  );
+  const starred = special === "starred";
+  const starredRef = useRef(starred);
+  starredRef.current = starred;
+  /** サーバーからの変更通知の接続。null は、まだ一度も繋がっていない。 */
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [online, setOnline] = useState(true);
+  /** いまサーバーに接続している端末の数 (この端末を含む)。 */
+  const [devices, setDevices] = useState(0);
+  /** まだサーバーへ送れていない操作の数。 */
+  const [pendingActions, setPendingActions] = useState(0);
   /** 作成画面で開いているメール。閉じると、内容は下書きとしてサーバーに残る。 */
   const [draft, setDraft] = useState<ComposeDraft | null>(null);
   /** 開いてから内容を変えたか。変えていない新規のメールは、閉じたら残さない。 */
@@ -395,6 +429,14 @@ export function MailApp({ user }: { user: User }) {
   const fetchPage = useCallback(
     async ({ accountId, mailboxId }: Selection, cursor: string | null) => {
       const params = { accountId, mailboxId, cursor, limit: PAGE_SIZE };
+      if (starredRef.current) {
+        const page = await searchMessages({
+          ...starredSearch,
+          cursor,
+          limit: PAGE_SIZE,
+        });
+        return { page, terms: null };
+      }
       const active = searchRef.current;
       if (!active) return { page: await listMessages(params), terms: null };
       const page = await searchMessages({ ...active, ...params });
@@ -466,6 +508,7 @@ export function MailApp({ user }: { user: User }) {
   const openFromNotification = useCallback((messageId: string | null) => {
     setSidebarOpen(false);
     setDraftsSelected(false);
+    setSpecial(null);
     setSearchInput(emptySearch);
     setSearch(null);
     setSelectedAccountId(null);
@@ -609,6 +652,8 @@ export function MailApp({ user }: { user: User }) {
   useEffect(() => {
     const queue = createActionQueue();
     queueRef.current = queue;
+    setPendingActions(queue.pending().length);
+    const unsubscribeCount = queue.onChange(setPendingActions);
     const unsubscribe = queue.onRejected(() => {
       // 画面に先に反映した内容を取り消すため、サーバーの状態を取り直す。
       setNotice({ message: ACTION_ERROR, tone: "error" });
@@ -618,6 +663,7 @@ export function MailApp({ user }: { user: User }) {
     });
     return () => {
       unsubscribe();
+      unsubscribeCount();
       queue.stop();
       queueRef.current = null;
     };
@@ -689,13 +735,13 @@ export function MailApp({ user }: { user: User }) {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: search は読み込み直すきっかけとして使う (中身は searchRef から読む)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: search と starred は読み込み直すきっかけとして使う (中身は ref から読む)
   useEffect(() => {
     void loadFirstPage(
       { accountId: selectedAccountId, mailboxId: selectedMailboxId },
       true,
     );
-  }, [selectedAccountId, selectedMailboxId, search, loadFirstPage]);
+  }, [selectedAccountId, selectedMailboxId, search, starred, loadFirstPage]);
 
   // 画面を開いている間、表示中のフォルダをサーバーへ知らせ続ける。サーバーはその間、
   // 表示中のフォルダを短い間隔で同期する。画面が隠れている間は知らせない (通常の間隔に戻る)。
@@ -746,7 +792,17 @@ export function MailApp({ user }: { user: User }) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let first = true;
-    const unsubscribe = subscribeEvents((event) => {
+    const handleEvent = (event: ServerEvent) => {
+      if (event.event === "devices") {
+        try {
+          const count: unknown = (JSON.parse(event.data) as { count?: unknown })
+            .count;
+          if (typeof count === "number") setDevices(count);
+        } catch {
+          // 形式の違う知らせは無視する。
+        }
+        return;
+      }
       if (event.event === "mail") {
         // Web Push が使えるときは、サービスワーカーが通知を出す。
         if (notificationStatusRef.current !== "page") return;
@@ -774,6 +830,10 @@ export function MailApp({ user }: { user: User }) {
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
+    };
+    const unsubscribe = subscribeEvents(handleEvent, {
+      deviceId: deviceId(),
+      onState: setConnected,
     });
     return () => {
       unsubscribe();
@@ -788,6 +848,18 @@ export function MailApp({ user }: { user: User }) {
     loadDrafts,
     openFromNotification,
   ]);
+
+  // ネットワークに繋がっているか。同期の状況の表示に使う。
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
 
   /**
    * 作成画面でメールを開く。それまで開いていたメールは、下書きとしてサーバーに残る。
@@ -831,9 +903,48 @@ export function MailApp({ user }: { user: User }) {
   const handleCompose = (
     mode: Exclude<ComposeMode, "new">,
     message: MessageDetail,
+    /** 本文の下の返信欄に書いてあった文章。あれば本文の先頭に入れる。 */
+    text = "",
   ) => {
-    showInCompose(buildDraftFrom(mode, message, accounts ?? []), false);
+    const built = buildDraftFrom(mode, message, accounts ?? []);
+    showInCompose(withReplyText(built, text), text.trim() !== "");
   };
+
+  /** 本文の下の返信欄から、差出人へそのまま返信する。署名と引用は、作成画面と同じように付く。 */
+  async function handleQuickReply(
+    message: MessageDetail,
+    text: string,
+  ): Promise<boolean> {
+    const reply = withReplyText(
+      buildDraftFrom("reply", message, accounts ?? []),
+      text,
+    );
+    if (reply.to.list.length === 0) {
+      setNotice({ message: QUICK_REPLY_NO_RECIPIENT, tone: "error" });
+      return false;
+    }
+    const html = sanitizeHtml(reply.html);
+    try {
+      await sendMail({
+        idempotencyKey: reply.idempotencyKey,
+        accountId: reply.accountId,
+        to: reply.to.list,
+        cc: [],
+        bcc: [],
+        subject: reply.subject,
+        text: htmlToText(html),
+        html,
+        mode: "reply",
+        sourceMessageId: message.id,
+      });
+    } catch {
+      setNotice({ message: QUICK_REPLY_ERROR, tone: "error" });
+      return false;
+    }
+    setNotice({ message: QUICK_REPLY_SENT, tone: "info" });
+    void loadOutgoing();
+    return true;
+  }
 
   /** 作成画面を閉じる。内容を変えていれば、下書きとしてサーバーに残る。 */
   function closeCompose() {
@@ -883,6 +994,17 @@ export function MailApp({ user }: { user: User }) {
       .finally(() => void loadOutgoing());
   }
 
+  /** 再ログインが必要な Google / Microsoft のアカウントで、ログイン画面へ移る。 */
+  function handleReauth(account: Account) {
+    const provider = oauthProviderOf(account);
+    if (!provider) return;
+    startOAuthLogin(provider, account.id)
+      .then((url) => window.location.assign(url))
+      .catch(() => {
+        // 失敗しても表示はそのままなので、もう一度押せる。
+      });
+  }
+
   useEffect(() => {
     if (!sidebarOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -928,6 +1050,7 @@ export function MailApp({ user }: { user: User }) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
     setDraftsSelected(false);
+    setSpecial(null);
     // フォルダを選んだら検索を終えて、そのフォルダの一覧を表示する。
     setSearchInput(emptySearch);
     setSearch(null);
@@ -945,7 +1068,22 @@ export function MailApp({ user }: { user: User }) {
     setSearch(null);
     clearSelection();
     anchorRef.current = null;
+    setSpecial(null);
     setDraftsSelected(true);
+  }
+
+  /** スター付き、送信待ち、設定を表示する。どれもフォルダには結び付かない。 */
+  function handleSelectSpecial(view: SpecialView) {
+    setSidebarOpen(false);
+    setSelectedMessageId(null);
+    setSearchInput(emptySearch);
+    setSearch(null);
+    clearSelection();
+    anchorRef.current = null;
+    setDraftsSelected(false);
+    setSelectedAccountId(null);
+    setSelectedMailboxId(null);
+    setSpecial(view);
   }
 
   const handleMissing = useCallback(() => {
@@ -968,6 +1106,7 @@ export function MailApp({ user }: { user: User }) {
     accountId: selectedAccountId,
     mailboxId: selectedMailboxId,
     drafts: draftsSelected,
+    special,
     messageId: selectedMessageId,
     composeId: openComposeId ?? composeTarget,
     search,
@@ -1009,7 +1148,8 @@ export function MailApp({ user }: { user: User }) {
     if (
       route.accountId !== selectedAccountId ||
       route.mailboxId !== selectedMailboxId ||
-      route.drafts !== draftsSelected
+      route.drafts !== draftsSelected ||
+      route.special !== special
     ) {
       clearSelection();
       anchorRef.current = null;
@@ -1017,6 +1157,7 @@ export function MailApp({ user }: { user: User }) {
     setSelectedAccountId(route.accountId);
     setSelectedMailboxId(route.mailboxId);
     setDraftsSelected(route.drafts);
+    setSpecial(route.special);
     setSelectedMessageId(route.messageId);
     // 検索の内容が同じなら、一覧を読み込み直さない (スクロールの位置も保つ)。
     if (!sameSearch(route.search, search)) {
@@ -1073,13 +1214,62 @@ export function MailApp({ user }: { user: User }) {
     : null;
   const title = draftsSelected
     ? "下書き"
-    : selectedMailbox
-      ? mailboxLabel(selectedMailbox)
-      : (accountName ?? "すべての受信トレイ");
+    : starred
+      ? "スター付き"
+      : special === "outgoing"
+        ? "送信待ち"
+        : selectedMailbox
+          ? mailboxLabel(selectedMailbox)
+          : (accountName ?? "すべての受信トレイ");
   /** フォルダを表示している間は、どのアカウントのフォルダかを添える。 */
   const subtitle = !draftsSelected && selectedMailbox ? accountName : null;
   const noAccounts = accounts !== null && accounts.length === 0;
   const searching = search !== null;
+  /** 新しいメールを書き始められる (アカウントがある)。 */
+  const canCompose = accounts !== null && accounts.length > 0;
+  /** 検索欄を出す一覧 (フォルダの一覧) を表示している。 */
+  const showSearch = canCompose && !draftsSelected && special === null;
+  const syncStatus = syncStatusOf({
+    online,
+    connected,
+    pendingActions,
+    pendingMails: outgoing.filter((mail) => mail.status !== "failed").length,
+    accounts,
+    devices,
+  });
+  /**
+   * 複数のアカウントのメールが並ぶ一覧 (すべての受信トレイ、スター付き、全体の検索) で、
+   * どのアカウントのメールかを色の点で示す。
+   */
+  const accountMark =
+    selectedAccountId === null && (accounts?.length ?? 0) > 1
+      ? (message: MessageSummary) => {
+          const account = accounts?.find(
+            (item) => item.id === message.accountId,
+          );
+          return account
+            ? {
+                color: accountColor(accounts ?? [], account.id),
+                name: account.displayName || account.email,
+              }
+            : null;
+        }
+      : undefined;
+  const settingsOpen = special === "settings";
+  /** 狭い画面でサイドバーを開くボタン。 */
+  const menuButton = (className: string) => (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      aria-label="メニューを開く"
+      aria-controls="mail-sidebar"
+      aria-expanded={sidebarOpen}
+      onClick={() => setSidebarOpen(true)}
+      className={cn("md:hidden", className)}
+    >
+      <MenuIcon />
+    </Button>
+  );
   /** 検索結果の各行に出す、メールのある場所。アカウントを選んでいなければアカウント名も添える。 */
   const locationLabel = (message: MessageSummary): string | null => {
     const mailbox = mailboxes?.find((item) => item.id === message.mailboxId);
@@ -1135,7 +1325,9 @@ export function MailApp({ user }: { user: User }) {
       return;
     }
     // 下書きの一覧を表示している間は、メールの一覧への操作は受け付けない。
-    if (draftsSelected) return;
+    if (draftsSelected || special === "outgoing" || special === "settings") {
+      return;
+    }
     const list = messages ?? [];
     const index = selectedMessage ? list.indexOf(selectedMessage) : -1;
 
@@ -1300,120 +1492,146 @@ export function MailApp({ user }: { user: User }) {
           draftCount={drafts?.length ?? 0}
           draftsSelected={draftsSelected}
           onSelectDrafts={handleSelectDrafts}
+          special={special}
+          onSelectSpecial={handleSelectSpecial}
+          outgoingCount={outgoing.length}
+          outgoingFailed={outgoing.some((mail) => mail.status === "failed")}
+          onCompose={
+            canCompose
+              ? () => {
+                  setSidebarOpen(false);
+                  handleNewMail();
+                }
+              : null
+          }
           onAdd={() => {
             setSidebarOpen(false);
             setAddOpen(true);
           }}
-          onDelete={(account) => {
-            setSidebarOpen(false);
-            setDeleteTarget(account);
-          }}
-          onEditSignature={(account) => {
-            setSidebarOpen(false);
-            setSignatureTarget(account);
-          }}
-          onReauth={(account) => {
-            const provider = oauthProviderOf(account);
-            if (!provider) return;
-            startOAuthLogin(provider, account.id)
-              .then((url) => window.location.assign(url))
-              .catch(() => {
-                // 失敗してもサイドバーの表示はそのままなので、もう一度押せる。
-              });
-          }}
-          onSignOut={() => {
-            // ログアウトしたあとに別の利用者がログインしても、この表示には戻さない。
-            window.history.replaceState(null, "", window.location.pathname);
-            void signOut();
-          }}
-          notificationStatus={notificationStatus}
-          notificationBusy={notificationBusy}
-          onNotificationChange={handleNotificationChange}
+          onReauth={handleReauth}
+          syncStatus={syncStatus}
         />
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1">
+        {settingsOpen && (
+          <SettingsView
+            user={user}
+            accounts={accounts}
+            onMenu={() => setSidebarOpen(true)}
+            notificationStatus={notificationStatus}
+            notificationBusy={notificationBusy}
+            onNotificationChange={handleNotificationChange}
+            syncStatus={syncStatus}
+            devices={devices}
+            onAdd={() => setAddOpen(true)}
+            onDelete={setDeleteTarget}
+            onEditSignature={setSignatureTarget}
+            onReauth={handleReauth}
+            onAccountUpdated={(account) =>
+              setAccounts(
+                (current) =>
+                  current?.map((item) =>
+                    item.id === account.id ? account : item,
+                  ) ?? null,
+              )
+            }
+            onSignOut={() => {
+              // ログアウトしたあとに別の利用者がログインしても、この表示には戻さない。
+              window.history.replaceState(null, "", window.location.pathname);
+              void signOut();
+            }}
+          />
+        )}
         <section
           aria-label="メール一覧"
           className={cn(
-            "min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
+            "relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
             selectedMessageId ? "hidden" : "flex",
+            settingsOpen && "hidden!",
           )}
         >
-          {selecting ? (
-            <SelectionToolbar
-              rows={checkedRows}
-              total={messages?.length ?? 0}
-              mailbox={selectedMailbox}
-              moveRequest={bulkMoveRequest}
-              onAction={performBulk}
-              onSelectAll={(checked) =>
-                setCheckedIds(
-                  new Set(
-                    checked
-                      ? (messages ?? []).map((message) => message.id)
-                      : [],
-                  ),
-                )
-              }
-              onClose={clearSelection}
-            />
-          ) : (
-            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="メニューを開く"
-                aria-controls="mail-sidebar"
-                aria-expanded={sidebarOpen}
-                onClick={() => setSidebarOpen(true)}
-                className="-ml-2 md:hidden"
+          {/* 狭い画面では、検索欄を上、見出しを下に置く。 */}
+          <div className="flex shrink-0 flex-col-reverse md:flex-col">
+            {selecting ? (
+              <SelectionToolbar
+                rows={checkedRows}
+                total={messages?.length ?? 0}
+                mailbox={selectedMailbox}
+                moveRequest={bulkMoveRequest}
+                onAction={performBulk}
+                onSelectAll={(checked) =>
+                  setCheckedIds(
+                    new Set(
+                      checked
+                        ? (messages ?? []).map((message) => message.id)
+                        : [],
+                    ),
+                  )
+                }
+                onClose={clearSelection}
+              />
+            ) : (
+              <header
+                className={cn(
+                  "flex h-14 shrink-0 items-center gap-2 border-b px-4",
+                  showSearch && "max-md:h-11",
+                )}
               >
-                <MenuIcon />
-              </Button>
-              <h1 className="min-w-0 truncate font-semibold text-lg">
-                {title}
-              </h1>
-              <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-                {subtitle}
-              </p>
-              {!noAccounts && accounts !== null && (
-                <Button size="sm" onClick={handleNewMail}>
-                  <PenLineIcon />
-                  作成
-                </Button>
-              )}
-              {!draftsSelected && (messages?.length ?? 0) > 0 && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="メールを選択"
-                  title="メールを選択 (X)"
-                  onClick={() => setSelectMode(true)}
-                  className="-mr-2"
-                >
-                  <ListChecksIcon />
-                </Button>
-              )}
-            </header>
-          )}
-          {!noAccounts && accounts !== null && !draftsSelected && (
-            <SearchBar
-              value={searchInput}
-              onChange={setSearchInput}
-              placeholder={
-                accountName
-                  ? `${accountName} から検索`
-                  : "すべてのアカウントから検索"
-              }
-              folderLabel={selectedMailbox ? title : "受信トレイ"}
+                {/* 検索欄を出している間は、メニューのボタンは検索欄の横に置く。 */}
+                {!showSearch && menuButton("-ml-2")}
+                <h1 className="min-w-0 truncate font-semibold text-lg">
+                  {title}
+                </h1>
+                <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+                  {subtitle}
+                </p>
+                <SyncIndicator
+                  status={syncStatus}
+                  short
+                  className="shrink-0 md:hidden"
+                />
+                {!draftsSelected &&
+                  special !== "outgoing" &&
+                  (messages?.length ?? 0) > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="メールを選択"
+                      title="メールを選択 (X)"
+                      onClick={() => setSelectMode(true)}
+                      className="-mr-2"
+                    >
+                      <ListChecksIcon />
+                    </Button>
+                  )}
+              </header>
+            )}
+            {showSearch && (
+              <div className="flex items-start md:block">
+                {menuButton("mt-3 ml-2")}
+                <SearchBar
+                  value={searchInput}
+                  onChange={setSearchInput}
+                  placeholder={
+                    accountName
+                      ? `${accountName} から検索`
+                      : "すべてのアカウントから検索"
+                  }
+                  folderLabel={selectedMailbox ? title : "受信トレイ"}
+                  className="min-w-0 flex-1 max-md:border-b-0 max-md:pb-1 max-md:pl-2 max-md:[&_input]:rounded-full"
+                />
+              </div>
+            )}
+          </div>
+          {/* 送信できなかったメールは、どの一覧を見ていても知らせる。送信中のものは「送信待ち」に出す。 */}
+          {special !== "outgoing" && (
+            <OutgoingList
+              outgoing={outgoing.filter((mail) => mail.status === "failed")}
+              onEdit={handleEditOutgoing}
+              onRemove={handleRemoveOutgoing}
             />
           )}
-          <OutgoingList
-            outgoing={outgoing}
-            onEdit={handleEditOutgoing}
-            onRemove={handleRemoveOutgoing}
-          />
           {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
               枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
           <div
@@ -1439,6 +1657,13 @@ export function MailApp({ user }: { user: User }) {
                   アカウントを追加
                 </Button>
               </div>
+            ) : special === "outgoing" ? (
+              <OutgoingList
+                full
+                outgoing={outgoing}
+                onEdit={handleEditOutgoing}
+                onRemove={handleRemoveOutgoing}
+              />
             ) : draftsSelected ? (
               <DraftList
                 drafts={drafts}
@@ -1460,15 +1685,22 @@ export function MailApp({ user }: { user: User }) {
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
                 showRecipients={!searching && showsRecipients(selectedMailbox)}
-                {...(searching
+                {...(accountMark ? { accountMark } : {})}
+                {...(starred
                   ? {
-                      emptyText: "条件に合うメールは見つかりませんでした。",
-                      highlightTerms: searchTerms,
+                      emptyText:
+                        "スターを付けたメールはありません。スターを付けると、どのフォルダにあってもここに並びます。",
                       locationLabel,
                     }
-                  : selectedMailbox?.lastSyncedAt
-                    ? { emptyText: "このフォルダにメールはありません。" }
-                    : {})}
+                  : searching
+                    ? {
+                        emptyText: "条件に合うメールは見つかりませんでした。",
+                        highlightTerms: searchTerms,
+                        locationLabel,
+                      }
+                    : selectedMailbox?.lastSyncedAt
+                      ? { emptyText: "このフォルダにメールはありません。" }
+                      : {})}
                 onSelect={handleSelectMessage}
                 onAction={performAction}
                 onLoadMore={() => void handleLoadMore()}
@@ -1476,6 +1708,15 @@ export function MailApp({ user }: { user: User }) {
               />
             )}
           </div>
+          {canCompose && !composeOpen && !selecting && (
+            <Button
+              onClick={handleNewMail}
+              className="absolute right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg md:hidden [&_svg]:size-5"
+            >
+              <PenSquareIcon />
+              作成
+            </Button>
+          )}
         </section>
 
         <section
@@ -1483,6 +1724,7 @@ export function MailApp({ user }: { user: User }) {
           className={cn(
             "relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
             selectedMessageId ? "flex" : "hidden",
+            settingsOpen && "hidden!",
           )}
         >
           {selectedMessageId ? (
@@ -1490,10 +1732,13 @@ export function MailApp({ user }: { user: User }) {
               messageId={selectedMessageId}
               refreshKey={refreshKey}
               summary={selectedMessage}
+              accounts={accounts ?? []}
+              mailboxes={mailboxes ?? []}
               onAction={performAction}
               moveRequest={moveRequest}
               composeRequest={composeRequest}
               onCompose={handleCompose}
+              onQuickReply={handleQuickReply}
               onBack={() => setSelectedMessageId(null)}
               onMissing={handleMissing}
             />

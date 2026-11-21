@@ -2,7 +2,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "cn";
-import { FolderIcon, PaperclipIcon, StarIcon } from "lucide-react";
+import { FolderIcon, PaperclipIcon, ReplyIcon, StarIcon } from "lucide-react";
 import {
   type Ref,
   type RefObject,
@@ -54,6 +54,13 @@ type Props = {
   highlightTerms?: string[];
   /** 検索結果で、メールのある場所 (アカウントとフォルダ) を各行に出すための関数。 */
   locationLabel?: (message: MessageSummary) => string | null;
+  /**
+   * 複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを色の点で示すための関数。
+   * 色の点に付けるクラスと、読み上げ用のアカウント名を返す。
+   */
+  accountMark?: (
+    message: MessageSummary,
+  ) => { color: string; name: string } | null;
   /** チェックを付けた行 (複数選択)。 */
   checkedIds: ReadonlySet<string>;
   /** 選択中。各行にチェックボックスを出し、行を押すとチェックを切り替える。 */
@@ -99,6 +106,7 @@ export function MessageList({
   emptyText = "メールはまだありません。同期が終わるとここに表示されます。",
   highlightTerms = [],
   locationLabel,
+  accountMark,
   checkedIds,
   selecting,
   onSelect,
@@ -222,6 +230,7 @@ export function MessageList({
           const preview = message.excerpt || message.snippet;
           const location = locationLabel?.(message);
           const checked = checkedIds.has(message.id);
+          const mark = accountMark?.(message);
           return (
             <ContextMenu key={message.id}>
               <ContextMenuTrigger
@@ -298,6 +307,12 @@ export function MessageList({
                     )}
                     {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
                     <span className="flex-1" />
+                    {message.answered && (
+                      <ReplyIcon
+                        className="size-3.5 shrink-0 text-muted-foreground"
+                        aria-label="返信済み"
+                      />
+                    )}
                     {message.flagged && (
                       <StarIcon
                         className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
@@ -308,6 +323,17 @@ export function MessageList({
                       <PaperclipIcon
                         className="size-3.5 shrink-0 text-muted-foreground"
                         aria-label="添付ファイルあり"
+                      />
+                    )}
+                    {mark && (
+                      <span
+                        role="img"
+                        aria-label={mark.name}
+                        title={mark.name}
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          mark.color,
+                        )}
                       />
                     )}
                     <time
