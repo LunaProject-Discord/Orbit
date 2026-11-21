@@ -21,6 +21,48 @@ import {
   type User,
 } from "@/lib/api";
 import { releasePush } from "@/lib/notifications";
+import { clearOffline, openOffline } from "@/lib/offline";
+
+const USER_KEY = "mail.user";
+
+/** 最後にログインを確かめた利用者。サーバーに届かないときに、この利用者として画面を開く。 */
+function rememberedUser(): User | null {
+  try {
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(USER_KEY) ?? "null",
+    );
+    if (!value || typeof value !== "object") return null;
+    const { id, email, name } = value as Record<string, unknown>;
+    return typeof id === "string" &&
+      typeof email === "string" &&
+      typeof name === "string"
+      ? { id, email, name }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberUser(user: User): void {
+  try {
+    window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {
+    // 保存できなくても、サーバーに届く間は使える。
+  }
+  // 端末内の保存先 (オフライン用) を、この利用者のものにする。
+  void openOffline(user.id);
+}
+
+/** ログアウトした利用者の、端末内に保存した内容を消す。 */
+function forgetUser(): void {
+  const user = rememberedUser();
+  try {
+    window.localStorage.removeItem(USER_KEY);
+  } catch {
+    // 消せなくても、トークンが無ければ画面は開かない。
+  }
+  if (user) void clearOffline(user.id);
+}
 
 type AuthState =
   | { status: "loading"; user: null }
@@ -58,11 +100,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     try {
       const user = await fetchMe(signal);
+      rememberUser(user);
       setState({ status: "signed-in", user });
     } catch (error) {
       if (signal?.aborted) return;
       if (error instanceof ApiError && error.status === 401) {
         setState({ status: "signed-out", user: null });
+        return;
+      }
+      // サーバーに届かなくても、前に確かめた利用者として、端末に保存した内容で開く。
+      // (セッションが切れていれば、次に届いたときの 401 でログイン画面へ移る。)
+      const user = rememberedUser();
+      if (user) {
+        rememberUser(user);
+        setState({ status: "signed-in", user });
       } else {
         setState({ status: "unreachable", user: null });
       }
@@ -75,6 +126,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onUnauthorized(() => {
       // セッションが切れた端末に、新着メールの通知が届き続けないようにする。
       void releasePush(false);
+      // 端末に保存した内容は消さない (接続後に送るメールを預かっているかもしれない)。
+      // 消すのは、自分でログアウトしたときだけにする。
       setState({ status: "signed-out", user: null });
     });
     return () => {
@@ -89,12 +142,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn: async (email, password) => {
         await apiSignIn(email, password);
         const user = await fetchMe();
+        rememberUser(user);
         setState({ status: "signed-in", user });
       },
       signOut: async () => {
         // ログアウトした端末に新着メールの通知が届かないよう、先に送り先を消す。
         await releasePush(true);
         await apiSignOut();
+        forgetUser();
         setState({ status: "signed-out", user: null });
       },
       retry: () => {

@@ -7,6 +7,7 @@ import "gen-interface-jp/display-600.css";
 import "gen-interface-jp/display-700.css";
 import "./globals.css";
 import { AuthGate, AuthProvider } from "@/components/auth-provider";
+import { OfflineBoot } from "@/components/offline-boot";
 import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body className="flex min-h-full flex-col">
+        <OfflineBoot />
         <ThemeProvider>
           <AuthProvider>
             <AuthGate>{children}</AuthGate>

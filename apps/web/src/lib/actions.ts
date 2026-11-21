@@ -100,6 +100,8 @@ export type ActionQueue = {
   /** まだサーバーへ送れていない操作 (古い順)。 */
   pending: () => MessageAction[];
   enqueue: (action: MessageAction) => void;
+  /** 送信待ちの操作が増減したときに呼ばれる処理を登録する。戻り値の関数で解除する。 */
+  onChange: (listener: () => void) => () => void;
   /** サーバーに拒否されて取り消された操作を受け取る。戻り値の関数で解除する。 */
   onRejected: (listener: (action: MessageAction) => void) => () => void;
   stop: () => void;
@@ -114,8 +116,10 @@ export function createActionQueue(
   let delay = MIN_DELAY;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(action: MessageAction) => void>();
+  const changeListeners = new Set<() => void>();
 
   const save = () => {
+    for (const listener of changeListeners) listener();
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
     } catch {
@@ -173,6 +177,10 @@ export function createActionQueue(
       items = [...items, action].slice(-MAX_PENDING);
       save();
       void flush();
+    },
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
     },
     onRejected(listener) {
       listeners.add(listener);

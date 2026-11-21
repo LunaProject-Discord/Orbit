@@ -204,6 +204,8 @@ type Props = {
   notificationStatus: NotificationStatus;
   notificationBusy: boolean;
   onNotificationChange: (enabled: boolean) => void;
+  /** 利用者の欄の上に出す、同期の状態の表示。 */
+  status?: React.ReactNode;
 };
 
 export function AccountSidebar({
@@ -226,6 +228,7 @@ export function AccountSidebar({
   notificationStatus,
   notificationBusy,
   onNotificationChange,
+  status,
 }: Props) {
   const { collapsed, toggle } = useCollapsed();
   const trees = useMemo(() => {
@@ -379,6 +382,7 @@ export function AccountSidebar({
         </span>
       </nav>
 
+      {status}
       <div className="flex shrink-0 items-center gap-2 border-t p-3">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>

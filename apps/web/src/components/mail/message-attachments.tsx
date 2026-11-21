@@ -23,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ApiError, type Attachment, fetchAttachment } from "@/lib/api";
+import { ApiError, type Attachment } from "@/lib/api";
 import {
   type AttachmentKind,
   attachmentErrorMessage,
@@ -32,6 +32,7 @@ import {
   previewOf,
 } from "@/lib/attachments";
 import { formatSize } from "@/lib/format";
+import { fetchAttachment } from "@/lib/offline";
 import { cn } from "@/lib/utils";
 
 const KIND_STYLE: Record<AttachmentKind, { icon: ReactNode; tone: string }> = {

@@ -30,9 +30,6 @@ import type { MessageActionInput } from "@/lib/actions";
 import {
   ApiError,
   type Attachment,
-  fetchAttachment,
-  getMessage,
-  getThread,
   type MessageDetail,
   type MessageSummary,
   type ThreadMessage,
@@ -50,6 +47,7 @@ import {
   formatListDate,
 } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
+import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
