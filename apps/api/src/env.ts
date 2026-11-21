@@ -3,7 +3,9 @@ import { loadEncryptionKey } from "@mail/core";
 function required(name: string): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name} が設定されていません。`);
+    throw new Error(
+      `${name} が設定されていません。リポジトリのルートで \`pnpm env:init\` を実行して .env を用意してください。`,
+    );
   }
   return value;
 }

@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "env:init": "node scripts/init-env.mjs",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",

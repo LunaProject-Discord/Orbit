@@ -22,15 +22,18 @@
 ## セットアップ
 
 ```sh
-cp .env.example .env
-# .env の BETTER_AUTH_SECRET と CREDENTIALS_ENCRYPTION_KEY に、それぞれ別の値を設定する
-openssl rand -base64 32
 pnpm install
+pnpm env:init          # .env を作成し、秘密の値 (BETTER_AUTH_SECRET など) を自動生成
 docker compose up -d   # PostgreSQL を起動
 pnpm db:migrate        # テーブルを作成
 pnpm user:create you@example.com "あなたの名前"   # ログイン用の利用者を作成 (パスワードを聞かれます)
 pnpm dev               # api / worker / web を起動
 ```
+
+どのコマンドも Windows (PowerShell)、macOS、Linux で同じように動きます。事前のビルドは不要です
+(開発時は `packages/*` の TypeScript を直接読み込みます。`pnpm build` は本番用の出力と型チェックのためのものです)。
+
+Node.js 25 以降には Corepack が同梱されていないため、pnpm は `npm install -g pnpm@10` などで入れてください。
 
 - Web: http://localhost:3000
 - API: http://localhost:8787 (`/healthz` で DB 接続を確認できます)
@@ -76,6 +79,7 @@ pnpm dev               # api / worker / web を起動
 
 | コマンド | 内容 |
 | --- | --- |
+| `pnpm env:init` | `.env` を作成し、未設定の秘密の値を生成 (設定済みの値は変更しない) |
 | `pnpm dev` | 全アプリを開発モードで起動 |
 | `pnpm build` | 全パッケージをビルド |
 | `pnpm typecheck` | 型チェック |
