@@ -277,7 +277,7 @@ export const messages = pgTable(
     draft: boolean().notNull().default(false),
     /**
      * 検索用の文字列 (差出人、宛先、本文)。PostgreSQL が自動で作るので、書き込む側は意識しなくてよい。
-     * mail_addresses_text / mail_html_to_text はマイグレーション 0006 で定義している。
+     * mail_addresses_text / mail_html_to_text はマイグレーション 0007 で定義している。
      * 本文は、テキストが無ければ HTML からタグを除いたもの、取得前なら冒頭の抜粋を使う。
      */
     searchFrom: text()

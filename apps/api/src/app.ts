@@ -93,12 +93,12 @@ export function createApp({
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/focus", focusRoutes(deps));
-  authed.route("/attachments", attachmentRoutes());
+  authed.route("/attachments", attachmentRoutes({ db, hub }));
   // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) を登録する。
   authed.route("/messages", sendRoutes(deps));
   // 検索 (/messages/search) も /messages/:id より先に登録する。
   authed.route("/messages", searchRoutes(deps));
-  authed.route("/messages", messageRoutes(deps));
+  authed.route("/messages", messageRoutes({ db, hub }));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);
 

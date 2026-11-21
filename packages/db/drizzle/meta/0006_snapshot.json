@@ -1,5 +1,5 @@
 {
-  "id": "14848f5c-fcb9-43b3-b7b2-c232458291f3",
+  "id": "56ec783b-b769-49e1-b124-886ec3bdf589",
   "prevId": "7c7d1f1d-df39-4cf9-8810-e6ffeaf33044",
   "version": "7",
   "dialect": "postgresql",
@@ -78,24 +78,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "attachments_message_id_messages_id_fk": {
           "name": "attachments_message_id_messages_id_fk",
           "tableFrom": "attachments",
-          "tableTo": "messages",
           "columnsFrom": [
             "message_id"
           ],
+          "tableTo": "messages",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -202,24 +202,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "auth_accounts_user_id_users_id_fk": {
           "name": "auth_accounts_user_id_users_id_fk",
           "tableFrom": "auth_accounts",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -290,24 +290,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "changes_user_id_users_id_fk": {
           "name": "changes_user_id_users_id_fk",
           "tableFrom": "changes",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -378,24 +378,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "devices_user_id_users_id_fk": {
           "name": "devices_user_id_users_id_fk",
           "tableFrom": "devices",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -570,24 +570,24 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "mail_accounts_user_id_users_id_fk": {
           "name": "mail_accounts_user_id_users_id_fk",
           "tableFrom": "mail_accounts",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -707,9 +707,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "mailboxes_parent_idx": {
           "name": "mailboxes_parent_idx",
@@ -722,37 +722,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "mailboxes_account_id_mail_accounts_id_fk": {
           "name": "mailboxes_account_id_mail_accounts_id_fk",
           "tableFrom": "mailboxes",
-          "tableTo": "mail_accounts",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "mail_accounts",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "mailboxes_parent_id_mailboxes_id_fk": {
           "name": "mailboxes_parent_id_mailboxes_id_fk",
           "tableFrom": "mailboxes",
-          "tableTo": "mailboxes",
           "columnsFrom": [
             "parent_id"
           ],
+          "tableTo": "mailboxes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -808,9 +808,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "message_mailboxes_message_idx": {
           "name": "message_mailboxes_message_idx",
@@ -823,37 +823,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "message_mailboxes_mailbox_id_mailboxes_id_fk": {
           "name": "message_mailboxes_mailbox_id_mailboxes_id_fk",
           "tableFrom": "message_mailboxes",
-          "tableTo": "mailboxes",
           "columnsFrom": [
             "mailbox_id"
           ],
+          "tableTo": "mailboxes",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "message_mailboxes_message_id_messages_id_fk": {
           "name": "message_mailboxes_message_id_messages_id_fk",
           "tableFrom": "message_mailboxes",
-          "tableTo": "messages",
           "columnsFrom": [
             "message_id"
           ],
+          "tableTo": "messages",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {
@@ -1039,36 +1039,6 @@
           "notNull": true,
           "default": false
         },
-        "search_from": {
-          "name": "search_from",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "mail_addresses_text(\"from\")",
-            "type": "stored"
-          }
-        },
-        "search_recipients": {
-          "name": "search_recipients",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "mail_addresses_text(\"to\" || \"cc\" || \"bcc\")",
-            "type": "stored"
-          }
-        },
-        "search_body": {
-          "name": "search_body",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "generated": {
-            "as": "coalesce(nullif(\"body_text\", ''), mail_html_to_text(\"body_html\"), \"snippet\", '')",
-            "type": "stored"
-          }
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1085,70 +1055,6 @@
         }
       },
       "indexes": {
-        "messages_subject_trgm_idx": {
-          "name": "messages_subject_trgm_idx",
-          "columns": [
-            {
-              "expression": "subject",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
-        "messages_search_from_trgm_idx": {
-          "name": "messages_search_from_trgm_idx",
-          "columns": [
-            {
-              "expression": "search_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
-        "messages_search_recipients_trgm_idx": {
-          "name": "messages_search_recipients_trgm_idx",
-          "columns": [
-            {
-              "expression": "search_recipients",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
-        "messages_search_body_trgm_idx": {
-          "name": "messages_search_body_trgm_idx",
-          "columns": [
-            {
-              "expression": "search_body",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "gin_trgm_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
-          "with": {}
-        },
         "messages_account_provider_id_idx": {
           "name": "messages_account_provider_id_idx",
           "columns": [
@@ -1166,9 +1072,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "messages_account_thread_idx": {
           "name": "messages_account_thread_idx",
@@ -1187,9 +1093,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "messages_account_received_idx": {
           "name": "messages_account_received_idx",
@@ -1208,9 +1114,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "messages_message_id_header_idx": {
           "name": "messages_message_id_header_idx",
@@ -1223,24 +1129,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "messages_account_id_mail_accounts_id_fk": {
           "name": "messages_account_id_mail_accounts_id_fk",
           "tableFrom": "messages",
-          "tableTo": "mail_accounts",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "mail_accounts",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1346,9 +1252,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "outbox_status_run_after_idx": {
           "name": "outbox_status_run_after_idx",
@@ -1367,24 +1273,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "outbox_account_id_mail_accounts_id_fk": {
           "name": "outbox_account_id_mail_accounts_id_fk",
           "tableFrom": "outbox",
-          "tableTo": "mail_accounts",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "mail_accounts",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1461,34 +1367,34 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sessions_user_id_users_id_fk": {
           "name": "sessions_user_id_users_id_fk",
           "tableFrom": "sessions",
-          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "sessions_token_unique": {
           "name": "sessions_token_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "token"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -1552,10 +1458,10 @@
       "uniqueConstraints": {
         "users_email_unique": {
           "name": "users_email_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -1618,9 +1524,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -1732,10 +1638,10 @@
     }
   },
   "schemas": {},
+  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
-  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

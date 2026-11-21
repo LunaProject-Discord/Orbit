@@ -1,5 +1,7 @@
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 const REQUEST_TIMEOUT_MS = 60_000;
+/** 添付ファイルの取得は本文を読み終えるまでが対象なので、長めに待つ。 */
+const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_RETRIES = 3;
 const MAX_RETRY_WAIT_MS = 60_000;
 
@@ -93,6 +95,33 @@ export class GraphClient {
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
+    const response = await this.send(
+      method,
+      path,
+      body,
+      signal,
+      REQUEST_TIMEOUT_MS,
+    );
+    if (response.status === 204) return undefined as T;
+    const text = await response.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  }
+
+  /**
+   * 応答の本文を解釈せずに、そのまま受け取る (添付ファイルの実体の取得用)。
+   * 呼び出し側が本文を読み終えるか、cancel すること。
+   */
+  download(path: string, signal?: AbortSignal): Promise<Response> {
+    return this.send("GET", path, undefined, signal, DOWNLOAD_TIMEOUT_MS);
+  }
+
+  private async send(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    path: string,
+    body: unknown,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<Response> {
     const raw = isRawBody(body) ? body : null;
     const url = path.startsWith("https://") ? path : `${GRAPH_BASE}${path}`;
     if (!url.startsWith(`${GRAPH_BASE}/`)) {
@@ -117,14 +146,10 @@ export class GraphClient {
           ? {}
           : { body: raw ? raw.raw : JSON.stringify(body) }),
         signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-          : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       });
-      if (response.ok) {
-        if (response.status === 204) return undefined as T;
-        const text = await response.text();
-        return (text ? JSON.parse(text) : undefined) as T;
-      }
+      if (response.ok) return response;
       if (response.status === 401 && !refreshed) {
         refreshed = true;
         await this.getToken(true);

@@ -1,4 +1,10 @@
-import { type Database, mailboxes, messageMailboxes, messages } from "@mail/db";
+import {
+  attachments,
+  type Database,
+  mailboxes,
+  messageMailboxes,
+  messages,
+} from "@mail/db";
 import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import {
@@ -7,8 +13,11 @@ import {
   type GraphPage,
 } from "./graph-client.js";
 import {
+  ATTACHMENT_SELECT,
+  type GraphAttachment,
   type GraphMessage,
   MESSAGE_SELECT,
+  toAttachmentInfos,
   toBody,
   toMessageValues,
   wellKnownFolders,
@@ -18,7 +27,7 @@ import {
   removePlacements,
   type SyncAccount,
 } from "./mailbox-store.js";
-import { clean, makeSnippet } from "./message-parse.js";
+import { type AttachmentInfo, clean, makeSnippet } from "./message-parse.js";
 import { loadPendingGuard } from "./outbox.js";
 
 const BODY_BATCH = 20;
@@ -297,6 +306,35 @@ export async function syncGraphFolder(
 }
 
 /**
+ * メッセージの添付ファイルの一覧 (実体は含めない)。
+ * 項目を絞った要求を受け付けてもらえなかった場合は、絞らずに取り直す。
+ */
+export async function listGraphAttachments(
+  client: GraphClient,
+  providerMessageId: string,
+  signal?: AbortSignal,
+): Promise<AttachmentInfo[]> {
+  const base = `/me/messages/${encodeURIComponent(providerMessageId)}/attachments`;
+  const items: GraphAttachment[] = [];
+  const readAll = async (first: string) => {
+    items.length = 0;
+    let next: string | undefined = first;
+    while (next) {
+      const page: GraphPage<GraphAttachment> = await client.get(next, signal);
+      items.push(...page.value);
+      next = page["@odata.nextLink"];
+    }
+  };
+  try {
+    await readAll(`${base}?$select=${ATTACHMENT_SELECT}`);
+  } catch (error) {
+    if (!(error instanceof GraphError && error.status === 400)) throw error;
+    await readAll(base);
+  }
+  return toAttachmentInfos(items);
+}
+
+/**
  * 本文をまだ取得していないメッセージを、フォルダに関係なく新しい順に 1 回分だけ取得する。
  * preferMailboxId (利用者が開いているフォルダ) に未取得のものがあれば、そちらを先に取得する。
  * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
@@ -312,6 +350,7 @@ export async function fetchGraphBodies(
     messageId: messages.id,
     providerMessageId: messages.providerMessageId,
     snippet: messages.snippet,
+    hasAttachments: messages.hasAttachments,
   };
   let pending = preferMailboxId
     ? await db
@@ -351,6 +390,7 @@ export async function fetchGraphBodies(
     await Promise.all(
       batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
         let body: GraphMessage["body"] = null;
+        let files: AttachmentInfo[] | null = null;
         if (row.providerMessageId) {
           try {
             const message = await client.get<GraphMessage>(
@@ -358,22 +398,47 @@ export async function fetchGraphBodies(
               signal,
             );
             body = message.body;
+            // 本文に埋め込まれた画像 (cid:) だけのメールは hasAttachments が false になる。
+            if (
+              row.hasAttachments ||
+              /\bcid:/i.test(message.body?.content ?? "")
+            ) {
+              files = await listGraphAttachments(
+                client,
+                row.providerMessageId,
+                signal,
+              );
+            }
           } catch (error) {
             // サーバーから消えていた場合は空のまま取得済みにする (次の差分でメッセージごと消える)。
             if (!(error instanceof GraphError && error.notFound)) throw error;
           }
         }
         const { bodyText, bodyHtml } = toBody(body);
-        await db
-          .update(messages)
-          .set({
-            bodyText,
-            bodyHtml,
-            // 一覧の取得で受け取った冒頭 (bodyPreview) があれば、それを使い続ける。
-            snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
-            bodyFetchedAt: new Date(),
-          })
-          .where(eq(messages.id, row.messageId));
+        await db.transaction(async (tx) => {
+          if (files) {
+            await tx
+              .delete(attachments)
+              .where(eq(attachments.messageId, row.messageId));
+            if (files.length > 0) {
+              await tx
+                .insert(attachments)
+                .values(
+                  files.map((file) => ({ messageId: row.messageId, ...file })),
+                );
+            }
+          }
+          await tx
+            .update(messages)
+            .set({
+              bodyText,
+              bodyHtml,
+              // 一覧の取得で受け取った冒頭 (bodyPreview) があれば、それを使い続ける。
+              snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
+              bodyFetchedAt: new Date(),
+            })
+            .where(eq(messages.id, row.messageId));
+        });
         done.push(row.messageId);
       }),
     );

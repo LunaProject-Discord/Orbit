@@ -671,3 +671,35 @@ export function uploadAttachment(
 export async function deleteAttachment(id: string): Promise<void> {
   await apiFetch(`/v1/attachments/${id}`, { method: "DELETE" });
 }
+
+/**
+ * 受信したメールの添付ファイルの実体を取得する。
+ * サーバーがまだ持っていなければ、メールサーバーから取得し終えるまで待つ。
+ */
+export async function fetchAttachment(
+  messageId: string,
+  attachmentId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await apiFetch(
+    `/v1/messages/${messageId}/attachments/${attachmentId}`,
+    { signal },
+  );
+  return response.blob();
+}
+
+/**
+ * 受信したメールの添付ファイルを、送信用の添付ファイルとして複製してもらう (転送用)。
+ * 戻り値は、sendMail の attachmentIds に指定できる添付ファイル。
+ */
+export async function forwardAttachments(
+  messageId: string,
+  attachmentIds: string[],
+  signal?: AbortSignal,
+): Promise<UploadedAttachment[]> {
+  const { attachments } = await apiJson<{ attachments: UploadedAttachment[] }>(
+    "/v1/attachments/forward",
+    { method: "POST", body: { messageId, attachmentIds }, signal },
+  );
+  return attachments;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toBody, toMessageValues } from "./graph-parse.js";
+import { toAttachmentInfos, toBody, toMessageValues } from "./graph-parse.js";
 
 describe("toMessageValues", () => {
   it("Graph の message を DB の値に変換する", () => {
@@ -76,5 +76,69 @@ describe("toBody", () => {
       bodyHtml: null,
     });
     expect(toBody(null)).toEqual({ bodyText: null, bodyHtml: null });
+  });
+});
+
+describe("toAttachmentInfos", () => {
+  it("ファイル、埋め込み画像、添付されたメールを変換し、リンクは除く", () => {
+    expect(
+      toAttachmentInfos([
+        {
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "AAA",
+          name: "議題.pdf",
+          contentType: "Application/PDF",
+          size: 1234,
+          isInline: false,
+          contentId: null,
+        },
+        {
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: "BBB",
+          name: "image001.png",
+          contentType: "image/png",
+          size: 99,
+          isInline: true,
+          contentId: "image001.png@01DC",
+        },
+        {
+          "@odata.type": "#microsoft.graph.itemAttachment",
+          id: "CCC",
+          name: "転送するメール",
+          contentType: null,
+          size: 5000,
+        },
+        {
+          "@odata.type": "#microsoft.graph.referenceAttachment",
+          id: "DDD",
+          name: "OneDrive のファイル",
+        },
+      ]),
+    ).toEqual([
+      {
+        partId: "AAA",
+        filename: "議題.pdf",
+        contentType: "application/pdf",
+        size: 1234,
+        contentId: null,
+        inline: false,
+      },
+      {
+        partId: "BBB",
+        filename: "image001.png",
+        contentType: "image/png",
+        size: 99,
+        contentId: "image001.png@01DC",
+        inline: true,
+      },
+      {
+        partId: "CCC",
+        filename: "転送するメール.eml",
+        contentType: "message/rfc822",
+        size: 5000,
+        contentId: null,
+        inline: false,
+      },
+    ]);
   });
 });

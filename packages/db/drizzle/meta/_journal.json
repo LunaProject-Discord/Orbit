@@ -47,8 +47,15 @@
     {
       "idx": 6,
       "version": "7",
-      "when": 1795281269139,
-      "tag": "0006_message_search",
+      "when": 1795280439944,
+      "tag": "0006_graph_attachments_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795281379792,
+      "tag": "0007_message_search",
       "breakpoints": true
     }
   ]
