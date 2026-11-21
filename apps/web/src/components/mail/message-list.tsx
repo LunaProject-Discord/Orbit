@@ -3,8 +3,15 @@
 import { cn } from "cn";
 import { PaperclipIcon, StarIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary } from "@/lib/api";
 import { addressLabel, formatListDate } from "@/lib/format";
 
@@ -19,6 +26,8 @@ type Props = {
   /** 1 通も無いときの文言。 */
   emptyText?: string;
   onSelect: (id: string) => void;
+  /** 右クリックメニューからの操作。 */
+  onAction: (messageIds: string[], input: MessageActionInput) => void;
   onLoadMore: () => void;
   onRetry: () => void;
 };
@@ -32,6 +41,7 @@ export function MessageList({
   showRecipients = false,
   emptyText = "メールはまだありません。同期が終わるとここに表示されます。",
   onSelect,
+  onAction,
   onLoadMore,
   onRetry,
 }: Props) {
@@ -106,67 +116,79 @@ export function MessageList({
         {messages.map((message) => {
           const unread = !message.seen;
           return (
-            <li key={message.id} className="border-b">
-              <button
-                type="button"
-                onClick={() => onSelect(message.id)}
-                aria-current={selectedId === message.id ? "true" : undefined}
-                className={cn(
-                  "flex w-full flex-col gap-0.5 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
-                  selectedId === message.id && "bg-muted",
-                )}
+            <ContextMenu key={message.id}>
+              <ContextMenuTrigger
+                render={
+                  <li className="border-b" data-message-id={message.id} />
+                }
               >
-                <span className="flex items-center gap-2">
-                  {unread && (
-                    <span
-                      className="size-2 shrink-0 rounded-full bg-primary"
-                      aria-hidden="true"
-                    />
+                <button
+                  type="button"
+                  onClick={() => onSelect(message.id)}
+                  aria-current={selectedId === message.id ? "true" : undefined}
+                  className={cn(
+                    "flex w-full flex-col gap-0.5 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                    selectedId === message.id && "bg-muted",
                   )}
+                >
+                  <span className="flex items-center gap-2">
+                    {unread && (
+                      <span
+                        className="size-2 shrink-0 rounded-full bg-primary"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-sm",
+                        unread ? "font-semibold" : "text-muted-foreground",
+                      )}
+                    >
+                      {unread && <span className="sr-only">未読 </span>}
+                      {showRecipients
+                        ? message.to.length > 0
+                          ? `宛先: ${message.to.map(addressLabel).join("、")}`
+                          : "(宛先なし)"
+                        : addressLabel(message.from[0])}
+                    </span>
+                    {message.flagged && (
+                      <StarIcon
+                        className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+                        aria-label="スター付き"
+                      />
+                    )}
+                    {message.hasAttachments && (
+                      <PaperclipIcon
+                        className="size-3.5 shrink-0 text-muted-foreground"
+                        aria-label="添付ファイルあり"
+                      />
+                    )}
+                    <time
+                      dateTime={message.receivedAt}
+                      className="shrink-0 text-muted-foreground text-xs tabular-nums"
+                    >
+                      {formatListDate(message.receivedAt)}
+                    </time>
+                  </span>
                   <span
                     className={cn(
-                      "min-w-0 flex-1 truncate text-sm",
-                      unread ? "font-semibold" : "text-muted-foreground",
+                      "truncate text-sm",
+                      unread && "font-semibold",
                     )}
                   >
-                    {unread && <span className="sr-only">未読 </span>}
-                    {showRecipients
-                      ? message.to.length > 0
-                        ? `宛先: ${message.to.map(addressLabel).join("、")}`
-                        : "(宛先なし)"
-                      : addressLabel(message.from[0])}
+                    {message.subject || "(件名なし)"}
                   </span>
-                  {message.flagged && (
-                    <StarIcon
-                      className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
-                      aria-label="スター付き"
-                    />
+                  {message.snippet && (
+                    <span className="line-clamp-2 text-muted-foreground text-xs">
+                      {message.snippet}
+                    </span>
                   )}
-                  {message.hasAttachments && (
-                    <PaperclipIcon
-                      className="size-3.5 shrink-0 text-muted-foreground"
-                      aria-label="添付ファイルあり"
-                    />
-                  )}
-                  <time
-                    dateTime={message.receivedAt}
-                    className="shrink-0 text-muted-foreground text-xs tabular-nums"
-                  >
-                    {formatListDate(message.receivedAt)}
-                  </time>
-                </span>
-                <span
-                  className={cn("truncate text-sm", unread && "font-semibold")}
-                >
-                  {message.subject || "(件名なし)"}
-                </span>
-                {message.snippet && (
-                  <span className="line-clamp-2 text-muted-foreground text-xs">
-                    {message.snippet}
-                  </span>
-                )}
-              </button>
-            </li>
+                </button>
+              </ContextMenuTrigger>
+              <ContextMenuContent className="w-56">
+                <MessageMenuItems message={message} onAction={onAction} />
+              </ContextMenuContent>
+            </ContextMenu>
           );
         })}
       </ul>

@@ -30,6 +30,7 @@ import {
 } from "@/lib/api";
 import { subscribeEvents } from "@/lib/events";
 import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
+import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 
 const PAGE_SIZE = 50;
 /** 表示中のフォルダをサーバーへ知らせる間隔。 */
@@ -99,6 +100,8 @@ export function MailApp({ user }: { user: User }) {
   /** サーバーへ送る操作の待ち行列。通信できない間の操作もここに残る。 */
   const queueRef = useRef<ActionQueue | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** 増やすと、表示中のメールの移動先メニューが開く (ショートカットキー用)。 */
+  const [moveRequest, setMoveRequest] = useState(0);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -339,6 +342,71 @@ export function MailApp({ user }: { user: User }) {
   /** フォルダを表示している間は、どのアカウントのフォルダかを添える。 */
   const subtitle = selectedMailbox ? accountName : null;
   const noAccounts = accounts !== null && accounts.length === 0;
+
+  // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
+  const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  shortcutRef.current = (event) => {
+    const command = resolveShortcut(event);
+    if (!command || isTypingTarget(event.target)) return;
+    // ダイアログやメニューを開いている間は、そちらのキー操作を優先する。
+    if (document.querySelector('[role="dialog"], [role="menu"]')) return;
+    const list = messages ?? [];
+    const index = list.findIndex((item) => item.id === selectedMessageId);
+    const open = (message: MessageSummary | undefined) => {
+      if (!message) return;
+      handleSelectMessage(message.id);
+      document
+        .querySelector(`[data-message-id="${message.id}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    };
+
+    if (command === "next" || command === "previous") {
+      if (list.length === 0) return;
+      event.preventDefault();
+      if (index === -1) open(list[0]);
+      else open(list[command === "next" ? index + 1 : index - 1]);
+      return;
+    }
+    const message = list[index];
+    if (!message) return;
+    event.preventDefault();
+    const id = [message.id];
+    // 移動や削除のあとは、続けて操作できるよう隣のメールを開く。
+    const neighbor = list[index + 1] ?? list[index - 1];
+    switch (command) {
+      case "close":
+        setSelectedMessageId(null);
+        break;
+      case "markRead":
+        performAction(id, { action: "set_flags", seen: true });
+        break;
+      case "markUnread":
+        performAction(id, { action: "set_flags", seen: false });
+        break;
+      case "toggleRead":
+        performAction(id, { action: "set_flags", seen: !message.seen });
+        break;
+      case "toggleStar":
+        performAction(id, { action: "set_flags", flagged: !message.flagged });
+        break;
+      case "archive":
+        performAction(id, { action: "move", destination: "archive" });
+        open(neighbor);
+        break;
+      case "delete":
+        performAction(id, { action: "move", destination: "trash" });
+        open(neighbor);
+        break;
+      case "move":
+        setMoveRequest((count) => count + 1);
+        break;
+    }
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => shortcutRef.current(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const selectedMessage =
     messages?.find((message) => message.id === selectedMessageId) ?? null;
 
@@ -459,6 +527,7 @@ export function MailApp({ user }: { user: User }) {
                   ? { emptyText: "このフォルダにメールはありません。" }
                   : {})}
                 onSelect={handleSelectMessage}
+                onAction={performAction}
                 onLoadMore={() => void handleLoadMore()}
                 onRetry={() => void loadFirstPage(selectionRef.current, true)}
               />
@@ -479,6 +548,7 @@ export function MailApp({ user }: { user: User }) {
               refreshKey={refreshKey}
               summary={selectedMessage}
               onAction={performAction}
+              moveRequest={moveRequest}
               onBack={() => setSelectedMessageId(null)}
               onMissing={handleMissing}
             />
