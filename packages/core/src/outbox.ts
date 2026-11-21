@@ -26,6 +26,8 @@ export type SetFlagsPayload = {
   targets: OutboxTarget[];
   seen?: boolean;
   flagged?: boolean;
+  /** 返信済みの印。返信を送信したあとに同期ワーカーが付ける。 */
+  answered?: boolean;
 };
 
 export type MovePayload = {
@@ -35,10 +37,50 @@ export type MovePayload = {
 
 export type DeletePayload = { targets: OutboxTarget[] };
 
+/** メールアドレス 1 件分 (packages/db の Address と同じ形)。 */
+export type MailAddress = { name?: string; address: string };
+
+/**
+ * 送信するメール 1 通。Message-ID と日時は受け付けた時点で決めておき、
+ * やり直しても、送信済みフォルダへ保存するときも、同じ内容のメールになるようにする。
+ */
+export type OutgoingMessage = {
+  from: MailAddress;
+  to: MailAddress[];
+  cc: MailAddress[];
+  bcc: MailAddress[];
+  subject: string;
+  text: string;
+  /** <...> の形の Message-ID。 */
+  messageId: string;
+  /** ISO 8601 の日時。 */
+  date: string;
+  inReplyTo: string | null;
+  references: string[];
+};
+
+export type SendPayload = {
+  message: OutgoingMessage;
+  /** 返信・転送の元になったメッセージ (messages.id)。 */
+  sourceMessageId: string | null;
+  mode: "new" | "reply" | "forward";
+};
+
+/** 送信したメールを、送信済みフォルダへ保存する (IMAP のみ)。 */
+export type AppendPayload = {
+  message: OutgoingMessage;
+  /** 保存先のフォルダのパス。 */
+  mailboxPath: string;
+  /** 移動などの操作と形を揃えるための空の配列。 */
+  targets: OutboxTarget[];
+};
+
+/** 受け付けた順に、同期の接続を使ってプロバイダへ反映する操作。 */
 export type OutboxOperation =
   | { kind: "set_flags"; payload: SetFlagsPayload }
   | { kind: "move"; payload: MovePayload }
-  | { kind: "delete"; payload: DeletePayload };
+  | { kind: "delete"; payload: DeletePayload }
+  | { kind: "append"; payload: AppendPayload };
 
 /**
  * アカウント単位の排他に使う PostgreSQL の勧告ロックのキー。

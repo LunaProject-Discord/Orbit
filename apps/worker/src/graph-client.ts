@@ -31,6 +31,18 @@ export class GraphError extends Error {
   }
 }
 
+/** JSON にせず、そのままの文字列で送る本文。 */
+export type RawBody = { raw: string; contentType: string };
+
+function isRawBody(body: unknown): body is RawBody {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    typeof (body as RawBody).raw === "string" &&
+    typeof (body as RawBody).contentType === "string"
+  );
+}
+
 export type GraphPage<T> = {
   value: T[];
   "@odata.nextLink"?: string;
@@ -67,13 +79,17 @@ export class GraphClient {
     return this.request<T>("GET", path, undefined, signal);
   }
 
-  /** 書き込みを含む呼び出し。本文の無い応答 (204 など) では undefined を返す。 */
+  /**
+   * 書き込みを含む呼び出し。本文の無い応答 (202、204 など) では undefined を返す。
+   * body に RawBody を渡すと、JSON にせずそのままの文字列で送る (MIME 形式の送信用)。
+   */
   async request<T>(
     method: "GET" | "POST" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
+    const raw = isRawBody(body) ? body : null;
     const url = path.startsWith("https://") ? path : `${GRAPH_BASE}${path}`;
     if (!url.startsWith(`${GRAPH_BASE}/`)) {
       // 保存しておいた続きの URL が書き換えられていても、トークンを外へ送らない。
@@ -89,9 +105,13 @@ export class GraphClient {
           Accept: "application/json",
           // 不変 ID: フォルダを移動しても変わらない ID を返してもらう。
           Prefer: 'IdType="ImmutableId", odata.maxpagesize=100',
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(body === undefined
+            ? {}
+            : { "Content-Type": raw ? raw.contentType : "application/json" }),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined
+          ? {}
+          : { body: raw ? raw.raw : JSON.stringify(body) }),
         signal: signal
           ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
           : AbortSignal.timeout(REQUEST_TIMEOUT_MS),

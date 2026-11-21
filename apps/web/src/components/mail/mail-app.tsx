@@ -1,14 +1,16 @@
 "use client";
 
 import { cn } from "cn";
-import { InboxIcon, MenuIcon, PlusIcon } from "lucide-react";
+import { InboxIcon, MenuIcon, PenLineIcon, PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AccountSidebar } from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
+import { ComposeDialog } from "@/components/mail/compose-dialog";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
+import { OutgoingList } from "@/components/mail/outgoing-list";
 import { Button } from "@/components/ui/button";
 import {
   type ActionQueue,
@@ -18,13 +20,25 @@ import {
 } from "@/lib/actions";
 import {
   type Account,
+  deleteOutgoing,
   listAccounts,
   listMessages,
+  listOutgoing,
   type MessageAction,
+  type MessageDetail,
   type MessageSummary,
+  type OutgoingMail,
   startMicrosoftLogin,
   type User,
 } from "@/lib/api";
+import {
+  bodyTextOf,
+  buildDraftFrom,
+  type ComposeDraft,
+  type ComposeMode,
+  draftFromOutgoing,
+  newDraft,
+} from "@/lib/compose";
 import { subscribeEvents } from "@/lib/events";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 
@@ -32,6 +46,8 @@ const PAGE_SIZE = 50;
 const LIST_ERROR = "メールを読み込めませんでした。";
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+const DRAFT_NOTICE =
+  "書きかけのメールがあります。送信するか破棄すると、新しいメールを作成できます。";
 
 /** 一覧の並び順 (新しい順)。a が b より後ろなら正。 */
 function compareMessages(a: MessageSummary, b: MessageSummary): number {
@@ -86,12 +102,32 @@ export function MailApp({ user }: { user: User }) {
   const [actionError, setActionError] = useState<string | null>(null);
   /** 増やすと、表示中のメールの移動先メニューが開く (ショートカットキー用)。 */
   const [moveRequest, setMoveRequest] = useState(0);
+  /** 作成中のメール。作成画面を閉じても、送信するか破棄するまで残す。 */
+  const [draft, setDraft] = useState<ComposeDraft | null>(null);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeNotice, setComposeNotice] = useState<string | null>(null);
+  /** 表示中のメールへの返信・転送の依頼 (ショートカットキー用)。 */
+  const [composeRequest, setComposeRequest] = useState<{
+    count: number;
+    mode: Exclude<ComposeMode, "new">;
+  } | null>(null);
+  /** まだ送り終えていないメール (送信中、やり直し待ち、失敗)。 */
+  const [outgoing, setOutgoing] = useState<OutgoingMail[]>([]);
 
   const loadAccounts = useCallback(async () => {
     try {
       setAccounts(await listAccounts());
     } catch {
       // 一覧は次の通知や操作でまた取得する。
+    }
+  }, []);
+
+  const loadOutgoing = useCallback(async () => {
+    try {
+      setOutgoing(await listOutgoing());
+    } catch {
+      // 次の通知や操作でまた取得する。
     }
   }, []);
 
@@ -134,7 +170,8 @@ export function MailApp({ user }: { user: User }) {
 
   useEffect(() => {
     void loadAccounts();
-  }, [loadAccounts]);
+    void loadOutgoing();
+  }, [loadAccounts, loadOutgoing]);
 
   useEffect(() => {
     const queue = createActionQueue();
@@ -202,6 +239,7 @@ export function MailApp({ user }: { user: User }) {
       timer = setTimeout(() => {
         timer = null;
         void loadAccounts();
+        void loadOutgoing();
         void loadFirstPage(selectedAccountRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
@@ -210,7 +248,72 @@ export function MailApp({ user }: { user: User }) {
       unsubscribe();
       if (timer) clearTimeout(timer);
     };
-  }, [loadAccounts, loadFirstPage]);
+  }, [loadAccounts, loadFirstPage, loadOutgoing]);
+
+  /** 作成画面を開く。書きかけのメールがあれば、上書きせずにそちらを開く。 */
+  function openCompose(create: () => ComposeDraft | null) {
+    if (draft && draftDirty) {
+      setComposeNotice(DRAFT_NOTICE);
+    } else {
+      const next = create();
+      if (!next) return;
+      setDraft(next);
+      setDraftDirty(false);
+      setComposeNotice(null);
+    }
+    setComposeOpen(true);
+  }
+
+  function handleNewMail() {
+    if (draft) {
+      // 「作成」は、書きかけがあればその続きを開く。
+      setComposeNotice(null);
+      setComposeOpen(true);
+      return;
+    }
+    openCompose(() => {
+      const accountId = selectedAccountId ?? accounts?.[0]?.id;
+      return accountId ? newDraft(accountId) : null;
+    });
+  }
+
+  const handleCompose = (
+    mode: Exclude<ComposeMode, "new">,
+    message: MessageDetail,
+  ) => {
+    openCompose(() =>
+      buildDraftFrom(mode, message, bodyTextOf(message), accounts ?? []),
+    );
+  };
+
+  function clearDraft() {
+    setDraft(null);
+    setDraftDirty(false);
+    setComposeNotice(null);
+    setComposeOpen(false);
+  }
+
+  function handleEditOutgoing(mail: OutgoingMail) {
+    if (draft && draftDirty) {
+      setComposeNotice(DRAFT_NOTICE);
+      setComposeOpen(true);
+      return;
+    }
+    setDraft(draftFromOutgoing(mail));
+    // 内容は下書きに移したので、閉じただけで消えないよう書きかけとして扱う。
+    setDraftDirty(true);
+    setComposeNotice(null);
+    setComposeOpen(true);
+    handleRemoveOutgoing(mail);
+  }
+
+  function handleRemoveOutgoing(mail: OutgoingMail) {
+    setOutgoing((current) => current.filter((item) => item.id !== mail.id));
+    // 送信が始まっていて取り消せなかった場合などは、取得し直して実際の状態を出す。
+    deleteOutgoing(mail.id)
+      .catch(() => {})
+      .finally(() => void loadOutgoing());
+  }
 
   useEffect(() => {
     if (!sidebarOpen) return;
@@ -274,6 +377,11 @@ export function MailApp({ user }: { user: User }) {
     if (!command || isTypingTarget(event.target)) return;
     // ダイアログやメニューを開いている間は、そちらのキー操作を優先する。
     if (document.querySelector('[role="dialog"], [role="menu"]')) return;
+    if (command === "compose") {
+      event.preventDefault();
+      handleNewMail();
+      return;
+    }
     const list = messages ?? [];
     const index = list.findIndex((item) => item.id === selectedMessageId);
     const open = (message: MessageSummary | undefined) => {
@@ -323,6 +431,14 @@ export function MailApp({ user }: { user: User }) {
         break;
       case "move":
         setMoveRequest((count) => count + 1);
+        break;
+      case "reply":
+      case "replyAll":
+      case "forward":
+        setComposeRequest((current) => ({
+          count: (current?.count ?? 0) + 1,
+          mode: command,
+        }));
         break;
     }
   };
@@ -400,8 +516,21 @@ export function MailApp({ user }: { user: User }) {
             >
               <MenuIcon />
             </Button>
-            <h1 className="truncate font-semibold text-lg">{title}</h1>
+            <h1 className="min-w-0 flex-1 truncate font-semibold text-lg">
+              {title}
+            </h1>
+            {!noAccounts && accounts !== null && (
+              <Button size="sm" onClick={handleNewMail}>
+                <PenLineIcon />
+                {draft ? "下書きを開く" : "作成"}
+              </Button>
+            )}
           </header>
+          <OutgoingList
+            outgoing={outgoing}
+            onEdit={handleEditOutgoing}
+            onRemove={handleRemoveOutgoing}
+          />
           {actionError && (
             <p
               role="alert"
@@ -462,6 +591,8 @@ export function MailApp({ user }: { user: User }) {
               summary={selectedMessage}
               onAction={performAction}
               moveRequest={moveRequest}
+              composeRequest={composeRequest}
+              onCompose={handleCompose}
               onBack={() => setSelectedMessageId(null)}
               onMissing={handleMissing}
             />
@@ -485,6 +616,29 @@ export function MailApp({ user }: { user: User }) {
               : [...(current ?? []), account],
           );
         }}
+      />
+      <ComposeDialog
+        draft={draft}
+        open={composeOpen}
+        accounts={accounts ?? []}
+        notice={composeNotice}
+        onOpenChange={(open) => {
+          setComposeOpen(open);
+          if (!open) {
+            setComposeNotice(null);
+            // 何も書いていない下書きは残さない。
+            if (!draftDirty) setDraft(null);
+          }
+        }}
+        onChange={(next) => {
+          setDraft(next);
+          setDraftDirty(true);
+        }}
+        onSent={() => {
+          clearDraft();
+          void loadOutgoing();
+        }}
+        onDiscard={clearDraft}
       />
       <DeleteAccountDialog
         account={deleteTarget}

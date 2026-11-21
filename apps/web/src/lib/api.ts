@@ -242,6 +242,38 @@ export type MessageAction = { idempotencyKey: string; messageIds: string[] } & (
   | { action: "delete" }
 );
 
+/** 送信するメール。idempotencyKey は送信ごとに作る一意な ID (再送しても二重に送られない)。 */
+export type SendMailInput = {
+  idempotencyKey: string;
+  accountId: string;
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  text: string;
+  mode: "new" | "reply" | "forward";
+  /** 返信・転送の元になったメッセージ。 */
+  sourceMessageId?: string;
+};
+
+/** まだ送り終えていないメール (送信待ち、送信中、失敗)。 */
+export type OutgoingMail = {
+  id: string;
+  accountId: string;
+  status: "pending" | "processing" | "failed";
+  attempts: number;
+  /** 失敗の理由。送信待ちで入っていれば、やり直しを待っている。 */
+  lastError: string | null;
+  createdAt: string;
+  mode: "new" | "reply" | "forward";
+  sourceMessageId: string | null;
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  text: string;
+};
+
 export type MessagePage = {
   messages: MessageSummary[];
   nextCursor: string | null;
@@ -368,4 +400,27 @@ export async function listMailboxes(
 /** 操作をサーバーへ送る。サーバーはすぐに反映して応答し、メールサーバーへは後から反映する。 */
 export async function sendMessageAction(action: MessageAction): Promise<void> {
   await apiFetch("/v1/messages/actions", { method: "POST", body: action });
+}
+
+/**
+ * メールを送信する。サーバーは受け付けるとすぐに応答し、実際の送信は後から行う。
+ * 送信の結果は listOutgoing で確かめる (送り終えたものは一覧から消える)。
+ */
+export async function sendMail(input: SendMailInput): Promise<void> {
+  await apiFetch("/v1/messages/send", { method: "POST", body: input });
+}
+
+export async function listOutgoing(
+  signal?: AbortSignal,
+): Promise<OutgoingMail[]> {
+  const { outgoing } = await apiJson<{ outgoing: OutgoingMail[] }>(
+    "/v1/messages/outgoing",
+    { signal },
+  );
+  return outgoing;
+}
+
+/** 送信待ちのメールを取り消す、または失敗したメールを一覧から消す。 */
+export async function deleteOutgoing(id: string): Promise<void> {
+  await apiFetch(`/v1/messages/outgoing/${id}`, { method: "DELETE" });
 }

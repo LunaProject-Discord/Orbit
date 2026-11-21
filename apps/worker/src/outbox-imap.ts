@@ -1,5 +1,6 @@
-import type { OutboxOperation, OutboxTarget } from "@mail/core";
+import type { AppendPayload, OutboxOperation, OutboxTarget } from "@mail/core";
 import type { ImapFlow } from "imapflow";
+import { buildMime } from "./mime.js";
 import type { OutboxResult } from "./outbox.js";
 
 function groupByMailbox(targets: OutboxTarget[]): Map<string, OutboxTarget[]> {
@@ -22,6 +23,9 @@ export async function applyImapOperation(
   client: ImapFlow,
   operation: OutboxOperation,
 ): Promise<OutboxResult> {
+  if (operation.kind === "append") {
+    return appendSentCopy(client, operation.payload);
+  }
   for (const [path, targets] of groupByMailbox(operation.payload.targets)) {
     let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>>;
     try {
@@ -63,20 +67,79 @@ export async function applyImapOperation(
   return { ok: true };
 }
 
+/** サーバーに拒否された (NO / BAD) なら true。接続の問題なら false。 */
+function isRejected(error: unknown): boolean {
+  const status = (error as { responseStatus?: string }).responseStatus;
+  return status === "NO" || status === "BAD";
+}
+
+/**
+ * 送信したメールの控えを、送信済みフォルダへ保存する。
+ * 同じ Message-ID のメールがすでにあれば何もしない (やり直しで二重に保存しないため。
+ * サーバーが自動で保存していた場合もここで止まる)。
+ */
+async function appendSentCopy(
+  client: ImapFlow,
+  payload: AppendPayload,
+): Promise<OutboxResult> {
+  const { message, mailboxPath } = payload;
+  let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>>;
+  try {
+    lock = await client.getMailboxLock(mailboxPath);
+  } catch (error) {
+    if (!isRejected(error)) throw error;
+    return {
+      ok: false,
+      reason: `送信済みフォルダを開けませんでした: ${mailboxPath}`,
+    };
+  }
+  try {
+    const existing = await client.search(
+      { header: { "message-id": message.messageId } },
+      { uid: true },
+    );
+    if (existing && existing.length > 0) return { ok: true };
+  } catch (error) {
+    // 検索に対応していないサーバーでは、確かめずに保存する。
+    if (!isRejected(error)) throw error;
+  } finally {
+    lock.release();
+  }
+  try {
+    const raw = await buildMime(message, { keepBcc: true });
+    const appended = await client.append(
+      mailboxPath,
+      raw,
+      ["\\Seen"],
+      new Date(message.date),
+    );
+    if (!appended) {
+      return { ok: false, reason: "送信済みフォルダへ保存できませんでした。" };
+    }
+    return { ok: true };
+  } catch (error) {
+    if (!isRejected(error)) throw error;
+    return { ok: false, reason: "送信済みフォルダへ保存できませんでした。" };
+  }
+}
+
 /** 存在しない UID は、サーバーが単に無視する (他の端末で先に消された場合など)。 */
 async function run(
   client: ImapFlow,
-  operation: OutboxOperation,
+  operation: Exclude<OutboxOperation, { kind: "append" }>,
   range: string,
 ): Promise<boolean> {
   const options = { uid: true };
   switch (operation.kind) {
     case "set_flags": {
-      const { seen, flagged } = operation.payload;
+      const { seen, flagged, answered } = operation.payload;
       const add: string[] = [];
       const remove: string[] = [];
       if (seen !== undefined) (seen ? add : remove).push("\\Seen");
       if (flagged !== undefined) (flagged ? add : remove).push("\\Flagged");
+      if (answered !== undefined) {
+        (answered ? add : remove).push("\\Answered");
+      }
       if (add.length > 0) {
         if (!(await client.messageFlagsAdd(range, add, options))) return false;
       }

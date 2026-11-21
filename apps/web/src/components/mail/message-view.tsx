@@ -4,10 +4,13 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   FolderInputIcon,
+  ForwardIcon,
   ImageOffIcon,
   MailIcon,
   MailOpenIcon,
   PaperclipIcon,
+  ReplyAllIcon,
+  ReplyIcon,
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -28,6 +31,7 @@ import {
   type MessageDetail,
   type MessageSummary,
 } from "@/lib/api";
+import type { ComposeMode } from "@/lib/compose";
 import {
   addressFull,
   addressLabel,
@@ -71,6 +75,8 @@ export function buildSrcDoc(html: string, allowRemoteImages = false): string {
   ].join("");
 }
 
+type ReplyMode = Exclude<ComposeMode, "new">;
+
 type Props = {
   messageId: string;
   /** 値が変わると、表示を保ったまま取得し直す (同期による更新の反映)。 */
@@ -83,6 +89,10 @@ type Props = {
   onAction: (messageIds: string[], input: MessageActionInput) => void;
   /** 値が増えると、移動先のメニューを開く (ショートカットキー用)。 */
   moveRequest: number;
+  /** count が増えると、表示中のメールへの返信・転送を始める (ショートカットキー用)。 */
+  composeRequest: { count: number; mode: ReplyMode } | null;
+  /** 返信・全員に返信・転送を始める。 */
+  onCompose: (mode: ReplyMode, message: MessageDetail) => void;
   onBack: () => void;
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
@@ -99,6 +109,8 @@ export function MessageView({
   summary,
   onAction,
   moveRequest,
+  composeRequest,
+  onCompose,
   onBack,
   onMissing,
 }: Props) {
@@ -129,6 +141,19 @@ export function MessageView({
     return () => controller.abort();
   }, [messageId, refreshKey, onMissing]);
 
+  // ショートカットキーからの返信・転送。本文を読み込み終えているときだけ始める。
+  const handledCompose = useRef(composeRequest?.count ?? 0);
+  const onComposeRef = useRef(onCompose);
+  onComposeRef.current = onCompose;
+  const loaded = state.status === "ready" ? state.message : null;
+  useEffect(() => {
+    if (!composeRequest || composeRequest.count === handledCompose.current) {
+      return;
+    }
+    handledCompose.current = composeRequest.count;
+    if (loaded) onComposeRef.current(composeRequest.mode, loaded);
+  }, [composeRequest, loaded]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 一覧の見出しと高さを揃えた、操作用のツールバー。 */}
@@ -148,6 +173,7 @@ export function MessageView({
             summary={summary}
             moveRequest={moveRequest}
             onAction={onAction}
+            onCompose={onCompose}
           />
         )}
       </div>
@@ -169,17 +195,19 @@ export function MessageView({
   );
 }
 
-/** 既読、スター、アーカイブ、削除、移動のボタン。 */
+/** 返信、全員に返信、転送、既読、スター、アーカイブ、削除、移動のボタン。 */
 function MessageToolbar({
   message,
   summary,
   moveRequest,
   onAction,
+  onCompose,
 }: {
   message: MessageDetail;
   summary: MessageSummary | null;
   moveRequest: number;
   onAction: Props["onAction"];
+  onCompose: Props["onCompose"];
 }) {
   const mailboxes = useMailboxes(message.accountId);
   const seen = summary?.seen ?? message.seen;
@@ -204,6 +232,31 @@ function MessageToolbar({
       aria-label="メールの操作"
       className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
     >
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onCompose("reply", message)}
+      >
+        <ReplyIcon />
+        <span className="sr-only sm:not-sr-only">返信</span>
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onCompose("replyAll", message)}
+      >
+        <ReplyAllIcon />
+        <span className="sr-only sm:not-sr-only">全員に返信</span>
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => onCompose("forward", message)}
+      >
+        <ForwardIcon />
+        <span className="sr-only sm:not-sr-only">転送</span>
+      </Button>
+      <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
       <Button
         variant="ghost"
         size="sm"

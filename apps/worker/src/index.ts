@@ -14,14 +14,15 @@ const manager = new AccountManager(
   databaseUrl,
   encryptionKey,
   loadMicrosoftOAuthConfig(process.env),
+  // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
+  process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
 );
 await manager.start();
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
 );
 
-// 既読や移動などの操作 (送信待ちキュー) は、各アカウントの同期の中で反映する。
-// メールの送信は今後ここに追加する。
+// 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。
 
 async function shutdown() {
   await manager.stop();
