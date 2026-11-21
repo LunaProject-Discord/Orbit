@@ -31,6 +31,21 @@ export function isSelectable(entry: Pick<ImapListEntry, "flags">): boolean {
 }
 
 /**
+ * 他のフォルダにあるメールを条件で集めて見せているだけのフォルダ
+ * (Gmail の「スター付き」と「重要」など)。中身は他のフォルダと重複するうえ、
+ * ここから移動するとスターや重要マークが外れてしまうので、同期の対象にしない。
+ * スター付きのメールは、アプリ側の「スター付き」で見られる。
+ */
+export function isVirtual(
+  entry: Pick<ImapListEntry, "flags" | "specialUse">,
+): boolean {
+  const has = (name: string) =>
+    entry.specialUse?.toLowerCase() === name ||
+    [...entry.flags].some((flag) => flag.toLowerCase() === name);
+  return has("\\flagged") || has("\\important");
+}
+
+/**
  * IMAP のフォルダ一覧を、親子関係の付いた形にする。
  * 親はパスを区切り文字で遡って決める。メールを入れられない入れ物 (Gmail の
  * "[Gmail]" など) は一覧に含めないので、その下のフォルダは一つ上の階層に付け、
@@ -39,7 +54,9 @@ export function isSelectable(entry: Pick<ImapListEntry, "flags">): boolean {
 export function toListedMailboxes(entries: ImapListEntry[]): ListedMailbox[] {
   const selectable = new Map<string, ImapListEntry>();
   for (const entry of entries) {
-    if (isSelectable(entry)) selectable.set(entry.path, entry);
+    if (isSelectable(entry) && !isVirtual(entry)) {
+      selectable.set(entry.path, entry);
+    }
   }
 
   const result: ListedMailbox[] = [];

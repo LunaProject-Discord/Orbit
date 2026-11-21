@@ -30,6 +30,7 @@ import {
   toDate,
 } from "./message-parse.js";
 import { loadPendingGuard } from "./outbox.js";
+import { resolveThreadKey } from "./thread-key.js";
 
 const FETCH_CHUNK = 100;
 const BODY_BATCH = 20;
@@ -373,21 +374,29 @@ async function insertMessages(
       const references = parseReferences(message.headers).map(clean);
       const structure = analyzeStructure(message.bodyStructure);
       const sentAt = toDate(envelope.date);
+      const messageIdHeader = envelope.messageId
+        ? clean(envelope.messageId)
+        : null;
+      const inReplyTo = envelope.inReplyTo ? clean(envelope.inReplyTo) : null;
+      const { threadKey, moved } = await resolveThreadKey(tx, account.id, {
+        computed: threadKeyOf({
+          references,
+          inReplyTo: envelope.inReplyTo,
+          messageId: envelope.messageId,
+          fallback: `${mailboxId}:${message.uid}`,
+        }),
+        messageId: messageIdHeader,
+        parents: [...references, ...(inReplyTo ? [inReplyTo] : [])],
+      });
+      inserted.push(...moved);
       const [row] = await tx
         .insert(messages)
         .values({
           accountId: account.id,
           providerMessageId: message.emailId ?? null,
-          threadKey: threadKeyOf({
-            references,
-            inReplyTo: envelope.inReplyTo,
-            messageId: envelope.messageId,
-            fallback: `${mailboxId}:${message.uid}`,
-          }),
-          messageIdHeader: envelope.messageId
-            ? clean(envelope.messageId)
-            : null,
-          inReplyTo: envelope.inReplyTo ? clean(envelope.inReplyTo) : null,
+          threadKey,
+          messageIdHeader,
+          inReplyTo,
           references,
           subject: clean(envelope.subject),
           from: toAddresses(envelope.from),

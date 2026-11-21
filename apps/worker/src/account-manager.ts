@@ -6,6 +6,7 @@ import {
   CHANNEL_GRAPH_PUSH,
   CHANNEL_OUTBOX,
   type FocusNotification,
+  type GoogleOAuthConfig,
   type GraphPushNotification,
   type MicrosoftOAuthConfig,
 } from "@mail/core";
@@ -69,6 +70,8 @@ export class AccountManager {
     private readonly graphWebhookBaseUrl: string | null = null,
     /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
     private readonly allowInsecureSmtp = false,
+    /** Gmail の OAuth2 用。未設定なら、OAuth2 の Gmail アカウントはエラーになる。 */
+    private readonly google: GoogleOAuthConfig | null = null,
   ) {}
 
   async start() {
@@ -195,6 +198,7 @@ export class AccountManager {
               this.encryptionKey,
               row,
               this.allowInsecureSmtp,
+              this.google,
             );
       const entry = { sync };
       this.running.set(row.id, entry);

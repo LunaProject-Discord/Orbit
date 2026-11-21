@@ -1,4 +1,9 @@
-import { decryptCredentials } from "@mail/core";
+import {
+  decryptCredentials,
+  GoogleAccessTokenSource,
+  type GoogleOAuthConfig,
+  GoogleOAuthError,
+} from "@mail/core";
 import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
@@ -101,6 +106,8 @@ export class AccountSync {
   private sending: Promise<void> = Promise.resolve();
   private readonly attachmentDownloader: ImapAttachmentDownloader;
   private readonly attachmentRequests: AttachmentRequests;
+  /** OAuth2 のアカウント (Gmail) のアクセストークン。最初に使うときに用意する。 */
+  private tokens: GoogleAccessTokenSource | null = null;
 
   constructor(
     private readonly db: Database,
@@ -108,6 +115,8 @@ export class AccountSync {
     readonly account: AccountRow,
     /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
     private readonly allowInsecureSmtp = false,
+    /** Gmail の OAuth2 用。未設定なら、OAuth2 の Gmail アカウントはエラーになる。 */
+    private readonly google: GoogleOAuthConfig | null = null,
   ) {
     this.watcher = new FolderWatcher(
       () => this.createClient(),
@@ -147,14 +156,27 @@ export class AccountSync {
           responseText?: string;
         };
         const reason = describeError(err);
-        if (err.authenticationFailed) {
+        if (error instanceof GoogleOAuthError && error.needsReauth) {
+          // リフレッシュトークンの取り消しや期限切れ。ログインし直すまで同期できない。
+          this.log(`Google へのログインし直しが必要です: ${reason}`);
+          await this.setStatus(
+            "auth_required",
+            "Google へのログインの有効期限が切れたか、アクセスが取り消されました。",
+          );
+          return;
+        }
+        if (err.authenticationFailed && this.tokens?.invalidate()) {
+          // 古くなったアクセストークンが拒否された。取り直してつなぎ直す。
+          this.log("アクセストークンを取り直して再接続します");
+        } else if (err.authenticationFailed) {
           // パスワードが変わった場合など。繰り返すとロックされかねないので止める。
           this.log(`認証に失敗しました。再ログインが必要です: ${reason}`);
           await this.setStatus("auth_required", reason);
           return;
+        } else {
+          this.log(`同期中にエラーが発生しました: ${err.message}`);
+          await this.setStatus("error", reason);
         }
-        this.log(`同期中にエラーが発生しました: ${err.message}`);
-        await this.setStatus("error", reason);
       }
       if (this.stopped) break;
       const delay = this.backoff * (0.75 + Math.random() * 0.5);
@@ -261,16 +283,18 @@ export class AccountSync {
         reason: "SMTP サーバーが設定されていません。",
       };
     }
-    const credentials = decryptCredentials(
-      this.account.credentialsEncrypted,
-      this.encryptionKey,
-      this.account.userId,
-    );
-    if (credentials.type !== "password") {
-      return {
-        status: "failed",
-        reason: "SMTP の OAuth2 にはまだ対応していません。",
-      };
+    let auth: Awaited<ReturnType<AccountSync["credentials"]>>;
+    try {
+      auth = await this.credentials();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // 取り消されたログインは、やり直しても通らない。それ以外 (通信の不調など) は待ってやり直す。
+      return error instanceof GoogleOAuthError && !error.needsReauth
+        ? { status: "retry", reason }
+        : {
+            status: "failed",
+            reason: `メールアカウントにログインできませんでした: ${reason}`,
+          };
     }
     return sendViaSmtp(
       {
@@ -278,11 +302,41 @@ export class AccountSync {
         port: smtpPort,
         secure: this.account.smtpSecure,
         username: this.account.username,
-        password: credentials.password,
+        ...auth,
         allowInsecure: this.allowInsecureSmtp,
       },
       message,
     );
+  }
+
+  /**
+   * IMAP / SMTP のログインに使う認証情報。パスワード、または OAuth2 のアクセストークン
+   * (XOAUTH2)。アクセストークンは期限が近づいたら取り直す。
+   */
+  private async credentials(): Promise<
+    { password: string } | { accessToken: string }
+  > {
+    const credentials = decryptCredentials(
+      this.account.credentialsEncrypted,
+      this.encryptionKey,
+      this.account.userId,
+    );
+    if (credentials.type === "password") {
+      return { password: credentials.password };
+    }
+    if (this.account.provider !== "gmail") {
+      throw new Error("このサービスの OAuth2 にはまだ対応していません。");
+    }
+    if (!this.google) {
+      throw new Error(
+        "サーバーに Google のログイン (GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET) が設定されていません。",
+      );
+    }
+    this.tokens ??= new GoogleAccessTokenSource(
+      this.google,
+      credentials.refreshToken,
+    );
+    return { accessToken: await this.tokens.get() };
   }
 
   private requestSync() {
@@ -322,15 +376,8 @@ export class AccountSync {
     }
   }
 
-  private createClient() {
-    const credentials = decryptCredentials(
-      this.account.credentialsEncrypted,
-      this.encryptionKey,
-      this.account.userId,
-    );
-    if (credentials.type !== "password") {
-      throw new Error("IMAP の OAuth2 にはまだ対応していません。");
-    }
+  private async createClient() {
+    const auth = await this.credentials();
     if (!this.account.imapHost || !this.account.imapPort) {
       throw new Error("IMAP サーバーが設定されていません。");
     }
@@ -338,7 +385,10 @@ export class AccountSync {
       host: this.account.imapHost,
       port: this.account.imapPort,
       secure: this.account.imapSecure,
-      auth: { user: this.account.username, pass: credentials.password },
+      auth:
+        "accessToken" in auth
+          ? { user: this.account.username, accessToken: auth.accessToken }
+          : { user: this.account.username, pass: auth.password },
       logger: false,
       // 既定の 15 秒だと、同期直後に起きた変化の通知がその分だけ遅れる。
       autoIdleDelay: AUTO_IDLE_DELAY_MS,
@@ -528,7 +578,11 @@ export class AccountSync {
 
   /** 接続 1 回分。切断されると戻る (エラーなら投げる)。 */
   private async session() {
-    const client = this.createClient();
+    const client = await this.createClient();
+    if (this.stopped) {
+      client.close();
+      return;
+    }
     this.client = client;
     let connectionError: Error | null = null;
     const closed = new Promise<void>((resolve) => client.on("close", resolve));

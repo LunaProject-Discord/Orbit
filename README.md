@@ -38,21 +38,91 @@ Node.js 25 以降には Corepack が同梱されていないため、pnpm は `n
 - Web: http://localhost:3000
 - API: http://localhost:8787 (`/healthz` で DB 接続を確認できます)
 
+## 本番への配置 (Oracle Cloud)
+
+Docker Compose で一式 (Web、API、同期ワーカー、PostgreSQL、HTTPS を受ける Caddy、バックアップ) を動かします。
+サーバーの用意から、独自ドメインと HTTPS、更新、バックアップ、環境変数の一覧までを
+[docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md) にまとめています。
+
+```sh
+bash deploy/setup.sh mail.example.com   # deploy/.env を作り、秘密の値を生成
+cd deploy && docker compose up -d --build
+```
+
 ## ログインとメールアカウント
 
 - アプリへのログインは [Better Auth](https://www.better-auth.com/) のメールアドレス + パスワードです。
   新規登録は API では受け付けておらず (招待制)、利用者は `pnpm user:create` で作成します。
 - クライアントはログインで得たセッショントークンを `Authorization: Bearer` で送ります
   (Web / Tauri / Capacitor で同じ方式を使うため、Cookie には依存しません)。
-- 1 人の利用者が複数のメールアカウントを追加できます。現在追加できるのは次の 2 種類です。
-  - パスワード (アプリ用パスワードを含む) で IMAP にログインするアカウント
+- 1 人の利用者が複数のメールアカウントを追加できます。アカウントの追加画面で、次の 4 つから選びます。
+  - Gmail。Google のログイン画面で認証し (OAuth2)、IMAP / SMTP で同期します。設定は下の「Gmail」を参照してください。
   - Microsoft アカウント (Microsoft 365 の Exchange Online、Outlook.com)。Microsoft のログイン画面で認証し、
     Microsoft Graph で同期します。設定は下の「Microsoft アカウント」を参照してください。
-
-  Gmail の OAuth2 は今後対応します。
+  - iCloud。メールアドレスとアプリ用パスワードだけで追加できます (接続先は自動で設定します)。下の「iCloud」を参照してください。
+  - その他のメール。IMAP / SMTP のサーバーを手動で設定し、パスワード (アプリ用パスワードを含む) でログインします。
 - メールアカウントのパスワードやリフレッシュトークンは AES-256-GCM で暗号化して保存します。鍵は `CREDENTIALS_ENCRYPTION_KEY` で、
   DB には入りません。鍵を失うと復号できなくなるため、安全な場所に控えてください。
 - ローカルの IMAP サーバー (localhost や内部 IP) で試す場合は、`.env` で `ALLOW_PRIVATE_MAIL_HOSTS=true` にします。
+
+## Gmail (Google でログイン)
+
+Gmail は、Google のログイン画面で許可を受け (OAuth2)、受け取ったトークンで IMAP / SMTP にログインします (XOAUTH2)。
+Google のパスワードやアプリ パスワードをこのアプリに保存する必要はありません。
+使うには、[Google Cloud コンソール](https://console.cloud.google.com/) で OAuth クライアントを作ります。
+以下は 2026 年 11 月時点の手順で、公式ドキュメントとの照合はできていません。画面の名称は変わることがあります。
+
+1. プロジェクトを作り (既存のものでも構いません)、「API とサービス」→「OAuth 同意画面」
+   (「Google Auth Platform」と表示されることもあります) を開いて、アプリ名と連絡先のメールアドレスを設定します。
+   対象 (ユーザーの種類) は、個人の Gmail で使うなら「外部」、Google Workspace の組織内だけで使うなら「内部」を選びます。
+2. 「データアクセス」(スコープ) で、`https://mail.google.com/` を追加します。IMAP / SMTP に OAuth2 でログインするには
+   このスコープが必要で、Google はこれを「制限付きスコープ」に分類しています。
+3. 「対象」で公開ステータスを決めます (「外部」を選んだ場合)。
+   - 「テスト中」のままだと、追加するアカウントを「テストユーザー」に登録する必要があり、**ログインが 7 日で切れます**
+     (7 日ごとに「Google にログインし直す」が必要になります)。動作確認にはこれで十分です。
+   - 続けて使うなら「本番環境」に切り替えます。Google の審査を受けていないアプリは、ログイン時に
+     「このアプリは Google で確認されていません」という警告が出ますが、「詳細」から進めば使えます
+     (未審査のアプリを使える人数には上限があります)。自分や身内だけで使うなら、審査を受けずにこの状態で使えます。
+4. 「クライアント」→「クライアントを作成」で、種類を「ウェブ アプリケーション」にします。
+   「承認済みのリダイレクト URI」に、Web の URL に `/oauth/google` を付けたものを登録します
+   (ローカルなら `http://localhost:3000/oauth/google`)。`GOOGLE_REDIRECT_URI` と完全に一致させてください。
+5. 表示されたクライアント ID とクライアント シークレットを `.env` の `GOOGLE_CLIENT_ID` と `GOOGLE_CLIENT_SECRET` に設定し、
+   api と worker を再起動します (どちらにも必要です)。
+
+設定すると、アカウントの追加画面の「Gmail」から追加できます。ログイン画面の確認では、
+「Gmail のすべてのメールの閲覧、作成、送信、完全な削除」にチェックを入れてください (外すと追加できません)。
+設定していないサーバーでは、「その他のメール」から Google のアプリ パスワードで追加することもできます
+(IMAP は `imap.gmail.com` の 993 番、SMTP は `smtp.gmail.com` の 465 番。接続先が Gmail なら、下の扱いは同じです)。
+
+- Gmail ではフォルダが実際には「ラベル」で、1 通のメールが、付いているラベルの数だけ IMAP のフォルダに現れます。
+  同じメールは Gmail のメッセージ ID (X-GM-MSGID) で 1 通にまとめて取り込むので、DB や一覧で重複しません。
+- 「すべてのメール」も同期します (アーカイブしたメールはここにだけ残るため)。「スター付き」と「重要」は、
+  ほかのフォルダのメールを集めて見せているだけなので同期しません (スターはメールの印として同期します)。
+- アーカイブは、受信トレイから外す操作です (メールは「すべてのメール」に残り、ほかのラベルは外しません)。
+  ラベルへの移動は、受信トレイにあるメールなら受信トレイから、無ければ付いているラベルから移します。
+  削除はごみ箱への移動で、すべてのラベルから消えます。
+- 送信したメールは Gmail が自動で「送信済みメール」に保存するので、こちらからは保存しません (二重になりません)。
+- アクセストークンは 1 時間で切れるので、ワーカーがリフレッシュトークンで取り直します。IMAP の接続は
+  トークンの期限で切られることがあり、その場合は自動でつなぎ直します。
+- リフレッシュトークンが失効した場合 (公開ステータスが「テスト中」で 7 日たった、Google アカウントの設定でアクセスを
+  取り消した、パスワードを変更したなど) は、サイドバーに「再ログインが必要です」と表示されます。
+  「Google にログインし直す」から復旧できます。
+- Google Workspace のアカウントでは、管理者が IMAP やサードパーティ製アプリのアクセスを制限していると追加できません。
+
+## iCloud
+
+アカウントの追加画面で「iCloud」を選び、iCloud メールのアドレス (`@icloud.com`、`@me.com`、`@mac.com`) と
+アプリ用パスワードを入力します。接続先 (IMAP は `imap.mail.me.com` の 993 番、SMTP は `smtp.mail.me.com` の 587 番) は
+自動で設定します。
+
+- Apple Account のパスワードではログインできません。[account.apple.com](https://account.apple.com/) にサインインし、
+  「サインインとセキュリティ」→「アプリ用パスワード」で、このアプリ専用のパスワードを作ってください
+  (2 ファクタ認証を有効にしている必要があります)。
+- Apple Account のパスワードを変更すると、アプリ用パスワードはすべて無効になります。その場合は作り直して、
+  アカウントを追加し直してください (パスワードだけを更新する画面はまだありません)。
+- ユーザー名にはメールアドレスをそのまま使います。カスタム メール ドメインのアドレスなどでログインできない場合は、
+  「その他のメール」から、ユーザー名に iCloud メールのアドレスを指定して追加してください。
+- 送信したメールの控えは、こちらから「送信済み」フォルダへ保存します。
 
 ## Microsoft アカウント (Exchange Online / Outlook.com)
 
@@ -68,7 +138,7 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 5. `.env` の `MICROSOFT_CLIENT_ID` (アプリケーション ID) と `MICROSOFT_CLIENT_SECRET` を設定し、api と worker を再起動します。
    「サポートされているアカウントの種類」で組織のみ / 個人のみを選んだ場合は、`MICROSOFT_TENANT` も合わせます。
 
-設定すると、アカウントの追加画面の「Microsoft アカウントでログイン」から追加できます。
+設定すると、アカウントの追加画面の「Microsoft」から追加できます。
 組織のアカウントでは、テナントの設定によって管理者の同意が必要な場合があります。
 
 - 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行います。確認の間隔は状況に応じて変わります
@@ -168,13 +238,16 @@ Microsoft Graph では、さらに次のように調整します。
 | `POST /v1/auth/sign-in/email` | ログイン。レスポンスヘッダー `set-auth-token` がセッショントークン |
 | `POST /v1/auth/sign-out` | ログアウト |
 | `GET /v1/me` | ログイン中の利用者 |
-| `GET /v1/accounts` / `POST /v1/accounts` | メールアカウントの一覧 / 追加 (IMAP へのログインを確認してから保存) |
+| `GET /v1/accounts` / `POST /v1/accounts` | メールアカウントの一覧 / 追加 (IMAP へのログインを確認してから保存。`provider` が `icloud` か `gmail` なら接続先を省略できる) |
+| `POST /v1/accounts/google/authorize` | Google のログイン画面の URL を取得 (`accountId` を渡すと再ログイン) |
+| `POST /v1/accounts/google/complete` | ログイン後に戻ってきた `code` と `state` を渡して、Gmail アカウントを追加 |
 | `POST /v1/accounts/microsoft/authorize` | Microsoft のログイン画面の URL を取得 (`accountId` を渡すと再ログイン) |
 | `POST /v1/accounts/microsoft/complete` | ログイン後に戻ってきた `code` と `state` を渡して、Microsoft アカウントを追加 |
 | `DELETE /v1/accounts/:id` | メールアカウントと取り込んだメールの削除 |
 | `GET /v1/accounts/:id/mailboxes` | アカウント 1 件分のフォルダ一覧 |
 | `GET /v1/mailboxes` | 全アカウントのフォルダ一覧 (親フォルダの `parentId`、未読数、件数付き) |
-| `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り) |
+| `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り)。会話 (スレッド) ごとに 1 件にまとめ、フォルダ内で最も新しいメッセージを返す。`threadCount` は会話の通数、`threadMessageIds` は会話のうちそのフォルダにあるメッセージ |
+| `GET /v1/messages/:id/thread` | メッセージが属する会話の一覧 (古い順、本文なし)。`mailboxId` で表示中のフォルダを指定する。ごみ箱・迷惑メール・下書きにあるものは、表示中のフォルダでなければ含めない |
 | `GET /v1/messages/:id` | メッセージの本文と添付ファイルの情報 |
 | `GET /v1/messages/:id/attachments/:attachmentId` | 受信したメールの添付ファイルの実体 (サーバーに無ければ、メールサーバーから取得し終えるまで待つ) |
 | `POST /v1/attachments/forward` | 受信したメールの添付ファイルを、送信用の添付ファイルとして複製 (`messageId`、`attachmentIds`。転送用) |
@@ -199,6 +272,7 @@ Microsoft Graph では、さらに次のように調整します。
 | `pnpm lint` / `pnpm format` | Biome による検査 / 整形 |
 | `pnpm db:generate` | スキーマの変更からマイグレーションを生成 |
 | `pnpm db:migrate` | マイグレーションを適用 |
+| `pnpm --filter @mail/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
 | `pnpm user:create <メール> <表示名>` | ログイン用の利用者を作成 |
 
 ## UI

@@ -88,10 +88,16 @@ type Props = {
   messageId: string;
   /** 本文の下に並べる添付ファイル (本文に埋め込んだ画像は含めない)。 */
   files: Attachment[];
+  /** 会話の中の 1 通として表示する (スクロールは会話全体で行う)。 */
+  inThread?: boolean;
 };
 
 /** 本文の下に並べる添付ファイルのカード。押すとプレビュー (できなければ保存) する。 */
-export function MessageAttachments({ messageId, files }: Props) {
+export function MessageAttachments({
+  messageId,
+  files,
+  inThread = false,
+}: Props) {
   /** 取得中の添付ファイルの ID。 */
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -197,7 +203,10 @@ export function MessageAttachments({ messageId, files }: Props) {
   return (
     <section
       aria-label="添付ファイル"
-      className="flex max-h-[40%] shrink-0 flex-col gap-2 overflow-y-auto border-t p-4 sm:px-6"
+      className={cn(
+        "flex shrink-0 flex-col gap-2 sm:px-6",
+        inThread ? "px-4 pb-4" : "max-h-[40%] overflow-y-auto border-t p-4",
+      )}
     >
       <div className="flex min-h-6 items-center gap-2 text-muted-foreground text-xs">
         <PaperclipIcon className="size-3.5 shrink-0" aria-hidden="true" />

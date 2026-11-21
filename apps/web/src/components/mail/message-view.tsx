@@ -1,13 +1,16 @@
 "use client";
 
+import { cn } from "cn";
 import {
   ArchiveIcon,
   ArrowLeftIcon,
+  ChevronDownIcon,
   FolderInputIcon,
   ForwardIcon,
   ImageOffIcon,
   MailIcon,
   MailOpenIcon,
+  PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
   StarIcon,
@@ -29,8 +32,10 @@ import {
   type Attachment,
   fetchAttachment,
   getMessage,
+  getThread,
   type MessageDetail,
   type MessageSummary,
+  type ThreadMessage,
 } from "@/lib/api";
 import {
   normalizeContentId,
@@ -38,7 +43,12 @@ import {
   splitAttachments,
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
-import { addressFull, addressLabel, formatFullDate } from "@/lib/format";
+import {
+  addressFull,
+  addressLabel,
+  formatFullDate,
+  formatListDate,
+} from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 
 /**
@@ -79,11 +89,12 @@ export function buildSrcDoc(html: string, allowRemoteImages = false): string {
 type ReplyMode = Exclude<ComposeMode, "new">;
 
 type Props = {
+  /** 開いたメール。会話 (スレッド) がある場合は、その会話全体を表示する。 */
   messageId: string;
   /** 値が変わると、表示を保ったまま取得し直す (同期による更新の反映)。 */
   refreshKey: number;
   /**
-   * 一覧にあるこのメールの情報。既読やスターは操作した直後からここに反映されるので、
+   * 一覧にあるこの会話の行。既読やスターは操作した直後からここに反映されるので、
    * 表示にはこちらを優先して使う。一覧に無ければ null。
    */
   summary: MessageSummary | null;
@@ -102,7 +113,8 @@ type Props = {
 type State =
   | { status: "loading" }
   | { status: "error" }
-  | { status: "ready"; message: MessageDetail };
+  /** thread は会話のメッセージ (古い順)。1 通だけのメールでは 1 件。 */
+  | { status: "ready"; thread: ThreadMessage[] };
 
 export function MessageView({
   messageId,
@@ -116,25 +128,79 @@ export function MessageView({
   onMissing,
 }: Props) {
   const [state, setState] = useState<State>({ status: "loading" });
+  /** 会話の中で、本文を開いているメッセージ。 */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [shownId, setShownId] = useState(messageId);
   if (shownId !== messageId) {
     // 別のメールを選んだら、前の本文を出したままにしない。
     setShownId(messageId);
     setState({ status: "loading" });
+    setExpanded(new Set());
   }
+
+  const summaryRef = useRef(summary);
+  summaryRef.current = summary;
+  const onActionRef = useRef(onAction);
+  onActionRef.current = onAction;
+  /** 開いているメールについて、これまでに会話の中で見たメッセージと、既読にしたかどうか。 */
+  const session = useRef({
+    messageId,
+    known: new Set<string>(),
+    markedRead: false,
+  });
+  /** 取得済みの本文。返信・転送の元にする。 */
+  const details = useRef(new Map<string, MessageDetail>());
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey は再取得のきっかけとして使う
   useEffect(() => {
     const controller = new AbortController();
-    getMessage(messageId, controller.signal)
-      .then((message) => setState({ status: "ready", message }))
+    if (session.current.messageId !== messageId) {
+      session.current = { messageId, known: new Set(), markedRead: false };
+    }
+    getThread(
+      messageId,
+      summaryRef.current?.mailboxId ?? null,
+      controller.signal,
+    )
+      .then((thread) => {
+        const current = session.current;
+        const last = thread.at(-1);
+        // 初めて見るメッセージのうち、未読のものと最新のものは本文を開いておく。
+        // (自分で閉じたものは、取得し直しても閉じたままにする。)
+        const open = thread
+          .filter(
+            (message) =>
+              !current.known.has(message.id) &&
+              (!message.seen || message.id === last?.id),
+          )
+          .map((message) => message.id);
+        for (const message of thread) current.known.add(message.id);
+        if (open.length > 0) {
+          setExpanded((ids) => new Set([...ids, ...open]));
+        }
+        setState({ status: "ready", thread });
+
+        // 開いたら既読にする (1 回だけ。あとから未読に戻した場合は、そのままにする)。
+        if (current.markedRead) return;
+        current.markedRead = true;
+        const row = summaryRef.current;
+        const unread = thread
+          .filter((message) => !message.seen)
+          .map((message) => message.id);
+        if (unread.length > 0 || (row && !row.seen)) {
+          onActionRef.current(
+            [...new Set([...(row?.threadMessageIds ?? []), ...unread])],
+            { action: "set_flags", seen: true },
+          );
+        }
+      })
       .catch((error) => {
         if (controller.signal.aborted) return;
         if (error instanceof ApiError && error.status === 404) {
           onMissing();
           return;
         }
-        // 再取得の失敗では、表示中の本文を消さない。
+        // 再取得の失敗では、表示中の内容を消さない。
         setState((current) =>
           current.status === "ready" ? current : { status: "error" },
         );
@@ -142,18 +208,42 @@ export function MessageView({
     return () => controller.abort();
   }, [messageId, refreshKey, onMissing]);
 
-  // ショートカットキーからの返信・転送。本文を読み込み終えているときだけ始める。
-  const handledCompose = useRef(composeRequest?.count ?? 0);
+  const thread = state.status === "ready" ? state.thread : null;
+  /** 返信・転送の元にするメッセージ (会話の最新)。 */
+  const replyTargetId = thread?.at(-1)?.id ?? null;
   const onComposeRef = useRef(onCompose);
   onComposeRef.current = onCompose;
-  const loaded = state.status === "ready" ? state.message : null;
+  const compose = (mode: ReplyMode) => {
+    if (!replyTargetId) return;
+    const loaded = details.current.get(replyTargetId);
+    if (loaded) {
+      onComposeRef.current(mode, loaded);
+      return;
+    }
+    // 本文を閉じていて未取得の場合は、取得してから始める。
+    getMessage(replyTargetId)
+      .then((message) => onComposeRef.current(mode, message))
+      .catch(() => {
+        // 取得できなければ始めない。もう一度押せばやり直せる。
+      });
+  };
+  const composeRef = useRef(compose);
+  composeRef.current = compose;
+
+  // ショートカットキーからの返信・転送。会話を読み込み終えているときだけ始める。
+  const handledCompose = useRef(composeRequest?.count ?? 0);
   useEffect(() => {
     if (!composeRequest || composeRequest.count === handledCompose.current) {
       return;
     }
     handledCompose.current = composeRequest.count;
-    if (loaded) onComposeRef.current(composeRequest.mode, loaded);
-  }, [composeRequest, loaded]);
+    if (replyTargetId) composeRef.current(composeRequest.mode);
+  }, [composeRequest, replyTargetId]);
+
+  const handleDetail = (message: MessageDetail) => {
+    details.current.set(message.id, message);
+  };
+  const first = thread?.[0];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -168,54 +258,251 @@ export function MessageView({
         >
           <ArrowLeftIcon />
         </Button>
-        {state.status === "ready" && (
+        {thread && first && (
           <MessageToolbar
-            message={state.message}
-            summary={summary}
+            accountId={first.accountId}
+            // 会話のうち、表示中のフォルダにある分をまとめて操作する。
+            targetIds={summary?.threadMessageIds ?? [messageId]}
+            starId={summary?.id ?? messageId}
+            mailboxId={summary?.mailboxId ?? null}
+            seen={summary?.seen ?? thread.every((message) => message.seen)}
+            flagged={
+              summary?.flagged ?? thread.some((message) => message.flagged)
+            }
             moveRequest={moveRequest}
             onAction={onAction}
-            onCompose={onCompose}
+            onCompose={compose}
           />
         )}
       </div>
       {state.status === "loading" ? (
-        <div className="flex flex-col gap-4 p-4 sm:p-6" aria-busy="true">
-          <output className="sr-only">メールを読み込み中</output>
-          <Skeleton className="h-7 w-2/3" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-40 w-full" />
-        </div>
-      ) : state.status === "error" ? (
+        <MessageSkeleton />
+      ) : state.status === "error" || !first ? (
         <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
           メールを読み込めませんでした。
         </p>
+      ) : state.thread.length === 1 ? (
+        <LoadedMessage
+          id={first.id}
+          refreshKey={refreshKey}
+          onDetail={handleDetail}
+        />
       ) : (
-        <MessageContent message={state.message} />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <header className="flex flex-col gap-2 border-b p-4 sm:p-6">
+            <h2 className="font-semibold text-xl leading-snug">
+              {first.subject || "(件名なし)"}
+            </h2>
+            <p className="text-muted-foreground text-xs">
+              {state.thread.length} 通のやり取り
+            </p>
+          </header>
+          <ol>
+            {state.thread.map((message) => (
+              <ThreadItem
+                key={message.id}
+                message={message}
+                expanded={expanded.has(message.id)}
+                refreshKey={refreshKey}
+                onToggle={() =>
+                  setExpanded((ids) => {
+                    const next = new Set(ids);
+                    if (!next.delete(message.id)) next.add(message.id);
+                    return next;
+                  })
+                }
+                onDetail={handleDetail}
+              />
+            ))}
+          </ol>
+        </div>
       )}
     </div>
   );
 }
 
+function MessageSkeleton() {
+  return (
+    <div className="flex flex-col gap-4 p-4 sm:p-6" aria-busy="true">
+      <output className="sr-only">メールを読み込み中</output>
+      <Skeleton className="h-7 w-2/3" />
+      <Skeleton className="h-4 w-1/2" />
+      <Skeleton className="h-40 w-full" />
+    </div>
+  );
+}
+
+/** メッセージ 1 通の本文を取得して表示する。 */
+function LoadedMessage({
+  id,
+  refreshKey,
+  inThread = false,
+  onDetail,
+}: {
+  id: string;
+  refreshKey: number;
+  /** 会話の中の 1 通として表示する (件名と宛先の見出しは会話側で出す)。 */
+  inThread?: boolean;
+  onDetail: (message: MessageDetail) => void;
+}) {
+  const [message, setMessage] = useState<MessageDetail | null>(null);
+  const [failed, setFailed] = useState(false);
+  const onDetailRef = useRef(onDetail);
+  onDetailRef.current = onDetail;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey は再取得のきっかけとして使う
+  useEffect(() => {
+    const controller = new AbortController();
+    getMessage(id, controller.signal)
+      .then((loaded) => {
+        setMessage(loaded);
+        setFailed(false);
+        onDetailRef.current(loaded);
+      })
+      .catch(() => {
+        // 再取得の失敗では、表示中の本文を消さない。
+        if (!controller.signal.aborted) setFailed(true);
+      });
+    return () => controller.abort();
+  }, [id, refreshKey]);
+
+  if (message) return <MessageContent message={message} inThread={inThread} />;
+  if (failed) {
+    return (
+      <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
+        メールを読み込めませんでした。
+      </p>
+    );
+  }
+  return <MessageSkeleton />;
+}
+
+/** 会話の中の 1 通。見出しを押すと本文を開閉する。 */
+function ThreadItem({
+  message,
+  expanded,
+  refreshKey,
+  onToggle,
+  onDetail,
+}: {
+  message: ThreadMessage;
+  expanded: boolean;
+  refreshKey: number;
+  onToggle: () => void;
+  onDetail: (message: MessageDetail) => void;
+}) {
+  const sender = message.from[0];
+  const name = addressLabel(sender);
+  const recipients = [...message.to, ...message.cc];
+  return (
+    <li className="border-b last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
+      >
+        <span
+          className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-sm"
+          aria-hidden="true"
+        >
+          {Array.from(name)[0] ?? "?"}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              "block truncate text-sm",
+              (expanded || !message.seen) && "font-medium",
+            )}
+          >
+            {!message.seen && <span className="sr-only">未読 </span>}
+            {name}
+            {expanded && sender?.name && (
+              <span className="font-normal text-muted-foreground">
+                {" "}
+                &lt;{sender.address}&gt;
+              </span>
+            )}
+          </span>
+          <span className="block truncate text-muted-foreground text-xs">
+            {expanded
+              ? `${
+                  recipients.length > 0
+                    ? `宛先: ${recipients.map(addressLabel).join("、")} · `
+                    : ""
+                }${formatFullDate(message.receivedAt)}`
+              : message.snippet}
+          </span>
+        </span>
+        {message.flagged && (
+          <StarIcon
+            className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+            aria-label="スター付き"
+          />
+        )}
+        {!expanded && message.hasAttachments && (
+          <PaperclipIcon
+            className="size-3.5 shrink-0 text-muted-foreground"
+            aria-label="添付ファイルあり"
+          />
+        )}
+        {!expanded && (
+          <time
+            dateTime={message.receivedAt}
+            className="shrink-0 text-muted-foreground text-xs tabular-nums"
+          >
+            {formatListDate(message.receivedAt)}
+          </time>
+        )}
+        <ChevronDownIcon
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform",
+            expanded && "rotate-180",
+          )}
+          aria-hidden="true"
+        />
+      </button>
+      {expanded && (
+        <LoadedMessage
+          id={message.id}
+          refreshKey={refreshKey}
+          inThread
+          onDetail={onDetail}
+        />
+      )}
+    </li>
+  );
+}
+
 /** 返信、全員に返信、転送、既読、スター、アーカイブ、削除、移動のボタン。 */
 function MessageToolbar({
-  message,
-  summary,
+  accountId,
+  targetIds,
+  starId,
+  mailboxId,
+  seen,
+  flagged,
   moveRequest,
   onAction,
   onCompose,
 }: {
-  message: MessageDetail;
-  summary: MessageSummary | null;
+  accountId: string;
+  /** 既読、アーカイブ、削除、移動の対象。 */
+  targetIds: string[];
+  /** スターを付けるメッセージ (外すときは対象のすべてから外す)。 */
+  starId: string;
+  /** 表示中のフォルダ。分からなければ null。 */
+  mailboxId: string | null;
+  seen: boolean;
+  flagged: boolean;
   moveRequest: number;
   onAction: Props["onAction"];
-  onCompose: Props["onCompose"];
+  onCompose: (mode: ReplyMode) => void;
 }) {
-  const mailboxes = useMailboxes(message.accountId);
-  const seen = summary?.seen ?? message.seen;
-  const flagged = summary?.flagged ?? message.flagged;
+  const mailboxes = useMailboxes(accountId);
   const { archive, trash, inTrash, destinations } = actionTargets(
     mailboxes,
-    summary?.mailboxId ?? null,
+    mailboxId,
   );
   // 移動先のメニュー。ショートカットキー (V) からも開く。
   const [moveOpen, setMoveOpen] = useState(false);
@@ -225,7 +512,7 @@ function MessageToolbar({
     handledMoveRequest.current = moveRequest;
     setMoveOpen(true);
   }, [moveRequest]);
-  const act = (input: MessageActionInput) => onAction([message.id], input);
+  const act = (input: MessageActionInput) => onAction(targetIds, input);
 
   return (
     <div
@@ -233,27 +520,15 @@ function MessageToolbar({
       aria-label="メールの操作"
       className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
     >
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onCompose("reply", message)}
-      >
+      <Button variant="ghost" size="sm" onClick={() => onCompose("reply")}>
         <ReplyIcon />
         <span className="sr-only sm:not-sr-only">返信</span>
       </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onCompose("replyAll", message)}
-      >
+      <Button variant="ghost" size="sm" onClick={() => onCompose("replyAll")}>
         <ReplyAllIcon />
         <span className="sr-only sm:not-sr-only">全員に返信</span>
       </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onCompose("forward", message)}
-      >
+      <Button variant="ghost" size="sm" onClick={() => onCompose("forward")}>
         <ForwardIcon />
         <span className="sr-only sm:not-sr-only">転送</span>
       </Button>
@@ -272,7 +547,11 @@ function MessageToolbar({
         variant="ghost"
         size="sm"
         aria-pressed={flagged}
-        onClick={() => act({ action: "set_flags", flagged: !flagged })}
+        onClick={() =>
+          flagged
+            ? act({ action: "set_flags", flagged: false })
+            : onAction([starId], { action: "set_flags", flagged: true })
+        }
       >
         <StarIcon
           className={flagged ? "fill-amber-400 text-amber-500" : undefined}
@@ -392,7 +671,59 @@ function useEmbeddedImages(
 
 const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
 
-function MessageContent({ message }: { message: MessageDetail }) {
+/**
+ * 会話の中に並べる本文用の iframe。中身の高さに合わせて伸ばし、スクロールは会話全体で行う。
+ * 高さを測るために allow-same-origin を付けるが、allow-scripts は付けないので、
+ * 本文の中のスクリプトは動かず、このアプリのデータにも触れない。
+ */
+function ThreadBodyFrame({ srcDoc }: { srcDoc: string }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const observer = useRef<ResizeObserver | null>(null);
+  const [height, setHeight] = useState(120);
+  useEffect(() => () => observer.current?.disconnect(), []);
+
+  const measure = () => {
+    const body = frame.current?.contentDocument?.body;
+    if (!body) return;
+    const update = () => {
+      const margin = Number.parseFloat(getComputedStyle(body).marginBottom);
+      setHeight(
+        Math.ceil(
+          body.getBoundingClientRect().bottom +
+            (Number.isFinite(margin) ? margin : 0),
+        ),
+      );
+    };
+    update();
+    // 画像の読み込みや幅の変化で高さが変わったら、合わせ直す。
+    observer.current?.disconnect();
+    observer.current = new ResizeObserver(update);
+    observer.current.observe(body);
+  };
+
+  return (
+    <iframe
+      ref={frame}
+      title="メール本文"
+      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+      srcDoc={srcDoc}
+      referrerPolicy="no-referrer"
+      onLoad={measure}
+      style={{ height }}
+      // 本文の余白 (16px) と合わせて、見出しや文字だけの本文と左端を揃える。
+      className="w-full shrink-0 border-0 bg-white sm:px-2"
+    />
+  );
+}
+
+function MessageContent({
+  message,
+  inThread = false,
+}: {
+  message: MessageDetail;
+  /** 会話の中の 1 通として表示する (件名と差出人は会話側の見出しに出ている)。 */
+  inThread?: boolean;
+}) {
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
   const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
   const showImages = imagesShownFor === message.id;
@@ -417,8 +748,14 @@ function MessageContent({ message }: { message: MessageDetail }) {
     hasRemoteImages(message.bodyHtml);
 
   return (
-    <article className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-col gap-3 border-b p-4 sm:p-6">
+    <article className={cn("flex flex-col", !inThread && "min-h-0 flex-1")}>
+      {/* 会話の中では、件名と差出人は会話側の見出しに出ている。 */}
+      <header
+        className={cn(
+          "flex shrink-0 flex-col gap-3 border-b p-4 sm:p-6",
+          inThread && "hidden",
+        )}
+      >
         <h2 className="font-semibold text-xl leading-snug">
           {message.subject || "(件名なし)"}
         </h2>
@@ -480,16 +817,26 @@ function MessageContent({ message }: { message: MessageDetail }) {
           )}
           {/* スクリプトの実行もこのアプリのデータへのアクセスも禁止する。
               許可するのは、本文内のリンクを新しいタブで開くことだけ。 */}
-          <iframe
-            title="メール本文"
-            sandbox="allow-popups allow-popups-to-escape-sandbox"
-            srcDoc={srcDoc}
-            referrerPolicy="no-referrer"
-            className="min-h-[60vh] w-full flex-1 border-0 bg-white"
-          />
+          {inThread ? (
+            <ThreadBodyFrame srcDoc={srcDoc} />
+          ) : (
+            <iframe
+              title="メール本文"
+              sandbox="allow-popups allow-popups-to-escape-sandbox"
+              srcDoc={srcDoc}
+              referrerPolicy="no-referrer"
+              className="min-h-[60vh] w-full flex-1 border-0 bg-white"
+            />
+          )}
         </>
       ) : message.bodyText ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        <div
+          className={
+            inThread
+              ? "px-4 pb-4 sm:px-6"
+              : "min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
+          }
+        >
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
             {message.bodyText}
           </p>
@@ -499,7 +846,11 @@ function MessageContent({ message }: { message: MessageDetail }) {
           本文はありません。
         </p>
       )}
-      <MessageAttachments messageId={message.id} files={listed} />
+      <MessageAttachments
+        messageId={message.id}
+        files={listed}
+        inThread={inThread}
+      />
     </article>
   );
 }

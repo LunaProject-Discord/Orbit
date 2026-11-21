@@ -24,6 +24,7 @@ const app = createApp({
   encryptionKey: env.encryptionKey,
   allowPrivateMailHosts: env.allowPrivateMailHosts,
   microsoft: env.microsoft,
+  google: env.google,
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

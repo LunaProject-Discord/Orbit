@@ -180,7 +180,9 @@ export class ImapAttachmentDownloader {
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly createClient: () => ImapFlow) {}
+  constructor(
+    private readonly createClient: () => ImapFlow | Promise<ImapFlow>,
+  ) {}
 
   readonly download: AttachmentDownloader = (target, sink) => {
     const result = this.queue.then(() => this.run(target, sink));
@@ -204,7 +206,7 @@ export class ImapAttachmentDownloader {
     if (this.closeTimer) clearTimeout(this.closeTimer);
     this.closeTimer = null;
     if (this.client?.usable) return this.client;
-    const client = this.createClient();
+    const client = await this.createClient();
     // 切断時のエラーは次の取得で気付く。リスナーが無いと例外になるので受けておく。
     client.on("error", () => {});
     await client.connect();

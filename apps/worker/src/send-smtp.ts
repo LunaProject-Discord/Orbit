@@ -9,10 +9,13 @@ export type SmtpSettings = {
   /** true なら最初から TLS (465 番など)、false なら STARTTLS (587 番など)。 */
   secure: boolean;
   username: string;
-  password: string;
   /** 暗号化されていない接続を許す (開発用のローカルサーバー向け)。 */
   allowInsecure: boolean;
-};
+} & (
+  | { password: string }
+  /** OAuth2 のアクセストークン。XOAUTH2 でログインする (Gmail)。 */
+  | { accessToken: string }
+);
 
 type SmtpError = Error & {
   code?: string;
@@ -72,7 +75,14 @@ export async function sendViaSmtp(
     secure: settings.secure,
     // STARTTLS に対応していないサーバーへ、パスワードを平文で送らない。
     requireTLS: !settings.secure && !settings.allowInsecure,
-    auth: { user: settings.username, pass: settings.password },
+    auth:
+      "accessToken" in settings
+        ? {
+            type: "OAuth2",
+            user: settings.username,
+            accessToken: settings.accessToken,
+          }
+        : { user: settings.username, pass: settings.password },
     connectionTimeout: 20_000,
     greetingTimeout: 15_000,
     socketTimeout: 60_000,

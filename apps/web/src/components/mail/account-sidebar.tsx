@@ -22,7 +22,12 @@ import { useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Account, MailboxSummary, User } from "@/lib/api";
+import {
+  type Account,
+  type MailboxSummary,
+  oauthProviderOf,
+  type User,
+} from "@/lib/api";
 import {
   buildMailboxTree,
   type MailboxNode,
@@ -95,7 +100,7 @@ type Props = {
   onDelete: (account: Account) => void;
   /** アカウントの署名を編集する。 */
   onEditSignature: (account: Account) => void;
-  /** 再ログインが必要な Microsoft アカウントで、ログインし直す。 */
+  /** 再ログインが必要な Google / Microsoft のアカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
   onSignOut: () => void;
 };
@@ -221,14 +226,16 @@ export function AccountSidebar({
                   <Trash2Icon />
                 </Button>
                 {account.status === "auth_required" &&
-                  account.protocol === "graph" && (
+                  oauthProviderOf(account) && (
                     <Button
                       variant="outline"
                       size="xs"
                       onClick={() => onReauth(account)}
                       className="mt-1 mb-2 ml-8"
                     >
-                      Microsoft にログインし直す
+                      {oauthProviderOf(account) === "google"
+                        ? "Google にログインし直す"
+                        : "Microsoft にログインし直す"}
                     </Button>
                   )}
                 {open && tree.length > 0 && (
