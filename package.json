@@ -9,10 +9,12 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
     "lint": "biome check",
     "format": "biome format --write",
     "db:generate": "pnpm --filter @mail/db generate",
-    "db:migrate": "pnpm --filter @mail/db migrate"
+    "db:migrate": "pnpm --filter @mail/db migrate",
+    "user:create": "pnpm --filter @mail/api user:create"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",

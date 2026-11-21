@@ -8,6 +8,13 @@
       "when": 1795230780079,
       "tag": "0000_fluffy_shinobi_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795231656842,
+      "tag": "0001_abandoned_vapor",
+      "breakpoints": true
     }
   ]
 }

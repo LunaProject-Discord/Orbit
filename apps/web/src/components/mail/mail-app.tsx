@@ -1,0 +1,342 @@
+"use client";
+
+import { cn } from "cn";
+import { InboxIcon, MenuIcon, PlusIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAuth } from "@/components/auth-provider";
+import { AccountSidebar } from "@/components/mail/account-sidebar";
+import { AddAccountDialog } from "@/components/mail/add-account-dialog";
+import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
+import { MessageList } from "@/components/mail/message-list";
+import { MessageView } from "@/components/mail/message-view";
+import { Button } from "@/components/ui/button";
+import {
+  type Account,
+  listAccounts,
+  listMessages,
+  type MessageSummary,
+  type User,
+} from "@/lib/api";
+import { subscribeEvents } from "@/lib/events";
+
+const PAGE_SIZE = 50;
+const LIST_ERROR = "メールを読み込めませんでした。";
+
+/** 一覧の並び順 (新しい順)。a が b より後ろなら正。 */
+function compareMessages(a: MessageSummary, b: MessageSummary): number {
+  if (a.receivedAt !== b.receivedAt) {
+    return a.receivedAt < b.receivedAt ? 1 : -1;
+  }
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+/**
+ * 取得し直した先頭ページを、読み込み済みの一覧に反映する。
+ * 先頭ページの範囲は新しい内容で置き換え、それより古い読み込み済みの分は残す。
+ */
+function mergeFirstPage(
+  current: MessageSummary[],
+  firstPage: MessageSummary[],
+  firstPageHasMore: boolean,
+): MessageSummary[] {
+  const last = firstPage.at(-1);
+  if (!last || !firstPageHasMore) return firstPage;
+  const ids = new Set(firstPage.map((message) => message.id));
+  const older = current.filter(
+    (message) => !ids.has(message.id) && compareMessages(last, message) < 0,
+  );
+  return [...firstPage, ...older];
+}
+
+export function MailApp({ user }: { user: User }) {
+  const { signOut } = useAuth();
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
+    null,
+  );
+  const [messages, setMessages] = useState<MessageSummary[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
+    null,
+  );
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [addOpen, setAddOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
+  const listRequest = useRef(0);
+  const selectedAccountRef = useRef(selectedAccountId);
+  selectedAccountRef.current = selectedAccountId;
+
+  const loadAccounts = useCallback(async () => {
+    try {
+      setAccounts(await listAccounts());
+    } catch {
+      // 一覧は次の通知や操作でまた取得する。
+    }
+  }, []);
+
+  /** 先頭ページを取得する。reset が true なら一覧を空にしてから読み込む。 */
+  const loadFirstPage = useCallback(
+    async (accountId: string | null, reset: boolean) => {
+      const request = ++listRequest.current;
+      if (reset) {
+        setMessages(null);
+        setNextCursor(null);
+        setListError(null);
+      }
+      try {
+        const page = await listMessages({ accountId, limit: PAGE_SIZE });
+        if (request !== listRequest.current) return;
+        setListError(null);
+        setMessages((current) =>
+          current && !reset
+            ? mergeFirstPage(current, page.messages, page.nextCursor !== null)
+            : page.messages,
+        );
+        // 2 ページ目以降を読み込み済みなら、続きの位置はそのまま使う。
+        setNextCursor((current) =>
+          reset || current === null || page.nextCursor === null
+            ? page.nextCursor
+            : current,
+        );
+      } catch {
+        if (request !== listRequest.current) return;
+        setListError(LIST_ERROR);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    void loadAccounts();
+  }, [loadAccounts]);
+
+  useEffect(() => {
+    void loadFirstPage(selectedAccountId, true);
+  }, [selectedAccountId, loadFirstPage]);
+
+  // サーバーからの変更通知で、アカウント一覧と表示中の一覧を取得し直す。
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let first = true;
+    const unsubscribe = subscribeEvents((event) => {
+      if (event.event !== "ready" && event.event !== "change") return;
+      // 最初の ready は、直前に行った初回の読み込みと重なるので何もしない。
+      if (first && event.event === "ready") {
+        first = false;
+        return;
+      }
+      first = false;
+      // 同期中は通知が続けて届くので、少し待ってまとめて反映する。
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void loadAccounts();
+        void loadFirstPage(selectedAccountRef.current, false);
+        setRefreshKey((key) => key + 1);
+      }, 300);
+    });
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, [loadAccounts, loadFirstPage]);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sidebarOpen]);
+
+  async function handleLoadMore() {
+    if (!nextCursor || loadingMore) return;
+    const request = listRequest.current;
+    setLoadingMore(true);
+    try {
+      const page = await listMessages({
+        accountId: selectedAccountId,
+        cursor: nextCursor,
+        limit: PAGE_SIZE,
+      });
+      if (request !== listRequest.current) return;
+      setMessages((current) => {
+        const ids = new Set((current ?? []).map((message) => message.id));
+        return [
+          ...(current ?? []),
+          ...page.messages.filter((message) => !ids.has(message.id)),
+        ];
+      });
+      setNextCursor(page.nextCursor);
+      setListError(null);
+    } catch {
+      if (request === listRequest.current) setListError(LIST_ERROR);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  function handleSelectAccount(accountId: string | null) {
+    setSidebarOpen(false);
+    setSelectedMessageId(null);
+    setSelectedAccountId(accountId);
+  }
+
+  const handleMissing = useCallback(() => setSelectedMessageId(null), []);
+
+  const selectedAccount =
+    accounts?.find((account) => account.id === selectedAccountId) ?? null;
+  const title = selectedAccount
+    ? selectedAccount.displayName || selectedAccount.email
+    : "すべての受信トレイ";
+  const noAccounts = accounts !== null && accounts.length === 0;
+
+  return (
+    <div className="flex h-dvh min-h-0 flex-1 overflow-hidden">
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="メニューを閉じる"
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-30 bg-black/30 md:hidden"
+        />
+      )}
+      <aside
+        id="mail-sidebar"
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r transition-transform md:static md:z-auto md:w-64 md:translate-x-0",
+          sidebarOpen
+            ? "translate-x-0"
+            : "invisible -translate-x-full md:visible",
+        )}
+      >
+        <AccountSidebar
+          user={user}
+          accounts={accounts}
+          selectedAccountId={selectedAccountId}
+          onSelect={handleSelectAccount}
+          onAdd={() => {
+            setSidebarOpen(false);
+            setAddOpen(true);
+          }}
+          onDelete={(account) => {
+            setSidebarOpen(false);
+            setDeleteTarget(account);
+          }}
+          onSignOut={() => void signOut()}
+        />
+      </aside>
+
+      <main className="flex min-w-0 flex-1">
+        <section
+          aria-label="メール一覧"
+          className={cn(
+            "min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
+            selectedMessageId ? "hidden" : "flex",
+          )}
+        >
+          <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="メニューを開く"
+              aria-controls="mail-sidebar"
+              aria-expanded={sidebarOpen}
+              onClick={() => setSidebarOpen(true)}
+              className="-ml-2 md:hidden"
+            >
+              <MenuIcon />
+            </Button>
+            <h1 className="truncate font-semibold text-lg">{title}</h1>
+          </header>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            {noAccounts ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+                <InboxIcon
+                  className="size-10 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <div className="flex flex-col gap-1">
+                  <h2 className="font-semibold text-lg">
+                    メールアカウントを追加しましょう
+                  </h2>
+                  <p className="text-muted-foreground text-sm">
+                    アカウントを追加すると、ここに受信トレイが表示されます。
+                  </p>
+                </div>
+                <Button onClick={() => setAddOpen(true)}>
+                  <PlusIcon />
+                  アカウントを追加
+                </Button>
+              </div>
+            ) : (
+              <MessageList
+                messages={messages}
+                error={listError}
+                selectedId={selectedMessageId}
+                hasMore={nextCursor !== null}
+                loadingMore={loadingMore}
+                onSelect={setSelectedMessageId}
+                onLoadMore={() => void handleLoadMore()}
+                onRetry={() => void loadFirstPage(selectedAccountId, true)}
+              />
+            )}
+          </div>
+        </section>
+
+        <section
+          aria-label="メールの内容"
+          className={cn(
+            "min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
+            selectedMessageId ? "flex" : "hidden",
+          )}
+        >
+          {selectedMessageId ? (
+            <MessageView
+              messageId={selectedMessageId}
+              refreshKey={refreshKey}
+              onBack={() => setSelectedMessageId(null)}
+              onMissing={handleMissing}
+            />
+          ) : (
+            <div className="flex flex-1 items-center justify-center p-8">
+              <p className="text-muted-foreground text-sm">
+                メールを選ぶと、ここに内容が表示されます。
+              </p>
+            </div>
+          )}
+        </section>
+      </main>
+
+      <AddAccountDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onCreated={(account) => {
+          setAccounts((current) =>
+            current?.some((item) => item.id === account.id)
+              ? current
+              : [...(current ?? []), account],
+          );
+        }}
+      />
+      <DeleteAccountDialog
+        account={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onDeleted={(id) => {
+          setAccounts(
+            (current) => current?.filter((item) => item.id !== id) ?? null,
+          );
+          setSelectedMessageId(null);
+          if (selectedAccountId === id) setSelectedAccountId(null);
+          else void loadFirstPage(selectedAccountId, true);
+        }}
+      />
+    </div>
+  );
+}

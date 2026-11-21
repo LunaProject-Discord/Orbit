@@ -1,0 +1,156 @@
+"use client";
+
+import { cn } from "cn";
+import { PaperclipIcon, StarIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { MessageSummary } from "@/lib/api";
+import { addressLabel, formatListDate } from "@/lib/format";
+
+type Props = {
+  messages: MessageSummary[] | null;
+  error: string | null;
+  selectedId: string | null;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onSelect: (id: string) => void;
+  onLoadMore: () => void;
+  onRetry: () => void;
+};
+
+export function MessageList({
+  messages,
+  error,
+  selectedId,
+  hasMore,
+  loadingMore,
+  onSelect,
+  onLoadMore,
+  onRetry,
+}: Props) {
+  if (messages === null) {
+    if (error) {
+      return (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+          <p role="alert" className="text-muted-foreground text-sm">
+            {error}
+          </p>
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            再試行
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col" aria-busy="true">
+        <output className="sr-only">メールを読み込み中</output>
+        {["a", "b", "c", "d", "e", "f"].map((key) => (
+          <div key={key} className="flex flex-col gap-2 border-b px-4 py-3">
+            <Skeleton className="h-4 w-1/3" />
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-3 w-full" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (messages.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-8 text-center">
+        <p className="text-muted-foreground text-sm">
+          メールはまだありません。同期が終わるとここに表示されます。
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {error && (
+        <p
+          role="alert"
+          className="border-b bg-destructive/10 px-4 py-2 text-destructive text-xs"
+        >
+          {error}
+        </p>
+      )}
+      <ul>
+        {messages.map((message) => {
+          const unread = !message.seen;
+          return (
+            <li key={message.id} className="border-b">
+              <button
+                type="button"
+                onClick={() => onSelect(message.id)}
+                aria-current={selectedId === message.id ? "true" : undefined}
+                className={cn(
+                  "flex w-full flex-col gap-0.5 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                  selectedId === message.id && "bg-muted",
+                )}
+              >
+                <span className="flex items-center gap-2">
+                  {unread && (
+                    <span
+                      className="size-2 shrink-0 rounded-full bg-primary"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-sm",
+                      unread ? "font-semibold" : "text-muted-foreground",
+                    )}
+                  >
+                    {unread && <span className="sr-only">未読 </span>}
+                    {addressLabel(message.from[0])}
+                  </span>
+                  {message.flagged && (
+                    <StarIcon
+                      className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+                      aria-label="スター付き"
+                    />
+                  )}
+                  {message.hasAttachments && (
+                    <PaperclipIcon
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                      aria-label="添付ファイルあり"
+                    />
+                  )}
+                  <time
+                    dateTime={message.receivedAt}
+                    className="shrink-0 text-muted-foreground text-xs tabular-nums"
+                  >
+                    {formatListDate(message.receivedAt)}
+                  </time>
+                </span>
+                <span
+                  className={cn("truncate text-sm", unread && "font-semibold")}
+                >
+                  {message.subject || "(件名なし)"}
+                </span>
+                {message.snippet && (
+                  <span className="line-clamp-2 text-muted-foreground text-xs">
+                    {message.snippet}
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {hasMore && (
+        <div className="flex justify-center p-4">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loadingMore}
+            onClick={onLoadMore}
+          >
+            {loadingMore ? "読み込み中…" : "さらに読み込む"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
