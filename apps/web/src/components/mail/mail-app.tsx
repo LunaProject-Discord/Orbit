@@ -11,9 +11,16 @@ import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { Button } from "@/components/ui/button";
 import {
+  type ActionQueue,
+  applyActions,
+  createActionQueue,
+  type MessageActionInput,
+} from "@/lib/actions";
+import {
   type Account,
   listAccounts,
   listMessages,
+  type MessageAction,
   type MessageSummary,
   startMicrosoftLogin,
   type User,
@@ -22,6 +29,8 @@ import { subscribeEvents } from "@/lib/events";
 
 const PAGE_SIZE = 50;
 const LIST_ERROR = "メールを読み込めませんでした。";
+const ACTION_ERROR =
+  "操作を反映できませんでした。一覧を最新の状態に戻しました。";
 
 /** 一覧の並び順 (新しい順)。a が b より後ろなら正。 */
 function compareMessages(a: MessageSummary, b: MessageSummary): number {
@@ -71,6 +80,9 @@ export function MailApp({ user }: { user: User }) {
   const listRequest = useRef(0);
   const selectedAccountRef = useRef(selectedAccountId);
   selectedAccountRef.current = selectedAccountId;
+  /** サーバーへ送る操作の待ち行列。通信できない間の操作もここに残る。 */
+  const queueRef = useRef<ActionQueue | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -93,10 +105,15 @@ export function MailApp({ user }: { user: User }) {
         const page = await listMessages({ accountId, limit: PAGE_SIZE });
         if (request !== listRequest.current) return;
         setListError(null);
+        // まだサーバーへ送れていない操作を、取得した一覧に重ねる。
+        const fetched = applyActions(
+          page.messages,
+          queueRef.current?.pending() ?? [],
+        );
         setMessages((current) =>
           current && !reset
-            ? mergeFirstPage(current, page.messages, page.nextCursor !== null)
-            : page.messages,
+            ? mergeFirstPage(current, fetched, page.nextCursor !== null)
+            : fetched,
         );
         // 2 ページ目以降を読み込み済みなら、続きの位置はそのまま使う。
         setNextCursor((current) =>
@@ -115,6 +132,51 @@ export function MailApp({ user }: { user: User }) {
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
+
+  useEffect(() => {
+    const queue = createActionQueue();
+    queueRef.current = queue;
+    const unsubscribe = queue.onRejected(() => {
+      // 画面に先に反映した内容を取り消すため、サーバーの状態を取り直す。
+      setActionError(ACTION_ERROR);
+      void loadFirstPage(selectedAccountRef.current, false);
+      setRefreshKey((key) => key + 1);
+    });
+    return () => {
+      unsubscribe();
+      queue.stop();
+      queueRef.current = null;
+    };
+  }, [loadFirstPage]);
+
+  /** 操作を画面にすぐ反映し、サーバーへは待ち行列から送る。 */
+  const performAction = useCallback(
+    (messageIds: string[], input: MessageActionInput) => {
+      const action: MessageAction = {
+        idempotencyKey: crypto.randomUUID(),
+        messageIds,
+        ...input,
+      };
+      setActionError(null);
+      setMessages((current) => current && applyActions(current, [action]));
+      if (input.action !== "set_flags") {
+        setSelectedMessageId((current) =>
+          current && messageIds.includes(current) ? null : current,
+        );
+      }
+      queueRef.current?.enqueue(action);
+    },
+    [],
+  );
+
+  /** メールを開く。未読なら既読にする。 */
+  function handleSelectMessage(id: string) {
+    setSelectedMessageId(id);
+    const message = messages?.find((item) => item.id === id);
+    if (message && !message.seen) {
+      performAction([id], { action: "set_flags", seen: true });
+    }
+  }
 
   useEffect(() => {
     void loadFirstPage(selectedAccountId, true);
@@ -167,11 +229,15 @@ export function MailApp({ user }: { user: User }) {
         limit: PAGE_SIZE,
       });
       if (request !== listRequest.current) return;
+      const fetched = applyActions(
+        page.messages,
+        queueRef.current?.pending() ?? [],
+      );
       setMessages((current) => {
         const ids = new Set((current ?? []).map((message) => message.id));
         return [
           ...(current ?? []),
-          ...page.messages.filter((message) => !ids.has(message.id)),
+          ...fetched.filter((message) => !ids.has(message.id)),
         ];
       });
       setNextCursor(page.nextCursor);
@@ -197,6 +263,8 @@ export function MailApp({ user }: { user: User }) {
     ? selectedAccount.displayName || selectedAccount.email
     : "すべての受信トレイ";
   const noAccounts = accounts !== null && accounts.length === 0;
+  const selectedMessage =
+    messages?.find((message) => message.id === selectedMessageId) ?? null;
 
   return (
     <div className="flex h-dvh min-h-0 flex-1 overflow-hidden">
@@ -263,6 +331,14 @@ export function MailApp({ user }: { user: User }) {
             </Button>
             <h1 className="truncate font-semibold text-lg">{title}</h1>
           </header>
+          {actionError && (
+            <p
+              role="alert"
+              className="shrink-0 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs"
+            >
+              {actionError}
+            </p>
+          )}
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
             {noAccounts ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
@@ -290,7 +366,7 @@ export function MailApp({ user }: { user: User }) {
                 selectedId={selectedMessageId}
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
-                onSelect={setSelectedMessageId}
+                onSelect={handleSelectMessage}
                 onLoadMore={() => void handleLoadMore()}
                 onRetry={() => void loadFirstPage(selectedAccountId, true)}
               />
@@ -309,6 +385,8 @@ export function MailApp({ user }: { user: User }) {
             <MessageView
               messageId={selectedMessageId}
               refreshKey={refreshKey}
+              summary={selectedMessage}
+              onAction={performAction}
               onBack={() => setSelectedMessageId(null)}
               onMissing={handleMissing}
             />

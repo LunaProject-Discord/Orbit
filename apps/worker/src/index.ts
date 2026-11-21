@@ -20,7 +20,8 @@ console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
 );
 
-// 送信キュー (outbox) の処理は今後ここに追加する。
+// 既読や移動などの操作 (送信待ちキュー) は、各アカウントの同期の中で反映する。
+// メールの送信は今後ここに追加する。
 
 async function shutdown() {
   await manager.stop();

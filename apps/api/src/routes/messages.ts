@@ -10,6 +10,10 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import {
+  enqueueMessageAction,
+  messageActionBody,
+} from "../lib/message-actions.js";
 
 const listQuery = z.object({
   /** 省略すると、全アカウントの受信トレイをまとめて返す。 */
@@ -78,6 +82,22 @@ export function messageRoutes({ db }: Pick<RouteDeps, "db">) {
         ? `${last.receivedAt.toISOString()}_${last.id}`
         : null;
     return c.json({ messages: page, nextCursor });
+  });
+
+  /**
+   * メッセージへの操作 (既読、スター、移動、削除)。
+   * すぐに DB へ反映して応答し、プロバイダへの反映は同期ワーカーが行う。
+   */
+  app.post("/actions", zValidator("json", messageActionBody), async (c) => {
+    const result = await enqueueMessageAction(
+      db,
+      c.var.user.id,
+      c.req.valid("json"),
+    );
+    if (!result.ok) {
+      return c.json({ error: result.error }, 400);
+    }
+    return c.json({ messageIds: result.messageIds });
   });
 
   app.get(

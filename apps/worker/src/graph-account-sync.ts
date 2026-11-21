@@ -14,6 +14,8 @@ import {
   syncGraphFolder,
   syncGraphFolders,
 } from "./graph-sync.js";
+import { processOutbox } from "./outbox.js";
+import { applyGraphOperation } from "./outbox-graph.js";
 
 const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
@@ -56,6 +58,7 @@ export class GraphAccountSync {
   private refreshToken: string | null = null;
   private accessToken: { value: string; expiresAt: number } | null = null;
   private refreshing: Promise<string> | null = null;
+  private outboxRequested = false;
 
   constructor(
     private readonly db: Database,
@@ -99,6 +102,12 @@ export class GraphAccountSync {
   stop() {
     this.stopped = true;
     this.abort.abort();
+    this.wake?.();
+  }
+
+  /** 送信待ちキューに操作が積まれた。次の確認を待たずに、すぐに反映する。 */
+  notifyOutbox() {
+    this.outboxRequested = true;
     this.wake?.();
   }
 
@@ -233,6 +242,15 @@ export class GraphAccountSync {
         throw new Error("受信トレイが見つかりませんでした。");
       }
 
+      // 既読や移動などの操作を先に反映してから、差分を確認する。
+      this.outboxRequested = false;
+      await processOutbox(
+        this.db,
+        this.account.id,
+        (operation) => applyGraphOperation(client, operation, signal),
+        (message) => this.log(message),
+      );
+
       const result = await syncGraphFolder(
         this.db,
         client,
@@ -256,6 +274,7 @@ export class GraphAccountSync {
       const nextPollAt = Date.now() + POLL_MS;
       while (
         !this.stopped &&
+        !this.outboxRequested &&
         Date.now() < nextPollAt &&
         (await fetchGraphBodies(
           this.db,
@@ -269,7 +288,7 @@ export class GraphAccountSync {
       }
       if (this.stopped) break;
       const wait = nextPollAt - Date.now();
-      if (wait > 0) await this.sleep(wait);
+      if (wait > 0 && !this.outboxRequested) await this.sleep(wait);
     }
   }
 }
