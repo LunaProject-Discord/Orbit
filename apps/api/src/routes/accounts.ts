@@ -1,6 +1,8 @@
 import { zValidator } from "@hono/zod-validator";
 import {
   CHANNEL_ACCOUNTS,
+  CHANNEL_CHANGES,
+  type ChangeNotification,
   createMicrosoftAuthorizeUrl,
   encryptCredentials,
   exchangeMicrosoftCode,
@@ -46,6 +48,11 @@ const microsoftCompleteBody = z.object({
 
 const idParam = z.object({ id: z.uuid() });
 
+const updateAccountBody = z.object({
+  /** 署名 (書式付き)。null か空なら署名なしにする。 */
+  signatureHtml: z.string().max(50_000).nullable(),
+});
+
 /** クライアントへ返す形。認証情報は暗号文であっても返さない。 */
 const publicColumns = {
   id: mailAccounts.id,
@@ -63,6 +70,7 @@ const publicColumns = {
   username: mailAccounts.username,
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
+  signatureHtml: mailAccounts.signatureHtml,
   createdAt: mailAccounts.createdAt,
 };
 
@@ -306,6 +314,50 @@ export function accountRoutes({
         return c.json({ error: "account_exists" }, 409);
       }
       return c.json({ account: result.account }, result.created ? 201 : 200);
+    },
+  );
+
+  /** アカウントの設定 (いまは署名) を変える。同期には影響しない。 */
+  app.patch(
+    "/:id",
+    zValidator("param", idParam),
+    zValidator("json", updateAccountBody),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const user = c.var.user;
+      const account = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(mailAccounts)
+          .set({ signatureHtml: body.signatureHtml?.trim() || null })
+          .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, user.id)))
+          .returning(publicColumns);
+        if (!row) return null;
+        // ほかの端末の作成画面にも、新しい署名が届くようにする。
+        const [change] = await tx
+          .insert(changes)
+          .values({
+            userId: user.id,
+            entity: "account",
+            entityId: id,
+            op: "upsert",
+          })
+          .returning({ seq: changes.seq });
+        if (change) {
+          const payload: ChangeNotification = {
+            userId: user.id,
+            seq: change.seq.toString(),
+          };
+          await tx.execute(
+            sql`select pg_notify(${CHANNEL_CHANGES}, ${JSON.stringify(payload)})`,
+          );
+        }
+        return row;
+      });
+      if (!account) {
+        return c.json({ error: "not_found" }, 404);
+      }
+      return c.json({ account });
     },
   );
 

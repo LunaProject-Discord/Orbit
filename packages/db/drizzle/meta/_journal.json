@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "7",
-      "when": 1795279955993,
-      "tag": "0005_graph_attachments_backfill",
+      "when": 1795279802869,
+      "tag": "0005_account_signature",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795280439944,
+      "tag": "0006_graph_attachments_backfill",
       "breakpoints": true
     }
   ]
