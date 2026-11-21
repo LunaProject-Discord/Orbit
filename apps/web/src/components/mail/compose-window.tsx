@@ -50,6 +50,7 @@ import {
   type ComposeDraft,
   htmlToText,
   MAX_ATTACHMENT_COUNT,
+  replaceSignature,
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
@@ -292,6 +293,19 @@ export function ComposeWindow({
   const limit = attachmentLimit(account ?? { protocol: "imap" });
   const uploading = uploads.length > 0;
 
+  /** 差出人を変える。本文の署名も、選んだアカウントのものに入れ替える。 */
+  function changeAccount(accountId: string) {
+    if (!draft) return;
+    const next = accounts.find((item) => item.id === accountId);
+    const editor = editorRef.current;
+    const html = replaceSignature(
+      editor?.innerHTML ?? draft.html,
+      next?.signatureHtml,
+    );
+    if (editor) editor.innerHTML = html;
+    onChange({ ...draft, accountId, html });
+  }
+
   function removeAttachment(file: UploadedAttachment) {
     if (!draft) return;
     set(
@@ -522,7 +536,7 @@ export function ComposeWindow({
               id={`${id}-from`}
               size="sm"
               value={draft.accountId}
-              onChange={(event) => set("accountId", event.target.value)}
+              onChange={(event) => changeAccount(event.target.value)}
               disabled={sending}
               className="max-w-full [&_select]:pl-7"
             >
@@ -775,10 +789,11 @@ const formats: { command: FormatCommand; label: string; icon: ReactNode }[] = [
  * 内容はブラウザーの編集機能 (contentEditable) に任せ、変わるたびに HTML を親へ伝える。
  * children は入力欄とツールバーの間に置くもの (添付ファイルの一覧など)。
  */
-function Editor({
+export function Editor({
   editorRef,
   initialHtml,
   disabled,
+  label = "本文",
   onChange,
   onFiles,
   toolbar,
@@ -787,10 +802,13 @@ function Editor({
   editorRef: React.RefObject<HTMLDivElement | null>;
   initialHtml: string;
   disabled: boolean;
+  /** 入力欄の名前 (読み上げ用)。 */
+  label?: string;
   onChange: (html: string) => void;
-  onFiles: (files: File[]) => void;
+  /** 貼り付けられたファイルの受け取り先。無ければファイルの貼り付けは無視する。 */
+  onFiles?: (files: File[]) => void;
   toolbar: (format: ReactNode) => ReactNode;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   const [active, setActive] = useState<Record<string, boolean>>({});
   const [linkOpen, setLinkOpen] = useState(false);
@@ -879,7 +897,7 @@ function Editor({
     const files = [...event.clipboardData.files];
     if (files.length > 0) {
       event.preventDefault();
-      onFiles(files);
+      onFiles?.(files);
       return;
     }
     // ほかの画面の書式を持ち込まないよう、文字だけを貼り付ける。
@@ -899,7 +917,7 @@ function Editor({
         ref={editorRef}
         role="textbox"
         aria-multiline="true"
-        aria-label="本文"
+        aria-label={label}
         tabIndex={0}
         contentEditable={!disabled}
         suppressContentEditableWarning
@@ -910,7 +928,7 @@ function Editor({
           if ((event.target as HTMLElement).closest("a"))
             event.preventDefault();
         }}
-        className="min-h-40 flex-1 overflow-y-auto break-words px-4 py-3 text-base leading-relaxed outline-none md:text-sm [&_a]:text-primary [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6"
+        className="min-h-40 flex-1 overflow-y-auto break-words px-4 py-3 text-base leading-relaxed outline-none md:text-sm [&_a]:text-primary [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h1]:font-semibold [&_h1]:text-lg [&_h2]:font-semibold [&_h2]:text-base [&_h3]:font-semibold [&_hr]:my-2 [&_ol]:list-decimal [&_pre]:whitespace-pre-wrap [&_td]:pr-3 [&_td]:align-top [&_th]:pr-3 [&_th]:text-left [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6"
       />
       {children}
       {linkOpen && (
