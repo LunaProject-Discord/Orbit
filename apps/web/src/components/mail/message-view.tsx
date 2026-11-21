@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftIcon, PaperclipIcon } from "lucide-react";
+import { ArrowLeftIcon, ImageOffIcon, PaperclipIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,13 +14,31 @@ import {
 } from "@/lib/format";
 
 /**
+ * 本文が外部サーバーの画像を参照しているか。
+ * 「画像を表示」の案内を出すかどうかを決めるだけなので、厳密な解析はしない
+ * (読み込みを実際に止めているのは iframe 側の CSP)。
+ */
+export function hasRemoteImages(html: string): boolean {
+  return (
+    /<img\b[^>]*\ssrc\s*=\s*["']?\s*(https?:)?\/\//i.test(html) ||
+    /\bbackground\s*=\s*["']?\s*(https?:)?\/\//i.test(html) ||
+    /url\(\s*["']?\s*(https?:)?\/\//i.test(html)
+  );
+}
+
+/**
  * メール本文の HTML を iframe に入れるための文書。
  * CSP で外部への通信をすべて止め、開封を知らせる追跡画像なども読み込ませない。
+ * allowRemoteImages が true のときだけ、https の画像の読み込みを許可する
+ * (スクリプト、フォント、外部のスタイルシートなどは引き続き止める)。
  */
-function buildSrcDoc(html: string): string {
+export function buildSrcDoc(html: string, allowRemoteImages = false): string {
+  const imgSrc = allowRemoteImages ? "data: https:" : "data:";
   return [
     "<!doctype html><html><head>",
-    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">",
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${imgSrc}">`,
+    // 画像を読み込むときに、このアプリの URL を相手のサーバーへ伝えない。
+    '<meta name="referrer" content="no-referrer">',
     '<base target="_blank">',
     '<meta charset="utf-8">',
     "<style>html{background:#fff;color:#111}body{margin:16px;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6;overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>",
@@ -122,10 +140,17 @@ function MessageContent({
   message: MessageDetail;
   backButton: React.ReactNode;
 }) {
+  /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
+  const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
+  const showImages = imagesShownFor === message.id;
   const srcDoc = useMemo(
-    () => (message.bodyHtml ? buildSrcDoc(message.bodyHtml) : null),
-    [message.bodyHtml],
+    () => (message.bodyHtml ? buildSrcDoc(message.bodyHtml, showImages) : null),
+    [message.bodyHtml, showImages],
   );
+  const imagesBlocked =
+    !showImages &&
+    message.bodyHtml !== null &&
+    hasRemoteImages(message.bodyHtml);
   const files = message.attachments.filter((file) => !file.inline);
 
   return (
@@ -189,15 +214,35 @@ function MessageContent({
           本文を取得中です。取得が終わると自動で表示されます。
         </output>
       ) : srcDoc ? (
-        // スクリプトの実行もこのアプリのデータへのアクセスも禁止する。
-        // 許可するのは、本文内のリンクを新しいタブで開くことだけ。
-        <iframe
-          title="メール本文"
-          sandbox="allow-popups allow-popups-to-escape-sandbox"
-          srcDoc={srcDoc}
-          referrerPolicy="no-referrer"
-          className="min-h-[60vh] w-full flex-1 border-0 bg-white"
-        />
+        <>
+          {imagesBlocked && (
+            <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-muted/50 px-4 py-2 sm:px-6">
+              <ImageOffIcon
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <p className="min-w-0 flex-1 text-muted-foreground text-sm">
+                外部の画像は表示していません。表示すると、開封したことが差出人に伝わる場合があります。
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setImagesShownFor(message.id)}
+              >
+                このメールの画像を表示
+              </Button>
+            </div>
+          )}
+          {/* スクリプトの実行もこのアプリのデータへのアクセスも禁止する。
+              許可するのは、本文内のリンクを新しいタブで開くことだけ。 */}
+          <iframe
+            title="メール本文"
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            srcDoc={srcDoc}
+            referrerPolicy="no-referrer"
+            className="min-h-[60vh] w-full flex-1 border-0 bg-white"
+          />
+        </>
       ) : message.bodyText ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">

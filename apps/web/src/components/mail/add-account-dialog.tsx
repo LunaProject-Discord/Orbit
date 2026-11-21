@@ -13,7 +13,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { type Account, ApiError, createAccount, NetworkError } from "@/lib/api";
+import {
+  type Account,
+  ApiError,
+  createAccount,
+  NetworkError,
+  startMicrosoftLogin,
+} from "@/lib/api";
 
 function messageOf(error: unknown): string {
   if (error instanceof NetworkError) {
@@ -32,6 +38,8 @@ function messageOf(error: unknown): string {
         return "このメールアドレスはすでに追加されています。";
       case "host_not_allowed":
         return `このホストには接続できません${body.host ? `: ${body.host}` : ""}。`;
+      case "microsoft_not_configured":
+        return "このサーバーでは Microsoft アカウントの追加が設定されていません。サーバーの管理者に確認してください。";
       case "host_not_found":
         return `ホストが見つかりません${body.host ? `: ${body.host}` : ""}。ホスト名を確認してください。`;
     }
@@ -68,6 +76,19 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
   const [usernameEdited, setUsernameEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
+
+  async function handleMicrosoft() {
+    setError(null);
+    setRedirecting(true);
+    try {
+      // Microsoft のログイン画面へ移動する。ログイン後は /oauth/microsoft に戻ってくる。
+      window.location.assign(await startMicrosoftLogin());
+    } catch (cause) {
+      setError(messageOf(cause));
+      setRedirecting(false);
+    }
+  }
 
   const set = <K extends keyof typeof initialForm>(
     key: K,
@@ -75,7 +96,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
   ) => setForm((current) => ({ ...current, [key]: value }));
 
   function handleOpenChange(next: boolean) {
-    if (submitting) return;
+    if (submitting || redirecting) return;
     if (!next) {
       setForm(initialForm);
       setUsernameEdited(false);
@@ -126,12 +147,35 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
         <DialogHeader>
           <DialogTitle>メールアカウントを追加</DialogTitle>
           <DialogDescription>
-            IMAP
-            サーバーの情報を入力してください。追加すると受信トレイの同期が始まります。iCloud
-            や Gmail
-            では、通常のパスワードではなくアプリ用パスワードを使ってください。
+            追加すると受信トレイの同期が始まります。
           </DialogDescription>
         </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            disabled={submitting || redirecting}
+            onClick={() => void handleMicrosoft()}
+          >
+            {redirecting
+              ? "Microsoft のログイン画面へ移動中…"
+              : "Microsoft アカウントでログイン"}
+          </Button>
+          <p className="text-muted-foreground text-xs">
+            Microsoft 365 (Exchange Online) と Outlook.com
+            のアカウントを追加できます。
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-muted-foreground text-xs">
+          <span className="h-px flex-1 bg-border" />
+          または IMAP サーバーを設定
+          <span className="h-px flex-1 bg-border" />
+        </div>
+        <p className="text-muted-foreground text-sm">
+          iCloud や Gmail
+          では、通常のパスワードではなくアプリ用パスワードを使ってください。
+        </p>
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
@@ -216,12 +260,12 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
             <Button
               type="button"
               variant="outline"
-              disabled={submitting}
+              disabled={submitting || redirecting}
               onClick={() => handleOpenChange(false)}
             >
               キャンセル
             </Button>
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={submitting || redirecting}>
               {submitting ? "接続を確認中…" : "追加"}
             </Button>
           </DialogFooter>

@@ -1,6 +1,6 @@
 # Mail
 
-サーバーが IMAP / SMTP でメールを扱い、各クライアントは REST API と SSE でサーバー経由で送受信するメールアプリです。
+サーバーが IMAP / SMTP や Microsoft Graph でメールを扱い、各クライアントは REST API と SSE でサーバー経由で送受信するメールアプリです。
 複数の端末で既読や新着がリアルタイムに一致することを目的にしています。
 
 ## 構成
@@ -8,7 +8,7 @@
 | パス | 内容 |
 | --- | --- |
 | `apps/api` | API サーバー (Hono)。REST API、SSE、認証 |
-| `apps/worker` | 同期ワーカー。IMAP の常時接続と送信キューの処理 |
+| `apps/worker` | 同期ワーカー。IMAP の常時接続、Microsoft Graph の差分取得、送信キューの処理 |
 | `apps/web` | Next.js の UI。静的エクスポートし、Web / Tauri / Capacitor で共用する |
 | `packages/db` | PostgreSQL のスキーマとマイグレーション (Drizzle ORM) |
 | `packages/core` | サーバー側で共有する処理 (認証情報の暗号化、プロセス間通知の定義) |
@@ -41,16 +41,44 @@ pnpm dev               # api / worker / web を起動
   新規登録は API では受け付けておらず (招待制)、利用者は `pnpm user:create` で作成します。
 - クライアントはログインで得たセッショントークンを `Authorization: Bearer` で送ります
   (Web / Tauri / Capacitor で同じ方式を使うため、Cookie には依存しません)。
-- 1 人の利用者が複数のメールアカウントを追加できます。現在追加できるのは、パスワード
-  (アプリ用パスワードを含む) で IMAP にログインするアカウントです。OAuth2 (Gmail / Microsoft) は今後対応します。
-- メールアカウントのパスワードは AES-256-GCM で暗号化して保存します。鍵は `CREDENTIALS_ENCRYPTION_KEY` で、
+- 1 人の利用者が複数のメールアカウントを追加できます。現在追加できるのは次の 2 種類です。
+  - パスワード (アプリ用パスワードを含む) で IMAP にログインするアカウント
+  - Microsoft アカウント (Microsoft 365 の Exchange Online、Outlook.com)。Microsoft のログイン画面で認証し、
+    Microsoft Graph で同期します。設定は下の「Microsoft アカウント」を参照してください。
+
+  Gmail の OAuth2 は今後対応します。
+- メールアカウントのパスワードやリフレッシュトークンは AES-256-GCM で暗号化して保存します。鍵は `CREDENTIALS_ENCRYPTION_KEY` で、
   DB には入りません。鍵を失うと復号できなくなるため、安全な場所に控えてください。
 - ローカルの IMAP サーバー (localhost や内部 IP) で試す場合は、`.env` で `ALLOW_PRIVATE_MAIL_HOSTS=true` にします。
+
+## Microsoft アカウント (Exchange Online / Outlook.com)
+
+Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://entra.microsoft.com/) でアプリを登録します。
+
+1. 「アプリの登録」→「新規登録」を開き、名前を付けます。「サポートされているアカウントの種類」は、
+   組織と個人の両方を使うなら「任意の組織ディレクトリ内のアカウントと個人用 Microsoft アカウント」を選びます。
+2. リダイレクト URI は種類を「Web」にして、Web の URL に `/oauth/microsoft` を付けたものを登録します
+   (ローカルなら `http://localhost:3000/oauth/microsoft`)。`MICROSOFT_REDIRECT_URI` と完全に一致させてください。
+3. 「証明書とシークレット」でクライアント シークレットを作り、値を控えます (有効期限が切れたら作り直しが必要です)。
+4. 「API のアクセス許可」で Microsoft Graph の委任されたアクセス許可 `offline_access`、`User.Read`、
+   `Mail.ReadWrite`、`Mail.Send` を追加します。
+5. `.env` の `MICROSOFT_CLIENT_ID` (アプリケーション ID) と `MICROSOFT_CLIENT_SECRET` を設定し、api と worker を再起動します。
+   「サポートされているアカウントの種類」で組織のみ / 個人のみを選んだ場合は、`MICROSOFT_TENANT` も合わせます。
+
+設定すると、アカウントの追加画面の「Microsoft アカウントでログイン」から追加できます。
+組織のアカウントでは、テナントの設定によって管理者の同意が必要な場合があります。
+
+- 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行い、15 秒ごとに差分を確認します。
+  変更通知 (Webhook) による即時反映は今後対応します。
+- メッセージは [不変 ID](https://learn.microsoft.com/graph/outlook-immutable-id) で識別します。
+- 現時点では添付ファイルの一覧、返信済みの印、サブフォルダは取り込みません。
+- リフレッシュトークンが失効した場合 (長期間の未使用、パスワード変更、同意の取り消しなど) は、
+  サイドバーに「再ログインが必要です」と表示されます。「Microsoft にログインし直す」から復旧できます。
 
 ## 同期の仕組み
 
 1. API がアカウントを保存すると、PostgreSQL の `NOTIFY` で同期ワーカーに伝わります。
-2. ワーカーはアカウントごとに IMAP へ常時接続し、受信トレイを DB に取り込みます
+2. ワーカーはアカウントごとに IMAP へ常時接続し (Microsoft アカウントでは Microsoft Graph を定期的に確認し)、受信トレイを DB に取り込みます
    (先に一覧、続いて本文を新しい順に取得)。以降は IMAP IDLE で新着・既読・削除の通知を受けて差分を反映します。
 3. ワーカーは変更を `changes` テーブルに記録して `NOTIFY` し、API が SSE (`GET /v1/events`) で各端末に知らせます。
    端末は `GET /v1/sync?since=<変更番号>` や一覧 API で取り直します。
@@ -65,6 +93,8 @@ pnpm dev               # api / worker / web を起動
 | `POST /v1/auth/sign-out` | ログアウト |
 | `GET /v1/me` | ログイン中の利用者 |
 | `GET /v1/accounts` / `POST /v1/accounts` | メールアカウントの一覧 / 追加 (IMAP へのログインを確認してから保存) |
+| `POST /v1/accounts/microsoft/authorize` | Microsoft のログイン画面の URL を取得 (`accountId` を渡すと再ログイン) |
+| `POST /v1/accounts/microsoft/complete` | ログイン後に戻ってきた `code` と `state` を渡して、Microsoft アカウントを追加 |
 | `DELETE /v1/accounts/:id` | メールアカウントと取り込んだメールの削除 |
 | `GET /v1/accounts/:id/mailboxes` | フォルダ一覧 |
 | `GET /v1/messages` | メッセージ一覧 (`accountId` 省略で全アカウントの受信トレイ、`cursor` でページ送り) |

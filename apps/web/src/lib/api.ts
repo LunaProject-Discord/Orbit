@@ -134,11 +134,14 @@ export type Account = {
   displayName: string | null;
   provider: "gmail" | "microsoft" | "icloud" | "generic";
   authType: "oauth2" | "password";
-  imapHost: string;
-  imapPort: number;
+  /** imap は IMAP / SMTP、graph は Microsoft Graph (Exchange Online、Outlook.com)。 */
+  protocol: "imap" | "graph";
+  /** IMAP / SMTP の接続先。protocol が graph のときは null。 */
+  imapHost: string | null;
+  imapPort: number | null;
   imapSecure: boolean;
-  smtpHost: string;
-  smtpPort: number;
+  smtpHost: string | null;
+  smtpPort: number | null;
   smtpSecure: boolean;
   username: string;
   status: AccountStatus;
@@ -269,6 +272,30 @@ export async function createAccount(
     method: "POST",
     body: input,
   });
+  return account;
+}
+
+/**
+ * Microsoft のログイン画面の URL を取得する。
+ * accountId を渡すと、そのアカウントの再ログインになる。
+ */
+export async function startMicrosoftLogin(accountId?: string): Promise<string> {
+  const { url } = await apiJson<{ url: string }>(
+    "/v1/accounts/microsoft/authorize",
+    { method: "POST", body: accountId ? { accountId } : {} },
+  );
+  return url;
+}
+
+/** Microsoft のログイン画面から戻ってきた code と state を渡して、アカウントを追加する。 */
+export async function completeMicrosoftLogin(
+  code: string,
+  state: string,
+): Promise<Account> {
+  const { account } = await apiJson<{ account: Account }>(
+    "/v1/accounts/microsoft/complete",
+    { method: "POST", body: { code, state } },
+  );
   return account;
 }
 

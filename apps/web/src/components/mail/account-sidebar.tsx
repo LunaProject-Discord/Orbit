@@ -28,6 +28,8 @@ type Props = {
   onSelect: (accountId: string | null) => void;
   onAdd: () => void;
   onDelete: (account: Account) => void;
+  /** 再ログインが必要な Microsoft アカウントで、ログインし直す。 */
+  onReauth: (account: Account) => void;
   onSignOut: () => void;
 };
 
@@ -38,6 +40,7 @@ export function AccountSidebar({
   onSelect,
   onAdd,
   onDelete,
+  onReauth,
   onSignOut,
 }: Props) {
   return (
@@ -98,6 +101,17 @@ export function AccountSidebar({
                 >
                   <Trash2Icon />
                 </Button>
+                {account.status === "auth_required" &&
+                  account.protocol === "graph" && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => onReauth(account)}
+                      className="mt-1 mb-2 ml-8"
+                    >
+                      Microsoft にログインし直す
+                    </Button>
+                  )}
               </div>
             );
           })

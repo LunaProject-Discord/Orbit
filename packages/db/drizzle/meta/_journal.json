@@ -15,6 +15,13 @@
       "when": 1795231656842,
       "tag": "0001_abandoned_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795233406770,
+      "tag": "0002_graph_accounts",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { loadEncryptionKey } from "@mail/core";
+import { loadEncryptionKey, loadMicrosoftOAuthConfig } from "@mail/core";
 import { createDb } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
 
@@ -9,7 +9,12 @@ if (!databaseUrl) {
 const encryptionKey = loadEncryptionKey(process.env.CREDENTIALS_ENCRYPTION_KEY);
 
 const { db, pool } = createDb(databaseUrl);
-const manager = new AccountManager(db, databaseUrl, encryptionKey);
+const manager = new AccountManager(
+  db,
+  databaseUrl,
+  encryptionKey,
+  loadMicrosoftOAuthConfig(process.env),
+);
 await manager.start();
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,

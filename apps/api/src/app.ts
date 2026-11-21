@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { Auth } from "./auth.js";
-import { type AppEnv, requireUser } from "./context.js";
+import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { messageRoutes } from "./routes/messages.js";
@@ -18,6 +18,7 @@ export type AppOptions = {
   allowedOrigins: string[];
   encryptionKey: Buffer;
   allowPrivateMailHosts: boolean;
+  microsoft: RouteDeps["microsoft"];
 };
 
 export function createApp({
@@ -27,6 +28,7 @@ export function createApp({
   allowedOrigins,
   encryptionKey,
   allowPrivateMailHosts,
+  microsoft,
 }: AppOptions) {
   const app = new Hono();
 
@@ -59,7 +61,7 @@ export function createApp({
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
   authed.get("/me", (c) => c.json({ user: c.var.user }));
-  const deps = { db, encryptionKey, allowPrivateMailHosts };
+  const deps = { db, encryptionKey, allowPrivateMailHosts, microsoft };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/messages", messageRoutes(deps));
   authed.route("/", syncRoutes({ db, hub }));
