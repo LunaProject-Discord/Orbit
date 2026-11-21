@@ -57,6 +57,13 @@
       "when": 1795281379792,
       "tag": "0007_message_search",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795281575464,
+      "tag": "0008_drafts",
+      "breakpoints": true
     }
   ]
 }

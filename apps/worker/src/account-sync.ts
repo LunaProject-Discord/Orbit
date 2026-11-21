@@ -12,6 +12,8 @@ import {
   ImapAttachmentDownloader,
 } from "./attachment-fetch.js";
 import { recordChanges } from "./changes.js";
+import { imapDraftRemote } from "./draft-imap.js";
+import { dbDraftStore, processDrafts } from "./draft-sync.js";
 import { FolderWatcher } from "./folder-watcher.js";
 import {
   isSelectable,
@@ -108,6 +110,8 @@ export class AccountSync {
   private readonly attachmentRequests: AttachmentRequests;
   /** OAuth2 のアカウント (Gmail) のアクセストークン。最初に使うときに用意する。 */
   private tokens: GoogleAccessTokenSource | null = null;
+  /** 書く手が止まるのを待っている下書きを、メールサーバーへ置きに戻るためのタイマー。 */
+  private draftTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly db: Database,
@@ -342,6 +346,43 @@ export class AccountSync {
   private requestSync() {
     this.syncRequested = true;
     this.wake?.();
+  }
+
+  /**
+   * まだメールサーバーへ置いていない下書きを、下書きフォルダへ置く。
+   * フォルダを選択し直すので、他のフォルダのロックを取る前に行う。
+   */
+  private async syncDrafts(client: ImapFlow) {
+    const result = await processDrafts(
+      dbDraftStore(this.db, this.account),
+      this.account,
+      imapDraftRemote(client, async () => {
+        const [row] = await this.db
+          .select({ path: mailboxes.path })
+          .from(mailboxes)
+          .where(
+            and(
+              eq(mailboxes.accountId, this.account.id),
+              eq(mailboxes.specialUse, "drafts"),
+            ),
+          );
+        return row?.path ?? null;
+      }),
+      (message) => this.log(message),
+    );
+    if (result.saved > 0) {
+      this.log(`下書きを ${result.saved} 件、メールサーバーへ保存しました`);
+      // 置いた控えを、下書きフォルダの同期で取り込む。
+      this.foldersDue = true;
+    }
+    if (this.draftTimer) clearTimeout(this.draftTimer);
+    this.draftTimer =
+      result.nextDueAt === null
+        ? null
+        : setTimeout(
+            () => this.requestSync(),
+            Math.max(0, result.nextDueAt - Date.now()) + 100,
+          );
   }
 
   private sleep(ms: number) {
@@ -630,6 +671,7 @@ export class AccountSync {
         );
         // 移動先のフォルダなど、受信トレイ以外にも変化がある。
         if (outbox.done > 0 || outbox.failed > 0) this.foldersDue = true;
+        await this.syncDrafts(client);
 
         await this.syncInbox(client);
         if (!healthy) {
@@ -671,6 +713,8 @@ export class AccountSync {
       clearInterval(periodic);
       clearInterval(folderPoll);
       clearInterval(focusPoll);
+      if (this.draftTimer) clearTimeout(this.draftTimer);
+      this.draftTimer = null;
       this.wake = null;
       this.client = null;
       client.close();

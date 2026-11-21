@@ -442,3 +442,65 @@ export const outbox = pgTable(
     index("outbox_status_run_after_idx").on(t.status, t.runAfter),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// 下書き
+// ---------------------------------------------------------------------------
+
+/** 宛先の欄 1 つ分。確定した宛先と、入力途中の文字列。 */
+export type DraftRecipients = { list: Address[]; text: string };
+
+/** 下書きに付けたファイル。実体は添付ファイルの置き場 (attachment-store) にある。 */
+export type DraftAttachment = {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+};
+
+/**
+ * 書きかけのメール。どの端末からも続きを書けるよう、サーバーに置く。
+ * id は端末が決める UUID で、送信するときの idempotencyKey にもなる
+ * (同じ下書きを 2 台から送っても 1 通しか送られない)。
+ */
+export const drafts = pgTable(
+  "drafts",
+  {
+    id: uuid().primaryKey(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 差出人にするメールアカウント。 */
+    accountId: uuid()
+      .notNull()
+      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+    to: jsonb().$type<DraftRecipients>().notNull(),
+    cc: jsonb().$type<DraftRecipients>().notNull(),
+    bcc: jsonb().$type<DraftRecipients>().notNull(),
+    subject: text().notNull().default(""),
+    /** 本文 (書式付き)。 */
+    html: text().notNull().default(""),
+    /** 本文をテキストに直したもの。一覧での表示と、メールサーバーへの保存に使う。 */
+    text: text().notNull().default(""),
+    attachments: jsonb().$type<DraftAttachment[]>().notNull().default([]),
+    mode: text().$type<"new" | "reply" | "forward">().notNull().default("new"),
+    /** 返信・転送の元になったメッセージ (messages.id)。消えていてもよいので参照にはしない。 */
+    sourceMessageId: uuid(),
+    /** 保存のたびに増える番号。端末は、自分が元にした番号と違えば他の端末の変更に気づける。 */
+    revision: integer().notNull().default(1),
+    /** メールサーバーの下書きフォルダへ保存し終えた revision。まだなら null。 */
+    syncedRevision: integer(),
+    /** メールサーバーに置いた控えの場所。IMAP はフォルダのパスと UID、Graph はメッセージの ID。 */
+    remoteMessageId: text(),
+    remoteMailboxPath: text(),
+    remoteUid: bigint({ mode: "bigint" }),
+    remoteUidValidity: bigint({ mode: "bigint" }),
+    remoteProviderId: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("drafts_user_updated_idx").on(t.userId, t.updatedAt),
+    index("drafts_account_idx").on(t.accountId),
+  ],
+);

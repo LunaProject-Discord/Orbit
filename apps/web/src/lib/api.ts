@@ -191,6 +191,8 @@ export type MessageSummary = {
    * 一覧の 1 行は会話 1 つを表し、既読やスターはこれらをまとめた値、操作もこれらが対象になる。
    */
   threadMessageIds: string[];
+  /** 下書きフォルダにある、このアプリの下書きの控えなら、その下書きの ID。 */
+  draftId?: string | null;
 };
 
 /** 会話 (スレッド) に含まれるメッセージ 1 通分。本文は含まない。 */
@@ -332,6 +334,44 @@ export type OutgoingMail = {
   text: string;
   html: string | null;
   attachments: UploadedAttachment[];
+};
+
+/** 宛先の欄 1 つ分。確定した宛先と、入力途中の文字列。 */
+export type RecipientField = { list: Address[]; text: string };
+
+/** サーバーに保存してある下書き。どの端末からも続きを書ける。 */
+export type ServerDraft = {
+  /** 端末が決めた ID。送信するときの idempotencyKey にもなる。 */
+  id: string;
+  accountId: string;
+  to: RecipientField;
+  cc: RecipientField;
+  bcc: RecipientField;
+  subject: string;
+  html: string;
+  /** 本文の冒頭 (一覧用)。 */
+  snippet: string;
+  attachments: UploadedAttachment[];
+  mode: "new" | "reply" | "forward";
+  sourceMessageId: string | null;
+  /** 保存のたびに増える番号。 */
+  revision: number;
+  updatedAt: string;
+};
+
+export type SaveDraftInput = {
+  accountId: string;
+  to: RecipientField;
+  cc: RecipientField;
+  bcc: RecipientField;
+  subject: string;
+  html: string;
+  text: string;
+  attachmentIds: string[];
+  mode: "new" | "reply" | "forward";
+  sourceMessageId: string | null;
+  /** この端末が元にした revision。まだサーバーに保存していなければ null。 */
+  baseRevision: number | null;
 };
 
 export type MessagePage = {
@@ -626,6 +666,33 @@ export async function listOutgoing(
 /** 送信待ちのメールを取り消す、または失敗したメールを一覧から消す。 */
 export async function deleteOutgoing(id: string): Promise<void> {
   await apiFetch(`/v1/messages/outgoing/${id}`, { method: "DELETE" });
+}
+
+export async function listDrafts(signal?: AbortSignal): Promise<ServerDraft[]> {
+  const { drafts } = await apiJson<{ drafts: ServerDraft[] }>("/v1/drafts", {
+    signal,
+  });
+  return drafts;
+}
+
+/**
+ * 下書きを保存する (無ければ作る)。他の端末が先に書き換えていたら 409、
+ * 他の端末で送信・破棄されていたら 410 の ApiError になる。
+ */
+export async function saveDraft(
+  id: string,
+  input: SaveDraftInput,
+): Promise<ServerDraft> {
+  const { draft } = await apiJson<{ draft: ServerDraft }>(`/v1/drafts/${id}`, {
+    method: "PUT",
+    body: input,
+  });
+  return draft;
+}
+
+/** 下書きを破棄する。付けていたファイルもサーバーから消える。 */
+export async function deleteDraft(id: string): Promise<void> {
+  await apiFetch(`/v1/drafts/${id}`, { method: "DELETE" });
 }
 
 /**

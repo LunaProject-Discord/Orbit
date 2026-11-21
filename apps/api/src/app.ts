@@ -9,6 +9,7 @@ import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
+import { draftRoutes } from "./routes/drafts.js";
 import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
@@ -94,6 +95,7 @@ export function createApp({
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));
+  authed.route("/drafts", draftRoutes(deps));
   // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) を登録する。
   authed.route("/messages", sendRoutes(deps));
   // 検索 (/messages/search) も /messages/:id より先に登録する。

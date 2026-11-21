@@ -3,9 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   attachmentKey,
   attachmentsDir,
-  CHANNEL_CHANGES,
   CHANNEL_OUTBOX,
-  type ChangeNotification,
   MAX_ATTACHMENT_COUNT,
   MAX_ATTACHMENTS_BYTES,
   MAX_GRAPH_ATTACHMENTS_BYTES,
@@ -14,11 +12,16 @@ import {
   readAttachmentMeta,
   type SendPayload,
 } from "@mail/core";
-import { changes, mailAccounts, messages, outbox } from "@mail/db";
+import { drafts, mailAccounts, messages, outbox } from "@mail/db";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { notifyAccountChanged } from "../lib/changes.js";
+import {
+  lockDraftAccount,
+  queueDraftCopyRemoval,
+} from "../lib/draft-remote.js";
 
 /** 1 通あたりの宛先の上限 (To / Cc / Bcc の合計)。 */
 const MAX_RECIPIENTS = 100;
@@ -52,23 +55,6 @@ const sendBody = z.object({
 });
 
 const idParam = z.object({ id: z.uuid() });
-
-/** 送信待ちの一覧が変わったことを、利用者の端末へ知らせる。 */
-async function notifyOutgoing(
-  tx: Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0],
-  userId: string,
-  accountId: string,
-) {
-  const [row] = await tx
-    .insert(changes)
-    .values({ userId, entity: "account", entityId: accountId, op: "upsert" })
-    .returning({ seq: changes.seq });
-  if (!row) return;
-  const payload: ChangeNotification = { userId, seq: row.seq.toString() };
-  await tx.execute(
-    sql`select pg_notify(${CHANNEL_CHANGES}, ${JSON.stringify(payload)})`,
-  );
-}
 
 /**
  * メールの送信。/v1/messages の下に置く。
@@ -202,7 +188,25 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
           );
         return existing?.id ?? null;
       }
-      await notifyOutgoing(tx, user.id, account.id);
+      // 送信したメールの下書きは、どの端末からも消す (ID は送信の idempotencyKey と同じ)。
+      // 付けていたファイルは送信に使うので残す。メールサーバーに置いた控えも消す。
+      const [draft] = await tx
+        .select({ accountId: drafts.accountId })
+        .from(drafts)
+        .where(
+          and(eq(drafts.id, body.idempotencyKey), eq(drafts.userId, user.id)),
+        );
+      if (draft) {
+        await lockDraftAccount(tx, draft.accountId);
+        const [removed] = await tx
+          .delete(drafts)
+          .where(
+            and(eq(drafts.id, body.idempotencyKey), eq(drafts.userId, user.id)),
+          )
+          .returning();
+        if (removed) await queueDraftCopyRemoval(tx, removed);
+      }
+      await notifyAccountChanged(tx, user.id, account.id);
       // コミット時に同期ワーカーへ届き、すぐに送信される。
       await tx.execute(sql`select pg_notify(${CHANNEL_OUTBOX}, ${account.id})`);
       return queued.id;
@@ -285,7 +289,7 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
         )
         .returning({ id: outbox.id });
       if (!deleted) return "in_progress" as const;
-      await notifyOutgoing(tx, user.id, row.accountId);
+      await notifyAccountChanged(tx, user.id, row.accountId);
       return "deleted" as const;
     });
     if (result === "not_found") return c.json({ error: "not_found" }, 404);

@@ -152,6 +152,16 @@ describe("添付ファイルと書式付きの本文", () => {
 
       // 期限を過ぎたものだけが消える。
       expect(await sweepAttachments(dir, 60_000)).toBe(0);
+      // 下書きに付いているファイルは、期限を過ぎても残す。
+      expect(
+        await sweepAttachments(
+          dir,
+          60_000,
+          Date.now() + 120_000,
+          new Set([attachmentKey(userId, stored.id)]),
+        ),
+      ).toBe(0);
+      expect(await readAttachmentMeta(dir, userId, stored.id)).not.toBeNull();
       expect(await sweepAttachments(dir, 60_000, Date.now() + 120_000)).toBe(1);
       expect(await missingAttachments(withFile)).toEqual([".._資料 1.pdf"]);
     } finally {
