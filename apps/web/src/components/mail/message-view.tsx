@@ -1,11 +1,35 @@
 "use client";
 
-import { ArrowLeftIcon, ImageOffIcon, PaperclipIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArrowLeftIcon,
+  FolderInputIcon,
+  ImageOffIcon,
+  MailIcon,
+  MailOpenIcon,
+  PaperclipIcon,
+  StarIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getMessage, type MessageDetail } from "@/lib/api";
+import type { MessageActionInput } from "@/lib/actions";
+import {
+  ApiError,
+  getMessage,
+  listMailboxes,
+  type Mailbox,
+  type MessageDetail,
+  type MessageSummary,
+} from "@/lib/api";
 import {
   addressFull,
   addressLabel,
@@ -52,6 +76,12 @@ type Props = {
   messageId: string;
   /** 値が変わると、表示を保ったまま取得し直す (同期による更新の反映)。 */
   refreshKey: number;
+  /**
+   * 一覧にあるこのメールの情報。既読やスターは操作した直後からここに反映されるので、
+   * 表示にはこちらを優先して使う。一覧に無ければ null。
+   */
+  summary: MessageSummary | null;
+  onAction: (messageIds: string[], input: MessageActionInput) => void;
   onBack: () => void;
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
@@ -65,6 +95,8 @@ type State =
 export function MessageView({
   messageId,
   refreshKey,
+  summary,
+  onAction,
   onBack,
   onMissing,
 }: Props) {
@@ -130,14 +162,164 @@ export function MessageView({
     );
   }
 
-  return <MessageContent message={state.message} backButton={backButton} />;
+  return (
+    <MessageContent
+      message={state.message}
+      summary={summary}
+      onAction={onAction}
+      backButton={backButton}
+    />
+  );
+}
+
+/** フォルダ一覧は頻繁には変わらないので、アカウントごとに覚えておく。 */
+const mailboxCache = new Map<string, Mailbox[]>();
+
+function useMailboxes(accountId: string): Mailbox[] {
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>(
+    () => mailboxCache.get(accountId) ?? [],
+  );
+  useEffect(() => {
+    const controller = new AbortController();
+    setMailboxes(mailboxCache.get(accountId) ?? []);
+    listMailboxes(accountId, controller.signal)
+      .then((list) => {
+        mailboxCache.set(accountId, list);
+        setMailboxes(list);
+      })
+      .catch(() => {
+        // 取得できなければ、移動先を選べないだけで他の操作は使える。
+      });
+    return () => controller.abort();
+  }, [accountId]);
+  return mailboxes;
+}
+
+const mailboxLabels: Partial<
+  Record<NonNullable<Mailbox["specialUse"]>, string>
+> = {
+  inbox: "受信トレイ",
+  sent: "送信済み",
+  drafts: "下書き",
+  trash: "ごみ箱",
+  junk: "迷惑メール",
+  archive: "アーカイブ",
+};
+
+/** 既読、スター、アーカイブ、削除、移動のボタン。 */
+function MessageToolbar({
+  message,
+  summary,
+  onAction,
+}: {
+  message: MessageDetail;
+  summary: MessageSummary | null;
+  onAction: Props["onAction"];
+}) {
+  const mailboxes = useMailboxes(message.accountId);
+  const seen = summary?.seen ?? message.seen;
+  const flagged = summary?.flagged ?? message.flagged;
+  const currentMailboxId = summary?.mailboxId ?? null;
+  const current = mailboxes.find((mailbox) => mailbox.id === currentMailboxId);
+  const archive = mailboxes.find((mailbox) => mailbox.specialUse === "archive");
+  const trash = mailboxes.find((mailbox) => mailbox.specialUse === "trash");
+  const inTrash = current?.specialUse === "trash";
+  // 移動先に選べるフォルダ。下書きなど、受信したメールを入れる場所でないものは除く。
+  const destinations = mailboxes.filter(
+    (mailbox) =>
+      mailbox.id !== currentMailboxId &&
+      mailbox.specialUse !== "drafts" &&
+      mailbox.specialUse !== "sent" &&
+      mailbox.specialUse !== "all" &&
+      mailbox.specialUse !== "flagged",
+  );
+  const act = (input: MessageActionInput) => onAction([message.id], input);
+
+  return (
+    <div
+      role="toolbar"
+      aria-label="メールの操作"
+      className="-ml-2 flex flex-wrap items-center gap-1"
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => act({ action: "set_flags", seen: !seen })}
+      >
+        {seen ? <MailIcon /> : <MailOpenIcon />}
+        {seen ? "未読にする" : "既読にする"}
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-pressed={flagged}
+        onClick={() => act({ action: "set_flags", flagged: !flagged })}
+      >
+        <StarIcon
+          className={flagged ? "fill-amber-400 text-amber-500" : undefined}
+        />
+        {flagged ? "スターを外す" : "スターを付ける"}
+      </Button>
+      {archive && archive.id !== currentMailboxId && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => act({ action: "move", mailboxId: archive.id })}
+        >
+          <ArchiveIcon />
+          アーカイブ
+        </Button>
+      )}
+      {(trash || inTrash) && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            act(
+              inTrash || !trash
+                ? { action: "delete" }
+                : { action: "move", mailboxId: trash.id },
+            )
+          }
+        >
+          <Trash2Icon />
+          {inTrash ? "完全に削除" : "削除"}
+        </Button>
+      )}
+      {destinations.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
+            <FolderInputIcon />
+            移動
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {destinations.map((mailbox) => (
+              <DropdownMenuItem
+                key={mailbox.id}
+                onClick={() => act({ action: "move", mailboxId: mailbox.id })}
+              >
+                <span className="truncate">
+                  {(mailbox.specialUse && mailboxLabels[mailbox.specialUse]) ||
+                    mailbox.name}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
 }
 
 function MessageContent({
   message,
+  summary,
+  onAction,
   backButton,
 }: {
   message: MessageDetail;
+  summary: MessageSummary | null;
+  onAction: Props["onAction"];
   backButton: React.ReactNode;
 }) {
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
@@ -157,6 +339,11 @@ function MessageContent({
     <article className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 flex-col gap-3 border-b p-4 sm:p-6">
         {backButton}
+        <MessageToolbar
+          message={message}
+          summary={summary}
+          onAction={onAction}
+        />
         <h2 className="font-semibold text-xl leading-snug">
           {message.subject || "(件名なし)"}
         </h2>

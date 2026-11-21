@@ -63,7 +63,17 @@ export class GraphClient {
   }
 
   /** path は "/me/..." の形か、nextLink / deltaLink の完全な URL。 */
-  async get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  get<T>(path: string, signal?: AbortSignal): Promise<T> {
+    return this.request<T>("GET", path, undefined, signal);
+  }
+
+  /** 書き込みを含む呼び出し。本文の無い応答 (204 など) では undefined を返す。 */
+  async request<T>(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const url = path.startsWith("https://") ? path : `${GRAPH_BASE}${path}`;
     if (!url.startsWith(`${GRAPH_BASE}/`)) {
       // 保存しておいた続きの URL が書き換えられていても、トークンを外へ送らない。
@@ -73,18 +83,23 @@ export class GraphClient {
     for (let attempt = 0; ; attempt++) {
       const token = await this.getToken(false);
       const response = await this.fetchFn(url, {
+        method,
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
           // 不変 ID: フォルダを移動しても変わらない ID を返してもらう。
           Prefer: 'IdType="ImmutableId", odata.maxpagesize=100',
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: signal
           ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
           : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (response.ok) {
-        return (await response.json()) as T;
+        if (response.status === 204) return undefined as T;
+        const text = await response.text();
+        return (text ? JSON.parse(text) : undefined) as T;
       }
       if (response.status === 401 && !refreshed) {
         refreshed = true;
@@ -102,13 +117,13 @@ export class GraphClient {
         await this.sleep(Math.min(wait, MAX_RETRY_WAIT_MS));
         continue;
       }
-      const body = (await response.json().catch(() => ({}))) as {
+      const failure = (await response.json().catch(() => ({}))) as {
         error?: { code?: string; message?: string };
       };
       throw new GraphError(
         response.status,
-        body.error?.code ?? "",
-        body.error?.message ?? "",
+        failure.error?.code ?? "",
+        failure.error?.message ?? "",
       );
     }
   }
