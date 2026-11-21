@@ -8,14 +8,13 @@ import {
   ImageOffIcon,
   MailIcon,
   MailOpenIcon,
-  PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { MessageAttachments } from "@/components/mail/message-attachments";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,17 +26,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageActionInput } from "@/lib/actions";
 import {
   ApiError,
+  type Attachment,
+  fetchAttachment,
   getMessage,
   type MessageDetail,
   type MessageSummary,
 } from "@/lib/api";
-import type { ComposeMode } from "@/lib/compose";
 import {
-  addressFull,
-  addressLabel,
-  formatFullDate,
-  formatSize,
-} from "@/lib/format";
+  normalizeContentId,
+  replaceCidReferences,
+  splitAttachments,
+} from "@/lib/attachments";
+import type { ComposeMode } from "@/lib/compose";
+import { addressFull, addressLabel, formatFullDate } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 
 /**
@@ -330,19 +331,90 @@ function MessageToolbar({
   );
 }
 
+/** 本文に埋め込む画像 1 枚の上限。これより大きいものは埋め込まない。 */
+const MAX_EMBEDDED_IMAGE_BYTES = 10 * 1024 * 1024;
+
+function toDataUrl(blob: Blob, type: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(new Blob([blob], { type }));
+  });
+}
+
+/**
+ * 本文に埋め込まれた画像 (cid: で参照される添付ファイル) を取得する。
+ * 本文の iframe はこのアプリとは別の扱い (sandbox) で、API を呼べないので、
+ * こちらで取得して data: の URL にしてから本文に差し込む。
+ * 戻り値は Content-ID から URL への対応。取得できた分から順に増える。
+ */
+function useEmbeddedImages(
+  messageId: string,
+  embedded: Attachment[],
+): ReadonlyMap<string, string> {
+  const [state, setState] = useState<{
+    key: string;
+    urls: ReadonlyMap<string, string>;
+  }>({ key: "", urls: new Map() });
+  // 同期で同じメールを取得し直しても、画像は取得し直さない。
+  const key = `${messageId}:${embedded.map((file) => file.id).join(",")}`;
+  const embeddedRef = useRef(embedded);
+  embeddedRef.current = embedded;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    for (const file of embeddedRef.current) {
+      if (file.contentId === null || file.size > MAX_EMBEDDED_IMAGE_BYTES) {
+        continue;
+      }
+      const contentId = normalizeContentId(file.contentId);
+      fetchAttachment(messageId, file.id, controller.signal)
+        .then((blob) => toDataUrl(blob, file.contentType.toLowerCase()))
+        .then((url) => {
+          if (controller.signal.aborted) return;
+          setState((current) => ({
+            key,
+            urls: new Map(current.key === key ? current.urls : []).set(
+              contentId,
+              url,
+            ),
+          }));
+        })
+        // 取得できなかった画像は、表示されないままにする。
+        .catch(() => {});
+    }
+    return () => controller.abort();
+  }, [messageId, key]);
+
+  return state.key === key ? state.urls : EMPTY_URLS;
+}
+
+const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
+
 function MessageContent({ message }: { message: MessageDetail }) {
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
   const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
   const showImages = imagesShownFor === message.id;
+  const { embedded, listed } = useMemo(
+    () => splitAttachments(message.bodyHtml, message.attachments),
+    [message.bodyHtml, message.attachments],
+  );
+  const embeddedUrls = useEmbeddedImages(message.id, embedded);
   const srcDoc = useMemo(
-    () => (message.bodyHtml ? buildSrcDoc(message.bodyHtml, showImages) : null),
-    [message.bodyHtml, showImages],
+    () =>
+      message.bodyHtml
+        ? buildSrcDoc(
+            replaceCidReferences(message.bodyHtml, embeddedUrls),
+            showImages,
+          )
+        : null,
+    [message.bodyHtml, embeddedUrls, showImages],
   );
   const imagesBlocked =
     !showImages &&
     message.bodyHtml !== null &&
     hasRemoteImages(message.bodyHtml);
-  const files = message.attachments.filter((file) => !file.inline);
 
   return (
     <article className="flex min-h-0 flex-1 flex-col">
@@ -380,23 +452,6 @@ function MessageContent({ message }: { message: MessageDetail }) {
             </time>
           </dd>
         </dl>
-        {files.length > 0 && (
-          <ul aria-label="添付ファイル" className="flex flex-wrap gap-2">
-            {files.map((file) => (
-              <li key={file.id}>
-                <Badge variant="outline" className="h-auto max-w-full py-1">
-                  <PaperclipIcon aria-hidden="true" />
-                  <span className="truncate">
-                    {file.filename || "(名前なし)"}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {formatSize(file.size)}
-                  </span>
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        )}
       </header>
 
       {message.bodyFetchedAt === null ? (
@@ -444,6 +499,7 @@ function MessageContent({ message }: { message: MessageDetail }) {
           本文はありません。
         </p>
       )}
+      <MessageAttachments messageId={message.id} files={listed} />
     </article>
   );
 }

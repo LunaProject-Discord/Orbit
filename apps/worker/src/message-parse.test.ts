@@ -49,7 +49,8 @@ describe("analyzeStructure", () => {
           type: "application/pdf",
           disposition: "attachment",
           dispositionParameters: { filename: "請求書.pdf" },
-          size: 34567,
+          encoding: "base64",
+          size: 65860,
         },
         {
           part: "3",
@@ -75,7 +76,8 @@ describe("analyzeStructure", () => {
           partId: "2",
           filename: "請求書.pdf",
           contentType: "application/pdf",
-          size: 34567,
+          // base64 にする前の大きさに直す。
+          size: 48128,
           contentId: null,
           inline: false,
         },

@@ -2,6 +2,10 @@ import { decryptCredentials } from "@mail/core";
 import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
+import {
+  AttachmentRequests,
+  ImapAttachmentDownloader,
+} from "./attachment-fetch.js";
 import { recordChanges } from "./changes.js";
 import { FolderWatcher } from "./folder-watcher.js";
 import {
@@ -95,6 +99,8 @@ export class AccountSync {
   private wake: (() => void) | null = null;
   private backoff = MIN_BACKOFF_MS;
   private sending: Promise<void> = Promise.resolve();
+  private readonly attachmentDownloader: ImapAttachmentDownloader;
+  private readonly attachmentRequests: AttachmentRequests;
 
   constructor(
     private readonly db: Database,
@@ -108,6 +114,20 @@ export class AccountSync {
       () => this.requestFocusSync("forced"),
       (message) => this.log(message),
     );
+    this.attachmentDownloader = new ImapAttachmentDownloader(() =>
+      this.createClient(),
+    );
+    this.attachmentRequests = new AttachmentRequests(
+      db,
+      account.id,
+      this.attachmentDownloader.download,
+      (message) => this.log(message),
+    );
+  }
+
+  /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期用とは別の接続で取得する。 */
+  notifyAttachment(attachmentId: string) {
+    if (!this.stopped) this.attachmentRequests.request(attachmentId);
   }
 
   private log(message: string, error?: unknown) {
@@ -147,6 +167,7 @@ export class AccountSync {
     this.stopped = true;
     this.wake?.();
     this.watcher.close();
+    this.attachmentDownloader.close();
     this.client?.close();
   }
 
