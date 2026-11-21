@@ -38,6 +38,17 @@ Node.js 25 以降には Corepack が同梱されていないため、pnpm は `n
 - Web: http://localhost:3000
 - API: http://localhost:8787 (`/healthz` で DB 接続を確認できます)
 
+## 本番への配置 (Oracle Cloud)
+
+Docker Compose で一式 (Web、API、同期ワーカー、PostgreSQL、HTTPS を受ける Caddy、バックアップ) を動かします。
+サーバーの用意から、独自ドメインと HTTPS、更新、バックアップ、環境変数の一覧までを
+[docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md) にまとめています。
+
+```sh
+bash deploy/setup.sh mail.example.com   # deploy/.env を作り、秘密の値を生成
+cd deploy && docker compose up -d --build
+```
+
 ## ログインとメールアカウント
 
 - アプリへのログインは [Better Auth](https://www.better-auth.com/) のメールアドレス + パスワードです。
@@ -183,6 +194,7 @@ Microsoft Graph では、さらに次のように調整します。
 | `pnpm lint` / `pnpm format` | Biome による検査 / 整形 |
 | `pnpm db:generate` | スキーマの変更からマイグレーションを生成 |
 | `pnpm db:migrate` | マイグレーションを適用 |
+| `pnpm --filter @mail/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
 | `pnpm user:create <メール> <表示名>` | ログイン用の利用者を作成 |
 
 ## UI

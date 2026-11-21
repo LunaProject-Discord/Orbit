@@ -1,0 +1,49 @@
+name: Deploy
+
+# main の CI が通ったら、Oracle Cloud のサーバーを更新する。
+# 準備 (リポジトリの変数とシークレット) は docs/deploy-oracle-cloud.md の「GitHub Actions で自動更新する」を参照。
+# 変数 DEPLOY_ENABLED が true になるまでは何もしない。
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# 更新が重ならないよう、1 つずつ順に実行する。
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: SSH の鍵を用意
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+      - name: サーバーを更新
+        # サーバー側では、この鍵で実行できるのは deploy/deploy.sh だけにしてある (authorized_keys の command=)。
+        # ここで渡すのは更新先のコミットだけ。
+        run: >-
+          ssh -i ~/.ssh/deploy_key
+          -o StrictHostKeyChecking=yes
+          -o ServerAliveInterval=30
+          "$DEPLOY_USER@$DEPLOY_HOST" "$DEPLOY_SHA"
