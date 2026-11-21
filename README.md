@@ -74,19 +74,25 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 - 同期は [差分取得 (delta query)](https://learn.microsoft.com/graph/delta-query-messages) で行い、15 秒ごとに差分を確認します。
   変更通知 (Webhook) による即時反映は今後対応します。
 - メッセージは [不変 ID](https://learn.microsoft.com/graph/outlook-immutable-id) で識別します。
-- 現時点では添付ファイルの一覧、返信済みの印、サブフォルダは取り込みません。
+- フォルダはサブフォルダも含めて取り込みます。受信トレイは 15 秒ごと、他のフォルダは 2 分ごと
+  (移動などの操作を反映した直後はすぐ) に差分を確認します。
+- 現時点では添付ファイルの一覧と返信済みの印は取り込みません。
 - リフレッシュトークンが失効した場合 (長期間の未使用、パスワード変更、同意の取り消しなど) は、
   サイドバーに「再ログインが必要です」と表示されます。「Microsoft にログインし直す」から復旧できます。
 
 ## 同期の仕組み
 
 1. API がアカウントを保存すると、PostgreSQL の `NOTIFY` で同期ワーカーに伝わります。
-2. ワーカーはアカウントごとに IMAP へ常時接続し (Microsoft アカウントでは Microsoft Graph を定期的に確認し)、受信トレイを DB に取り込みます
-   (先に一覧、続いて本文を新しい順に取得)。以降は IMAP IDLE で新着・既読・削除の通知を受けて差分を反映します。
+2. ワーカーはアカウントごとに IMAP へ常時接続し (Microsoft アカウントでは Microsoft Graph を定期的に確認し)、全フォルダを DB に取り込みます
+   (先に一覧、続いて本文を取得)。以降、受信トレイは IMAP IDLE で新着・既読・削除の通知を受けて差分を反映します。
+   IDLE で通知を受けられるのは 1 つのフォルダだけなので、他のフォルダは 2 分ごとに件数や変更番号 (STATUS) を確認し、
+   変化のあったフォルダだけを開いて突き合わせます。
 3. ワーカーは変更を `changes` テーブルに記録して `NOTIFY` し、API が SSE (`GET /v1/events`) で各端末に知らせます。
    端末は `GET /v1/sync?since=<変更番号>` や一覧 API で取り直します。
 
-現時点で同期するのは受信トレイのみです。メールを開くと既読になり、既読 / 未読の切り替え、スター、
+フォルダはサブフォルダも含めて同期し、サイドバーにアカウントごとのツリーで表示します。送信済み、下書き、ごみ箱、
+迷惑メール、アーカイブなどの役割は、IMAP では SPECIAL-USE (無ければフォルダ名)、Microsoft Graph では既定フォルダ名
+(`sentitems` など) で判定します。メールを開くと既読になり、既読 / 未読の切り替え、スター、
 アーカイブ、削除 (ごみ箱へ移動)、フォルダへの移動ができます。操作はまず画面と DB に反映し、
 送信待ちキュー (outbox) から同期ワーカーがメールサーバーへ反映します (送信は今後追加します)。
 
@@ -101,8 +107,9 @@ Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://e
 | `POST /v1/accounts/microsoft/authorize` | Microsoft のログイン画面の URL を取得 (`accountId` を渡すと再ログイン) |
 | `POST /v1/accounts/microsoft/complete` | ログイン後に戻ってきた `code` と `state` を渡して、Microsoft アカウントを追加 |
 | `DELETE /v1/accounts/:id` | メールアカウントと取り込んだメールの削除 |
-| `GET /v1/accounts/:id/mailboxes` | フォルダ一覧 |
-| `GET /v1/messages` | メッセージ一覧 (`accountId` 省略で全アカウントの受信トレイ、`cursor` でページ送り) |
+| `GET /v1/accounts/:id/mailboxes` | アカウント 1 件分のフォルダ一覧 |
+| `GET /v1/mailboxes` | 全アカウントのフォルダ一覧 (親フォルダの `parentId`、未読数、件数付き) |
+| `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り) |
 | `GET /v1/messages/:id` | メッセージの本文と添付ファイルの情報 |
 | `GET /v1/sync?since=` | 変更番号より後の変更履歴 |
 | `GET /v1/events` | 変更の通知 (SSE) |

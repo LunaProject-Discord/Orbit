@@ -14,6 +14,7 @@ import {
   syncGraphFolder,
   syncGraphFolders,
 } from "./graph-sync.js";
+import { syncPriority } from "./mailbox-list.js";
 import { processOutbox } from "./outbox.js";
 import { applyGraphOperation } from "./outbox-graph.js";
 
@@ -27,6 +28,11 @@ const MAX_BACKOFF_MS = 5 * 60_000;
 const POLL_MS = 15_000;
 /** フォルダ一覧を取り直す間隔。 */
 const FOLDER_SYNC_MS = 10 * 60_000;
+/**
+ * 受信トレイ以外のフォルダの差分を確認する間隔。受信トレイより長くして、
+ * フォルダが多いアカウントでも呼び出しの数を抑える。
+ */
+const OTHER_POLL_MS = 2 * 60_000;
 /** アクセストークンは、期限のこれだけ前に取り直す。 */
 const TOKEN_MARGIN_MS = 5 * 60_000;
 
@@ -46,7 +52,8 @@ function describeError(error: Error & { query?: unknown }): string {
 
 /**
  * Microsoft Graph を使うアカウント (Exchange Online、Outlook.com) 1 件分の同期。
- * 受信トレイを差分取得で同期し、一定間隔で差分を確認し続ける。
+ * 全フォルダを差分取得で同期し、一定間隔で差分を確認し続ける
+ * (受信トレイは短い間隔、他のフォルダは長めの間隔)。
  */
 export class GraphAccountSync {
   /** 接続設定の比較に使う、現在の行。リフレッシュトークンを更新すると差し替わる。 */
@@ -219,38 +226,40 @@ export class GraphAccountSync {
     });
     let healthy = false;
     let foldersSyncedAt = 0;
+    let othersQueuedAt = 0;
+    /** これから差分を確認する、受信トレイ以外のフォルダ (mailboxes.id)。 */
+    let queue: string[] = [];
 
     while (!this.stopped) {
       if (Date.now() - foldersSyncedAt >= FOLDER_SYNC_MS) {
-        await syncGraphFolders(this.db, client, this.account);
+        await syncGraphFolders(this.db, client, this.account, signal);
         foldersSyncedAt = Date.now();
       }
-      const [inbox] = await this.db
+      const folders = await this.db
         .select({
           id: mailboxes.id,
           path: mailboxes.path,
+          name: mailboxes.name,
+          specialUse: mailboxes.specialUse,
           syncState: mailboxes.syncState,
         })
         .from(mailboxes)
-        .where(
-          and(
-            eq(mailboxes.accountId, this.account.id),
-            eq(mailboxes.specialUse, "inbox"),
-          ),
-        );
+        .where(eq(mailboxes.accountId, this.account.id));
+      const inbox = folders.find((folder) => folder.specialUse === "inbox");
       if (!inbox) {
         throw new Error("受信トレイが見つかりませんでした。");
       }
 
       // 既読や移動などの操作を先に反映してから、差分を確認する。
       this.outboxRequested = false;
-      await processOutbox(
+      const outbox = await processOutbox(
         this.db,
         this.account.id,
         (operation) => applyGraphOperation(client, operation, signal),
         (message) => this.log(message),
       );
 
+      const nextPollAt = Date.now() + POLL_MS;
       const result = await syncGraphFolder(
         this.db,
         client,
@@ -270,19 +279,54 @@ export class GraphAccountSync {
         await this.setStatus("active");
       }
 
+      // 受信トレイ以外のフォルダ。移動などを反映した直後は、移動先にすぐ現れるよう
+      // 間隔を待たずに確認する。
+      if (
+        outbox.done > 0 ||
+        outbox.failed > 0 ||
+        Date.now() - othersQueuedAt >= OTHER_POLL_MS
+      ) {
+        othersQueuedAt = Date.now();
+        queue = folders
+          .filter((folder) => folder.id !== inbox.id)
+          .sort(
+            (a, b) => syncPriority(a.specialUse) - syncPriority(b.specialUse),
+          )
+          .map((folder) => folder.id);
+      }
+      // 受信トレイの次の確認時刻までに終わらなかった分は、次の周回で続ける
+      // (周回ごとに少なくとも 1 つは進める)。
+      for (let first = true; queue.length > 0 && !this.stopped; first = false) {
+        if (!first && Date.now() >= nextPollAt) break;
+        const id = queue.shift();
+        const folder = folders.find((item) => item.id === id);
+        if (!folder) continue;
+        try {
+          const other = await syncGraphFolder(
+            this.db,
+            client,
+            this.account,
+            folder,
+            signal,
+          );
+          if (other.added > 0 || other.removed > 0) {
+            this.log(
+              `${folder.name} を同期しました (追加 ${other.added} 件、削除 ${other.removed} 件)`,
+            );
+          }
+        } catch (error) {
+          if (!(error instanceof GraphError && error.notFound)) throw error;
+          // フォルダが消されていた。次の周回でフォルダ一覧を取り直す。
+          foldersSyncedAt = 0;
+        }
+      }
+
       // 本文の取得は時間がかかるので、次の差分確認の時刻が来たら中断して同期を優先する。
-      const nextPollAt = Date.now() + POLL_MS;
       while (
         !this.stopped &&
         !this.outboxRequested &&
         Date.now() < nextPollAt &&
-        (await fetchGraphBodies(
-          this.db,
-          client,
-          this.account,
-          inbox.id,
-          signal,
-        ))
+        (await fetchGraphBodies(this.db, client, this.account, signal))
       ) {
         // 続きを取得する
       }

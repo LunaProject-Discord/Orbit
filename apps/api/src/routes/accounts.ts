@@ -338,6 +338,7 @@ export function accountRoutes({
     const rows = await db
       .select({
         id: mailboxes.id,
+        parentId: mailboxes.parentId,
         path: mailboxes.path,
         name: mailboxes.name,
         specialUse: mailboxes.specialUse,

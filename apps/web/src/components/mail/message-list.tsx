@@ -14,6 +14,10 @@ type Props = {
   selectedId: string | null;
   hasMore: boolean;
   loadingMore: boolean;
+  /** 差出人の代わりに宛先を表示する (送信済み、下書き)。 */
+  showRecipients?: boolean;
+  /** 1 通も無いときの文言。 */
+  emptyText?: string;
   onSelect: (id: string) => void;
   onLoadMore: () => void;
   onRetry: () => void;
@@ -25,6 +29,8 @@ export function MessageList({
   selectedId,
   hasMore,
   loadingMore,
+  showRecipients = false,
+  emptyText = "メールはまだありません。同期が終わるとここに表示されます。",
   onSelect,
   onLoadMore,
   onRetry,
@@ -81,9 +87,7 @@ export function MessageList({
   if (messages.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center p-8 text-center">
-        <p className="text-muted-foreground text-sm">
-          メールはまだありません。同期が終わるとここに表示されます。
-        </p>
+        <p className="text-muted-foreground text-sm">{emptyText}</p>
       </div>
     );
   }
@@ -126,7 +130,11 @@ export function MessageList({
                     )}
                   >
                     {unread && <span className="sr-only">未読 </span>}
-                    {addressLabel(message.from[0])}
+                    {showRecipients
+                      ? message.to.length > 0
+                        ? `宛先: ${message.to.map(addressLabel).join("、")}`
+                        : "(宛先なし)"
+                      : addressLabel(message.from[0])}
                   </span>
                   {message.flagged && (
                     <StarIcon

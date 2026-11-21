@@ -214,6 +214,8 @@ export type MessageDetail = {
 
 export type Mailbox = {
   id: string;
+  /** 親フォルダ。最上位なら null。 */
+  parentId: string | null;
   /** IMAP ではフォルダのパス、Microsoft Graph ではフォルダの ID。 */
   path: string;
   name: string;
@@ -227,6 +229,15 @@ export type Mailbox = {
     | "all"
     | "flagged"
     | null;
+};
+
+/** フォルダ一覧用。全アカウント分をまとめて取得する。 */
+export type MailboxSummary = Mailbox & {
+  accountId: string;
+  /** 同期が一度終わっていれば、その時刻。 */
+  lastSyncedAt: string | null;
+  totalCount: number;
+  unreadCount: number;
 };
 
 /** メッセージへの操作。idempotencyKey は操作ごとに作る一意な ID (再送しても二重に実行されない)。 */
@@ -334,11 +345,18 @@ export async function deleteAccount(id: string): Promise<void> {
 }
 
 export async function listMessages(
-  params: { accountId?: string | null; cursor?: string | null; limit?: number },
+  params: {
+    accountId?: string | null;
+    /** 省略すると受信トレイ。 */
+    mailboxId?: string | null;
+    cursor?: string | null;
+    limit?: number;
+  },
   signal?: AbortSignal,
 ): Promise<MessagePage> {
   const query = new URLSearchParams({ limit: String(params.limit ?? 50) });
   if (params.accountId) query.set("accountId", params.accountId);
+  if (params.mailboxId) query.set("mailboxId", params.mailboxId);
   if (params.cursor) query.set("cursor", params.cursor);
   return apiJson<MessagePage>(`/v1/messages?${query}`, { signal });
 }
@@ -360,6 +378,17 @@ export async function listMailboxes(
 ): Promise<Mailbox[]> {
   const { mailboxes } = await apiJson<{ mailboxes: Mailbox[] }>(
     `/v1/accounts/${accountId}/mailboxes`,
+    { signal },
+  );
+  return mailboxes;
+}
+
+/** 全アカウントのフォルダを、未読数を付けて取得する。 */
+export async function listAllMailboxes(
+  signal?: AbortSignal,
+): Promise<MailboxSummary[]> {
+  const { mailboxes } = await apiJson<{ mailboxes: MailboxSummary[] }>(
+    "/v1/mailboxes",
     { signal },
   );
   return mailboxes;

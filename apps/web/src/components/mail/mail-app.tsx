@@ -19,18 +19,24 @@ import {
 import {
   type Account,
   listAccounts,
+  listAllMailboxes,
   listMessages,
+  type MailboxSummary,
   type MessageAction,
   type MessageSummary,
   startMicrosoftLogin,
   type User,
 } from "@/lib/api";
 import { subscribeEvents } from "@/lib/events";
+import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
 
 const PAGE_SIZE = 50;
 const LIST_ERROR = "メールを読み込めませんでした。";
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+
+/** 表示する一覧。mailboxId が null なら受信トレイ (accountId も null なら全アカウント分)。 */
+type Selection = { accountId: string | null; mailboxId: string | null };
 
 /** 一覧の並び順 (新しい順)。a が b より後ろなら正。 */
 function compareMessages(a: MessageSummary, b: MessageSummary): number {
@@ -64,6 +70,10 @@ export function MailApp({ user }: { user: User }) {
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     null,
   );
+  const [selectedMailboxId, setSelectedMailboxId] = useState<string | null>(
+    null,
+  );
+  const [mailboxes, setMailboxes] = useState<MailboxSummary[] | null>(null);
   const [messages, setMessages] = useState<MessageSummary[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -78,8 +88,11 @@ export function MailApp({ user }: { user: User }) {
 
   /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
   const listRequest = useRef(0);
-  const selectedAccountRef = useRef(selectedAccountId);
-  selectedAccountRef.current = selectedAccountId;
+  const selectionRef = useRef<Selection>({ accountId: null, mailboxId: null });
+  selectionRef.current = {
+    accountId: selectedAccountId,
+    mailboxId: selectedMailboxId,
+  };
   /** サーバーへ送る操作の待ち行列。通信できない間の操作もここに残る。 */
   const queueRef = useRef<ActionQueue | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -92,9 +105,17 @@ export function MailApp({ user }: { user: User }) {
     }
   }, []);
 
+  const loadMailboxes = useCallback(async () => {
+    try {
+      setMailboxes(await listAllMailboxes());
+    } catch {
+      // 一覧は次の通知や操作でまた取得する。
+    }
+  }, []);
+
   /** 先頭ページを取得する。reset が true なら一覧を空にしてから読み込む。 */
   const loadFirstPage = useCallback(
-    async (accountId: string | null, reset: boolean) => {
+    async ({ accountId, mailboxId }: Selection, reset: boolean) => {
       const request = ++listRequest.current;
       if (reset) {
         setMessages(null);
@@ -102,7 +123,11 @@ export function MailApp({ user }: { user: User }) {
         setListError(null);
       }
       try {
-        const page = await listMessages({ accountId, limit: PAGE_SIZE });
+        const page = await listMessages({
+          accountId,
+          mailboxId,
+          limit: PAGE_SIZE,
+        });
         if (request !== listRequest.current) return;
         setListError(null);
         // まだサーバーへ送れていない操作を、取得した一覧に重ねる。
@@ -131,7 +156,8 @@ export function MailApp({ user }: { user: User }) {
 
   useEffect(() => {
     void loadAccounts();
-  }, [loadAccounts]);
+    void loadMailboxes();
+  }, [loadAccounts, loadMailboxes]);
 
   useEffect(() => {
     const queue = createActionQueue();
@@ -139,7 +165,8 @@ export function MailApp({ user }: { user: User }) {
     const unsubscribe = queue.onRejected(() => {
       // 画面に先に反映した内容を取り消すため、サーバーの状態を取り直す。
       setActionError(ACTION_ERROR);
-      void loadFirstPage(selectedAccountRef.current, false);
+      void loadFirstPage(selectionRef.current, false);
+      void loadMailboxes();
       setRefreshKey((key) => key + 1);
     });
     return () => {
@@ -147,7 +174,7 @@ export function MailApp({ user }: { user: User }) {
       queue.stop();
       queueRef.current = null;
     };
-  }, [loadFirstPage]);
+  }, [loadFirstPage, loadMailboxes]);
 
   /** 操作を画面にすぐ反映し、サーバーへは待ち行列から送る。 */
   const performAction = useCallback(
@@ -179,10 +206,25 @@ export function MailApp({ user }: { user: User }) {
   }
 
   useEffect(() => {
-    void loadFirstPage(selectedAccountId, true);
-  }, [selectedAccountId, loadFirstPage]);
+    void loadFirstPage(
+      { accountId: selectedAccountId, mailboxId: selectedMailboxId },
+      true,
+    );
+  }, [selectedAccountId, selectedMailboxId, loadFirstPage]);
 
-  // サーバーからの変更通知で、アカウント一覧と表示中の一覧を取得し直す。
+  // 表示中のフォルダがサーバーから無くなったら、受信トレイに戻す。
+  useEffect(() => {
+    if (
+      selectedMailboxId &&
+      mailboxes &&
+      !mailboxes.some((mailbox) => mailbox.id === selectedMailboxId)
+    ) {
+      setSelectedMailboxId(null);
+      setSelectedMessageId(null);
+    }
+  }, [mailboxes, selectedMailboxId]);
+
+  // サーバーからの変更通知で、アカウントとフォルダの一覧、表示中の一覧を取得し直す。
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let first = true;
@@ -199,7 +241,8 @@ export function MailApp({ user }: { user: User }) {
       timer = setTimeout(() => {
         timer = null;
         void loadAccounts();
-        void loadFirstPage(selectedAccountRef.current, false);
+        void loadMailboxes();
+        void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
     });
@@ -207,7 +250,7 @@ export function MailApp({ user }: { user: User }) {
       unsubscribe();
       if (timer) clearTimeout(timer);
     };
-  }, [loadAccounts, loadFirstPage]);
+  }, [loadAccounts, loadMailboxes, loadFirstPage]);
 
   useEffect(() => {
     if (!sidebarOpen) return;
@@ -225,6 +268,7 @@ export function MailApp({ user }: { user: User }) {
     try {
       const page = await listMessages({
         accountId: selectedAccountId,
+        mailboxId: selectedMailboxId,
         cursor: nextCursor,
         limit: PAGE_SIZE,
       });
@@ -249,19 +293,30 @@ export function MailApp({ user }: { user: User }) {
     }
   }
 
-  function handleSelectAccount(accountId: string | null) {
+  function handleSelectFolder(
+    accountId: string | null,
+    mailboxId: string | null,
+  ) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
     setSelectedAccountId(accountId);
+    setSelectedMailboxId(mailboxId);
   }
 
   const handleMissing = useCallback(() => setSelectedMessageId(null), []);
 
   const selectedAccount =
     accounts?.find((account) => account.id === selectedAccountId) ?? null;
-  const title = selectedAccount
+  const selectedMailbox =
+    mailboxes?.find((mailbox) => mailbox.id === selectedMailboxId) ?? null;
+  const accountName = selectedAccount
     ? selectedAccount.displayName || selectedAccount.email
-    : "すべての受信トレイ";
+    : null;
+  const title = selectedMailbox
+    ? mailboxLabel(selectedMailbox)
+    : (accountName ?? "すべての受信トレイ");
+  /** フォルダを表示している間は、どのアカウントのフォルダかを添える。 */
+  const subtitle = selectedMailbox ? accountName : null;
   const noAccounts = accounts !== null && accounts.length === 0;
   const selectedMessage =
     messages?.find((message) => message.id === selectedMessageId) ?? null;
@@ -291,8 +346,10 @@ export function MailApp({ user }: { user: User }) {
         <AccountSidebar
           user={user}
           accounts={accounts}
+          mailboxes={mailboxes}
           selectedAccountId={selectedAccountId}
-          onSelect={handleSelectAccount}
+          selectedMailboxId={selectedMailboxId}
+          onSelect={handleSelectFolder}
           onAdd={() => {
             setSidebarOpen(false);
             setAddOpen(true);
@@ -333,6 +390,11 @@ export function MailApp({ user }: { user: User }) {
               <MenuIcon />
             </Button>
             <h1 className="truncate font-semibold text-lg">{title}</h1>
+            {subtitle && (
+              <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+                {subtitle}
+              </p>
+            )}
           </header>
           {actionError && (
             <p
@@ -371,9 +433,13 @@ export function MailApp({ user }: { user: User }) {
                 selectedId={selectedMessageId}
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
+                showRecipients={showsRecipients(selectedMailbox)}
+                {...(selectedMailbox?.lastSyncedAt
+                  ? { emptyText: "このフォルダにメールはありません。" }
+                  : {})}
                 onSelect={handleSelectMessage}
                 onLoadMore={() => void handleLoadMore()}
-                onRetry={() => void loadFirstPage(selectedAccountId, true)}
+                onRetry={() => void loadFirstPage(selectionRef.current, true)}
               />
             )}
           </div>
@@ -414,6 +480,7 @@ export function MailApp({ user }: { user: User }) {
               ? current
               : [...(current ?? []), account],
           );
+          void loadMailboxes();
         }}
       />
       <DeleteAccountDialog
@@ -423,9 +490,17 @@ export function MailApp({ user }: { user: User }) {
           setAccounts(
             (current) => current?.filter((item) => item.id !== id) ?? null,
           );
+          setMailboxes(
+            (current) =>
+              current?.filter((mailbox) => mailbox.accountId !== id) ?? null,
+          );
           setSelectedMessageId(null);
-          if (selectedAccountId === id) setSelectedAccountId(null);
-          else void loadFirstPage(selectedAccountId, true);
+          if (selectedAccountId === id) {
+            setSelectedAccountId(null);
+            setSelectedMailboxId(null);
+          } else {
+            void loadFirstPage(selectionRef.current, true);
+          }
         }}
       />
     </div>

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   bigserial,
   boolean,
@@ -200,6 +201,7 @@ export const mailboxSpecialUse = pgEnum("mailbox_special_use", [
 /**
  * フォルダ (Gmail ではラベル)。差分同期用の状態を持つ。
  * path は IMAP ではフォルダのパス、Microsoft Graph ではフォルダの ID。
+ * parentId は親フォルダ (最上位なら null) で、画面のフォルダツリーに使う。
  */
 export const mailboxes = pgTable(
   "mailboxes",
@@ -209,6 +211,9 @@ export const mailboxes = pgTable(
       .notNull()
       .references(() => mailAccounts.id, { onDelete: "cascade" }),
     path: text().notNull(),
+    parentId: uuid().references((): AnyPgColumn => mailboxes.id, {
+      onDelete: "set null",
+    }),
     name: text().notNull(),
     delimiter: text(),
     specialUse: mailboxSpecialUse(),
@@ -221,7 +226,10 @@ export const mailboxes = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("mailboxes_account_path_idx").on(t.accountId, t.path)],
+  (t) => [
+    uniqueIndex("mailboxes_account_path_idx").on(t.accountId, t.path),
+    index("mailboxes_parent_idx").on(t.parentId),
+  ],
 );
 
 // ---------------------------------------------------------------------------

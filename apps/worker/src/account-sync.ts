@@ -3,7 +3,19 @@ import { type Database, mailAccounts } from "@mail/db";
 import { eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
 import { recordChanges } from "./changes.js";
-import { fetchBodies, syncMailbox, syncMailboxList } from "./mailbox-sync.js";
+import {
+  isSelectable,
+  type MailboxStatus,
+  needsSync,
+  syncPriority,
+} from "./mailbox-list.js";
+import {
+  fetchBodies,
+  loadMailboxStates,
+  mailboxesWithPendingBodies,
+  syncMailbox,
+  syncMailboxList,
+} from "./mailbox-sync.js";
 import { processOutbox } from "./outbox.js";
 import { applyImapOperation } from "./outbox-imap.js";
 
@@ -12,6 +24,16 @@ const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 /** IDLE の通知を取りこぼした場合に備えた、定期的な突き合わせの間隔。 */
 const PERIODIC_SYNC_MS = 10 * 60_000;
+/**
+ * 受信トレイ以外のフォルダを確認する間隔。IDLE で通知を受けられるのは選択中の
+ * フォルダ (受信トレイ) だけなので、他のフォルダは定期的に件数や変更番号を確認する。
+ */
+const FOLDER_POLL_MS = 2 * 60_000;
+/**
+ * 受信トレイ以外のフォルダの作業 (初回の取り込みや本文の取得) を続けてよい時間。
+ * その間は受信トレイの通知を受け取れないので、これを過ぎたら受信トレイを確認しに戻る。
+ */
+const BACKGROUND_SLICE_MS = 15_000;
 /** 多くのサーバーは 30 分ほどで IDLE を切るので、その前に張り直す。 */
 const MAX_IDLE_MS = 25 * 60_000;
 /** 最後のコマンドから IDLE に入るまでの待ち時間。 */
@@ -35,13 +57,18 @@ type AccountRow = typeof mailAccounts.$inferSelect;
 type Status = AccountRow["status"];
 
 /**
- * メールアカウント 1 件分の同期。IMAP に常時接続して受信トレイを同期し、
- * IDLE で新着や既読の変化を受け取る。切断されたら間隔を空けて再接続する。
+ * メールアカウント 1 件分の同期。IMAP に常時接続して全フォルダを同期する。
+ * 受信トレイは IDLE で新着や既読の変化をすぐに受け取り、他のフォルダは定期的に確認する。
+ * 切断されたら間隔を空けて再接続する。
  */
 export class AccountSync {
   private stopped = false;
   private client: ImapFlow | null = null;
   private syncRequested = false;
+  /** 受信トレイ以外のフォルダを確認する時刻になった。 */
+  private foldersDue = true;
+  /** 変更番号の無いサーバー向けに、次の確認では全フォルダを開いて突き合わせる。 */
+  private forceFolders = false;
   private wake: (() => void) | null = null;
   private backoff = MIN_BACKOFF_MS;
 
@@ -156,6 +183,128 @@ export class AccountSync {
     });
   }
 
+  /** 受信トレイ 1 回分の同期。 */
+  private async syncInbox(client: ImapFlow) {
+    const lock = await client.getMailboxLock(INBOX);
+    try {
+      const result = await syncMailbox(this.db, client, this.account, INBOX);
+      if (result.added > 0 || result.removed > 0) {
+        this.log(
+          `受信トレイを同期しました (追加 ${result.added} 件、削除 ${result.removed} 件)`,
+        );
+      }
+    } finally {
+      lock.release();
+    }
+  }
+
+  /**
+   * フォルダを開く。サーバーに拒否された場合 (消された直後など) は null を返し、
+   * 接続の問題はそのまま投げる。
+   */
+  private async openMailbox(client: ImapFlow, path: string) {
+    try {
+      return await client.getMailboxLock(path);
+    } catch (error) {
+      const err = error as Error & { responseStatus?: string };
+      if (err.responseStatus !== "NO" && err.responseStatus !== "BAD") {
+        throw error;
+      }
+      this.log(`フォルダ ${path} を開けませんでした`, err);
+      return null;
+    }
+  }
+
+  /**
+   * 受信トレイ以外のフォルダを同期する。フォルダ一覧と各フォルダの状態 (STATUS) を
+   * 取得し、変化のあったフォルダだけを開いて突き合わせる。
+   * 受信トレイに変化があるか、一定時間が過ぎたら切り上げて false を返す
+   * (残りは受信トレイを確認したあとで続ける)。
+   */
+  private async syncOtherFolders(client: ImapFlow): Promise<boolean> {
+    const force = this.forceFolders;
+    const deadline = Date.now() + BACKGROUND_SLICE_MS;
+    const shouldStop = () =>
+      this.stopped || this.syncRequested || Date.now() > deadline;
+    const listed = await syncMailboxList(this.db, client, this.account, true);
+    const states = await loadMailboxStates(this.db, this.account.id);
+    const targets = listed
+      .filter((entry) => isSelectable(entry) && entry.path !== INBOX)
+      .flatMap((entry) => {
+        const state = states.get(entry.path);
+        return state ? [{ entry, state }] : [];
+      })
+      .sort(
+        (a, b) =>
+          syncPriority(a.state.specialUse) - syncPriority(b.state.specialUse),
+      );
+
+    for (const { entry, state } of targets) {
+      if (shouldStop()) return false;
+      const status = entry.status as MailboxStatus | undefined;
+      if (!needsSync(state, status, force)) continue;
+      const lock = await this.openMailbox(client, entry.path);
+      if (!lock) continue;
+      try {
+        const result = await syncMailbox(
+          this.db,
+          client,
+          this.account,
+          entry.path,
+          shouldStop,
+        );
+        if (result.added > 0 || result.removed > 0) {
+          this.log(
+            `${entry.path} を同期しました (追加 ${result.added} 件、削除 ${result.removed} 件)`,
+          );
+        }
+        if (!result.complete) return false;
+      } finally {
+        lock.release();
+      }
+    }
+    this.forceFolders = false;
+    return true;
+  }
+
+  /**
+   * 本文をまだ取得していないメッセージの本文を、フォルダごとに取得する。
+   * 時間がかかるので、新しい変化が来たら中断して同期を優先する。
+   */
+  private async fetchPendingBodies(client: ImapFlow) {
+    const deadline = Date.now() + BACKGROUND_SLICE_MS;
+    const interrupted = () =>
+      this.stopped || this.syncRequested || this.foldersDue;
+    const pending = (
+      await mailboxesWithPendingBodies(this.db, this.account.id)
+    ).sort((a, b) => syncPriority(a.specialUse) - syncPriority(b.specialUse));
+    for (const mailbox of pending) {
+      if (interrupted()) return;
+      // 受信トレイを開いている間は通知が届くので、時間で区切らなくてよい。
+      const expired = () => mailbox.path !== INBOX && Date.now() > deadline;
+      const lock = await this.openMailbox(client, mailbox.path);
+      if (!lock) continue;
+      let remaining = true;
+      try {
+        while (remaining && !interrupted() && !expired()) {
+          remaining = await fetchBodies(
+            this.db,
+            client,
+            this.account,
+            mailbox.id,
+          );
+        }
+      } finally {
+        lock.release();
+      }
+      if (remaining && expired()) {
+        // 受信トレイを確認してから続きを取得する。
+        this.syncRequested = true;
+        return;
+      }
+    }
+  }
+
   /** 接続 1 回分。切断されると戻る (エラーなら投げる)。 */
   private async session() {
     const client = this.createClient();
@@ -165,63 +314,68 @@ export class AccountSync {
     client.on("error", (error) => {
       connectionError = error;
     });
-    // 選択中のフォルダの変化。コマンドの合間は ImapFlow が自動で IDLE に入り、
-    // サーバーからの通知がここに届く。
-    const onChange = () => this.requestSync();
+    // 選択中のフォルダ (受信トレイ) の変化。コマンドの合間は ImapFlow が自動で IDLE に入り、
+    // サーバーからの通知がここに届く。他のフォルダを開いている間の通知は無視する。
+    const onChange = (event?: { path?: string }) => {
+      if (event?.path === undefined || event.path === INBOX) {
+        this.requestSync();
+      }
+    };
     client.on("exists", onChange);
     client.on("expunge", onChange);
     client.on("flags", onChange);
     client.on("highestModseq", onChange);
 
-    const periodic = setInterval(onChange, PERIODIC_SYNC_MS);
+    const periodic = setInterval(() => {
+      this.forceFolders = true;
+      this.requestSync();
+    }, PERIODIC_SYNC_MS);
+    const folderPoll = setInterval(() => {
+      this.foldersDue = true;
+      this.wake?.();
+    }, FOLDER_POLL_MS);
     try {
       await client.connect();
       if (this.stopped) return;
       this.log("IMAP に接続しました");
       await syncMailboxList(this.db, client, this.account);
-      await client.mailboxOpen(INBOX);
+      this.foldersDue = true;
       let healthy = false;
 
       while (!this.stopped && client.usable) {
         this.syncRequested = false;
         // 既読や移動などの操作を先にサーバーへ反映してから、同期で突き合わせる。
-        // 対象のフォルダを選択し直すので、受信トレイのロックを取る前に行う。
-        await processOutbox(
+        // 対象のフォルダを選択し直すので、他のフォルダのロックを取る前に行う。
+        const outbox = await processOutbox(
           this.db,
           this.account.id,
           (operation) => applyImapOperation(client, operation),
           (message) => this.log(message),
         );
-        const lock = await client.getMailboxLock(INBOX);
-        try {
-          const result = await syncMailbox(
-            this.db,
-            client,
-            this.account,
-            INBOX,
-          );
-          if (result.added > 0 || result.removed > 0) {
-            this.log(
-              `受信トレイを同期しました (追加 ${result.added} 件、削除 ${result.removed} 件)`,
-            );
-          }
-          if (!healthy) {
-            healthy = true;
-            this.backoff = MIN_BACKOFF_MS;
-            await this.setStatus("active");
-          }
-          // 本文の取得は時間がかかるので、新しい変化が来たら中断して同期を優先する。
-          while (
-            !this.stopped &&
-            !this.syncRequested &&
-            (await fetchBodies(this.db, client, this.account, result.mailboxId))
-          ) {
-            // 続きを取得する
-          }
-        } finally {
-          lock.release();
+        // 移動先のフォルダなど、受信トレイ以外にも変化がある。
+        if (outbox.done > 0 || outbox.failed > 0) this.foldersDue = true;
+
+        await this.syncInbox(client);
+        if (!healthy) {
+          healthy = true;
+          this.backoff = MIN_BACKOFF_MS;
+          await this.setStatus("active");
         }
-        if (this.stopped || this.syncRequested) continue;
+        if (this.foldersDue && !this.syncRequested) {
+          // 確認中に次の時刻が来た場合に取りこぼさないよう、先に下ろしておく。
+          this.foldersDue = false;
+          if (!(await this.syncOtherFolders(client))) this.foldersDue = true;
+        }
+        if (!this.syncRequested && !this.foldersDue) {
+          await this.fetchPendingBodies(client);
+        }
+        if (this.stopped || this.syncRequested || this.foldersDue) continue;
+
+        // IDLE で通知を受けるフォルダを受信トレイに戻す。
+        if (client.mailbox === false || client.mailbox.path !== INBOX) {
+          await client.mailboxOpen(INBOX);
+        }
+        if (this.syncRequested || this.foldersDue) continue;
         await Promise.race([
           closed,
           new Promise<void>((resolve) => {
@@ -234,6 +388,7 @@ export class AccountSync {
       if (!this.stopped) this.log("接続が切れました。再接続します");
     } finally {
       clearInterval(periodic);
+      clearInterval(folderPoll);
       this.wake = null;
       this.client = null;
       client.close();

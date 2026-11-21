@@ -13,9 +13,12 @@ import {
   isNotNull,
   isNull,
   notInArray,
+  sql,
 } from "drizzle-orm";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
 import { recordChanges } from "./changes.js";
+import { toListedMailboxes } from "./mailbox-list.js";
+import { applyMailboxList, type SyncAccount } from "./mailbox-store.js";
 import {
   analyzeStructure,
   clean,
@@ -25,7 +28,6 @@ import {
   threadKeyOf,
   toAddresses,
   toDate,
-  toSpecialUse,
 } from "./message-parse.js";
 import { loadPendingGuard } from "./outbox.js";
 
@@ -34,7 +36,7 @@ const BODY_BATCH = 20;
 /** 本文 1 パートあたりの上限。これを超える分は切り捨てる。 */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
-export type SyncAccount = { id: string; userId: string };
+export type { SyncAccount };
 
 function chunk<T>(items: T[], size: number): T[][] {
   const result: T[][] = [];
@@ -44,65 +46,88 @@ function chunk<T>(items: T[], size: number): T[][] {
   return result;
 }
 
-/** サーバーのフォルダ一覧を DB に反映する。 */
+const STATUS_QUERY = {
+  messages: true,
+  uidNext: true,
+  uidValidity: true,
+  unseen: true,
+  highestModseq: true,
+};
+
+/**
+ * サーバーのフォルダ一覧を DB に反映し、取得した一覧を返す。
+ * withStatus が true なら、各フォルダの件数や変更番号 (STATUS) も一緒に取得する。
+ */
 export async function syncMailboxList(
   db: Database,
   client: ImapFlow,
   account: SyncAccount,
+  withStatus = false,
 ) {
-  const listed = await client.list();
-  await db.transaction(async (tx) => {
-    const existing = await tx
-      .select({ id: mailboxes.id, path: mailboxes.path })
-      .from(mailboxes)
-      .where(eq(mailboxes.accountId, account.id));
-    const known = new Map(existing.map((row) => [row.path, row.id]));
-    const upserted: string[] = [];
+  const listed = await client.list(
+    withStatus ? { statusQuery: STATUS_QUERY } : undefined,
+  );
+  await applyMailboxList(db, account, toListedMailboxes(listed));
+  return listed;
+}
 
-    for (const entry of listed) {
-      if (entry.flags.has("\\Noselect") || entry.flags.has("\\NonExistent")) {
-        continue;
-      }
-      const specialUse =
-        entry.path.toUpperCase() === "INBOX"
-          ? "inbox"
-          : toSpecialUse(entry.specialUse);
-      const values = {
-        name: clean(entry.name),
-        delimiter: entry.delimiter || null,
-        specialUse,
-      };
-      const [row] = await tx
-        .insert(mailboxes)
-        .values({ accountId: account.id, path: entry.path, ...values })
-        .onConflictDoUpdate({
-          target: [mailboxes.accountId, mailboxes.path],
-          set: values,
-        })
-        .returning({ id: mailboxes.id });
-      if (row && !known.has(entry.path)) upserted.push(row.id);
-      known.delete(entry.path);
-    }
+/** フォルダごとの同期状態と、DB にあるメッセージの数 (path をキーにする)。 */
+export async function loadMailboxStates(db: Database, accountId: string) {
+  const rows = await db
+    .select({
+      id: mailboxes.id,
+      path: mailboxes.path,
+      specialUse: mailboxes.specialUse,
+      uidValidity: mailboxes.uidValidity,
+      uidNext: mailboxes.uidNext,
+      highestModseq: mailboxes.highestModseq,
+      lastSyncedAt: mailboxes.lastSyncedAt,
+      total: sql<number>`count(${messageMailboxes.messageId})::int`,
+      unseen: sql<number>`(count(*) filter (where ${messages.seen} = false))::int`,
+    })
+    .from(mailboxes)
+    .leftJoin(messageMailboxes, eq(messageMailboxes.mailboxId, mailboxes.id))
+    .leftJoin(messages, eq(messages.id, messageMailboxes.messageId))
+    .where(eq(mailboxes.accountId, accountId))
+    .groupBy(mailboxes.id);
+  return new Map(rows.map((row) => [row.path, row]));
+}
 
-    // サーバーから無くなったフォルダを消す (メッセージの所在は cascade で消える)。
-    const removed = [...known.values()];
-    if (removed.length > 0) {
-      await tx.delete(mailboxes).where(inArray(mailboxes.id, removed));
-    }
-    await recordChanges(tx, account.userId, "mailbox", "upsert", upserted);
-    await recordChanges(tx, account.userId, "mailbox", "delete", removed);
-  });
+/** 本文をまだ取得していないメッセージがあるフォルダ。 */
+export async function mailboxesWithPendingBodies(
+  db: Database,
+  accountId: string,
+) {
+  return db
+    .selectDistinct({
+      id: mailboxes.id,
+      path: mailboxes.path,
+      specialUse: mailboxes.specialUse,
+    })
+    .from(mailboxes)
+    .innerJoin(messageMailboxes, eq(messageMailboxes.mailboxId, mailboxes.id))
+    .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
+    .where(
+      and(
+        eq(mailboxes.accountId, accountId),
+        isNotNull(messageMailboxes.uid),
+        isNull(messages.bodyFetchedAt),
+      ),
+    );
 }
 
 /**
  * 選択中のフォルダ (呼び出し側がロックを持っていること) を DB と突き合わせる。
  * UID の一覧を比べて追加と削除を求め、フラグは CONDSTORE があれば差分だけ取る。
+ * shouldStop が true を返すと取り込みの途中で切り上げ、complete: false を返す
+ * (同期状態は保存しないので、次回に続きから取り込む)。
  */
 export async function syncMailbox(
   db: Database,
   client: ImapFlow,
   account: SyncAccount,
   path: string,
+  shouldStop?: () => boolean,
 ) {
   const remote = client.mailbox;
   if (!remote || remote.path !== path) {
@@ -162,6 +187,14 @@ export async function syncMailbox(
     .filter((uid) => !localByUid.has(uid))
     .sort((a, b) => b - a);
   for (const uids of chunk(addedUids, FETCH_CHUNK)) {
+    if (shouldStop?.()) {
+      return {
+        mailboxId: mailbox.id,
+        added: 0,
+        removed: removedUids.length,
+        complete: false,
+      };
+    }
     const fetched: FetchMessageObject[] = [];
     for await (const message of client.fetch(
       uids,
@@ -255,6 +288,7 @@ export async function syncMailbox(
     mailboxId: mailbox.id,
     added: addedUids.length,
     removed: removedUids.length,
+    complete: true,
   };
 }
 
