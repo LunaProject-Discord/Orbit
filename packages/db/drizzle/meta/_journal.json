@@ -54,8 +54,15 @@
     {
       "idx": 7,
       "version": "7",
-      "when": 1795281512484,
-      "tag": "0007_push_subscriptions",
+      "when": 1795281379792,
+      "tag": "0007_message_search",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795281729647,
+      "tag": "0008_push_subscriptions",
       "breakpoints": true
     }
   ]

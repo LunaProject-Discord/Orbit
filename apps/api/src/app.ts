@@ -14,6 +14,7 @@ import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
 import { pushRoutes } from "./routes/push.js";
+import { searchRoutes } from "./routes/search.js";
 import { sendRoutes } from "./routes/send.js";
 import { syncRoutes } from "./routes/sync.js";
 import { webhookRoutes } from "./routes/webhooks.js";
@@ -103,6 +104,8 @@ export function createApp({
   // 反映の失敗 (/messages/failures) を登録する。
   authed.route("/messages", sendRoutes(deps));
   authed.route("/messages", failureRoutes(deps));
+  // 検索 (/messages/search) も /messages/:id より先に登録する。
+  authed.route("/messages", searchRoutes(deps));
   authed.route("/messages", messageRoutes({ db, hub }));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);
