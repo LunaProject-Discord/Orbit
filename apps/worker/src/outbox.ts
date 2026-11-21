@@ -4,7 +4,7 @@ import {
   type OutboxTarget,
 } from "@mail/core";
 import { type Database, mailboxes, outbox } from "@mail/db";
-import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Tx } from "./changes.js";
 
 /** 一時的な失敗 (接続が切れたなど) でやり直す回数の上限。超えたら失敗として扱う。 */
@@ -25,14 +25,8 @@ export type OutboxExecutor = (
 type OutboxRow = typeof outbox.$inferSelect;
 
 function toOperation(row: OutboxRow): OutboxOperation | null {
-  if (
-    row.kind !== "set_flags" &&
-    row.kind !== "move" &&
-    row.kind !== "delete"
-  ) {
-    // 送信 (send) と保存 (append) にはまだ対応していない。
-    return null;
-  }
+  // 送信 (send) は processSends が別に扱うので、ここには来ない。
+  if (row.kind === "send") return null;
   return { kind: row.kind, payload: row.payload } as OutboxOperation;
 }
 
@@ -54,6 +48,8 @@ export async function processOutbox(
     .where(
       and(
         eq(outbox.accountId, accountId),
+        // メールの送信は processSends が別に扱う。
+        ne(outbox.kind, "send"),
         inArray(outbox.status, ["pending", "processing"]),
       ),
     )

@@ -9,7 +9,11 @@ export type ShortcutCommand =
   | "toggleStar"
   | "archive"
   | "delete"
-  | "move";
+  | "move"
+  | "compose"
+  | "reply"
+  | "replyAll"
+  | "forward";
 
 type KeyLike = {
   key: string;
@@ -37,6 +41,8 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
         return "markUnread";
       case "#":
         return "delete";
+      case "R":
+        return "replyAll";
       default:
         return null;
     }
@@ -63,6 +69,12 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       return "delete";
     case "v":
       return "move";
+    case "c":
+      return "compose";
+    case "r":
+      return "reply";
+    case "f":
+      return "forward";
     default:
       return null;
   }
@@ -87,4 +99,8 @@ export const shortcutLabels = {
   archive: "E",
   delete: "Delete",
   move: "V",
+  compose: "C",
+  reply: "R",
+  replyAll: "Shift+R",
+  forward: "F",
 } as const;

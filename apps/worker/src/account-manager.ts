@@ -19,6 +19,9 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
     row.imapHost,
     row.imapPort,
     row.imapSecure,
+    row.smtpHost,
+    row.smtpPort,
+    row.smtpSecure,
     row.username,
     row.credentialsEncrypted,
   ].join("\n");
@@ -43,6 +46,8 @@ export class AccountManager {
     private readonly encryptionKey: Buffer,
     /** Microsoft Graph のアカウント用。未設定ならそれらのアカウントはエラーになる。 */
     private readonly microsoft: MicrosoftOAuthConfig | null,
+    /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
+    private readonly allowInsecureSmtp = false,
   ) {}
 
   async start() {
@@ -125,7 +130,12 @@ export class AccountManager {
               row,
               this.microsoft,
             )
-          : new AccountSync(this.db, this.encryptionKey, row);
+          : new AccountSync(
+              this.db,
+              this.encryptionKey,
+              row,
+              this.allowInsecureSmtp,
+            );
       const entry = { sync };
       this.running.set(row.id, entry);
       sync.run().finally(() => {

@@ -1,4 +1,9 @@
-import { loadEncryptionKey, loadMicrosoftOAuthConfig } from "@mail/core";
+import {
+  attachmentsDir,
+  loadEncryptionKey,
+  loadMicrosoftOAuthConfig,
+  sweepAttachments,
+} from "@mail/core";
 import { createDb } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
 
@@ -14,16 +19,27 @@ const manager = new AccountManager(
   databaseUrl,
   encryptionKey,
   loadMicrosoftOAuthConfig(process.env),
+  // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
+  process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
 );
 await manager.start();
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
 );
 
-// 既読や移動などの操作 (送信待ちキュー) は、各アカウントの同期の中で反映する。
-// メールの送信は今後ここに追加する。
+// 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。
+
+// 送信用に受け取った添付ファイルは、7 日たったら消す (送信済みのものも、送らなかったものも)。
+const ATTACHMENT_KEEP_MS = 7 * 24 * 60 * 60_000;
+const sweep = () =>
+  sweepAttachments(attachmentsDir(), ATTACHMENT_KEEP_MS).catch((error) => {
+    console.error("古い添付ファイルを消せませんでした。", error);
+  });
+void sweep();
+const sweepTimer = setInterval(sweep, 60 * 60_000);
 
 async function shutdown() {
+  clearInterval(sweepTimer);
   await manager.stop();
   await pool.end();
   process.exit(0);

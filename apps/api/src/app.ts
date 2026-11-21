@@ -7,7 +7,9 @@ import type { Auth } from "./auth.js";
 import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import { accountRoutes } from "./routes/accounts.js";
+import { attachmentRoutes } from "./routes/attachments.js";
 import { messageRoutes } from "./routes/messages.js";
+import { sendRoutes } from "./routes/send.js";
 import { syncRoutes } from "./routes/sync.js";
 
 export type AppOptions = {
@@ -37,7 +39,7 @@ export function createApp({
     cors({
       origin: allowedOrigins,
       credentials: true,
-      allowHeaders: ["Content-Type", "Authorization"],
+      allowHeaders: ["Content-Type", "Authorization", "X-Filename"],
       // ログイン時に Better Auth が返すセッショントークンをブラウザから読めるようにする。
       exposeHeaders: ["set-auth-token"],
     }),
@@ -63,6 +65,9 @@ export function createApp({
   authed.get("/me", (c) => c.json({ user: c.var.user }));
   const deps = { db, encryptionKey, allowPrivateMailHosts, microsoft };
   authed.route("/accounts", accountRoutes(deps));
+  authed.route("/attachments", attachmentRoutes());
+  // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) を登録する。
+  authed.route("/messages", sendRoutes(deps));
   authed.route("/messages", messageRoutes(deps));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);

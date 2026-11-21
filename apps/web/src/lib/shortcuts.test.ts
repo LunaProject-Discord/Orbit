@@ -18,6 +18,10 @@ describe("resolveShortcut", () => {
     expect(key("Escape")).toBe("close");
     expect(key("m")).toBe("toggleRead");
     expect(key("s")).toBe("toggleStar");
+    expect(key("c")).toBe("compose");
+    expect(key("r")).toBe("reply");
+    expect(key("R", { shiftKey: true })).toBe("replyAll");
+    expect(key("f")).toBe("forward");
     expect(key("e")).toBe("archive");
     expect(key("a")).toBe("archive");
     expect(key("Delete")).toBe("delete");
