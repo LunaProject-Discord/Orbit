@@ -184,6 +184,8 @@ export const mailAccounts = pgTable(
     /** Microsoft Graph の変更通知 (Webhook) の購読 ID と期限。購読していなければ null。 */
     pushSubscriptionId: text(),
     pushExpiresAt: timestamp({ withTimezone: true }),
+    /** このアカウントから送るメールの署名 (書式付き)。無ければ null。 */
+    signatureHtml: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

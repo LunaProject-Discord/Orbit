@@ -14,6 +14,7 @@ import {
   OctagonAlertIcon,
   PlusIcon,
   SendIcon,
+  SignatureIcon,
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -97,6 +98,8 @@ type Props = {
   onSelectDrafts: () => void;
   onAdd: () => void;
   onDelete: (account: Account) => void;
+  /** アカウントの署名を編集する。 */
+  onEditSignature: (account: Account) => void;
   /** 再ログインが必要な Microsoft アカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
   onSignOut: () => void;
@@ -114,6 +117,7 @@ export function AccountSidebar({
   onSelectDrafts,
   onAdd,
   onDelete,
+  onEditSignature,
   onReauth,
   onSignOut,
 }: Props) {
@@ -211,9 +215,19 @@ export function AccountSidebar({
                       selectedMailboxId === null
                     }
                     onClick={() => onSelect(account.id, null)}
-                    className="min-w-0 flex-1 pr-9 pl-1"
+                    className="min-w-0 flex-1 pr-16 pl-1"
                   />
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`${account.email} の署名を編集`}
+                  title="署名を編集"
+                  onClick={() => onEditSignature(account)}
+                  className="absolute top-2 right-8 opacity-0 focus-visible:opacity-100 group-hover/account:opacity-100 pointer-coarse:opacity-100"
+                >
+                  <SignatureIcon />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon-xs"

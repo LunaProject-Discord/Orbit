@@ -146,6 +146,8 @@ export type Account = {
   username: string;
   status: AccountStatus;
   lastError: string | null;
+  /** このアカウントから送るメールの署名 (書式付き)。無ければ null。 */
+  signatureHtml: string | null;
   createdAt: string;
 };
 
@@ -420,6 +422,18 @@ export async function completeMicrosoftLogin(
   const { account } = await apiJson<{ account: Account }>(
     "/v1/accounts/microsoft/complete",
     { method: "POST", body: { code, state } },
+  );
+  return account;
+}
+
+/** アカウントの署名を変える。null なら署名なしにする。 */
+export async function updateAccountSignature(
+  id: string,
+  signatureHtml: string | null,
+): Promise<Account> {
+  const { account } = await apiJson<{ account: Account }>(
+    `/v1/accounts/${id}`,
+    { method: "PATCH", body: { signatureHtml } },
   );
   return account;
 }

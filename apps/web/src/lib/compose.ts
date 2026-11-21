@@ -156,10 +156,40 @@ function linesToHtml(text: string): string {
     .join("");
 }
 
-const EMPTY_LINES = "<div><br></div><div><br></div>";
+const EMPTY_LINE = "<div><br></div>";
+const EMPTY_LINES = `${EMPTY_LINE}${EMPTY_LINE}`;
 const field = (list: Address[] = []): RecipientField => ({ list, text: "" });
 
-export function newDraft(accountId: string): ComposeDraft {
+/** 署名を持つアカウント (作成画面で使う分だけ)。 */
+type SignatureAccount = Pick<Account, "id" | "email"> & {
+  signatureHtml?: string | null;
+};
+
+/**
+ * 本文に入れる署名。data-signature は、差出人を変えたときに署名を入れ替える目印。
+ * 署名が無ければ空文字列。
+ */
+function signatureBlock(signatureHtml: string | null | undefined): string {
+  const html = signatureHtml ? sanitizeHtml(signatureHtml) : "";
+  if (!htmlHasContent(html)) return "";
+  return `<div data-signature="">${html}</div>`;
+}
+
+/** 文字が 1 つでもあるか (空行だけの HTML は中身なしとして扱う)。 */
+export function htmlHasContent(html: string): boolean {
+  return html.replace(/<[^>]*>/g, "").replace(/&nbsp;|\s/g, "") !== "";
+}
+
+/** 書き始める場所 (空行) と署名。署名は 1 行あけて入れる。 */
+function draftHead(signatureHtml: string | null | undefined): string {
+  const signature = signatureBlock(signatureHtml);
+  return signature ? `${EMPTY_LINES}${signature}` : "";
+}
+
+export function newDraft(
+  accountId: string,
+  signatureHtml?: string | null,
+): ComposeDraft {
   return {
     idempotencyKey: crypto.randomUUID(),
     accountId,
@@ -167,22 +197,31 @@ export function newDraft(accountId: string): ComposeDraft {
     cc: field(),
     bcc: field(),
     subject: "",
-    html: "",
+    html: draftHead(signatureHtml),
     attachments: [],
     mode: "new",
     sourceMessageId: null,
   };
 }
 
+/** 引用や転送に入れる、元のメールの本文 (書式付き)。 */
+function quotedBodyOf(message: MessageDetail): string {
+  if (message.bodyHtml?.trim()) {
+    const html = sanitizeHtml(message.bodyHtml);
+    if (htmlHasContent(html)) return html;
+  }
+  return linesToHtml(message.bodyText ?? "");
+}
+
 /**
  * 返信・全員に返信・転送の下書きを作る。
- * bodyText は元のメールの本文 (HTML だけのメールでは、テキストに直したもの)。
+ * 元のメールが HTML なら書式を保ったまま引用し、テキストだけなら 1 行ずつ引用する。
+ * 並びは「書き始める空行、署名、元のメール」。
  */
 export function buildDraftFrom(
   mode: Exclude<ComposeMode, "new">,
   message: MessageDetail,
-  bodyText: string,
-  accounts: Pick<Account, "id" | "email">[],
+  accounts: SignatureAccount[],
 ): ComposeDraft {
   const account =
     accounts.find((entry) => entry.id === message.accountId) ?? accounts[0];
@@ -190,6 +229,8 @@ export function buildDraftFrom(
   draft.sourceMessageId = message.id;
   const sender = message.from[0];
   const date = formatFullDate(message.sentAt ?? message.receivedAt);
+  const head = draftHead(account?.signatureHtml) || EMPTY_LINE;
+  const body = quotedBodyOf(message);
 
   if (mode === "forward") {
     const header = [
@@ -206,7 +247,7 @@ export function buildDraftFrom(
       ...draft,
       mode: "forward",
       subject: withPrefix(message.subject, "Fwd"),
-      html: `${EMPTY_LINES}${linesToHtml(`${header}\n\n${bodyText}`)}`,
+      html: `${head}${EMPTY_LINE}<div data-quote="">${linesToHtml(header)}${EMPTY_LINE}${body}</div>`,
     };
   }
 
@@ -237,8 +278,32 @@ export function buildDraftFrom(
     to: field(to),
     cc: field(cc),
     subject: withPrefix(message.subject, "Re"),
-    html: `${EMPTY_LINES}<blockquote>${linesToHtml(`${attribution}\n${bodyText}`)}</blockquote>`,
+    html: `${head}${EMPTY_LINE}<div data-quote=""><div>${escapeHtml(attribution)}</div><blockquote>${body}</blockquote></div>`,
   };
+}
+
+/**
+ * 本文の署名を入れ替える (差出人を変えたとき)。
+ * 署名が入っていなければ、引用の前 (引用が無ければ末尾) に入れる。
+ */
+export function replaceSignature(
+  html: string,
+  signatureHtml: string | null | undefined,
+): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const next = signatureBlock(signatureHtml);
+  const current = doc.body.querySelector("[data-signature]");
+  if (current) {
+    current.outerHTML = next;
+    return doc.body.innerHTML;
+  }
+  if (!next) return html;
+  const quote = doc.body.querySelector("[data-quote]");
+  if (quote) {
+    quote.insertAdjacentHTML("beforebegin", `${next}${EMPTY_LINE}`);
+    return doc.body.innerHTML;
+  }
+  return `${html || EMPTY_LINE}${EMPTY_LINE}${next}`;
 }
 
 /** 送信できなかったメールを、編集して送り直すための下書きに戻す。 */
@@ -315,7 +380,11 @@ function linesOf(parent: Node): string[] {
       continue;
     }
     flush();
-    let inner = linesOf(element);
+    // 整形済みの文 (pre) は、改行をそのまま行にする。
+    let inner =
+      tag === "pre"
+        ? (element.textContent ?? "").replace(/\r\n?/g, "\n").split("\n")
+        : linesOf(element);
     if (inner.length === 0) inner = tag === "ul" || tag === "ol" ? [] : [""];
     if (tag === "blockquote") inner = inner.map(quoteLine);
     if (tag === "li") {
@@ -339,21 +408,75 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-/** 引用や転送に使う、元のメールの本文。 */
-export function bodyTextOf(message: MessageDetail): string {
-  if (message.bodyText?.trim()) return message.bodyText;
-  if (message.bodyHtml) {
-    return htmlToText(message.bodyHtml).replace(/\n{3,}/g, "\n\n");
-  }
-  return "";
-}
-
-/** 送信する本文に残すタグ。これ以外は、タグだけ外して中身を残す。 */
+/**
+ * 送信する本文に残すタグ。これ以外は、タグだけ外して中身を残す。
+ * 見出しや表は作成画面では作れないが、引用した元のメールの形を保つために残す。
+ */
 const ALLOWED = new Set(
-  "a,b,blockquote,br,div,em,i,li,ol,p,s,strong,u,ul".split(","),
+  "a,b,blockquote,br,code,div,em,h1,h2,h3,h4,h5,h6,hr,i,li,ol,p,pre,s,span,strong,sub,sup,table,tbody,td,tfoot,th,thead,tr,u,ul".split(
+    ",",
+  ),
 );
+const VOID = new Set(["br", "hr"]);
 const QUOTE_STYLE =
   "margin:0 0 0 0.8ex;border-left:2px solid #ccc;padding-left:1ex;color:#555";
+
+const CELL_STYLE = "padding:0 1em 0 0;vertical-align:top";
+
+/**
+ * 残す style の項目。色は残さない (暗い画面の作成画面で読めなくなるため)。
+ * 値は決まった語だけを通すので、url() などは入らない。
+ */
+const STYLE_VALUES: Record<string, RegExp> = {
+  "font-weight": /^(normal|bold|bolder|lighter|[1-9]00)$/,
+  "font-style": /^(normal|italic|oblique)$/,
+  "text-decoration": /^(none|underline|line-through)$/,
+  "text-decoration-line": /^(none|underline|line-through)$/,
+  "text-align": /^(left|right|center|justify|start|end)$/,
+};
+
+function declarationsOf(element: Element): [string, string][] {
+  return (element.getAttribute("style") ?? "")
+    .split(";")
+    .map((part): [string, string] => {
+      const index = part.indexOf(":");
+      if (index < 0) return ["", ""];
+      return [
+        part.slice(0, index).trim().toLowerCase(),
+        part
+          .slice(index + 1)
+          .replace(/!important/i, "")
+          .trim()
+          .toLowerCase(),
+      ];
+    })
+    .filter(([name]) => name !== "");
+}
+
+/** 受信者に見せないために隠してある要素 (プレビュー用の文など)。引用には入れない。 */
+function isHidden(declarations: [string, string][]): boolean {
+  return declarations.some(
+    ([name, value]) =>
+      (name === "display" && value === "none") ||
+      (name === "visibility" && value === "hidden") ||
+      (name === "opacity" && /^0(\.0+)?$/.test(value)) ||
+      ((name === "font-size" || name === "max-height") &&
+        /^0+(\.0+)?(px|pt|em|rem|%)?$/.test(value)),
+  );
+}
+
+function styleAttribute(declarations: [string, string][]): string {
+  const kept = declarations.filter(([name, value]) =>
+    STYLE_VALUES[name]?.test(value),
+  );
+  if (kept.length === 0) return "";
+  return ` style="${kept.map(([name, value]) => `${name}:${value}`).join(";")}"`;
+}
+
+function spanAttribute(element: Element, name: string): string {
+  const value = element.getAttribute(name) ?? "";
+  return /^[1-9][0-9]{0,2}$/.test(value) ? ` ${name}="${value}"` : "";
+}
 
 function sanitizeNode(parent: Node): string {
   let html = "";
@@ -366,11 +489,19 @@ function sanitizeNode(parent: Node): string {
     const element = node as Element;
     const tag = element.tagName.toLowerCase();
     if (DROPPED.has(tag)) continue;
+    const declarations = declarationsOf(element);
+    if (isHidden(declarations)) continue;
+    if (tag === "img") {
+      // 画像は持ち込まない (外部の画像は開封の追跡に使われる)。説明の文字だけ残す。
+      const alt = element.getAttribute("alt")?.trim();
+      if (alt) html += escapeHtml(`[画像: ${alt}]`);
+      continue;
+    }
     const inner = sanitizeNode(element);
     if (!ALLOWED.has(tag)) {
       html += inner;
-    } else if (tag === "br") {
-      html += "<br>";
+    } else if (VOID.has(tag)) {
+      html += `<${tag}>`;
     } else if (tag === "a") {
       const href = element.getAttribute("href") ?? "";
       html += /^(https?:|mailto:)/i.test(href)
@@ -378,8 +509,28 @@ function sanitizeNode(parent: Node): string {
         : inner;
     } else if (tag === "blockquote") {
       html += `<blockquote style="${QUOTE_STYLE}">${inner}</blockquote>`;
+    } else if (tag === "td" || tag === "th") {
+      const attributes = `${spanAttribute(element, "colspan")}${spanAttribute(element, "rowspan")}`;
+      // 相手のメールソフトでも列がくっつかないよう、余白を付ける。
+      const kept = declarations
+        .filter(([name, value]) => STYLE_VALUES[name]?.test(value))
+        .map(([name, value]) => `;${name}:${value}`)
+        .join("");
+      html += `<${tag}${attributes} style="${CELL_STYLE}${kept}">${inner}</${tag}>`;
+    } else if (tag === "span") {
+      // 何も付かない span は、中身だけにする。
+      const style = styleAttribute(declarations);
+      html += style ? `<span${style}>${inner}</span>` : inner;
+    } else if (tag === "div") {
+      // 署名と引用の目印は、差出人を変えたときに署名を入れ替えるために残す。
+      const mark = element.hasAttribute("data-signature")
+        ? ' data-signature=""'
+        : element.hasAttribute("data-quote")
+          ? ' data-quote=""'
+          : "";
+      html += `<div${mark}${styleAttribute(declarations)}>${inner}</div>`;
     } else {
-      html += `<${tag}>${inner}</${tag}>`;
+      html += `<${tag}${styleAttribute(declarations)}>${inner}</${tag}>`;
     }
   }
   return html;
@@ -387,7 +538,8 @@ function sanitizeNode(parent: Node): string {
 
 /**
  * 作成画面の本文を、送信してよい HTML に整える。
- * 太字・斜体・下線・箇条書き・リンク・引用だけを残し、属性やスクリプトは落とす。
+ * 太字・斜体・下線・箇条書き・リンク・引用・見出し・表だけを残し、
+ * スクリプト、画像、色や大きさの指定は落とす。元のメールを引用するときにも使う。
  */
 export function sanitizeHtml(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");

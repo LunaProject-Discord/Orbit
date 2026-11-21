@@ -4,7 +4,9 @@ import type { MessageDetail } from "@/lib/api";
 import {
   buildDraftFrom,
   htmlToText,
+  newDraft,
   parseAddressList,
+  replaceSignature,
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
@@ -76,7 +78,13 @@ const accounts = [{ id: "acc1", email: "Me@example.com" }];
 const build = (
   mode: "reply" | "replyAll" | "forward",
   message: MessageDetail = original,
-) => buildDraftFrom(mode, message, message.bodyText ?? "", accounts);
+) => buildDraftFrom(mode, message, accounts);
+const SIGNATURE = "<div><b>あおい</b></div><div>aoi@example.com</div>";
+const signed = [{ ...accounts[0], signatureHtml: SIGNATURE }] as {
+  id: string;
+  email: string;
+  signatureHtml: string;
+}[];
 
 describe("buildDraftFrom", () => {
   it("返信は差出人だけに宛て、本文を引用する", () => {
@@ -91,7 +99,9 @@ describe("buildDraftFrom", () => {
     });
     // 先頭に書き始めるための空行があり、元の本文は引用として入る。
     expect(
-      draft.html.startsWith("<div><br></div><div><br></div><blockquote>"),
+      draft.html.startsWith(
+        '<div><br></div><div><br></div><div data-quote=""><div>',
+      ),
     ).toBe(true);
     // 元の本文にあったタグは、文字としてそのまま出る。
     expect(draft.html).toContain("&lt;b&gt;念のため&lt;/b&gt;");
@@ -99,7 +109,36 @@ describe("buildDraftFrom", () => {
     expect(text).toContain(
       "> 明日の 10 時でいかがですか。\n>\n> <b>念のため</b>\n>> 前の引用",
     );
-    expect(text).toMatch(/^> .*山田 <yamada@example\.com>:$/m);
+    // 誰のいつのメールかは、引用の前の行に書く。
+    expect(text).toMatch(/^2026.*山田 <yamada@example\.com>:\n> 明日/m);
+  });
+
+  it("HTML のメールは、書式を保ったまま引用する", () => {
+    const draft = build("reply", {
+      ...original,
+      bodyText: "テキスト版",
+      bodyHtml:
+        '<html><head><style>p{color:red}</style></head><body><p style="color:#333;text-align:center">こんにちは <b>太字</b></p>' +
+        '<div style="display:none">隠した文</div><img src="https://example.com/track.gif" alt="ロゴ">' +
+        '<table><tr><td colspan="2" onclick="x()">表</td></tr></table><script>alert(1)</script></body></html>',
+    });
+    expect(draft.html).toContain(
+      '<blockquote><p style="text-align:center">こんにちは <b>太字</b></p>' +
+        '[画像: ロゴ]<table><tbody><tr><td colspan="2" style="padding:0 1em 0 0;vertical-align:top">表</td></tr></tbody></table></blockquote>',
+    );
+    const text = htmlToText(sanitizeHtml(draft.html));
+    expect(text).toContain("> こんにちは 太字");
+    expect(text).not.toContain("隠した文");
+    expect(text).not.toContain("テキスト版");
+  });
+
+  it("返信では、署名を引用の前に入れる", () => {
+    const draft = buildDraftFrom("reply", original, signed);
+    expect(draft.html).toMatch(
+      /^<div><br><\/div><div><br><\/div><div data-signature=""><div><b>あおい<\/b><\/div><div>aoi@example\.com<\/div><\/div><div><br><\/div><div data-quote="">/,
+    );
+    // 送信用に整えても、署名と引用の目印は残る。
+    expect(sanitizeHtml(draft.html)).toContain('<div data-signature="">');
   });
 
   it("全員に返信は、自分以外の宛先を Cc に入れる", () => {
@@ -147,6 +186,41 @@ describe("buildDraftFrom", () => {
   });
 });
 
+describe("署名", () => {
+  it("新しいメールには、書き始める空行のあとに署名を入れる", () => {
+    expect(newDraft("acc1", SIGNATURE).html).toBe(
+      `<div><br></div><div><br></div><div data-signature="">${SIGNATURE}</div>`,
+    );
+    expect(newDraft("acc1", null).html).toBe("");
+    // 空行だけの署名は、署名なしとして扱う。
+    expect(newDraft("acc1", "<div><br></div>").html).toBe("");
+  });
+
+  it("差出人を変えたら、署名を入れ替える", () => {
+    const html = `<div>本文</div><div data-signature="">${SIGNATURE}</div><div>追記</div>`;
+    expect(replaceSignature(html, "<div>別の署名</div>")).toBe(
+      '<div>本文</div><div data-signature=""><div>別の署名</div></div><div>追記</div>',
+    );
+    // 署名のないアカウントに変えたら、署名を外す。
+    expect(replaceSignature(html, null)).toBe("<div>本文</div><div>追記</div>");
+  });
+
+  it("署名が入っていなければ、引用の前か末尾に入れる", () => {
+    expect(
+      replaceSignature(
+        '<div>本文</div><div data-quote=""><blockquote>引用</blockquote></div>',
+        "<div>署名</div>",
+      ),
+    ).toBe(
+      '<div>本文</div><div data-signature=""><div>署名</div></div><div><br></div><div data-quote=""><blockquote>引用</blockquote></div>',
+    );
+    expect(replaceSignature("<div>本文</div>", "<div>署名</div>")).toBe(
+      '<div>本文</div><div><br></div><div data-signature=""><div>署名</div></div>',
+    );
+    expect(replaceSignature("<div>本文</div>", null)).toBe("<div>本文</div>");
+  });
+});
+
 describe("sanitizeHtml", () => {
   it("許可した書式だけを残し、スクリプトや属性は落とす", () => {
     expect(
@@ -188,6 +262,17 @@ describe("htmlToText", () => {
         "> 元の本文",
         ">> さらに前",
       ].join("\n"),
+    );
+  });
+
+  it("見出し、表、整形済みの文をテキストにする", () => {
+    expect(
+      htmlToText(
+        "<h2>見出し</h2><table><tbody><tr><td>品名</td><td>数量</td></tr><tr><td>りんご</td><td>3</td></tr></tbody></table>" +
+          "<pre>1 行目\n  2 行目</pre>",
+      ),
+    ).toBe(
+      ["見出し", "品名 数量", "りんご 3", "1 行目", "  2 行目"].join("\n"),
     );
   });
 });
