@@ -27,6 +27,7 @@ import {
   toDate,
   toSpecialUse,
 } from "./message-parse.js";
+import { loadPendingGuard } from "./outbox.js";
 
 const FETCH_CHUNK = 100;
 const BODY_BATCH = 20;
@@ -217,7 +218,13 @@ export async function syncMailbox(
     }
     if (changed.length > 0) {
       await db.transaction(async (tx) => {
-        for (const { messageId, flags } of changed) {
+        // この端末側で既読などを変更中のメッセージは、サーバーへ反映し終えるまで
+        // 上書きしない (反映後はフラグが変わるので、次の同期で改めて届く)。
+        const guard = await loadPendingGuard(tx, account.id);
+        const applied = changed.filter(
+          (entry) => !guard.flagMessageIds.has(entry.messageId),
+        );
+        for (const { messageId, flags } of applied) {
           await tx
             .update(messages)
             .set(flags)
@@ -228,7 +235,7 @@ export async function syncMailbox(
           account.userId,
           "message",
           "upsert",
-          changed.map((entry) => entry.messageId),
+          applied.map((entry) => entry.messageId),
         );
       });
     }
@@ -309,8 +316,13 @@ async function insertMessages(
 ) {
   if (fetched.length === 0) return;
   await db.transaction(async (tx) => {
+    // 移動・削除を受け付けたがまだサーバーへ反映していないメッセージは、
+    // サーバーにはまだ残っている。取り込み直さない。
+    const guard = await loadPendingGuard(tx, account.id);
+    const removing = guard.removedUids.get(mailboxId);
     const inserted: string[] = [];
     for (const message of fetched) {
+      if (removing?.has(message.uid)) continue;
       const envelope = message.envelope ?? {};
       const references = parseReferences(message.headers).map(clean);
       const structure = analyzeStructure(message.bodyStructure);

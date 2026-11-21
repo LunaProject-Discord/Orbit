@@ -212,6 +212,36 @@ export type MessageDetail = {
   attachments: Attachment[];
 };
 
+export type Mailbox = {
+  id: string;
+  /** IMAP ではフォルダのパス、Microsoft Graph ではフォルダの ID。 */
+  path: string;
+  name: string;
+  specialUse:
+    | "inbox"
+    | "sent"
+    | "drafts"
+    | "trash"
+    | "junk"
+    | "archive"
+    | "all"
+    | "flagged"
+    | null;
+};
+
+/** メッセージへの操作。idempotencyKey は操作ごとに作る一意な ID (再送しても二重に実行されない)。 */
+export type MessageAction = { idempotencyKey: string; messageIds: string[] } & (
+  | { action: "set_flags"; seen?: boolean; flagged?: boolean }
+  | {
+      action: "move";
+      /** 移動先のフォルダ。destination とどちらか一方を指定する。 */
+      mailboxId?: string;
+      /** 移動先を役割で指定する。 */
+      destination?: "inbox" | "archive" | "trash" | "junk";
+    }
+  | { action: "delete" }
+);
+
 export type MessagePage = {
   messages: MessageSummary[];
   nextCursor: string | null;
@@ -322,4 +352,20 @@ export async function getMessage(
     { signal },
   );
   return message;
+}
+
+export async function listMailboxes(
+  accountId: string,
+  signal?: AbortSignal,
+): Promise<Mailbox[]> {
+  const { mailboxes } = await apiJson<{ mailboxes: Mailbox[] }>(
+    `/v1/accounts/${accountId}/mailboxes`,
+    { signal },
+  );
+  return mailboxes;
+}
+
+/** 操作をサーバーへ送る。サーバーはすぐに反映して応答し、メールサーバーへは後から反映する。 */
+export async function sendMessageAction(action: MessageAction): Promise<void> {
+  await apiFetch("/v1/messages/actions", { method: "POST", body: action });
 }

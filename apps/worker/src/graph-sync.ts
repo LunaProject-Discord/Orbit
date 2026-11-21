@@ -15,6 +15,7 @@ import {
 } from "./graph-parse.js";
 import type { SyncAccount } from "./mailbox-sync.js";
 import { clean, makeSnippet } from "./message-parse.js";
+import { loadPendingGuard } from "./outbox.js";
 
 const BODY_BATCH = 20;
 /** 本文を同時に取得する数。Outlook の制限 (1 メールボックスあたり同時 4 件) より少なくする。 */
@@ -159,6 +160,8 @@ async function applyPage(
   }
 
   return db.transaction(async (tx) => {
+    // この端末側で受け付けた操作のうち、まだ Graph へ反映していないものの対象。
+    const guard = await loadPendingGuard(tx, account.id);
     const known = await tx
       .select({
         id: messages.id,
@@ -187,7 +190,14 @@ async function applyPage(
     const changed: string[] = [];
     let added = 0;
     for (const item of upserts) {
+      // 移動・削除中のメッセージは取り込み直さない (反映後の差分で所在が決まる)。
+      if (guard.removedProviderIds.has(item.id)) continue;
       const values = toMessageValues(item);
+      if (guard.flagProviderIds.has(item.id)) {
+        // 既読やスターを変更中。反映し終えるまで、古い状態で上書きしない。
+        delete values.seen;
+        delete values.flagged;
+      }
       let messageId = idOf.get(item.id);
       if (messageId) {
         if (Object.keys(values).length > 0) {

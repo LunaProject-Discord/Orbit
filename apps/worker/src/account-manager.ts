@@ -1,9 +1,14 @@
-import { CHANNEL_ACCOUNTS, type MicrosoftOAuthConfig } from "@mail/core";
+import {
+  CHANNEL_ACCOUNTS,
+  CHANNEL_OUTBOX,
+  type MicrosoftOAuthConfig,
+} from "@mail/core";
 import { type Database, mailAccounts } from "@mail/db";
 import { inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";
 import { GraphAccountSync } from "./graph-account-sync.js";
+import { accountsWithPendingOutbox } from "./outbox.js";
 
 const RECONCILE_MS = 60_000;
 
@@ -23,6 +28,7 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * 同期対象のアカウントごとに AccountSync を起動・停止する。
  * API サーバーからの NOTIFY (アカウントの追加・削除) ですぐに反映し、
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
+ * 送信待ちキューに操作が積まれた通知も受け取り、該当のアカウントへ伝える。
  */
 export class AccountManager {
   private running = new Map<string, { sync: AccountSync | GraphAccountSync }>();
@@ -59,12 +65,22 @@ export class AccountManager {
       setTimeout(() => this.listen(), 3_000);
     };
     this.listener = client;
-    client.on("notification", () => this.reconcile());
+    client.on("notification", (message) => {
+      if (message.channel === CHANNEL_OUTBOX) {
+        // payload はアカウントの ID。同期中でなければ、再開したときに反映される。
+        if (message.payload) {
+          this.running.get(message.payload)?.sync.notifyOutbox();
+        }
+        return;
+      }
+      this.reconcile();
+    });
     client.on("error", retry);
     client.on("end", retry);
     client
       .connect()
       .then(() => client.query(`LISTEN ${CHANNEL_ACCOUNTS}`))
+      .then(() => client.query(`LISTEN ${CHANNEL_OUTBOX}`))
       // 待ち受けを始めるまでの間に届いた通知は失われるので、ここで追いつく。
       .then(() => this.reconcile())
       .catch(retry);
@@ -115,6 +131,10 @@ export class AccountManager {
       sync.run().finally(() => {
         if (this.running.get(row.id) === entry) this.running.delete(row.id);
       });
+    }
+    // 通知を取りこぼしていても、反映待ちの操作が残っていれば処理させる。
+    for (const accountId of await accountsWithPendingOutbox(this.db)) {
+      this.running.get(accountId)?.sync.notifyOutbox();
     }
   }
 

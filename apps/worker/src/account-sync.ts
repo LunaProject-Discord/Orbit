@@ -4,6 +4,8 @@ import { eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
 import { recordChanges } from "./changes.js";
 import { fetchBodies, syncMailbox, syncMailboxList } from "./mailbox-sync.js";
+import { processOutbox } from "./outbox.js";
+import { applyImapOperation } from "./outbox-imap.js";
 
 const INBOX = "INBOX";
 const MIN_BACKOFF_MS = 5_000;
@@ -86,6 +88,11 @@ export class AccountSync {
     this.stopped = true;
     this.wake?.();
     this.client?.close();
+  }
+
+  /** 送信待ちキューに操作が積まれた。すぐに反映する。 */
+  notifyOutbox() {
+    this.requestSync();
   }
 
   private requestSync() {
@@ -177,6 +184,14 @@ export class AccountSync {
 
       while (!this.stopped && client.usable) {
         this.syncRequested = false;
+        // 既読や移動などの操作を先にサーバーへ反映してから、同期で突き合わせる。
+        // 対象のフォルダを選択し直すので、受信トレイのロックを取る前に行う。
+        await processOutbox(
+          this.db,
+          this.account.id,
+          (operation) => applyImapOperation(client, operation),
+          (message) => this.log(message),
+        );
         const lock = await client.getMailboxLock(INBOX);
         try {
           const result = await syncMailbox(
