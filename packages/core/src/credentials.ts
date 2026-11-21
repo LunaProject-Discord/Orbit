@@ -16,7 +16,7 @@ const IV_BYTES = 12;
 export function loadEncryptionKey(value: string | undefined): Buffer {
   if (!value) {
     throw new Error(
-      "CREDENTIALS_ENCRYPTION_KEY が設定されていません。`openssl rand -base64 32` で生成してください。",
+      "CREDENTIALS_ENCRYPTION_KEY が設定されていません。リポジトリのルートで `pnpm env:init` を実行してください。",
     );
   }
   const key = Buffer.from(value, "base64");
@@ -68,10 +68,18 @@ export function decryptText(
   );
   decipher.setAAD(Buffer.from(context, "utf8"));
   decipher.setAuthTag(Buffer.from(tag, "base64"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(ciphertext, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
+  try {
+    return Buffer.concat([
+      decipher.update(Buffer.from(ciphertext, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch (cause) {
+    // Node.js の既定のメッセージでは原因が分からないので、言い換える。
+    throw new Error(
+      "認証情報を復号できません。CREDENTIALS_ENCRYPTION_KEY が保存時と異なる可能性があります。",
+      { cause },
+    );
+  }
 }
 
 /**

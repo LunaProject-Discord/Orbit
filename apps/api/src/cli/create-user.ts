@@ -45,10 +45,21 @@ try {
   });
   console.log(`利用者を作成しました: ${user.email} (${user.id})`);
 } catch (error) {
+  // DB に繋がらない場合などは、原因 (cause) の方に本当の理由が入っている。
+  const cause = error instanceof Error ? error.cause : undefined;
   console.error(
     "利用者を作成できませんでした:",
     error instanceof Error ? error.message : error,
   );
+  if (cause instanceof Error) {
+    console.error(
+      "原因:",
+      cause.message || (cause as NodeJS.ErrnoException).code || cause.name,
+    );
+    console.error(
+      "PostgreSQL が起動しているか (docker compose up -d)、pnpm db:migrate を実行済みかを確認してください。",
+    );
+  }
   process.exitCode = 1;
 } finally {
   await pool.end();
