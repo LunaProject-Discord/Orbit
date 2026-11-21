@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { listMailboxes, type Mailbox, type MailboxSummary } from "@/lib/api";
+import type { Mailbox, MailboxSummary } from "@/lib/api";
+import { listMailboxes } from "@/lib/offline";
 
 /** フォルダ一覧は頻繁には変わらないので、アカウントごとに覚えておく。 */
 const mailboxCache = new Map<string, Mailbox[]>();

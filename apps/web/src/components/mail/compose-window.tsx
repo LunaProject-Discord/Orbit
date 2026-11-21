@@ -17,6 +17,7 @@ import {
   SendIcon,
   Trash2Icon,
   UnderlineIcon,
+  WifiOffIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -46,7 +47,6 @@ import {
   deleteAttachment,
   forwardAttachments,
   NetworkError,
-  sendMail,
   type UploadedAttachment,
   uploadAttachment,
 } from "@/lib/api";
@@ -61,6 +61,7 @@ import {
   sanitizeHtml,
 } from "@/lib/compose";
 import { formatSize } from "@/lib/format";
+import { sendMailOrQueue, useOnline } from "@/lib/offline";
 
 function sendErrorOf(error: unknown, limit: number): string {
   if (error instanceof NetworkError) {
@@ -175,6 +176,7 @@ export function ComposeWindow({
   onDiscard,
 }: Props) {
   const id = useId();
+  const online = useOnline();
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [minimized, setMinimized] = useState(false);
@@ -420,21 +422,25 @@ export function ComposeWindow({
     try {
       // 送信のあとから保存が届くと、送ったはずの下書きが残ってしまう。
       await onBeforeSend();
-      await sendMail({
-        idempotencyKey: draft.idempotencyKey,
-        accountId: draft.accountId,
-        to: to.addresses,
-        cc: cc.addresses,
-        bcc: bcc.addresses,
-        subject: draft.subject,
-        text: htmlToText(html),
-        html,
-        attachmentIds: draft.attachments.map((file) => file.id),
-        mode: draft.mode,
-        ...(draft.sourceMessageId
-          ? { sourceMessageId: draft.sourceMessageId }
-          : {}),
-      });
+      // サーバーに届かなければ端末で預かり、接続後に自動で送る。
+      await sendMailOrQueue(
+        {
+          idempotencyKey: draft.idempotencyKey,
+          accountId: draft.accountId,
+          to: to.addresses,
+          cc: cc.addresses,
+          bcc: bcc.addresses,
+          subject: draft.subject,
+          text: htmlToText(html),
+          html,
+          attachmentIds: draft.attachments.map((file) => file.id),
+          mode: draft.mode,
+          ...(draft.sourceMessageId
+            ? { sourceMessageId: draft.sourceMessageId }
+            : {}),
+        },
+        draft.attachments,
+      );
       onSent();
     } catch (cause) {
       setError(sendErrorOf(cause, limit));
@@ -847,6 +853,12 @@ export function ComposeWindow({
           <p className="shrink-0 px-4 pb-2 text-muted-foreground text-xs sm:hidden">
             {saved}
           </p>
+          {!online && (
+            <p className="flex shrink-0 items-center gap-2 border-t bg-muted/50 px-4 py-2 text-muted-foreground text-xs">
+              <WifiOffIcon className="size-3.5 shrink-0" aria-hidden="true" />
+              オフラインです。送信すると、接続後に自動で送られます。
+            </p>
+          )}
           {error && (
             <p
               role="alert"

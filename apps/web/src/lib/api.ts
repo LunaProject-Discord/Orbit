@@ -5,6 +5,7 @@
  */
 
 import type { AccountColorName } from "@/lib/account-colors";
+import { reportReachable } from "@/lib/offline/network";
 
 export const API_URL = (
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
@@ -93,8 +94,10 @@ export async function apiFetch(
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
     }
+    reportReachable(false);
     throw new NetworkError();
   }
+  reportReachable(true);
 
   if (response.status === 401 && handle401) {
     handleUnauthorized();
@@ -836,7 +839,10 @@ export function uploadAttachment(
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(event.loaded / event.total);
     };
-    xhr.onerror = () => reject(new NetworkError());
+    xhr.onerror = () => {
+      reportReachable(false);
+      reject(new NetworkError());
+    };
     xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
     xhr.onload = () => {
       const data: unknown = xhr.response;

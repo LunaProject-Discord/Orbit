@@ -47,11 +47,7 @@ import {
   deleteOutgoing,
   dismissFailure,
   type FailedOperation,
-  listAccounts,
-  listAllMailboxes,
-  listDrafts,
   listFailures,
-  listMessages,
   listOutgoing,
   type MailboxSummary,
   type MessageAction,
@@ -65,9 +61,7 @@ import {
   saveAccountOrder,
   saveDraft,
   saveMailboxOrder,
-  searchMessages,
   sendFocus,
-  sendMail,
   startOAuthLogin,
   type User,
 } from "@/lib/api";
@@ -106,6 +100,21 @@ import {
   syncNotifications,
 } from "@/lib/notifications";
 import {
+  applyActionLocally,
+  cachedMessages,
+  listAccounts,
+  listAllMailboxes,
+  listDrafts,
+  listMessages,
+  onQueuedSendDelivered,
+  type QueuedSend,
+  removeQueuedSend,
+  searchMessages,
+  sendMailOrQueue,
+  useOnline,
+  useQueuedSends,
+} from "@/lib/offline";
+import {
   buildRoute,
   historyMode,
   type MailRoute,
@@ -126,6 +135,10 @@ const FOCUS_INTERVAL_MS = 30_000;
 const SEARCH_DELAY_MS = 300;
 const LIST_ERROR = "メールを読み込めませんでした。";
 const SEARCH_ERROR = "検索できませんでした。";
+const OFFLINE_LIST_ERROR =
+  "オフラインです。このフォルダは、まだこの端末に保存されていません。";
+/** サーバーに届かない間、届くようになったかを確かめる間隔。 */
+const RECONNECT_INTERVAL_MS = 15_000;
 const emptySearch: SearchParams = {
   text: "",
   filters: emptyFilters,
@@ -142,6 +155,7 @@ const NOTIFICATION_BLOCKED =
 /** 短い知らせを出しておく時間。 */
 const NOTICE_MS = 8_000;
 const QUICK_REPLY_SENT = "返信を送信しました。";
+const QUICK_REPLY_QUEUED = "オフラインです。返信は、接続後に自動で送られます。";
 const QUICK_REPLY_ERROR =
   "返信を送信できませんでした。時間をおいて、もう一度お試しください。";
 const QUICK_REPLY_NO_RECIPIENT =
@@ -266,6 +280,12 @@ export function MailApp({ user }: { user: User }) {
   };
   /** サーバーへ送る操作の待ち行列。通信できない間の操作もここに残る。 */
   const queueRef = useRef<ActionQueue | null>(null);
+  /** サーバーに届く状態か。届かない間は、端末に保存した内容を表示する。 */
+  const online = useOnline();
+  const onlineRef = useRef(online);
+  onlineRef.current = online;
+  /** 端末で預かっている、接続後に送るメール。 */
+  const queuedSends = useQueuedSends();
   /** 画面の下に短く出す知らせ (操作の失敗など)。 */
   const [notice, setNotice] = useState<{
     message: string;
@@ -302,7 +322,6 @@ export function MailApp({ user }: { user: User }) {
   starredRef.current = starred;
   /** サーバーからの変更通知の接続。null は、まだ一度も繋がっていない。 */
   const [connected, setConnected] = useState<boolean | null>(null);
-  const [online, setOnline] = useState(true);
   /** いまサーバーに接続している端末の数 (この端末を含む)。 */
   const [devices, setDevices] = useState(0);
   /** まだサーバーへ送れていない操作の数。 */
@@ -453,6 +472,18 @@ export function MailApp({ user }: { user: User }) {
         setMessages(null);
         setNextCursor(null);
         setListError(null);
+        // サーバーの応答を待たずに、端末に保存してある一覧を先に出す。
+        if (!searchRef.current && !starredRef.current) {
+          void cachedMessages(selection, PAGE_SIZE).then((saved) => {
+            if (!saved || request !== listRequest.current) return;
+            const rows = applyActions(
+              saved.messages,
+              queueRef.current?.pending() ?? [],
+            );
+            // サーバーの応答が先に届いていたら、そちらを残す。
+            setMessages((current) => current ?? rows);
+          });
+        }
       }
       try {
         const { page, terms } = await fetchPage(selection, null);
@@ -477,7 +508,13 @@ export function MailApp({ user }: { user: User }) {
         );
       } catch {
         if (request !== listRequest.current) return;
-        setListError(searchRef.current ? SEARCH_ERROR : LIST_ERROR);
+        setListError(
+          searchRef.current
+            ? SEARCH_ERROR
+            : onlineRef.current
+              ? LIST_ERROR
+              : OFFLINE_LIST_ERROR,
+        );
       }
     },
     [fetchPage],
@@ -684,6 +721,8 @@ export function MailApp({ user }: { user: User }) {
         );
       }
       queueRef.current?.enqueue(action);
+      // オフラインで開き直しても操作後の状態で出るよう、端末に保存した内容にも反映する。
+      applyActionLocally(action);
     },
     [],
   );
@@ -849,17 +888,49 @@ export function MailApp({ user }: { user: User }) {
     openFromNotification,
   ]);
 
-  // ネットワークに繋がっているか。同期の状況の表示に使う。
+  // サーバーに届くようになったら、表示を最新の状態にする。届かない間は、届くかを時々確かめる。
+  const wasOnline = useRef(online);
   useEffect(() => {
-    const update = () => setOnline(navigator.onLine);
-    update();
-    window.addEventListener("online", update);
-    window.addEventListener("offline", update);
-    return () => {
-      window.removeEventListener("online", update);
-      window.removeEventListener("offline", update);
+    if (online && !wasOnline.current) {
+      void loadAccounts();
+      void loadMailboxes();
+      void loadOutgoing();
+      void loadFailures();
+      void loadDrafts();
+      void loadFirstPage(selectionRef.current, false);
+      void saverRef.current?.flush();
+      setRefreshKey((key) => key + 1);
+    }
+    wasOnline.current = online;
+    if (online) return;
+    const probe = () => {
+      if (navigator.onLine !== false) void loadAccounts();
     };
-  }, []);
+    const timer = setInterval(probe, RECONNECT_INTERVAL_MS);
+    window.addEventListener("online", probe);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", probe);
+    };
+  }, [
+    online,
+    loadAccounts,
+    loadMailboxes,
+    loadOutgoing,
+    loadFailures,
+    loadDrafts,
+    loadFirstPage,
+  ]);
+
+  // 端末で預かっていたメールをサーバーへ渡せたら、送信中の一覧と下書きを取得し直す。
+  useEffect(
+    () =>
+      onQueuedSendDelivered(() => {
+        void loadOutgoing();
+        void loadDrafts();
+      }),
+    [loadOutgoing, loadDrafts],
+  );
 
   /**
    * 作成画面でメールを開く。それまで開いていたメールは、下書きとしてサーバーに残る。
@@ -924,24 +995,32 @@ export function MailApp({ user }: { user: User }) {
       return false;
     }
     const html = sanitizeHtml(reply.html);
+    let result: "sent" | "queued";
     try {
-      await sendMail({
-        idempotencyKey: reply.idempotencyKey,
-        accountId: reply.accountId,
-        to: reply.to.list,
-        cc: [],
-        bcc: [],
-        subject: reply.subject,
-        text: htmlToText(html),
-        html,
-        mode: "reply",
-        sourceMessageId: message.id,
-      });
+      // サーバーに届かなければ端末で預かり、接続後に自動で送る。
+      result = await sendMailOrQueue(
+        {
+          idempotencyKey: reply.idempotencyKey,
+          accountId: reply.accountId,
+          to: reply.to.list,
+          cc: [],
+          bcc: [],
+          subject: reply.subject,
+          text: htmlToText(html),
+          html,
+          mode: "reply",
+          sourceMessageId: message.id,
+        },
+        [],
+      );
     } catch {
       setNotice({ message: QUICK_REPLY_ERROR, tone: "error" });
       return false;
     }
-    setNotice({ message: QUICK_REPLY_SENT, tone: "info" });
+    setNotice({
+      message: result === "queued" ? QUICK_REPLY_QUEUED : QUICK_REPLY_SENT,
+      tone: "info",
+    });
     void loadOutgoing();
     return true;
   }
@@ -992,6 +1071,47 @@ export function MailApp({ user }: { user: User }) {
     deleteOutgoing(mail.id)
       .catch(() => {})
       .finally(() => void loadOutgoing());
+  }
+
+  /** 端末で預かっているメールを、送らずに作成画面へ戻す。 */
+  function handleEditQueued(item: QueuedSend) {
+    void removeQueuedSend(item.id).then((removed) => {
+      // ちょうど送っている最中なら、戻せない。
+      if (!removed) return;
+      const { input } = item;
+      const restored: ComposeDraft = {
+        ...draftFromOutgoing({
+          id: item.id,
+          accountId: input.accountId,
+          status: "failed",
+          attempts: 0,
+          lastError: null,
+          createdAt: item.createdAt,
+          mode: input.mode,
+          sourceMessageId: input.sourceMessageId ?? null,
+          to: input.to,
+          cc: input.cc,
+          bcc: input.bcc,
+          subject: input.subject,
+          text: input.text,
+          html: input.html ?? null,
+          attachments: item.attachments,
+        }),
+        // サーバーには届いていないので、同じ ID のまま続きを書く (下書きが残っていれば、その続きになる)。
+        idempotencyKey: item.id,
+      };
+      const remote = drafts?.find((draft) => draft.id === item.id);
+      if (remote) saverRef.current?.track(item.id, remote.revision);
+      showInCompose(restored, true);
+    });
+  }
+
+  /** 端末で預かっているメールの送信を取り消す。 */
+  function handleRemoveQueued(item: QueuedSend) {
+    void removeQueuedSend(item.id).then((removed) => {
+      // サーバーに下書きが残っていれば、それも消す (届かなければ、下書きとして残る)。
+      if (removed) handleDiscardDraft(item.id);
+    });
   }
 
   /** 再ログインが必要な Google / Microsoft のアカウントで、ログイン画面へ移る。 */
@@ -1205,6 +1325,13 @@ export function MailApp({ user }: { user: User }) {
     else replaceNextRef.current = true;
   }, [composeTarget, accounts, drafts]);
 
+  // 接続後に送るメールの下書きは、送信したものとして一覧に出さない。
+  const queuedIds = new Set(queuedSends.map((item) => item.id));
+  const visibleDrafts =
+    drafts && queuedIds.size > 0
+      ? drafts.filter((item) => !queuedIds.has(item.id))
+      : drafts;
+
   const selectedAccount =
     accounts?.find((account) => account.id === selectedAccountId) ?? null;
   const selectedMailbox =
@@ -1233,7 +1360,10 @@ export function MailApp({ user }: { user: User }) {
     online,
     connected,
     pendingActions,
-    pendingMails: outgoing.filter((mail) => mail.status !== "failed").length,
+    // 端末で預かっている、接続後に送るメールも数える (サーバーに断られたものは除く)。
+    pendingMails:
+      outgoing.filter((mail) => mail.status !== "failed").length +
+      queuedSends.filter((item) => item.error === null).length,
     accounts,
     devices,
   });
@@ -1489,13 +1619,16 @@ export function MailApp({ user }: { user: User }) {
             setMailboxes((current) => current && withSortOrder(current, ids));
             saveOrder(() => saveMailboxOrder(ids));
           }}
-          draftCount={drafts?.length ?? 0}
+          draftCount={visibleDrafts?.length ?? 0}
           draftsSelected={draftsSelected}
           onSelectDrafts={handleSelectDrafts}
           special={special}
           onSelectSpecial={handleSelectSpecial}
-          outgoingCount={outgoing.length}
-          outgoingFailed={outgoing.some((mail) => mail.status === "failed")}
+          outgoingCount={outgoing.length + queuedSends.length}
+          outgoingFailed={
+            outgoing.some((mail) => mail.status === "failed") ||
+            queuedSends.some((item) => item.error !== null)
+          }
           onCompose={
             canCompose
               ? () => {
@@ -1628,8 +1761,12 @@ export function MailApp({ user }: { user: User }) {
           {special !== "outgoing" && (
             <OutgoingList
               outgoing={outgoing.filter((mail) => mail.status === "failed")}
+              queued={queuedSends.filter((item) => item.error !== null)}
+              online={online}
               onEdit={handleEditOutgoing}
               onRemove={handleRemoveOutgoing}
+              onEditQueued={handleEditQueued}
+              onRemoveQueued={handleRemoveQueued}
             />
           )}
           {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
@@ -1661,12 +1798,16 @@ export function MailApp({ user }: { user: User }) {
               <OutgoingList
                 full
                 outgoing={outgoing}
+                queued={queuedSends}
+                online={online}
                 onEdit={handleEditOutgoing}
                 onRemove={handleRemoveOutgoing}
+                onEditQueued={handleEditQueued}
+                onRemoveQueued={handleRemoveQueued}
               />
             ) : draftsSelected ? (
               <DraftList
-                drafts={drafts}
+                drafts={visibleDrafts}
                 accounts={accounts ?? []}
                 openId={draft?.idempotencyKey ?? null}
                 onOpen={handleOpenDraft}

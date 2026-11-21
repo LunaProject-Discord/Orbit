@@ -37,9 +37,6 @@ import {
   type Account,
   ApiError,
   type Attachment,
-  fetchAttachment,
-  getMessage,
-  getThread,
   type MailboxSummary,
   type MessageDetail,
   type MessageSummary,
@@ -58,6 +55,7 @@ import {
   formatListDate,
 } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
+import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
