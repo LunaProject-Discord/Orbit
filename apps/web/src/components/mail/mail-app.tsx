@@ -18,6 +18,7 @@ import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
+import { SignatureDialog } from "@/components/mail/signature-dialog";
 import { Button } from "@/components/ui/button";
 import {
   type ActionQueue,
@@ -42,7 +43,6 @@ import {
   type User,
 } from "@/lib/api";
 import {
-  bodyTextOf,
   buildDraftFrom,
   type ComposeDraft,
   type ComposeMode,
@@ -114,6 +114,7 @@ export function MailApp({ user }: { user: User }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
@@ -402,7 +403,9 @@ export function MailApp({ user }: { user: User }) {
     }
     openCompose(() => {
       const accountId = selectedAccountId ?? accounts?.[0]?.id;
-      return accountId ? newDraft(accountId) : null;
+      if (!accountId) return null;
+      const account = accounts?.find((item) => item.id === accountId);
+      return newDraft(accountId, account?.signatureHtml);
     });
   }
 
@@ -410,9 +413,7 @@ export function MailApp({ user }: { user: User }) {
     mode: Exclude<ComposeMode, "new">,
     message: MessageDetail,
   ) => {
-    openCompose(() =>
-      buildDraftFrom(mode, message, bodyTextOf(message), accounts ?? []),
-    );
+    openCompose(() => buildDraftFrom(mode, message, accounts ?? []));
   };
 
   function clearDraft() {
@@ -703,6 +704,10 @@ export function MailApp({ user }: { user: User }) {
             setSidebarOpen(false);
             setDeleteTarget(account);
           }}
+          onEditSignature={(account) => {
+            setSidebarOpen(false);
+            setSignatureTarget(account);
+          }}
           onReauth={(account) => {
             startMicrosoftLogin(account.id)
               .then((url) => window.location.assign(url))
@@ -901,6 +906,18 @@ export function MailApp({ user }: { user: User }) {
           void loadOutgoing();
         }}
         onDiscard={clearDraft}
+      />
+      <SignatureDialog
+        account={signatureTarget}
+        onClose={() => setSignatureTarget(null)}
+        onSaved={(account) =>
+          setAccounts(
+            (current) =>
+              current?.map((item) =>
+                item.id === account.id ? account : item,
+              ) ?? null,
+          )
+        }
       />
       <DeleteAccountDialog
         account={deleteTarget}
