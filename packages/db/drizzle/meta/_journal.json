@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "7",
-      "when": 1795279941220,
-      "tag": "0005_push_subscriptions",
+      "when": 1795279802869,
+      "tag": "0005_account_signature",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795280777420,
+      "tag": "0006_push_subscriptions",
       "breakpoints": true
     }
   ]

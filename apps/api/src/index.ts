@@ -24,6 +24,7 @@ const app = createApp({
   encryptionKey: env.encryptionKey,
   allowPrivateMailHosts: env.allowPrivateMailHosts,
   microsoft: env.microsoft,
+  google: env.google,
   webPushPublicKey: env.webPushPublicKey,
 });
 

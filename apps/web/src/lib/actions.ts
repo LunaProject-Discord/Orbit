@@ -36,27 +36,39 @@ export function applyActions(
   let result = messages;
   for (const action of actions) {
     const ids = new Set(action.messageIds);
-    if (action.action === "set_flags") {
-      result = result.map((message) =>
-        ids.has(message.id)
-          ? {
-              ...message,
-              ...(action.seen === undefined ? {} : { seen: action.seen }),
-              ...(action.flagged === undefined
-                ? {}
-                : { flagged: action.flagged }),
-            }
-          : message,
-      );
-    } else {
+    result = result.flatMap((message) => {
+      // 一覧の 1 行は会話 1 つ。会話のうち、操作の対象になった分を調べる。
+      const members = message.threadMessageIds;
+      const hits = members.filter((id) => ids.has(id)).length;
+      if (hits === 0) return [message];
+      const all = hits === members.length;
+      if (action.action === "set_flags") {
+        // 行の既読は「すべて既読」、スターは「どれかに付いている」を表す。
+        // 一部だけが対象のときは、結果が確実に決まる向きだけを反映する。
+        const seen =
+          action.seen === undefined || (action.seen && !all)
+            ? message.seen
+            : action.seen;
+        const flagged =
+          action.flagged === undefined || (!action.flagged && !all)
+            ? message.flagged
+            : action.flagged;
+        return [{ ...message, seen, flagged }];
+      }
       // 移動と削除では、いま見ているフォルダから無くなる。
       // 移動先がそのメッセージのあるフォルダ自身なら、何も起きない。
-      result = result.filter(
-        (message) =>
-          !ids.has(message.id) ||
-          (action.action === "move" && action.mailboxId === message.mailboxId),
-      );
-    }
+      if (action.action === "move" && action.mailboxId === message.mailboxId) {
+        return [message];
+      }
+      if (all) return [];
+      return [
+        {
+          ...message,
+          threadMessageIds: members.filter((id) => !ids.has(id)),
+          threadCount: Math.max(1, message.threadCount - hits),
+        },
+      ];
+    });
   }
   return result;
 }

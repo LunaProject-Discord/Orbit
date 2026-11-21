@@ -146,6 +146,8 @@ export type Account = {
   username: string;
   status: AccountStatus;
   lastError: string | null;
+  /** このアカウントから送るメールの署名 (書式付き)。無ければ null。 */
+  signatureHtml: string | null;
   createdAt: string;
 };
 
@@ -155,11 +157,16 @@ export type CreateAccountInput = {
   email: string;
   displayName?: string;
   provider: Account["provider"];
-  imap: ServerSettings;
-  smtp: ServerSettings;
-  username: string;
+  /** 接続先。provider が gmail か icloud なら省略でき、サーバーが決まった値を使う。 */
+  imap?: ServerSettings;
+  smtp?: ServerSettings;
+  /** 省略するとメールアドレスを使う。 */
+  username?: string;
   password: string;
 };
+
+/** ログイン画面へ移動して追加するサービス (OAuth2)。 */
+export type OAuthProvider = "google" | "microsoft";
 
 export type MessageSummary = {
   id: string;
@@ -175,6 +182,32 @@ export type MessageSummary = {
   seen: boolean;
   flagged: boolean;
   answered: boolean;
+  /** 会話 (スレッド) に含まれるメッセージの数。ほかのフォルダにある自分の返信なども数える。 */
+  threadCount: number;
+  /**
+   * 会話のうち、このフォルダにあるメッセージ (このメッセージ自身を含む)。
+   * 一覧の 1 行は会話 1 つを表し、既読やスターはこれらをまとめた値、操作もこれらが対象になる。
+   */
+  threadMessageIds: string[];
+};
+
+/** 会話 (スレッド) に含まれるメッセージ 1 通分。本文は含まない。 */
+export type ThreadMessage = {
+  id: string;
+  accountId: string;
+  subject: string;
+  from: Address[];
+  to: Address[];
+  cc: Address[];
+  receivedAt: string;
+  snippet: string;
+  hasAttachments: boolean;
+  seen: boolean;
+  flagged: boolean;
+  answered: boolean;
+  draft: boolean;
+  /** このメッセージがあるフォルダ。 */
+  mailboxIds: string[];
 };
 
 export type Attachment = {
@@ -395,25 +428,55 @@ export async function createAccount(
 }
 
 /**
- * Microsoft のログイン画面の URL を取得する。
+ * Google または Microsoft のログイン画面の URL を取得する。
  * accountId を渡すと、そのアカウントの再ログインになる。
  */
-export async function startMicrosoftLogin(accountId?: string): Promise<string> {
+export async function startOAuthLogin(
+  provider: OAuthProvider,
+  accountId?: string,
+): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
-    "/v1/accounts/microsoft/authorize",
+    `/v1/accounts/${provider}/authorize`,
     { method: "POST", body: accountId ? { accountId } : {} },
   );
   return url;
 }
 
-/** Microsoft のログイン画面から戻ってきた code と state を渡して、アカウントを追加する。 */
-export async function completeMicrosoftLogin(
+/** ログイン画面から戻ってきた code と state を渡して、アカウントを追加する。 */
+export async function completeOAuthLogin(
+  provider: OAuthProvider,
   code: string,
   state: string,
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
-    "/v1/accounts/microsoft/complete",
+    `/v1/accounts/${provider}/complete`,
     { method: "POST", body: { code, state } },
+  );
+  return account;
+}
+
+/**
+ * アカウントのログインし直しに使うサービス。パスワードで追加したアカウントは null
+ * (ログイン画面へ移動する方法では直せない)。
+ */
+export function oauthProviderOf(
+  account: Pick<Account, "protocol" | "provider" | "authType">,
+): OAuthProvider | null {
+  if (account.protocol === "graph") return "microsoft";
+  if (account.provider === "gmail" && account.authType === "oauth2") {
+    return "google";
+  }
+  return null;
+}
+
+/** アカウントの署名を変える。null なら署名なしにする。 */
+export async function updateAccountSignature(
+  id: string,
+  signatureHtml: string | null,
+): Promise<Account> {
+  const { account } = await apiJson<{ account: Account }>(
+    `/v1/accounts/${id}`,
+    { method: "PATCH", body: { signatureHtml } },
   );
   return account;
 }
@@ -448,6 +511,23 @@ export async function getMessage(
     { signal },
   );
   return message;
+}
+
+/**
+ * メッセージが属する会話 (スレッド) を、古い順に取得する。
+ * mailboxId は表示中のフォルダ (そこにあるメッセージは、ごみ箱などでも会話に含まれる)。
+ */
+export async function getThread(
+  id: string,
+  mailboxId: string | null,
+  signal?: AbortSignal,
+): Promise<ThreadMessage[]> {
+  const query = mailboxId ? `?mailboxId=${mailboxId}` : "";
+  const { messages } = await apiJson<{ messages: ThreadMessage[] }>(
+    `/v1/messages/${id}/thread${query}`,
+    { signal },
+  );
+  return messages;
 }
 
 export async function listMailboxes(

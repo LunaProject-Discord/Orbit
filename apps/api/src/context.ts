@@ -1,4 +1,4 @@
-import type { MicrosoftOAuthConfig } from "@mail/core";
+import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from "@mail/core";
 import type { Database } from "@mail/db";
 import { createMiddleware } from "hono/factory";
 import type { Auth } from "./auth.js";
@@ -14,6 +14,7 @@ export type RouteDeps = {
   encryptionKey: Buffer;
   allowPrivateMailHosts: boolean;
   microsoft: { config: MicrosoftOAuthConfig; redirectUri: string } | null;
+  google: { config: GoogleOAuthConfig; redirectUri: string } | null;
   /** Web Push の公開鍵 (VAPID)。未設定なら null で、端末は画面を開いている間だけ通知する。 */
   webPushPublicKey: string | null;
 };

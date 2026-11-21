@@ -1,5 +1,6 @@
 import {
   loadEncryptionKey,
+  loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
 } from "@mail/core";
@@ -27,6 +28,8 @@ export function loadEnv() {
     .map((origin) => origin.trim())
     .filter(Boolean);
   const microsoftConfig = loadMicrosoftOAuthConfig(process.env);
+  const googleConfig = loadGoogleOAuthConfig(process.env);
+  const webOrigin = allowedOrigins[0] ?? "http://localhost:3000";
   return {
     databaseUrl: required("DATABASE_URL"),
     port: Number(process.env.API_PORT ?? 8787),
@@ -44,8 +47,14 @@ export function loadEnv() {
       config: microsoftConfig,
       /** ログイン後に戻る Web の URL。Entra のアプリ登録のリダイレクト URI と一致させる。 */
       redirectUri:
-        process.env.MICROSOFT_REDIRECT_URI ??
-        `${allowedOrigins[0] ?? "http://localhost:3000"}/oauth/microsoft`,
+        process.env.MICROSOFT_REDIRECT_URI ?? `${webOrigin}/oauth/microsoft`,
+    },
+    /** Gmail アカウントの追加 (Google でログイン)。未設定なら null で無効。 */
+    google: googleConfig && {
+      config: googleConfig,
+      /** ログイン後に戻る Web の URL。Google Cloud の「承認済みのリダイレクト URI」と一致させる。 */
+      redirectUri:
+        process.env.GOOGLE_REDIRECT_URI ?? `${webOrigin}/oauth/google`,
     },
   };
 }

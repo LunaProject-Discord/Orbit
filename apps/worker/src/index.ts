@@ -2,6 +2,7 @@ import {
   attachmentsDir,
   graphWebhookBaseUrl,
   loadEncryptionKey,
+  loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
   sweepAttachments,
@@ -28,6 +29,7 @@ const manager = new AccountManager(
   graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
   // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
   process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
+  loadGoogleOAuthConfig(process.env),
   // 新着メールの通知 (Web Push)。VAPID の鍵が無ければ送らない。
   webPush && new PushSender(db, webPushTransport(webPush)),
 );

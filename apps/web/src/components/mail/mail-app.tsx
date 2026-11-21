@@ -1,7 +1,13 @@
 "use client";
 
 import { cn } from "cn";
-import { InboxIcon, MenuIcon, PenLineIcon, PlusIcon } from "lucide-react";
+import {
+  InboxIcon,
+  ListChecksIcon,
+  MenuIcon,
+  PenLineIcon,
+  PlusIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AccountSidebar } from "@/components/mail/account-sidebar";
@@ -16,6 +22,8 @@ import {
 import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
+import { SelectionToolbar } from "@/components/mail/selection-toolbar";
+import { SignatureDialog } from "@/components/mail/signature-dialog";
 import { Button } from "@/components/ui/button";
 import {
   type ActionQueue,
@@ -39,13 +47,13 @@ import {
   type MessageDetail,
   type MessageSummary,
   type OutgoingMail,
+  oauthProviderOf,
   retryFailure,
   sendFocus,
-  startMicrosoftLogin,
+  startOAuthLogin,
   type User,
 } from "@/lib/api";
 import {
-  bodyTextOf,
   buildDraftFrom,
   type ComposeDraft,
   type ComposeMode,
@@ -68,6 +76,7 @@ import {
   showUnreadCount,
   syncNotifications,
 } from "@/lib/notifications";
+import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 
 const PAGE_SIZE = 50;
@@ -135,6 +144,7 @@ export function MailApp({ user }: { user: User }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
@@ -161,6 +171,14 @@ export function MailApp({ user }: { user: User }) {
   notificationStatusRef.current = notificationStatus;
   /** 増やすと、表示中のメールの移動先メニューが開く (ショートカットキー用)。 */
   const [moveRequest, setMoveRequest] = useState(0);
+  /** 一覧でチェックを付けた行 (複数選択)。一覧から無くなった行は数えない。 */
+  const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(new Set());
+  /** 選択中。1 件もチェックしていなくても、各行にチェックボックスを出す。 */
+  const [selectMode, setSelectMode] = useState(false);
+  /** Shift を押しながらの範囲選択の起点 (最後にチェックを操作した行)。 */
+  const anchorRef = useRef<string | null>(null);
+  /** 増やすと、選択したメールの移動先メニューが開く (ショートカットキー用)。 */
+  const [bulkMoveRequest, setBulkMoveRequest] = useState(0);
   /** 作成中のメール。作成画面を閉じても、送信するか破棄するまで残す。 */
   const [draft, setDraft] = useState<ComposeDraft | null>(null);
   const [draftDirty, setDraftDirty] = useState(false);
@@ -274,14 +292,8 @@ export function MailApp({ user }: { user: User }) {
     setSidebarOpen(false);
     setSelectedAccountId(null);
     setSelectedMailboxId(null);
+    // 既読にするのは、開いた本文側が行う。
     setSelectedMessageId(messageId);
-    if (messageId) {
-      // 一覧に無くても開けるので、既読にするのは一覧の有無に関係なく行う。
-      performActionRef.current([messageId], {
-        action: "set_flags",
-        seen: true,
-      });
-    }
   }, []);
 
   // 新着メールの通知。前回この端末で有効にしていれば、送り先を登録し直す。
@@ -412,16 +424,34 @@ export function MailApp({ user }: { user: User }) {
     [],
   );
 
-  const performActionRef = useRef(performAction);
-  performActionRef.current = performAction;
-
-  /** メールを開く。未読なら既読にする。 */
+  /** メールを開く。既読にするのは、会話を読み込んだ本文側が行う。 */
   function handleSelectMessage(id: string) {
     setSelectedMessageId(id);
-    const message = messages?.find((item) => item.id === id);
-    if (message && !message.seen) {
-      performAction([id], { action: "set_flags", seen: true });
-    }
+    anchorRef.current = id;
+  }
+
+  function clearSelection() {
+    setCheckedIds(new Set());
+    setSelectMode(false);
+  }
+
+  /** 行のチェックを切り替える。range が true なら、起点からその行までをまとめて選ぶ。 */
+  function handleToggleCheck(id: string, range: boolean) {
+    const order = (messages ?? []).map((message) => message.id);
+    const anchor = anchorRef.current;
+    setCheckedIds((current) =>
+      range
+        ? selectRange(order, current, anchor, id)
+        : toggleSelection(current, id),
+    );
+    anchorRef.current = id;
+  }
+
+  /** 選択した行 (会話) にまとめて操作する。 */
+  function performBulk(rows: MessageSummary[], input: MessageActionInput) {
+    for (const ids of actionBatches(rows)) performAction(ids, input);
+    // 移動や削除で一覧から無くなるので、選択も終える。
+    if (input.action !== "set_flags") clearSelection();
   }
 
   useEffect(() => {
@@ -530,7 +560,9 @@ export function MailApp({ user }: { user: User }) {
     }
     openCompose(() => {
       const accountId = selectedAccountId ?? accounts?.[0]?.id;
-      return accountId ? newDraft(accountId) : null;
+      if (!accountId) return null;
+      const account = accounts?.find((item) => item.id === accountId);
+      return newDraft(accountId, account?.signatureHtml);
     });
   }
 
@@ -538,9 +570,7 @@ export function MailApp({ user }: { user: User }) {
     mode: Exclude<ComposeMode, "new">,
     message: MessageDetail,
   ) => {
-    openCompose(() =>
-      buildDraftFrom(mode, message, bodyTextOf(message), accounts ?? []),
-    );
+    openCompose(() => buildDraftFrom(mode, message, accounts ?? []));
   };
 
   function clearDraft() {
@@ -622,6 +652,8 @@ export function MailApp({ user }: { user: User }) {
   ) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
+    clearSelection();
+    anchorRef.current = null;
     setSelectedAccountId(accountId);
     setSelectedMailboxId(mailboxId);
   }
@@ -642,6 +674,20 @@ export function MailApp({ user }: { user: User }) {
   const subtitle = selectedMailbox ? accountName : null;
   const noAccounts = accounts !== null && accounts.length === 0;
 
+  // 開いているメールを含む行。会話に新しいメールが届いて行の代表が替わっても、同じ行を指す。
+  const selectedMessage =
+    (selectedMessageId &&
+      messages?.find(
+        (message) =>
+          message.id === selectedMessageId ||
+          message.threadMessageIds.includes(selectedMessageId),
+      )) ||
+    null;
+  const checkedRows = (messages ?? []).filter((message) =>
+    checkedIds.has(message.id),
+  );
+  const selecting = selectMode || checkedRows.length > 0;
+
   // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (event) => {
@@ -655,7 +701,60 @@ export function MailApp({ user }: { user: User }) {
       return;
     }
     const list = messages ?? [];
-    const index = list.findIndex((item) => item.id === selectedMessageId);
+    const index = selectedMessage ? list.indexOf(selectedMessage) : -1;
+
+    if (command === "select") {
+      // 開いているメール (無ければ最後に操作した行) のチェックを切り替える。
+      const id = selectedMessage?.id ?? anchorRef.current;
+      if (!id || !list.some((item) => item.id === id)) return;
+      event.preventDefault();
+      handleToggleCheck(id, false);
+      return;
+    }
+    // チェックを付けたメールがあれば、操作はそれらが対象になる。
+    if (checkedRows.length > 0 || selectMode) {
+      const flags = (input: { seen?: boolean; flagged?: boolean }) =>
+        performBulk(checkedRows, { action: "set_flags", ...input });
+      const inTrash = selectedMailbox?.specialUse === "trash";
+      let handled = true;
+      switch (command) {
+        case "close":
+          clearSelection();
+          break;
+        case "markRead":
+          flags({ seen: true });
+          break;
+        case "markUnread":
+          flags({ seen: false });
+          break;
+        case "toggleRead":
+          flags({ seen: !checkedRows.every((row) => row.seen) });
+          break;
+        case "toggleStar":
+          flags({ flagged: !checkedRows.every((row) => row.flagged) });
+          break;
+        case "archive":
+          performBulk(checkedRows, { action: "move", destination: "archive" });
+          break;
+        case "delete":
+          performBulk(
+            checkedRows,
+            inTrash
+              ? { action: "delete" }
+              : { action: "move", destination: "trash" },
+          );
+          break;
+        case "move":
+          setBulkMoveRequest((count) => count + 1);
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) {
+        event.preventDefault();
+        return;
+      }
+    }
     const open = (message: MessageSummary | undefined) => {
       if (!message) return;
       handleSelectMessage(message.id);
@@ -674,7 +773,8 @@ export function MailApp({ user }: { user: User }) {
     const message = list[index];
     if (!message) return;
     event.preventDefault();
-    const id = [message.id];
+    // 一覧の 1 行は会話 1 つ。会話のうち、このフォルダにある分をまとめて操作する。
+    const id = message.threadMessageIds;
     // 移動や削除のあとは、続けて操作できるよう隣のメールを開く。
     const neighbor = list[index + 1] ?? list[index - 1];
     switch (command) {
@@ -691,7 +791,11 @@ export function MailApp({ user }: { user: User }) {
         performAction(id, { action: "set_flags", seen: !message.seen });
         break;
       case "toggleStar":
-        performAction(id, { action: "set_flags", flagged: !message.flagged });
+        // 付けるときは最新の 1 通に、外すときは会話のすべてから外す。
+        performAction(message.flagged ? id : [message.id], {
+          action: "set_flags",
+          flagged: !message.flagged,
+        });
         break;
       case "archive":
         performAction(id, { action: "move", destination: "archive" });
@@ -719,8 +823,6 @@ export function MailApp({ user }: { user: User }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
-  const selectedMessage =
-    messages?.find((message) => message.id === selectedMessageId) ?? null;
 
   return (
     // 高さは画面に固定し、一覧と本文をそれぞれの枠の中でスクロールさせる。
@@ -759,8 +861,14 @@ export function MailApp({ user }: { user: User }) {
             setSidebarOpen(false);
             setDeleteTarget(account);
           }}
+          onEditSignature={(account) => {
+            setSidebarOpen(false);
+            setSignatureTarget(account);
+          }}
           onReauth={(account) => {
-            startMicrosoftLogin(account.id)
+            const provider = oauthProviderOf(account);
+            if (!provider) return;
+            startOAuthLogin(provider, account.id)
               .then((url) => window.location.assign(url))
               .catch(() => {
                 // 失敗してもサイドバーの表示はそのままなので、もう一度押せる。
@@ -781,29 +889,63 @@ export function MailApp({ user }: { user: User }) {
             selectedMessageId ? "hidden" : "flex",
           )}
         >
-          <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="メニューを開く"
-              aria-controls="mail-sidebar"
-              aria-expanded={sidebarOpen}
-              onClick={() => setSidebarOpen(true)}
-              className="-ml-2 md:hidden"
-            >
-              <MenuIcon />
-            </Button>
-            <h1 className="min-w-0 truncate font-semibold text-lg">{title}</h1>
-            <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-              {subtitle}
-            </p>
-            {!noAccounts && accounts !== null && (
-              <Button size="sm" onClick={handleNewMail}>
-                <PenLineIcon />
-                {draft ? "下書きを開く" : "作成"}
+          {selecting ? (
+            <SelectionToolbar
+              rows={checkedRows}
+              total={messages?.length ?? 0}
+              mailbox={selectedMailbox}
+              moveRequest={bulkMoveRequest}
+              onAction={performBulk}
+              onSelectAll={(checked) =>
+                setCheckedIds(
+                  new Set(
+                    checked
+                      ? (messages ?? []).map((message) => message.id)
+                      : [],
+                  ),
+                )
+              }
+              onClose={clearSelection}
+            />
+          ) : (
+            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="メニューを開く"
+                aria-controls="mail-sidebar"
+                aria-expanded={sidebarOpen}
+                onClick={() => setSidebarOpen(true)}
+                className="-ml-2 md:hidden"
+              >
+                <MenuIcon />
               </Button>
-            )}
-          </header>
+              <h1 className="min-w-0 truncate font-semibold text-lg">
+                {title}
+              </h1>
+              <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+                {subtitle}
+              </p>
+              {!noAccounts && accounts !== null && (
+                <Button size="sm" onClick={handleNewMail}>
+                  <PenLineIcon />
+                  {draft ? "下書きを開く" : "作成"}
+                </Button>
+              )}
+              {(messages?.length ?? 0) > 0 && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="メールを選択"
+                  title="メールを選択 (X)"
+                  onClick={() => setSelectMode(true)}
+                  className="-mr-2"
+                >
+                  <ListChecksIcon />
+                </Button>
+              )}
+            </header>
+          )}
           <OutgoingList
             outgoing={outgoing}
             onEdit={handleEditOutgoing}
@@ -835,7 +977,10 @@ export function MailApp({ user }: { user: User }) {
               <MessageList
                 messages={messages}
                 error={listError}
-                selectedId={selectedMessageId}
+                selectedId={selectedMessage?.id ?? selectedMessageId}
+                checkedIds={checkedIds}
+                selecting={selecting}
+                onToggleCheck={handleToggleCheck}
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
                 showRecipients={showsRecipients(selectedMailbox)}
@@ -933,6 +1078,18 @@ export function MailApp({ user }: { user: User }) {
           onDismiss={handleDismissFailures}
         />
       </ToastRegion>
+      <SignatureDialog
+        account={signatureTarget}
+        onClose={() => setSignatureTarget(null)}
+        onSaved={(account) =>
+          setAccounts(
+            (current) =>
+              current?.map((item) =>
+                item.id === account.id ? account : item,
+              ) ?? null,
+          )
+        }
+      />
       <DeleteAccountDialog
         account={deleteTarget}
         onClose={() => setDeleteTarget(null)}

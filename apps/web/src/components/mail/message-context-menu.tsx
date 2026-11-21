@@ -37,7 +37,9 @@ export function MessageMenuItems({
     mailboxes,
     message.mailboxId,
   );
-  const act = (input: MessageActionInput) => onAction([message.id], input);
+  // 一覧の 1 行は会話 1 つなので、会話のうちこのフォルダにある分をまとめて操作する。
+  const act = (input: MessageActionInput) =>
+    onAction(message.threadMessageIds, input);
 
   return (
     <>

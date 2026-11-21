@@ -27,6 +27,7 @@ export type AppOptions = {
   encryptionKey: Buffer;
   allowPrivateMailHosts: boolean;
   microsoft: RouteDeps["microsoft"];
+  google: RouteDeps["google"];
   webPushPublicKey: string | null;
 };
 
@@ -38,6 +39,7 @@ export function createApp({
   encryptionKey,
   allowPrivateMailHosts,
   microsoft,
+  google,
   webPushPublicKey,
 }: AppOptions) {
   const app = new Hono();
@@ -89,6 +91,7 @@ export function createApp({
     encryptionKey,
     allowPrivateMailHosts,
     microsoft,
+    google,
     webPushPublicKey,
   };
   authed.route("/accounts", accountRoutes(deps));

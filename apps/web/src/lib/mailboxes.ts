@@ -131,7 +131,14 @@ export function actionTargets(
   currentMailboxId: string | null,
 ) {
   const current = mailboxes.find((mailbox) => mailbox.id === currentMailboxId);
-  const archive = mailboxes.find((mailbox) => mailbox.specialUse === "archive");
+  // Gmail にはアーカイブ用のフォルダが無く、受信トレイから外したメールは
+  // 「すべてのメール」に残る。アーカイブ先が無ければ、それをアーカイブ先にする。
+  const archive =
+    mailboxes.find((mailbox) => mailbox.specialUse === "archive") ??
+    // 受信トレイから外す操作なので、ほかのラベルを開いているときは出さない。
+    (!current || current.specialUse === "inbox"
+      ? mailboxes.find((mailbox) => mailbox.specialUse === "all")
+      : undefined);
   const trash = mailboxes.find((mailbox) => mailbox.specialUse === "trash");
   return {
     /** アーカイブ先。無いか、すでにそこにあるなら null。 */
