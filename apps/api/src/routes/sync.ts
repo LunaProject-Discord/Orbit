@@ -45,7 +45,10 @@ export function syncRoutes({
     });
   });
 
-  /** 変更があったことを SSE で知らせる。内容は GET /v1/sync で取得する。 */
+  /**
+   * 変更があったこと (change) と新着メール (mail) を SSE で知らせる。
+   * 変更の内容は GET /v1/sync で取得する。mail には通知に出す内容が入っている。
+   */
   app.get("/events", (c) => {
     const userId = c.var.user.id;
     return streamSSE(c, async (stream) => {
@@ -58,9 +61,10 @@ export function syncRoutes({
         data: JSON.stringify({ seq: (row?.seq ?? 0n).toString() }),
       });
 
-      const unsubscribe = hub.subscribe(userId, (seq) => {
+      const unsubscribe = hub.subscribe(userId, (event) => {
+        const { type, ...data } = event;
         stream
-          .writeSSE({ event: "change", data: JSON.stringify({ seq }) })
+          .writeSSE({ event: type, data: JSON.stringify(data) })
           .catch(() => {});
       });
       await new Promise<void>((resolve) => {

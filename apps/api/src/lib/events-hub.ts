@@ -3,15 +3,24 @@ import {
   type AttachmentReadyNotification,
   CHANNEL_ATTACHMENT_READY,
   CHANNEL_CHANGES,
+  CHANNEL_NEW_MAIL,
   type ChangeNotification,
+  type NewMailNotification,
+  type PushMessage,
+  toPushMessages,
 } from "@mail/core";
 import pg from "pg";
 
-type Listener = (seq: string) => void;
+/** 端末へ伝える内容。change は変更があったこと、mail は新着メールの通知。 */
+export type HubEvent =
+  | { type: "change"; seq: string }
+  | { type: "mail"; notifications: PushMessage[] };
+
+type Listener = (event: HubEvent) => void;
 type AttachmentWaiter = (error: AttachmentFetchError | null) => void;
 
 /**
- * 同期ワーカーが NOTIFY で知らせる変更を受け取り、該当する利用者の
+ * 同期ワーカーが NOTIFY で知らせる変更と新着メールを受け取り、該当する利用者の
  * SSE 接続へ配る。LISTEN 用に専用の接続を 1 本持ち、切れたら張り直す。
  * 添付ファイルの取得が終わった知らせも、同じ接続で受け取る。
  */
@@ -48,13 +57,24 @@ export class EventsHub {
         }
         return;
       }
-      if (message.channel !== CHANNEL_CHANGES) return;
       try {
+        if (message.channel === CHANNEL_NEW_MAIL) {
+          const payload = JSON.parse(message.payload) as NewMailNotification;
+          const event: HubEvent = {
+            type: "mail",
+            notifications: toPushMessages(payload),
+          };
+          for (const listener of this.listeners.get(payload.userId) ?? []) {
+            listener(event);
+          }
+          return;
+        }
+        if (message.channel !== CHANNEL_CHANGES) return;
         const { userId, seq } = JSON.parse(
           message.payload,
         ) as ChangeNotification;
         for (const listener of this.listeners.get(userId) ?? []) {
-          listener(seq);
+          listener({ type: "change", seq });
         }
       } catch {
         // 形式の違う通知は無視する。
@@ -70,11 +90,14 @@ export class EventsHub {
     client.on("end", onLost);
     await client.connect();
     await client.query(`LISTEN ${CHANNEL_CHANGES}`);
+    await client.query(`LISTEN ${CHANNEL_NEW_MAIL}`);
     await client.query(`LISTEN ${CHANNEL_ATTACHMENT_READY}`);
     this.client = client;
     // 切れていた間の通知は失われるので、接続中の全端末に再取得を促す。
     for (const listeners of this.listeners.values()) {
-      for (const listener of listeners) listener("resync");
+      for (const listener of listeners) {
+        listener({ type: "change", seq: "resync" });
+      }
     }
   }
 

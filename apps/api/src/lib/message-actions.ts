@@ -53,7 +53,7 @@ export type MessageActionResult =
   | { ok: true; messageIds: string[] }
   | { ok: false; error: "invalid_action" | "mailbox_not_found" };
 
-type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 type Placement = OutboxTarget & {
   accountId: string;
@@ -329,7 +329,7 @@ export async function enqueueMessageAction(
  * 同期しているフォルダのどこにも無くなったメッセージは、本体ごと消す
  * (移動先のフォルダを同期していれば、そちらの同期で改めて取り込まれる)。
  */
-async function removePlacements(
+export async function removePlacements(
   tx: Tx,
   userId: string,
   targets: OutboxTarget[],
@@ -370,7 +370,7 @@ async function removePlacements(
 }
 
 /** 変更履歴に載せ、接続中の端末へ知らせる (同期ワーカーの recordChanges と同じ)。 */
-async function recordChanges(
+export async function recordChanges(
   tx: Tx,
   userId: string,
   op: "upsert" | "delete",

@@ -193,6 +193,8 @@ export type MessageSummary = {
    * 一覧の 1 行は会話 1 つを表し、既読やスターはこれらをまとめた値、操作もこれらが対象になる。
    */
   threadMessageIds: string[];
+  /** 下書きフォルダにある、このアプリの下書きの控えなら、その下書きの ID。 */
+  draftId?: string | null;
 };
 
 /** 会話 (スレッド) に含まれるメッセージ 1 通分。本文は含まない。 */
@@ -336,6 +338,76 @@ export type OutgoingMail = {
   text: string;
   html: string | null;
   attachments: UploadedAttachment[];
+};
+
+/**
+ * メールサーバーへ反映できなかった操作 (既読、スター、移動、削除、送信したメールの控えの保存)。
+ * 画面には先に反映していたので、サーバーの状態に戻したうえで知らせる。
+ */
+export type FailedOperation = {
+  id: string;
+  accountId: string;
+  kind: "set_flags" | "move" | "delete" | "append";
+  /** 対象のメールの数。 */
+  count: number;
+  /** set_flags で変えようとした内容。変えなかった項目は null。 */
+  seen: boolean | null;
+  flagged: boolean | null;
+  answered: boolean | null;
+  /** move の移動先のフォルダ。 */
+  destinationMailboxId: string | null;
+  /** メールサーバーなどから返った失敗の理由。 */
+  error: string | null;
+  createdAt: string;
+  failedAt: string;
+};
+
+/** 端末に出す通知 1 件分 (新着メール)。 */
+export type MailNotification = {
+  title: string;
+  body: string;
+  /** 同じ値の通知は置き換わる。 */
+  tag: string;
+  /** 押したときに開くメール。まとめた通知では null。 */
+  messageId: string | null;
+};
+
+/** 宛先の欄 1 つ分。確定した宛先と、入力途中の文字列。 */
+export type RecipientField = { list: Address[]; text: string };
+
+/** サーバーに保存してある下書き。どの端末からも続きを書ける。 */
+export type ServerDraft = {
+  /** 端末が決めた ID。送信するときの idempotencyKey にもなる。 */
+  id: string;
+  accountId: string;
+  to: RecipientField;
+  cc: RecipientField;
+  bcc: RecipientField;
+  subject: string;
+  html: string;
+  /** 本文の冒頭 (一覧用)。 */
+  snippet: string;
+  attachments: UploadedAttachment[];
+  mode: "new" | "reply" | "forward";
+  sourceMessageId: string | null;
+  /** 保存のたびに増える番号。 */
+  revision: number;
+  updatedAt: string;
+};
+
+export type SaveDraftInput = {
+  accountId: string;
+  to: RecipientField;
+  cc: RecipientField;
+  bcc: RecipientField;
+  subject: string;
+  html: string;
+  text: string;
+  attachmentIds: string[];
+  mode: "new" | "reply" | "forward";
+  sourceMessageId: string | null;
+  /** この端末が元にした revision。まだサーバーに保存していなければ null。 */
+  baseRevision: number | null;
 };
 
 export type MessagePage = {
@@ -646,6 +718,83 @@ export async function listOutgoing(
 /** 送信待ちのメールを取り消す、または失敗したメールを一覧から消す。 */
 export async function deleteOutgoing(id: string): Promise<void> {
   await apiFetch(`/v1/messages/outgoing/${id}`, { method: "DELETE" });
+}
+
+export async function listFailures(
+  signal?: AbortSignal,
+): Promise<FailedOperation[]> {
+  const { failures } = await apiJson<{ failures: FailedOperation[] }>(
+    "/v1/messages/failures",
+    { signal },
+  );
+  return failures;
+}
+
+/**
+ * 失敗した操作を、もう一度メールサーバーへ反映する。
+ * 対象のメールがもう無ければ、ApiError (status 410) で失敗する。
+ */
+export async function retryFailure(id: string): Promise<void> {
+  await apiFetch(`/v1/messages/failures/${id}/retry`, { method: "POST" });
+}
+
+/** 失敗した操作を、やり直さずに一覧から消す。 */
+export async function dismissFailure(id: string): Promise<void> {
+  await apiFetch(`/v1/messages/failures/${id}`, { method: "DELETE" });
+}
+
+/** Web Push の公開鍵。null なら、サーバーは Web Push を送らない。 */
+export async function getPushPublicKey(): Promise<string | null> {
+  const { publicKey } = await apiJson<{ publicKey: string | null }>(
+    "/v1/push/config",
+  );
+  return publicKey;
+}
+
+/** このブラウザーを、新着メールの通知 (Web Push) の送り先として登録する。 */
+export async function savePushSubscription(subscription: {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}): Promise<void> {
+  await apiFetch("/v1/push/subscriptions", {
+    method: "POST",
+    body: subscription,
+  });
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  await apiFetch("/v1/push/subscriptions", {
+    method: "DELETE",
+    body: { endpoint },
+    handle401: false,
+  });
+}
+
+export async function listDrafts(signal?: AbortSignal): Promise<ServerDraft[]> {
+  const { drafts } = await apiJson<{ drafts: ServerDraft[] }>("/v1/drafts", {
+    signal,
+  });
+  return drafts;
+}
+
+/**
+ * 下書きを保存する (無ければ作る)。他の端末が先に書き換えていたら 409、
+ * 他の端末で送信・破棄されていたら 410 の ApiError になる。
+ */
+export async function saveDraft(
+  id: string,
+  input: SaveDraftInput,
+): Promise<ServerDraft> {
+  const { draft } = await apiJson<{ draft: ServerDraft }>(`/v1/drafts/${id}`, {
+    method: "PUT",
+    body: input,
+  });
+  return draft;
+}
+
+/** 下書きを破棄する。付けていたファイルもサーバーから消える。 */
+export async function deleteDraft(id: string): Promise<void> {
+  await apiFetch(`/v1/drafts/${id}`, { method: "DELETE" });
 }
 
 /**

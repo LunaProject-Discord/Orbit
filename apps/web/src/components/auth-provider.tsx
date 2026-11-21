@@ -20,6 +20,7 @@ import {
   onUnauthorized,
   type User,
 } from "@/lib/api";
+import { releasePush } from "@/lib/notifications";
 
 type AuthState =
   | { status: "loading"; user: null }
@@ -71,9 +72,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const controller = new AbortController();
     void check(controller.signal);
-    const unsubscribe = onUnauthorized(() =>
-      setState({ status: "signed-out", user: null }),
-    );
+    const unsubscribe = onUnauthorized(() => {
+      // セッションが切れた端末に、新着メールの通知が届き続けないようにする。
+      void releasePush(false);
+      setState({ status: "signed-out", user: null });
+    });
     return () => {
       controller.abort();
       unsubscribe();
@@ -89,6 +92,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setState({ status: "signed-in", user });
       },
       signOut: async () => {
+        // ログアウトした端末に新着メールの通知が届かないよう、先に送り先を消す。
+        await releasePush(true);
         await apiSignOut();
         setState({ status: "signed-out", user: null });
       },

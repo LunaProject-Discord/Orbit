@@ -30,6 +30,18 @@ export async function recordChanges(
   );
 }
 
+/**
+ * アカウントに属するもの (送信待ちのメール、下書き) が変わったことを、
+ * 利用者の端末へ知らせる。NOTIFY はコミット時に届く。
+ */
+export async function notifyAccountChanged(
+  tx: Tx,
+  userId: string,
+  accountId: string,
+) {
+  await recordChanges(tx, userId, "account", [accountId]);
+}
+
 /** 並び替えの依頼。ids は上から順に並べたい ID (重複は不可)。 */
 export function isDistinct(ids: string[]): boolean {
   return new Set(ids).size === ids.length;

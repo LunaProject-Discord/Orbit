@@ -37,6 +37,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { NotificationToggle } from "@/components/mail/notification-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -53,6 +54,7 @@ import {
   moveBy,
   moveTo,
 } from "@/lib/mailboxes";
+import type { NotificationStatus } from "@/lib/notifications";
 
 const statusLabel: Partial<Record<Account["status"], string>> = {
   auth_required: "再ログインが必要です",
@@ -186,6 +188,11 @@ type Props = {
   onReorderAccounts: (ids: string[]) => void;
   /** 同じ親を持つフォルダを並び替えた。ids は新しい表示順。 */
   onReorderMailboxes: (ids: string[]) => void;
+  /** サーバーに保存してある下書きの数 (全アカウント分)。 */
+  draftCount: number;
+  /** 下書きの一覧を表示している。その間はフォルダを選択中として扱わない。 */
+  draftsSelected: boolean;
+  onSelectDrafts: () => void;
   onAdd: () => void;
   onDelete: (account: Account) => void;
   /** アカウントの署名を編集する。 */
@@ -193,6 +200,10 @@ type Props = {
   /** 再ログインが必要な Google / Microsoft のアカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
   onSignOut: () => void;
+  /** 新着メールの通知の状態と、その切り替え。 */
+  notificationStatus: NotificationStatus;
+  notificationBusy: boolean;
+  onNotificationChange: (enabled: boolean) => void;
 };
 
 export function AccountSidebar({
@@ -204,11 +215,17 @@ export function AccountSidebar({
   onSelect,
   onReorderAccounts,
   onReorderMailboxes,
+  draftCount,
+  draftsSelected,
+  onSelectDrafts,
   onAdd,
   onDelete,
   onEditSignature,
   onReauth,
   onSignOut,
+  notificationStatus,
+  notificationBusy,
+  onNotificationChange,
 }: Props) {
   const { collapsed, toggle } = useCollapsed();
   const trees = useMemo(() => {
@@ -294,8 +311,16 @@ export function AccountSidebar({
           icon={<InboxIcon />}
           label="すべての受信トレイ"
           count={inboxUnread}
-          selected={selectedAccountId === null}
+          selected={!draftsSelected && selectedAccountId === null}
           onClick={() => onSelect(null, null)}
+        />
+        <SidebarItem
+          icon={<FilePenLineIcon />}
+          label="下書き"
+          count={draftCount}
+          countLabel="件数"
+          selected={draftsSelected}
+          onClick={onSelectDrafts}
         />
         {accounts === null ? (
           <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
@@ -328,7 +353,7 @@ export function AccountSidebar({
                   tree={trees.get(account.id) ?? []}
                   collapsed={collapsed}
                   onToggle={toggle}
-                  selected={selectedAccountId === account.id}
+                  selected={!draftsSelected && selectedAccountId === account.id}
                   selectedMailboxId={selectedMailboxId}
                   onSelect={onSelect}
                   onMove={move}
@@ -359,6 +384,11 @@ export function AccountSidebar({
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
         </div>
+        <NotificationToggle
+          status={notificationStatus}
+          busy={notificationBusy}
+          onChange={onNotificationChange}
+        />
         <ThemeToggle />
         <Button
           variant="outline"
@@ -549,11 +579,17 @@ function ToggleButton(props: {
   );
 }
 
-function UnreadCount({ count }: { count: number }) {
+function UnreadCount({
+  count,
+  label = "未読",
+}: {
+  count: number;
+  label?: string | undefined;
+}) {
   if (count <= 0) return null;
   return (
     <span className="shrink-0 font-medium text-muted-foreground text-xs tabular-nums">
-      <span className="sr-only">未読 </span>
+      <span className="sr-only">{label} </span>
       {count > 9999 ? "9999+" : count}
     </span>
   );
@@ -659,6 +695,8 @@ function SidebarItem(props: {
   problem?: string | undefined;
   /** 未読数。0 なら表示しない。 */
   count?: number;
+  /** 数が未読数でないときの、読み上げ用の説明。 */
+  countLabel?: string;
   selected: boolean;
   onClick: () => void;
   className?: string;
@@ -693,7 +731,9 @@ function SidebarItem(props: {
           </span>
         )}
       </span>
-      {props.count !== undefined && <UnreadCount count={props.count} />}
+      {props.count !== undefined && (
+        <UnreadCount count={props.count} label={props.countLabel} />
+      )}
     </button>
   );
 }
