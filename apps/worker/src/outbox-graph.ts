@@ -14,6 +14,8 @@ export async function applyGraphOperation(
   operation: OutboxOperation,
   signal?: AbortSignal,
 ): Promise<OutboxResult> {
+  // 送信済みアイテムへの保存は Graph が自動で行うので、この操作は積まれない。
+  if (operation.kind === "append") return { ok: true };
   const ids = [
     ...new Set(
       operation.payload.targets.flatMap(
@@ -52,7 +54,7 @@ export async function applyGraphOperation(
 
 function run(
   client: GraphClient,
-  operation: OutboxOperation,
+  operation: Exclude<OutboxOperation, { kind: "append" }>,
   id: string,
   signal?: AbortSignal,
 ): Promise<unknown> {
@@ -60,6 +62,10 @@ function run(
   switch (operation.kind) {
     case "set_flags": {
       const { seen, flagged } = operation.payload;
+      // 返信済みの印だけの変更は、Graph には書き込む先が無い。
+      if (seen === undefined && flagged === undefined) {
+        return Promise.resolve();
+      }
       return client.request(
         "PATCH",
         path,

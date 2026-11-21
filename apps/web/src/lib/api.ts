@@ -253,6 +253,52 @@ export type MessageAction = { idempotencyKey: string; messageIds: string[] } & (
   | { action: "delete" }
 );
 
+/** 送信するメール。idempotencyKey は送信ごとに作る一意な ID (再送しても二重に送られない)。 */
+export type SendMailInput = {
+  idempotencyKey: string;
+  accountId: string;
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  text: string;
+  /** 書式付きの本文。 */
+  html?: string;
+  /** uploadAttachment で受け取ってもらったファイルの ID。 */
+  attachmentIds?: string[];
+  mode: "new" | "reply" | "forward";
+  /** 返信・転送の元になったメッセージ。 */
+  sourceMessageId?: string;
+};
+
+/** サーバーに受け取ってもらった、送信用の添付ファイル。 */
+export type UploadedAttachment = {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+};
+
+/** まだ送り終えていないメール (送信待ち、送信中、失敗)。 */
+export type OutgoingMail = {
+  id: string;
+  accountId: string;
+  status: "pending" | "processing" | "failed";
+  attempts: number;
+  /** 失敗の理由。送信待ちで入っていれば、やり直しを待っている。 */
+  lastError: string | null;
+  createdAt: string;
+  mode: "new" | "reply" | "forward";
+  sourceMessageId: string | null;
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  text: string;
+  html: string | null;
+  attachments: UploadedAttachment[];
+};
+
 export type MessagePage = {
   messages: MessageSummary[];
   nextCursor: string | null;
@@ -411,4 +457,71 @@ export async function sendFocus(
 /** 操作をサーバーへ送る。サーバーはすぐに反映して応答し、メールサーバーへは後から反映する。 */
 export async function sendMessageAction(action: MessageAction): Promise<void> {
   await apiFetch("/v1/messages/actions", { method: "POST", body: action });
+}
+
+/**
+ * メールを送信する。サーバーは受け付けるとすぐに応答し、実際の送信は後から行う。
+ * 送信の結果は listOutgoing で確かめる (送り終えたものは一覧から消える)。
+ */
+export async function sendMail(input: SendMailInput): Promise<void> {
+  await apiFetch("/v1/messages/send", { method: "POST", body: input });
+}
+
+export async function listOutgoing(
+  signal?: AbortSignal,
+): Promise<OutgoingMail[]> {
+  const { outgoing } = await apiJson<{ outgoing: OutgoingMail[] }>(
+    "/v1/messages/outgoing",
+    { signal },
+  );
+  return outgoing;
+}
+
+/** 送信待ちのメールを取り消す、または失敗したメールを一覧から消す。 */
+export async function deleteOutgoing(id: string): Promise<void> {
+  await apiFetch(`/v1/messages/outgoing/${id}`, { method: "DELETE" });
+}
+
+/**
+ * 送信するメールに付けるファイルをサーバーへ送る。進み具合 (0〜1) を onProgress で受け取れる。
+ * 戻り値の abort で中止できる (中止すると promise は AbortError で失敗する)。
+ */
+export function uploadAttachment(
+  file: File,
+  onProgress: (ratio: number) => void,
+): { promise: Promise<UploadedAttachment>; abort: () => void } {
+  // fetch では送信の進み具合が分からないので、XMLHttpRequest を使う。
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise<UploadedAttachment>((resolve, reject) => {
+    xhr.open("POST", `${API_URL}/v1/attachments`);
+    const token = getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader(
+      "Content-Type",
+      file.type || "application/octet-stream",
+    );
+    xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name));
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    };
+    xhr.onerror = () => reject(new NetworkError());
+    xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
+    xhr.onload = () => {
+      const data: unknown = xhr.response;
+      if (xhr.status === 401) handleUnauthorized();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve((data as { attachment: UploadedAttachment }).attachment);
+      } else {
+        reject(new ApiError(xhr.status, errorCodeOf(data), data));
+      }
+    };
+    xhr.send(file);
+  });
+  return { promise, abort: () => xhr.abort() };
+}
+
+/** 作成画面で外した添付ファイルを、サーバーからも消す。 */
+export async function deleteAttachment(id: string): Promise<void> {
+  await apiFetch(`/v1/attachments/${id}`, { method: "DELETE" });
 }

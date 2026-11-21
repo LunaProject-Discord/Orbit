@@ -34,6 +34,9 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
     row.imapHost,
     row.imapPort,
     row.imapSecure,
+    row.smtpHost,
+    row.smtpPort,
+    row.smtpSecure,
     row.username,
     row.credentialsEncrypted,
   ].join("\n");
@@ -61,6 +64,8 @@ export class AccountManager {
     private readonly microsoft: MicrosoftOAuthConfig | null,
     /** Microsoft Graph の変更通知 (Webhook) の受け口。公開された HTTPS の URL が無ければ null。 */
     private readonly graphWebhookBaseUrl: string | null = null,
+    /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
+    private readonly allowInsecureSmtp = false,
   ) {}
 
   async start() {
@@ -163,7 +168,12 @@ export class AccountManager {
               this.microsoft,
               this.graphWebhookBaseUrl,
             )
-          : new AccountSync(this.db, this.encryptionKey, row);
+          : new AccountSync(
+              this.db,
+              this.encryptionKey,
+              row,
+              this.allowInsecureSmtp,
+            );
       const entry = { sync };
       this.running.set(row.id, entry);
       sync.run().finally(() => {

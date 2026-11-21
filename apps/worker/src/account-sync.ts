@@ -21,6 +21,8 @@ import {
 } from "./mailbox-sync.js";
 import { processOutbox } from "./outbox.js";
 import { applyImapOperation } from "./outbox-imap.js";
+import { processSends, type SendOutcome } from "./send.js";
+import { sendViaSmtp } from "./send-smtp.js";
 
 const INBOX = "INBOX";
 const MIN_BACKOFF_MS = 5_000;
@@ -92,11 +94,14 @@ export class AccountSync {
   private readonly watcher: FolderWatcher;
   private wake: (() => void) | null = null;
   private backoff = MIN_BACKOFF_MS;
+  private sending: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly db: Database,
     private readonly encryptionKey: Buffer,
     readonly account: AccountRow,
+    /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
+    private readonly allowInsecureSmtp = false,
   ) {
     this.watcher = new FolderWatcher(
       () => this.createClient(),
@@ -199,6 +204,64 @@ export class AccountSync {
   /** 送信待ちキューに操作が積まれた。すぐに反映する。 */
   notifyOutbox() {
     this.requestSync();
+    this.flushSends();
+  }
+
+  /**
+   * 送信待ちのメールを SMTP で送る。IMAP の接続とは別なので、同期が止まっていても送れる。
+   * 同時には 1 回だけ走らせる。
+   */
+  private flushSends() {
+    this.sending = this.sending
+      .then(async () => {
+        if (this.stopped) return;
+        const result = await processSends(
+          this.db,
+          this.account,
+          (message) => this.sendMessage(message),
+          (message) => this.log(message),
+        );
+        if (result.sent > 0) this.log(`メールを ${result.sent} 通送信しました`);
+        // 送信済みフォルダへの保存などを、同期の接続で反映させる。
+        if (result.queued) this.requestSync();
+      })
+      .catch((error) =>
+        this.log("送信待ちのメールを処理できませんでした", error),
+      );
+  }
+
+  private async sendMessage(
+    message: Parameters<typeof sendViaSmtp>[1],
+  ): Promise<SendOutcome> {
+    const { smtpHost, smtpPort } = this.account;
+    if (!smtpHost || !smtpPort) {
+      return {
+        status: "failed",
+        reason: "SMTP サーバーが設定されていません。",
+      };
+    }
+    const credentials = decryptCredentials(
+      this.account.credentialsEncrypted,
+      this.encryptionKey,
+      this.account.userId,
+    );
+    if (credentials.type !== "password") {
+      return {
+        status: "failed",
+        reason: "SMTP の OAuth2 にはまだ対応していません。",
+      };
+    }
+    return sendViaSmtp(
+      {
+        host: smtpHost,
+        port: smtpPort,
+        secure: this.account.smtpSecure,
+        username: this.account.username,
+        password: credentials.password,
+        allowInsecure: this.allowInsecureSmtp,
+      },
+      message,
+    );
   }
 
   private requestSync() {

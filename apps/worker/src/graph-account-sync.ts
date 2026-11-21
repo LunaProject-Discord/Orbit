@@ -27,6 +27,8 @@ import {
 import { syncPriority } from "./mailbox-list.js";
 import { processOutbox } from "./outbox.js";
 import { applyGraphOperation } from "./outbox-graph.js";
+import { processSends } from "./send.js";
+import { sendViaGraph } from "./send-graph.js";
 
 const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
@@ -104,6 +106,7 @@ export class GraphAccountSync {
   private pushRecreate = false;
   private pushRetryAt = 0;
   private pushRenewedAt = 0;
+  private sending: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly db: Database,
@@ -159,6 +162,7 @@ export class GraphAccountSync {
   /** 送信待ちキューに操作が積まれた。次の確認を待たずに、すぐに反映する。 */
   notifyOutbox() {
     this.requestWake();
+    this.flushSends();
   }
 
   /** 利用者が画面を開いている。mailboxId は開いているフォルダ (受信トレイなら null)。 */
@@ -188,6 +192,30 @@ export class GraphAccountSync {
   private requestWake() {
     this.wakeRequested = true;
     this.wake?.();
+  }
+
+  /** 送信待ちのメールを送る。同期の周期とは別に、同時には 1 回だけ走らせる。 */
+  private flushSends() {
+    this.sending = this.sending
+      .then(async () => {
+        if (this.stopped) return;
+        const client = new GraphClient({
+          getToken: (force) => this.getToken(force),
+          fetchFn: this.fetchFn,
+        });
+        const result = await processSends(
+          this.db,
+          this.account,
+          (message) => sendViaGraph(client, message, this.abort.signal),
+          (message) => this.log(message),
+        );
+        if (result.sent > 0) this.log(`メールを ${result.sent} 通送信しました`);
+      })
+      .catch((error) =>
+        this.log(
+          `送信待ちのメールを処理できませんでした: ${error instanceof Error ? error.message : ""}`,
+        ),
+      );
   }
 
   /**
