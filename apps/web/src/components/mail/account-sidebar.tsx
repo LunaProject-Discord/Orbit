@@ -206,6 +206,8 @@ type Props = {
   /** 再ログインが必要な Google / Microsoft のアカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
   syncStatus: SyncStatus;
+  /** 見出しの左端に置くもの (サイドバーを折りたたむボタン)。 */
+  headerStart?: React.ReactNode;
 };
 
 export function AccountSidebar({
@@ -228,6 +230,7 @@ export function AccountSidebar({
   onAdd,
   onReauth,
   syncStatus,
+  headerStart,
 }: Props) {
   /** フォルダの一覧を表示している (下書きやスター付きなどではない)。 */
   const folderView = !draftsSelected && special === null;
@@ -296,8 +299,9 @@ export function AccountSidebar({
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 shrink-0 items-center justify-between px-4">
-        <span className="font-heading font-semibold text-xl tracking-tight">
+      <div className="flex h-14 shrink-0 items-center gap-2 px-4">
+        {headerStart}
+        <span className="flex-1 font-heading font-semibold text-xl tracking-tight">
           Mail
         </span>
         <Button

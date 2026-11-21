@@ -104,6 +104,8 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --scrollbar-thumb: oklch(0 0 0 / 28%);
+  --scrollbar-thumb-hover: oklch(0 0 0 / 50%);
 }
 
 .dark {
@@ -138,4 +140,53 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --scrollbar-thumb: oklch(1 0 0 / 28%);
+  --scrollbar-thumb-hover: oklch(1 0 0 / 50%);
+}
+
+/*
+ * スクロールバー。ふだんは細い線で表示し、バーにカーソルを乗せたときだけ太くする。
+ * 幅を変えると中身がずれるので、バーの場所 (12px) は常に確保し、つまみの見た目だけを変える。
+ * バーの空いている部分に乗ったことは CSS では分からないため、
+ * components/scrollbar-hover.tsx が data-scrollbar-hover を付けて知らせる。
+ * タッチ操作の端末は、OS の重ねて表示するバーのままにする。
+ */
+@media (hover: hover) and (pointer: fine) {
+  @supports selector(::-webkit-scrollbar) {
+    ::-webkit-scrollbar {
+      width: 12px;
+      height: 12px;
+      background: transparent;
+    }
+    ::-webkit-scrollbar-track,
+    ::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      min-height: 32px;
+      min-width: 32px;
+      border: solid transparent;
+      border-width: 2px 2px 2px 6px;
+      border-radius: 999px;
+      background-color: var(--scrollbar-thumb);
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:horizontal {
+      border-width: 6px 2px 2px;
+    }
+    ::-webkit-scrollbar-thumb:hover,
+    ::-webkit-scrollbar-thumb:active,
+    [data-scrollbar-hover]::-webkit-scrollbar-thumb {
+      border-width: 2px;
+      background-color: var(--scrollbar-thumb-hover);
+    }
+  }
+
+  /* Firefox はつまみの太さを細かく指定できないので、常に細いバーにする。 */
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--scrollbar-thumb) transparent;
+    }
+  }
 }
