@@ -3,12 +3,20 @@ import {
   CHANNEL_ACCOUNTS,
   CHANNEL_CHANGES,
   type ChangeNotification,
+  createGoogleAuthorizeUrl,
   createMicrosoftAuthorizeUrl,
   encryptCredentials,
+  exchangeGoogleCode,
   exchangeMicrosoftCode,
+  fetchGoogleEmail,
   fetchMicrosoftProfile,
+  GoogleOAuthError,
+  hasGmailScope,
+  MAIL_PROVIDER_PRESETS,
   MicrosoftOAuthError,
+  openGoogleState,
   openMicrosoftState,
+  providerOfImapHost,
 } from "@mail/core";
 import { changes, mailAccounts, mailboxes } from "@mail/db";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -30,9 +38,13 @@ const createAccountBody = z.object({
   provider: z
     .enum(["gmail", "microsoft", "icloud", "generic"])
     .default("generic"),
-  imap: server,
-  smtp: server,
-  username: z.string().min(1).max(320),
+  /**
+   * 接続先。provider が gmail か icloud なら省略でき、そのサービスの決まった値を使う。
+   * ユーザー名を省略するとメールアドレスを使う。
+   */
+  imap: server.optional(),
+  smtp: server.optional(),
+  username: z.string().min(1).max(320).optional(),
   password: z.string().min(1).max(1024),
 });
 
@@ -40,6 +52,8 @@ const microsoftAuthorizeBody = z.object({
   /** 再ログインするアカウントの ID。ログイン画面にそのメールアドレスを入れておく。 */
   accountId: z.uuid().optional(),
 });
+
+const oauthAuthorizeBody = microsoftAuthorizeBody;
 
 const microsoftCompleteBody = z.object({
   code: z.string().min(1).max(8192),
@@ -79,6 +93,7 @@ export function accountRoutes({
   encryptionKey,
   allowPrivateMailHosts,
   microsoft,
+  google,
 }: RouteDeps) {
   const app = new Hono<AppEnv>();
 
@@ -92,8 +107,30 @@ export function accountRoutes({
   });
 
   app.post("/", zValidator("json", createAccountBody), async (c) => {
-    const body = c.req.valid("json");
+    const input = c.req.valid("json");
     const user = c.var.user;
+
+    const preset =
+      input.provider === "gmail" || input.provider === "icloud"
+        ? MAIL_PROVIDER_PRESETS[input.provider]
+        : null;
+    const imap = input.imap ?? preset?.imap;
+    const smtp = input.smtp ?? preset?.smtp;
+    if (!imap || !smtp) {
+      return c.json({ error: "server_required" }, 400);
+    }
+    // 手動で設定した場合も、接続先が Gmail や iCloud ならそのサービスとして扱う。
+    const provider: typeof input.provider =
+      input.provider === "generic"
+        ? (providerOfImapHost(imap.host) ?? "generic")
+        : input.provider;
+    const body = {
+      ...input,
+      imap,
+      smtp,
+      username: input.username ?? input.email,
+      provider,
+    };
 
     if (!allowPrivateMailHosts) {
       for (const host of [body.imap.host, body.smtp.host]) {
@@ -297,6 +334,177 @@ export function accountRoutes({
                 protocol: "graph",
                 username: profile.email,
                 credentialsEncrypted,
+              })
+              .onConflictDoNothing()
+              .returning(publicColumns);
+        if (!row) return null;
+        await tx.insert(changes).values({
+          userId: user.id,
+          entity: "account",
+          entityId: row.id,
+          op: "upsert",
+        });
+        await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${row.id})`);
+        return { account: row, created: !existing };
+      });
+      if (!result) {
+        return c.json({ error: "account_exists" }, 409);
+      }
+      return c.json({ account: result.account }, result.created ? 201 : 200);
+    },
+  );
+
+  // Gmail アカウントの追加 (Google でログイン)。流れは Microsoft と同じ。
+  // 受け取ったトークンで、IMAP / SMTP に XOAUTH2 でログインする。
+  app.post(
+    "/google/authorize",
+    zValidator("json", oauthAuthorizeBody),
+    async (c) => {
+      if (!google) {
+        return c.json({ error: "google_not_configured" }, 503);
+      }
+      const { accountId } = c.req.valid("json");
+      const user = c.var.user;
+      let loginHint: string | undefined;
+      if (accountId) {
+        const [row] = await db
+          .select({ email: mailAccounts.email })
+          .from(mailAccounts)
+          .where(
+            and(
+              eq(mailAccounts.id, accountId),
+              eq(mailAccounts.userId, user.id),
+              eq(mailAccounts.provider, "gmail"),
+            ),
+          );
+        if (!row) {
+          return c.json({ error: "not_found" }, 404);
+        }
+        loginHint = row.email;
+      }
+      const url = createGoogleAuthorizeUrl({
+        config: google.config,
+        redirectUri: google.redirectUri,
+        userId: user.id,
+        encryptionKey,
+        loginHint,
+      });
+      return c.json({ url });
+    },
+  );
+
+  app.post(
+    "/google/complete",
+    zValidator("json", microsoftCompleteBody),
+    async (c) => {
+      if (!google) {
+        return c.json({ error: "google_not_configured" }, 503);
+      }
+      const body = c.req.valid("json");
+      const user = c.var.user;
+      const opened = openGoogleState({
+        state: body.state,
+        userId: user.id,
+        encryptionKey,
+      });
+      if (!opened) {
+        return c.json({ error: "invalid_state" }, 400);
+      }
+
+      const preset = MAIL_PROVIDER_PRESETS.gmail;
+      let refreshToken: string;
+      let email: string;
+      try {
+        const tokens = await exchangeGoogleCode(google.config, {
+          code: body.code,
+          verifier: opened.verifier,
+          redirectUri: google.redirectUri,
+        });
+        // 同意画面では権限を個別に外せる。メールの権限が無ければ同期できない。
+        if (!hasGmailScope(tokens.scope)) {
+          return c.json({ error: "scope_missing" }, 422);
+        }
+        if (!tokens.refreshToken) {
+          return c.json({ error: "no_refresh_token" }, 422);
+        }
+        refreshToken = tokens.refreshToken;
+        email = await fetchGoogleEmail(tokens.accessToken);
+        // Google Workspace では管理者が IMAP を止めていることがある。保存する前に確かめる。
+        const verified = await verifyImap({
+          ...preset.imap,
+          username: email,
+          accessToken: tokens.accessToken,
+        });
+        if (!verified.ok) {
+          return c.json(
+            {
+              error:
+                verified.reason === "auth_failed"
+                  ? "imap_unavailable"
+                  : "connection_failed",
+              detail: verified.detail,
+            },
+            422,
+          );
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "";
+        console.error("Google のログインを完了できませんでした。", detail);
+        return c.json(
+          {
+            error:
+              error instanceof GoogleOAuthError
+                ? "oauth_failed"
+                : "connection_failed",
+            detail,
+          },
+          422,
+        );
+      }
+
+      const settings = {
+        authType: "oauth2" as const,
+        imapHost: preset.imap.host,
+        imapPort: preset.imap.port,
+        imapSecure: preset.imap.secure,
+        smtpHost: preset.smtp.host,
+        smtpPort: preset.smtp.port,
+        smtpSecure: preset.smtp.secure,
+        username: email,
+        credentialsEncrypted: encryptCredentials(
+          { type: "oauth2", refreshToken },
+          encryptionKey,
+          user.id,
+        ),
+      };
+      const result = await db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select({ id: mailAccounts.id, provider: mailAccounts.provider })
+          .from(mailAccounts)
+          .where(
+            and(
+              eq(mailAccounts.userId, user.id),
+              sql`lower(${mailAccounts.email}) = ${email.toLowerCase()}`,
+            ),
+          );
+        // 同じアドレスを Gmail 以外の設定で追加済みなら、二重に取り込まないよう断る。
+        if (existing && existing.provider !== "gmail") return null;
+
+        // 追加済みの Gmail アカウントなら再ログイン (アプリ パスワードからの切り替えも含む)。
+        // 認証情報を入れ替えて同期を再開する。
+        const [row] = existing
+          ? await tx
+              .update(mailAccounts)
+              .set({ ...settings, status: "active", lastError: null })
+              .where(eq(mailAccounts.id, existing.id))
+              .returning(publicColumns)
+          : await tx
+              .insert(mailAccounts)
+              .values({
+                ...settings,
+                userId: user.id,
+                email,
+                provider: "gmail",
               })
               .onConflictDoNothing()
               .returning(publicColumns);
