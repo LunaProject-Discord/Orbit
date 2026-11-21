@@ -1,4 +1,4 @@
-# ローカル開発用。本番 (OCI) 用の構成は別途追加する。
+# ローカル開発用。本番 (Oracle Cloud) 用の構成は deploy/compose.yml。
 services:
   postgres:
     image: postgres:19

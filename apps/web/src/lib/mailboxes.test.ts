@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MailboxSummary } from "@/lib/api";
-import { buildMailboxTree, mailboxLabel } from "@/lib/mailboxes";
+import { actionTargets, buildMailboxTree, mailboxLabel } from "@/lib/mailboxes";
 
 function mailbox(
   id: string,
@@ -72,5 +72,28 @@ describe("mailboxLabel", () => {
     expect(mailboxLabel(mailbox("x", { name: "プロジェクト" }))).toBe(
       "プロジェクト",
     );
+  });
+});
+
+describe("actionTargets", () => {
+  const gmail = [
+    mailbox("inbox", { specialUse: "inbox" }),
+    mailbox("all", { specialUse: "all" }),
+    mailbox("label"),
+  ];
+
+  it("アーカイブ用のフォルダが無い Gmail では「すべてのメール」をアーカイブ先にする", () => {
+    expect(actionTargets(gmail, "inbox").archive?.id).toBe("all");
+    expect(actionTargets(gmail, null).archive?.id).toBe("all");
+  });
+
+  it("受信トレイ以外を開いているときは「すべてのメール」へのアーカイブを出さない", () => {
+    expect(actionTargets(gmail, "label").archive).toBeNull();
+    expect(actionTargets(gmail, "all").archive).toBeNull();
+  });
+
+  it("アーカイブ用のフォルダがあればそれを使う", () => {
+    const mailboxes = [...gmail, mailbox("archive", { specialUse: "archive" })];
+    expect(actionTargets(mailboxes, "label").archive?.id).toBe("archive");
   });
 });

@@ -3,6 +3,7 @@ import {
   attachmentsDir,
   graphWebhookBaseUrl,
   loadEncryptionKey,
+  loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   sweepAttachments,
 } from "@mail/core";
@@ -25,6 +26,7 @@ const manager = new AccountManager(
   graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
   // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
   process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
+  loadGoogleOAuthConfig(process.env),
 );
 await manager.start();
 console.log(

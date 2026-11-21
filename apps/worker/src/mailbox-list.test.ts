@@ -48,6 +48,26 @@ describe("toListedMailboxes", () => {
     ]);
   });
 
+  it("Gmail の「スター付き」と「重要」は同期せず、「すべてのメール」は同期する", () => {
+    const listed = toListedMailboxes([
+      entry("INBOX"),
+      entry("[Gmail]", { flags: ["\\Noselect", "\\HasChildren"] }),
+      entry("[Gmail]/All Mail", { specialUse: "\\All" }),
+      entry("[Gmail]/Starred", { specialUse: "\\Flagged" }),
+      entry("[Gmail]/Important", {
+        flags: ["\\HasNoChildren", "\\Important"],
+      }),
+      entry("[Gmail]/Trash", { specialUse: "\\Trash" }),
+      entry("仕事"),
+    ]);
+    expect(listed.map((item) => [item.path, item.specialUse])).toEqual([
+      ["INBOX", "inbox"],
+      ["[Gmail]/All Mail", "all"],
+      ["[Gmail]/Trash", "trash"],
+      ["仕事", null],
+    ]);
+  });
+
   it("メールを入れられない入れ物は除き、その下のフォルダは上の階層に付ける", () => {
     const listed = toListedMailboxes([
       entry("INBOX"),
