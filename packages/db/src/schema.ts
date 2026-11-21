@@ -208,6 +208,8 @@ export const mailAccounts = pgTable(
     pushExpiresAt: timestamp({ withTimezone: true }),
     /** このアカウントから送るメールの署名 (書式付き)。無ければ null。 */
     signatureHtml: text(),
+    /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null で、追加した順に並ぶ。 */
+    sortOrder: integer(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -244,6 +246,11 @@ export const mailboxes = pgTable(
     name: text().notNull(),
     delimiter: text(),
     specialUse: mailboxSpecialUse(),
+    /**
+     * 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null で、
+     * 既定の順 (受信トレイなどの役割、次に名前) に並ぶ。メールサーバー側には反映しない。
+     */
+    sortOrder: integer(),
     uidValidity: bigint({ mode: "bigint" }),
     uidNext: bigint({ mode: "bigint" }),
     highestModseq: bigint({ mode: "bigint" }),

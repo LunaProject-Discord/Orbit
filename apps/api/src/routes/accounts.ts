@@ -19,10 +19,11 @@ import {
   providerOfImapHost,
 } from "@mail/core";
 import { changes, mailAccounts, mailboxes } from "@mail/db";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { isDistinct, recordChanges } from "../lib/changes.js";
 import { resolvesToPrivateAddress } from "../lib/host-check.js";
 import { verifyImap } from "../lib/imap-verify.js";
 
@@ -67,6 +68,11 @@ const updateAccountBody = z.object({
   signatureHtml: z.string().max(50_000).nullable(),
 });
 
+const orderBody = z.object({
+  /** 上から順に並べたいアカウントの ID。 */
+  accountIds: z.array(z.uuid()).min(1).max(200).refine(isDistinct),
+});
+
 /** クライアントへ返す形。認証情報は暗号文であっても返さない。 */
 const publicColumns = {
   id: mailAccounts.id,
@@ -85,6 +91,7 @@ const publicColumns = {
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
   signatureHtml: mailAccounts.signatureHtml,
+  sortOrder: mailAccounts.sortOrder,
   createdAt: mailAccounts.createdAt,
 };
 
@@ -102,8 +109,39 @@ export function accountRoutes({
       .select(publicColumns)
       .from(mailAccounts)
       .where(eq(mailAccounts.userId, c.var.user.id))
-      .orderBy(asc(mailAccounts.createdAt));
+      // 並び替えたアカウントをその順に、まだ並び替えていないものは追加した順に後ろへ。
+      .orderBy(asc(mailAccounts.sortOrder), asc(mailAccounts.createdAt));
     return c.json({ accounts: rows });
+  });
+
+  /** サイドバーでのアカウントの並び順を保存する。ほかの端末にも同じ順で表示される。 */
+  app.put("/order", zValidator("json", orderBody), async (c) => {
+    const { accountIds } = c.req.valid("json");
+    const user = c.var.user;
+    const saved = await db.transaction(async (tx) => {
+      const owned = await tx
+        .select({ id: mailAccounts.id })
+        .from(mailAccounts)
+        .where(
+          and(
+            eq(mailAccounts.userId, user.id),
+            inArray(mailAccounts.id, accountIds),
+          ),
+        );
+      if (owned.length !== accountIds.length) return false;
+      for (const [index, id] of accountIds.entries()) {
+        await tx
+          .update(mailAccounts)
+          .set({ sortOrder: index })
+          .where(eq(mailAccounts.id, id));
+      }
+      await recordChanges(tx, user.id, "account", accountIds);
+      return true;
+    });
+    if (!saved) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return c.body(null, 204);
   });
 
   app.post("/", zValidator("json", createAccountBody), async (c) => {

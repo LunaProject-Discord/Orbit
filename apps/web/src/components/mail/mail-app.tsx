@@ -55,7 +55,9 @@ import {
   retryFailure,
   type SearchParams,
   type ServerDraft,
+  saveAccountOrder,
   saveDraft,
+  saveMailboxOrder,
   searchMessages,
   sendFocus,
   startOAuthLogin,
@@ -75,7 +77,12 @@ import {
 } from "@/lib/compose";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { subscribeEvents } from "@/lib/events";
-import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
+import {
+  mailboxLabel,
+  showsRecipients,
+  sortAccounts,
+  withSortOrder,
+} from "@/lib/mailboxes";
 import {
   disableNotifications,
   enableNotifications,
@@ -106,6 +113,7 @@ const emptySearch: SearchParams = {
 };
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
 const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
 const RETRY_ERROR =
   "やり直せませんでした。時間をおいて、もう一度お試しください。";
@@ -282,6 +290,16 @@ export function MailApp({ user }: { user: User }) {
       // 一覧は次の通知や操作でまた取得する。
     }
   }, []);
+
+  /** 並び順の保存は、操作した順に 1 つずつ送る。失敗したらサーバーの順に戻す。 */
+  const orderQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveOrder = (save: () => Promise<void>) => {
+    orderQueueRef.current = orderQueueRef.current.then(save).catch(() => {
+      setNotice({ message: ORDER_ERROR, tone: "error" });
+      void loadAccounts();
+      void loadMailboxes();
+    });
+  };
 
   const loadOutgoing = useCallback(async () => {
     try {
@@ -1108,6 +1126,16 @@ export function MailApp({ user }: { user: User }) {
           selectedAccountId={selectedAccountId}
           selectedMailboxId={selectedMailboxId}
           onSelect={handleSelectFolder}
+          onReorderAccounts={(ids) => {
+            setAccounts(
+              (current) => current && sortAccounts(withSortOrder(current, ids)),
+            );
+            saveOrder(() => saveAccountOrder(ids));
+          }}
+          onReorderMailboxes={(ids) => {
+            setMailboxes((current) => current && withSortOrder(current, ids));
+            saveOrder(() => saveMailboxOrder(ids));
+          }}
           draftCount={drafts?.length ?? 0}
           draftsSelected={draftsSelected}
           onSelectDrafts={handleSelectDrafts}

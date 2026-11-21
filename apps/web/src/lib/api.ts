@@ -148,6 +148,8 @@ export type Account = {
   lastError: string | null;
   /** このアカウントから送るメールの署名 (書式付き)。無ければ null。 */
   signatureHtml: string | null;
+  /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null。 */
+  sortOrder: number | null;
   createdAt: string;
 };
 
@@ -271,6 +273,8 @@ export type Mailbox = {
 /** フォルダ一覧用。全アカウント分をまとめて取得する。 */
 export type MailboxSummary = Mailbox & {
   accountId: string;
+  /** 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null。 */
+  sortOrder: number | null;
   /** 同期が一度終わっていれば、その時刻。 */
   lastSyncedAt: string | null;
   totalCount: number;
@@ -656,6 +660,22 @@ export async function listAllMailboxes(
     { signal },
   );
   return mailboxes;
+}
+
+/** フォルダの並び順を保存する。ids は、同じ親を持つフォルダを上から順に並べたもの。 */
+export async function saveMailboxOrder(mailboxIds: string[]): Promise<void> {
+  await apiFetch("/v1/mailboxes/order", {
+    method: "PUT",
+    body: { mailboxIds },
+  });
+}
+
+/** アカウントの並び順を保存する。 */
+export async function saveAccountOrder(accountIds: string[]): Promise<void> {
+  await apiFetch("/v1/accounts/order", {
+    method: "PUT",
+    body: { accountIds },
+  });
 }
 
 /**
