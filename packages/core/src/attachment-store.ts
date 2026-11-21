@@ -178,11 +178,13 @@ export async function attachmentExists(
 /**
  * 古い添付ファイルを消す。送信し終えたものも、作成画面で選んだまま送らなかったものも、
  * 置いてから maxAgeMs が過ぎたらここで消える。戻り値は消したファイルの数。
+ * keep は残しておく storageKey (下書きに付いているファイルなど)。
  */
 export async function sweepAttachments(
   dir: string,
   maxAgeMs: number,
   now = Date.now(),
+  keep: ReadonlySet<string> = new Set(),
 ): Promise<number> {
   let removed = 0;
   const users = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -190,6 +192,7 @@ export async function sweepAttachments(
     if (!user.isDirectory() || !UUID.test(user.name)) continue;
     const userDir = join(dir, user.name);
     for (const name of await readdir(userDir).catch(() => [])) {
+      if (keep.has(`${user.name}/${name.replace(/\.json$/, "")}`)) continue;
       const path = join(userDir, name);
       const info = await stat(path).catch(() => null);
       if (info?.isFile() && now - info.mtimeMs > maxAgeMs) {

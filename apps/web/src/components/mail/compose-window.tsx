@@ -126,11 +126,22 @@ type Props = {
   accounts: Account[];
   /** 画面の上部に出す案内 (書きかけのメールを開き直したときなど)。 */
   notice: string | null;
-  /** 下書きをこの端末に保存した時刻。 */
+  /** 下書きをサーバーに保存した時刻。 */
   savedAt: Date | null;
-  /** 閉じても下書きは残る (もう一度開くと続きから書ける)。 */
+  /**
+   * 下書きをサーバーに保存できていない理由。offline は通信できず自動でやり直している、
+   * rejected は内容に問題があって受け付けられなかった。
+   */
+  saveProblem: "offline" | "rejected" | null;
+  /** 増えると、本文の入力欄を下書きの内容で作り直す (他の端末での変更を反映するとき)。 */
+  contentVersion: number;
+  /** 閉じても下書きは残る (下書きの一覧から続きを書ける)。 */
   onOpenChange: (open: boolean) => void;
   onChange: (draft: ComposeDraft) => void;
+  /** 送信を始める前に呼ぶ。下書きの保存を止めるのを待ってから送信する。 */
+  onBeforeSend: () => Promise<void>;
+  /** 送信を受け付けてもらえなかった。下書きの保存を再開する。 */
+  onSendFailed: () => void;
   /** 送信を受け付けてもらえた。 */
   onSent: () => void;
   onDiscard: () => void;
@@ -146,8 +157,12 @@ export function ComposeWindow({
   accounts,
   notice,
   savedAt,
+  saveProblem,
+  contentVersion,
   onOpenChange,
   onChange,
+  onBeforeSend,
+  onSendFailed,
   onSent,
   onDiscard,
 }: Props) {
@@ -336,6 +351,8 @@ export function ComposeWindow({
     setError(null);
     setSending(true);
     try {
+      // 送信のあとから保存が届くと、送ったはずの下書きが残ってしまう。
+      await onBeforeSend();
       await sendMail({
         idempotencyKey: draft.idempotencyKey,
         accountId: draft.accountId,
@@ -354,6 +371,7 @@ export function ComposeWindow({
       onSent();
     } catch (cause) {
       setError(sendErrorOf(cause, limit));
+      onSendFailed();
     } finally {
       setSending(false);
     }
@@ -388,10 +406,18 @@ export function ComposeWindow({
   }
 
   const title = draft.subject.trim() || titles[draft.mode];
-  const saved = savedAt && (
-    <span className="truncate text-muted-foreground text-xs">
-      下書きを保存しました {timeFormat.format(savedAt)}
+  const saved = saveProblem ? (
+    <span className="truncate text-destructive text-xs">
+      {saveProblem === "offline"
+        ? "下書きを保存できていません。接続が戻ると保存します"
+        : "下書きを保存できません。宛先と添付ファイルを確認してください"}
     </span>
+  ) : (
+    savedAt && (
+      <span className="truncate text-muted-foreground text-xs">
+        下書きを保存しました {timeFormat.format(savedAt)}
+      </span>
+    )
   );
 
   if (minimized) {
@@ -588,7 +614,7 @@ export function ComposeWindow({
         </Row>
 
         <Editor
-          key={draft.idempotencyKey}
+          key={`${draft.idempotencyKey}:${contentVersion}`}
           editorRef={editorRef}
           initialHtml={draft.html}
           disabled={sending}

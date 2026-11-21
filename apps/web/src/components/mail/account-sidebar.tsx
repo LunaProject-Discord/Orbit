@@ -90,6 +90,11 @@ type Props = {
   /** null は受信トレイ (アカウントを選んでいればそのアカウントの受信トレイ)。 */
   selectedMailboxId: string | null;
   onSelect: (accountId: string | null, mailboxId: string | null) => void;
+  /** サーバーに保存してある下書きの数 (全アカウント分)。 */
+  draftCount: number;
+  /** 下書きの一覧を表示している。その間はフォルダを選択中として扱わない。 */
+  draftsSelected: boolean;
+  onSelectDrafts: () => void;
   onAdd: () => void;
   onDelete: (account: Account) => void;
   /** 再ログインが必要な Microsoft アカウントで、ログインし直す。 */
@@ -104,6 +109,9 @@ export function AccountSidebar({
   selectedAccountId,
   selectedMailboxId,
   onSelect,
+  draftCount,
+  draftsSelected,
+  onSelectDrafts,
   onAdd,
   onDelete,
   onReauth,
@@ -146,8 +154,16 @@ export function AccountSidebar({
           icon={<InboxIcon />}
           label="すべての受信トレイ"
           count={inboxUnread}
-          selected={selectedAccountId === null}
+          selected={!draftsSelected && selectedAccountId === null}
           onClick={() => onSelect(null, null)}
+        />
+        <SidebarItem
+          icon={<FilePenLineIcon />}
+          label="下書き"
+          count={draftCount}
+          countLabel="件数"
+          selected={draftsSelected}
+          onClick={onSelectDrafts}
         />
         {accounts === null ? (
           <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
@@ -159,7 +175,8 @@ export function AccountSidebar({
             const problem = statusLabel[account.status];
             const tree = trees.get(account.id) ?? [];
             const open = !collapsed.has(account.id);
-            const selected = selectedAccountId === account.id;
+            const selected =
+              !draftsSelected && selectedAccountId === account.id;
             const name = account.displayName || account.email;
             return (
               <div key={account.id} className="group/account relative">
@@ -300,11 +317,17 @@ function ToggleButton(props: {
   );
 }
 
-function UnreadCount({ count }: { count: number }) {
+function UnreadCount({
+  count,
+  label = "未読",
+}: {
+  count: number;
+  label?: string | undefined;
+}) {
   if (count <= 0) return null;
   return (
     <span className="shrink-0 font-medium text-muted-foreground text-xs tabular-nums">
-      <span className="sr-only">未読 </span>
+      <span className="sr-only">{label} </span>
       {count > 9999 ? "9999+" : count}
     </span>
   );
@@ -383,6 +406,8 @@ function SidebarItem(props: {
   problem?: string | undefined;
   /** 未読数。0 なら表示しない。 */
   count?: number;
+  /** 数が未読数でないときの、読み上げ用の説明。 */
+  countLabel?: string;
   selected: boolean;
   onClick: () => void;
   className?: string;
@@ -413,7 +438,9 @@ function SidebarItem(props: {
           </span>
         )}
       </span>
-      {props.count !== undefined && <UnreadCount count={props.count} />}
+      {props.count !== undefined && (
+        <UnreadCount count={props.count} label={props.countLabel} />
+      )}
     </button>
   );
 }

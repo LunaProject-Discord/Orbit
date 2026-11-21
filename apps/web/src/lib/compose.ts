@@ -3,6 +3,9 @@ import type {
   Address,
   MessageDetail,
   OutgoingMail,
+  RecipientField,
+  SaveDraftInput,
+  ServerDraft,
   UploadedAttachment,
 } from "@/lib/api";
 import { addressFull, formatFullDate } from "@/lib/format";
@@ -10,12 +13,14 @@ import { addressFull, formatFullDate } from "@/lib/format";
 /** 作成画面の種類。reply と replyAll は、送信時にはどちらも「返信」として扱う。 */
 export type ComposeMode = "new" | "reply" | "replyAll" | "forward";
 
-/** 宛先の欄 1 つ分。確定した宛先と、入力途中の文字列。 */
-export type RecipientField = { list: Address[]; text: string };
+export type { RecipientField };
 
 /** 作成中のメール。 */
 export type ComposeDraft = {
-  /** 送信ごとに作る一意な ID。同じ下書きを送り直しても二重に送られない。 */
+  /**
+   * 下書きの ID で、送信ごとの一意な ID にもなる。
+   * 同じ下書きを送り直しても、別の端末から送っても、二重に送られない。
+   */
   idempotencyKey: string;
   accountId: string;
   to: RecipientField;
@@ -390,10 +395,55 @@ export function sanitizeHtml(html: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 下書きの保存 (この端末のブラウザーの中)
+// 下書きの保存
+// 下書きはサーバーに保存し、どの端末からも続きを書けるようにする。
+// サーバーへ保存し終えるまでの間だけ、この端末のブラウザーの中にも置いておく
+// (保存の前にページを閉じたり、通信できなかったりしても内容を失わないため)。
 // ---------------------------------------------------------------------------
 
-const DRAFT_KEY = "mail.compose-draft.v1";
+/** サーバーにある下書きを、作成画面で開く形にする。 */
+export function draftFromServer(draft: ServerDraft): ComposeDraft {
+  return {
+    idempotencyKey: draft.id,
+    accountId: draft.accountId,
+    to: draft.to,
+    cc: draft.cc,
+    bcc: draft.bcc,
+    subject: draft.subject,
+    html: draft.html,
+    attachments: draft.attachments,
+    mode: draft.mode,
+    sourceMessageId: draft.sourceMessageId,
+  };
+}
+
+/** 下書きを、サーバーへ保存する形にする (ブラウザーでのみ動く)。 */
+export function draftSaveInput(
+  draft: ComposeDraft,
+  baseRevision: number | null,
+): SaveDraftInput {
+  const html = sanitizeHtml(draft.html);
+  return {
+    accountId: draft.accountId,
+    to: draft.to,
+    cc: draft.cc,
+    bcc: draft.bcc,
+    subject: draft.subject,
+    html,
+    text: htmlToText(html),
+    attachmentIds: draft.attachments.map((file) => file.id),
+    mode: draft.mode,
+    sourceMessageId: draft.sourceMessageId,
+    baseRevision,
+  };
+}
+
+/** まだサーバーへ保存し終えていない下書きと、それが元にしたサーバー側の revision。 */
+export type UnsavedDraft = { draft: ComposeDraft; baseRevision: number | null };
+
+const UNSAVED_KEY = "mail.unsaved-drafts.v1";
+/** 以前の版が、書きかけのメールを 1 通だけ置いていた場所。 */
+const LEGACY_KEY = "mail.compose-draft.v1";
 
 function isField(value: unknown): value is RecipientField {
   const record = value as RecipientField | null;
@@ -402,38 +452,86 @@ function isField(value: unknown): value is RecipientField {
   );
 }
 
-export function loadStoredDraft(): ComposeDraft | null {
-  try {
-    const value: unknown = JSON.parse(
-      window.localStorage.getItem(DRAFT_KEY) ?? "null",
-    );
-    const draft = value as ComposeDraft | null;
-    if (
-      !draft ||
-      typeof draft.idempotencyKey !== "string" ||
-      typeof draft.accountId !== "string" ||
-      typeof draft.subject !== "string" ||
-      typeof draft.html !== "string" ||
-      !isField(draft.to) ||
-      !isField(draft.cc) ||
-      !isField(draft.bcc) ||
-      !Array.isArray(draft.attachments)
-    ) {
-      return null;
-    }
-    return draft;
-  } catch {
-    return null;
-  }
+function isDraft(value: unknown): value is ComposeDraft {
+  const draft = value as ComposeDraft | null;
+  return (
+    !!draft &&
+    typeof draft.idempotencyKey === "string" &&
+    typeof draft.accountId === "string" &&
+    typeof draft.subject === "string" &&
+    typeof draft.html === "string" &&
+    isField(draft.to) &&
+    isField(draft.cc) &&
+    isField(draft.bcc) &&
+    Array.isArray(draft.attachments)
+  );
 }
 
-/** 下書きを保存する。null なら消す。保存できたら true。 */
-export function storeDraft(draft: ComposeDraft | null): boolean {
+function readUnsaved(): Record<string, UnsavedDraft> {
+  const result: Record<string, UnsavedDraft> = {};
   try {
-    if (draft) window.localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-    else window.localStorage.removeItem(DRAFT_KEY);
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(UNSAVED_KEY) ?? "{}",
+    );
+    for (const entry of Object.values(value ?? {})) {
+      const { draft, baseRevision } = (entry ?? {}) as Partial<UnsavedDraft>;
+      if (!isDraft(draft)) continue;
+      result[draft.idempotencyKey] = {
+        draft,
+        baseRevision: typeof baseRevision === "number" ? baseRevision : null,
+      };
+    }
+    const legacy: unknown = JSON.parse(
+      window.localStorage.getItem(LEGACY_KEY) ?? "null",
+    );
+    if (isDraft(legacy)) {
+      result[legacy.idempotencyKey] ??= { draft: legacy, baseRevision: null };
+    }
+  } catch {
+    // 読めなければ、置いてあるものは無い扱いにする。
+  }
+  return result;
+}
+
+function writeUnsaved(entries: Record<string, UnsavedDraft>): boolean {
+  try {
+    if (Object.keys(entries).length > 0) {
+      window.localStorage.setItem(UNSAVED_KEY, JSON.stringify(entries));
+    } else {
+      window.localStorage.removeItem(UNSAVED_KEY);
+    }
+    window.localStorage.removeItem(LEGACY_KEY);
     return true;
   } catch {
     return false;
   }
+}
+
+/** この端末に置いてある、サーバーへ保存し終えていない下書き。 */
+export function loadUnsavedDrafts(): UnsavedDraft[] {
+  return Object.values(readUnsaved());
+}
+
+/** サーバーへ保存し終えるまでの間、下書きをこの端末に置く。置けたら true。 */
+export function storeUnsavedDraft(entry: UnsavedDraft): boolean {
+  return writeUnsaved({
+    ...readUnsaved(),
+    [entry.draft.idempotencyKey]: entry,
+  });
+}
+
+/** サーバーへ保存し終えた (または破棄・送信した) 下書きを、この端末から消す。 */
+export function removeUnsavedDraft(id: string): void {
+  const entries = readUnsaved();
+  if (!(id in entries)) {
+    // 以前の版の置き場だけが残っている場合も、ここで片付ける。
+    try {
+      window.localStorage.removeItem(LEGACY_KEY);
+    } catch {
+      // 消せなくても支障は無い。
+    }
+    return;
+  }
+  delete entries[id];
+  writeUnsaved(entries);
 }

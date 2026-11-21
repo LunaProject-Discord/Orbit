@@ -1,11 +1,12 @@
 import {
+  attachmentKey,
   attachmentsDir,
   graphWebhookBaseUrl,
   loadEncryptionKey,
   loadMicrosoftOAuthConfig,
   sweepAttachments,
 } from "@mail/core";
-import { createDb } from "@mail/db";
+import { createDb, drafts } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -33,11 +34,28 @@ console.log(
 // 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。
 
 // 送信用に受け取った添付ファイルは、7 日たったら消す (送信済みのものも、送らなかったものも)。
+// 下書きに付いているファイルは、下書きがある間は残す。
 const ATTACHMENT_KEEP_MS = 7 * 24 * 60 * 60_000;
-const sweep = () =>
-  sweepAttachments(attachmentsDir(), ATTACHMENT_KEEP_MS).catch((error) => {
+const sweep = async () => {
+  try {
+    const rows = await db
+      .select({ userId: drafts.userId, attachments: drafts.attachments })
+      .from(drafts);
+    const keep = new Set(
+      rows.flatMap((row) =>
+        row.attachments.map((file) => attachmentKey(row.userId, file.id)),
+      ),
+    );
+    await sweepAttachments(
+      attachmentsDir(),
+      ATTACHMENT_KEEP_MS,
+      Date.now(),
+      keep,
+    );
+  } catch (error) {
     console.error("古い添付ファイルを消せませんでした。", error);
-  });
+  }
+};
 void sweep();
 const sweepTimer = setInterval(sweep, 60 * 60_000);
 
