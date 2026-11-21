@@ -137,10 +137,6 @@ type Props = {
   onDiscard: () => void;
 };
 
-/**
- * メールの作成画面 (新規、返信、転送)。
- * 広い画面では右下に浮かぶ窓で、開いたままほかのメールを読める。狭い画面では全画面になる。
- */
 const MAXIMIZED_KEY = "mail.compose-maximized.v1";
 
 function loadMaximized(): boolean {
@@ -160,6 +156,10 @@ function storeMaximized(maximized: boolean): void {
   }
 }
 
+/**
+ * メールの作成画面 (新規、返信、転送)。
+ * 広い画面では右下に浮かぶ窓で、開いたままほかのメールを読める。狭い画面では全画面になる。
+ */
 export function ComposeWindow({
   draft,
   open,
@@ -194,6 +194,21 @@ export function ComposeWindow({
   draftRef.current = draft;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  /**
+   * 下書きを変える。変更は必ず最新の下書きに対して行い、次の描画を待たずに draftRef へ反映する。
+   * 添付ファイルの送信が同時にいくつも終わったとき、どれも描画前の同じ下書きに足してしまい、
+   * 最後の 1 件しか残らなかったことがあるため。
+   */
+  const commit = useCallback(
+    (update: (latest: ComposeDraft) => ComposeDraft) => {
+      const latest = draftRef.current;
+      if (!latest) return;
+      const next = update(latest);
+      draftRef.current = next;
+      onChangeRef.current(next);
+    },
+    [],
+  );
   const uploadsRef = useRef(uploads);
   uploadsRef.current = uploads;
 
@@ -253,11 +268,11 @@ export function ComposeWindow({
         });
         if (!latest || latest.idempotencyKey !== draftKey) return;
         if (controller.signal.aborted) return;
-        onChangeRef.current({
-          ...latest,
-          attachments: [...latest.attachments, ...kept],
+        commit((current) => ({
+          ...current,
+          attachments: [...current.attachments, ...kept],
           forwardAttachments: null,
-        });
+        }));
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
@@ -268,10 +283,10 @@ export function ComposeWindow({
             cause instanceof ApiError ? cause.code : null,
           )}`,
         );
-        onChangeRef.current({ ...latest, forwardAttachments: null });
+        commit((current) => ({ ...current, forwardAttachments: null }));
       });
     return () => controller.abort();
-  }, [draftKey, forwardPending]);
+  }, [draftKey, forwardPending, commit]);
 
   const addFiles = useCallback(
     (files: File[]) => {
@@ -325,10 +340,10 @@ export function ComposeWindow({
               void deleteAttachment(uploaded.id).catch(() => {});
               return;
             }
-            onChangeRef.current({
-              ...latest,
-              attachments: [...latest.attachments, uploaded],
-            });
+            commit((current) => ({
+              ...current,
+              attachments: [...current.attachments, uploaded],
+            }));
           })
           .catch((cause) => {
             if (cause instanceof DOMException && cause.name === "AbortError") {
@@ -345,7 +360,7 @@ export function ComposeWindow({
           );
       }
     },
-    [accounts],
+    [accounts, commit],
   );
 
   if (!draft || !open) return null;
@@ -357,7 +372,7 @@ export function ComposeWindow({
     draft.bcc.list.length > 0 ||
     draft.bcc.text.trim() !== "";
   const set = <K extends keyof ComposeDraft>(key: K, value: ComposeDraft[K]) =>
-    onChange({ ...draft, [key]: value });
+    commit((current) => ({ ...current, [key]: value }));
   const account = accounts.find((item) => item.id === draft.accountId);
   const limit = attachmentLimit(account ?? { protocol: "imap" });
   const pendingFiles = draft.forwardAttachments?.files ?? [];
@@ -373,15 +388,15 @@ export function ComposeWindow({
       next?.signatureHtml,
     );
     if (editor) editor.innerHTML = html;
-    onChange({ ...draft, accountId, html });
+    commit((current) => ({ ...current, accountId, html }));
   }
 
   function removeAttachment(file: UploadedAttachment) {
     if (!draft) return;
-    set(
-      "attachments",
-      draft.attachments.filter((item) => item.id !== file.id),
-    );
+    commit((current) => ({
+      ...current,
+      attachments: current.attachments.filter((item) => item.id !== file.id),
+    }));
     void deleteAttachment(file.id).catch(() => {});
   }
 
