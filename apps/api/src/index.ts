@@ -23,6 +23,7 @@ const app = createApp({
   allowedOrigins: env.allowedOrigins,
   encryptionKey: env.encryptionKey,
   allowPrivateMailHosts: env.allowPrivateMailHosts,
+  microsoft: env.microsoft,
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

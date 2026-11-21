@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import { PaperclipIcon, StarIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageSummary } from "@/lib/api";
@@ -28,6 +29,28 @@ export function MessageList({
   onLoadMore,
   onRetry,
 }: Props) {
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+  onLoadMoreRef.current = onLoadMore;
+
+  // 一覧の末尾 (「さらに読み込む」ボタン) が見えたら、続きを自動で読み込む。
+  // 読み込みに失敗したあとは繰り返さず、ボタンを押してやり直してもらう。
+  // 件数が変わるたびに監視し直すので、読み込んでも末尾が見えたままなら次も読み込む。
+  const count = messages?.length ?? 0;
+  const autoLoad = hasMore && !loadingMore && !error && count > 0;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: count は監視し直すきっかけとして使う
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!autoLoad || !target) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        onLoadMoreRef.current();
+      }
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [autoLoad, count]);
+
   if (messages === null) {
     if (error) {
       return (
@@ -140,7 +163,7 @@ export function MessageList({
         })}
       </ul>
       {hasMore && (
-        <div className="flex justify-center p-4">
+        <div ref={loadMoreRef} className="flex justify-center p-4">
           <Button
             variant="outline"
             size="sm"
