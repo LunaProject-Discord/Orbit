@@ -1,3 +1,4 @@
+import type { NewMailCandidate } from "@mail/core";
 import {
   attachments,
   type Database,
@@ -29,6 +30,7 @@ import {
   toAddresses,
   toDate,
 } from "./message-parse.js";
+import { announceNewMail } from "./new-mail.js";
 import { loadPendingGuard } from "./outbox.js";
 
 const FETCH_CHUNK = 100;
@@ -194,6 +196,16 @@ export async function syncMailbox(
     await removeMessages(db, account, mailbox.id, removedUids);
   }
 
+  // 受信トレイに前回の同期より後に届いたメール (UID が前回の UIDNEXT 以上) は、新着として
+  // 端末へ通知する。初回の取り込みや、UID を振り直された場合は通知しない。
+  const announceFromUid =
+    mailbox.specialUse === "inbox" &&
+    !uidValidityChanged &&
+    mailbox.lastSyncedAt !== null &&
+    mailbox.uidNext !== null
+      ? Number(mailbox.uidNext)
+      : null;
+
   // 新しいメッセージ。新しいものから順に取り込み、途中で切れても次回に続きから再開できる。
   const addedUids = found
     .filter((uid) => !localByUid.has(uid))
@@ -223,7 +235,7 @@ export async function syncMailbox(
     )) {
       fetched.push(message);
     }
-    await insertMessages(db, account, mailbox.id, fetched);
+    await insertMessages(db, account, mailbox.id, fetched, announceFromUid);
   }
 
   // 既存メッセージのフラグ (既読など) の変化
@@ -359,6 +371,8 @@ async function insertMessages(
   account: SyncAccount,
   mailboxId: string,
   fetched: FetchMessageObject[],
+  /** この UID 以上のメールを新着として通知する。null なら通知しない。 */
+  announceFromUid: number | null,
 ) {
   if (fetched.length === 0) return;
   await db.transaction(async (tx) => {
@@ -367,12 +381,15 @@ async function insertMessages(
     const guard = await loadPendingGuard(tx, account.id);
     const removing = guard.removedUids.get(mailboxId);
     const inserted: string[] = [];
+    const arrived: NewMailCandidate[] = [];
     for (const message of fetched) {
       if (removing?.has(message.uid)) continue;
       const envelope = message.envelope ?? {};
       const references = parseReferences(message.headers).map(clean);
       const structure = analyzeStructure(message.bodyStructure);
       const sentAt = toDate(envelope.date);
+      const receivedAt = toDate(message.internalDate) ?? sentAt ?? new Date();
+      const flags = flagsOf(message.flags);
       const [row] = await tx
         .insert(messages)
         .values({
@@ -396,10 +413,10 @@ async function insertMessages(
           bcc: toAddresses(envelope.bcc),
           replyTo: toAddresses(envelope.replyTo),
           sentAt,
-          receivedAt: toDate(message.internalDate) ?? sentAt ?? new Date(),
+          receivedAt,
           size: message.size ?? 0,
           hasAttachments: structure.attachments.some((file) => !file.inline),
-          ...flagsOf(message.flags),
+          ...flags,
         })
         // サーバーが不変の ID (OBJECTID の EMAILID など) を返す場合、複製された
         // メッセージは同じ ID になる。その場合は既存の行に所在だけを足す。
@@ -456,8 +473,22 @@ async function insertMessages(
         );
       }
       inserted.push(row.id);
+      if (
+        announceFromUid !== null &&
+        message.uid >= announceFromUid &&
+        !flags.draft
+      ) {
+        arrived.push({
+          id: row.id,
+          from: toAddresses(envelope.from),
+          subject: clean(envelope.subject),
+          seen: flags.seen,
+          receivedAt,
+        });
+      }
     }
     await recordChanges(tx, account.userId, "message", "upsert", inserted);
+    await announceNewMail(tx, account, arrived);
   });
 }
 

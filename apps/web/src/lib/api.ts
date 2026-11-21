@@ -299,6 +299,38 @@ export type OutgoingMail = {
   attachments: UploadedAttachment[];
 };
 
+/**
+ * メールサーバーへ反映できなかった操作 (既読、スター、移動、削除、送信したメールの控えの保存)。
+ * 画面には先に反映していたので、サーバーの状態に戻したうえで知らせる。
+ */
+export type FailedOperation = {
+  id: string;
+  accountId: string;
+  kind: "set_flags" | "move" | "delete" | "append";
+  /** 対象のメールの数。 */
+  count: number;
+  /** set_flags で変えようとした内容。変えなかった項目は null。 */
+  seen: boolean | null;
+  flagged: boolean | null;
+  answered: boolean | null;
+  /** move の移動先のフォルダ。 */
+  destinationMailboxId: string | null;
+  /** メールサーバーなどから返った失敗の理由。 */
+  error: string | null;
+  createdAt: string;
+  failedAt: string;
+};
+
+/** 端末に出す通知 1 件分 (新着メール)。 */
+export type MailNotification = {
+  title: string;
+  body: string;
+  /** 同じ値の通知は置き換わる。 */
+  tag: string;
+  /** 押したときに開くメール。まとめた通知では null。 */
+  messageId: string | null;
+};
+
 export type MessagePage = {
   messages: MessageSummary[];
   nextCursor: string | null;
@@ -480,6 +512,56 @@ export async function listOutgoing(
 /** 送信待ちのメールを取り消す、または失敗したメールを一覧から消す。 */
 export async function deleteOutgoing(id: string): Promise<void> {
   await apiFetch(`/v1/messages/outgoing/${id}`, { method: "DELETE" });
+}
+
+export async function listFailures(
+  signal?: AbortSignal,
+): Promise<FailedOperation[]> {
+  const { failures } = await apiJson<{ failures: FailedOperation[] }>(
+    "/v1/messages/failures",
+    { signal },
+  );
+  return failures;
+}
+
+/**
+ * 失敗した操作を、もう一度メールサーバーへ反映する。
+ * 対象のメールがもう無ければ、ApiError (status 410) で失敗する。
+ */
+export async function retryFailure(id: string): Promise<void> {
+  await apiFetch(`/v1/messages/failures/${id}/retry`, { method: "POST" });
+}
+
+/** 失敗した操作を、やり直さずに一覧から消す。 */
+export async function dismissFailure(id: string): Promise<void> {
+  await apiFetch(`/v1/messages/failures/${id}`, { method: "DELETE" });
+}
+
+/** Web Push の公開鍵。null なら、サーバーは Web Push を送らない。 */
+export async function getPushPublicKey(): Promise<string | null> {
+  const { publicKey } = await apiJson<{ publicKey: string | null }>(
+    "/v1/push/config",
+  );
+  return publicKey;
+}
+
+/** このブラウザーを、新着メールの通知 (Web Push) の送り先として登録する。 */
+export async function savePushSubscription(subscription: {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}): Promise<void> {
+  await apiFetch("/v1/push/subscriptions", {
+    method: "POST",
+    body: subscription,
+  });
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  await apiFetch("/v1/push/subscriptions", {
+    method: "DELETE",
+    body: { endpoint },
+    handle401: false,
+  });
 }
 
 /**

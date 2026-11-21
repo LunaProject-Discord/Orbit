@@ -2,6 +2,7 @@ import {
   CHANNEL_ACCOUNTS,
   CHANNEL_FOCUS,
   CHANNEL_GRAPH_PUSH,
+  CHANNEL_NEW_MAIL,
   CHANNEL_OUTBOX,
   type FocusNotification,
   type GraphPushNotification,
@@ -12,6 +13,7 @@ import { inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";
 import { GraphAccountSync } from "./graph-account-sync.js";
+import { type PushSender, parseNewMailNotification } from "./new-mail.js";
 import { accountsWithPendingOutbox } from "./outbox.js";
 
 const RECONCILE_MS = 60_000;
@@ -48,6 +50,7 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
  * 送信待ちキューに操作が積まれた通知、利用者が開いているフォルダの通知、
  * Microsoft Graph の変更通知も受け取り、該当のアカウントへ伝える。
+ * 新着メールの知らせは、Web Push で端末へ送る。
  */
 export class AccountManager {
   private running = new Map<string, { sync: AccountSync | GraphAccountSync }>();
@@ -66,6 +69,8 @@ export class AccountManager {
     private readonly graphWebhookBaseUrl: string | null = null,
     /** 暗号化されていない SMTP 接続を許す (開発用のローカルサーバー向け)。 */
     private readonly allowInsecureSmtp = false,
+    /** 新着メールを Web Push で端末へ送る。Web Push を設定していなければ null。 */
+    private readonly pushSender: PushSender | null = null,
   ) {}
 
   async start() {
@@ -105,6 +110,15 @@ export class AccountManager {
         }
         return;
       }
+      if (message.channel === CHANNEL_NEW_MAIL) {
+        const payload = parseNewMailNotification(message.payload);
+        if (payload) {
+          this.pushSender?.deliver(payload).catch((error) => {
+            console.error("新着メールの通知を送れませんでした。", error);
+          });
+        }
+        return;
+      }
       if (message.channel === CHANNEL_GRAPH_PUSH) {
         const payload = parsePayload<GraphPushNotification>(message.payload);
         const sync = payload && this.running.get(payload.accountId)?.sync;
@@ -123,6 +137,9 @@ export class AccountManager {
       .then(() => client.query(`LISTEN ${CHANNEL_OUTBOX}`))
       .then(() => client.query(`LISTEN ${CHANNEL_FOCUS}`))
       .then(() => client.query(`LISTEN ${CHANNEL_GRAPH_PUSH}`))
+      .then(() =>
+        this.pushSender ? client.query(`LISTEN ${CHANNEL_NEW_MAIL}`) : null,
+      )
       // 待ち受けを始めるまでの間に届いた通知は失われるので、ここで追いつく。
       .then(() => this.reconcile())
       .catch(retry);

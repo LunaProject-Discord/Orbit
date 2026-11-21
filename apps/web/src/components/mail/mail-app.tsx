@@ -8,6 +8,11 @@ import { AccountSidebar } from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
 import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
+import {
+  FailureToast,
+  NoticeToast,
+  ToastRegion,
+} from "@/components/mail/failure-toast";
 import { MessageList } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
@@ -20,9 +25,13 @@ import {
 } from "@/lib/actions";
 import {
   type Account,
+  ApiError,
   deleteOutgoing,
+  dismissFailure,
+  type FailedOperation,
   listAccounts,
   listAllMailboxes,
+  listFailures,
   listMessages,
   listOutgoing,
   type MailboxSummary,
@@ -30,6 +39,7 @@ import {
   type MessageDetail,
   type MessageSummary,
   type OutgoingMail,
+  retryFailure,
   sendFocus,
   startMicrosoftLogin,
   type User,
@@ -46,6 +56,18 @@ import {
 } from "@/lib/compose";
 import { subscribeEvents } from "@/lib/events";
 import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
+import {
+  disableNotifications,
+  enableNotifications,
+  inboxUnreadCount,
+  MESSAGE_ID,
+  type NotificationStatus,
+  onNotificationOpen,
+  parseMailEvent,
+  showPageNotification,
+  showUnreadCount,
+  syncNotifications,
+} from "@/lib/notifications";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 
 const PAGE_SIZE = 50;
@@ -54,6 +76,13 @@ const FOCUS_INTERVAL_MS = 30_000;
 const LIST_ERROR = "メールを読み込めませんでした。";
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
+const RETRY_ERROR =
+  "やり直せませんでした。時間をおいて、もう一度お試しください。";
+const NOTIFICATION_BLOCKED =
+  "ブラウザーの設定で通知が拒否されています。ブラウザーの設定で、このサイトの通知を許可してください。";
+/** 短い知らせを出しておく時間。 */
+const NOTICE_MS = 8_000;
 const DRAFT_NOTICE =
   "書きかけのメールがあります。送信するか破棄すると、新しいメールを作成できます。";
 
@@ -117,7 +146,19 @@ export function MailApp({ user }: { user: User }) {
   };
   /** サーバーへ送る操作の待ち行列。通信できない間の操作もここに残る。 */
   const queueRef = useRef<ActionQueue | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  /** 画面の下に短く出す知らせ (操作の失敗など)。 */
+  const [notice, setNotice] = useState<{
+    message: string;
+    tone: "error" | "info";
+  } | null>(null);
+  /** メールサーバーへ反映できなかった操作。やり直すか破棄するまで知らせ続ける。 */
+  const [failures, setFailures] = useState<FailedOperation[]>([]);
+  const [failureBusy, setFailureBusy] = useState(false);
+  const [notificationStatus, setNotificationStatus] =
+    useState<NotificationStatus>("off");
+  const [notificationBusy, setNotificationBusy] = useState(false);
+  const notificationStatusRef = useRef(notificationStatus);
+  notificationStatusRef.current = notificationStatus;
   /** 増やすと、表示中のメールの移動先メニューが開く (ショートカットキー用)。 */
   const [moveRequest, setMoveRequest] = useState(0);
   /** 作成中のメール。作成画面を閉じても、送信するか破棄するまで残す。 */
@@ -154,6 +195,14 @@ export function MailApp({ user }: { user: User }) {
   const loadOutgoing = useCallback(async () => {
     try {
       setOutgoing(await listOutgoing());
+    } catch {
+      // 次の通知や操作でまた取得する。
+    }
+  }, []);
+
+  const loadFailures = useCallback(async () => {
+    try {
+      setFailures(await listFailures());
     } catch {
       // 次の通知や操作でまた取得する。
     }
@@ -204,7 +253,105 @@ export function MailApp({ user }: { user: User }) {
     void loadAccounts();
     void loadMailboxes();
     void loadOutgoing();
-  }, [loadAccounts, loadMailboxes, loadOutgoing]);
+    void loadFailures();
+  }, [loadAccounts, loadMailboxes, loadOutgoing, loadFailures]);
+
+  // 短い知らせは、しばらくしたら消す。
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  // タブの題名に、受信トレイの未読数を出す。
+  useEffect(() => {
+    showUnreadCount(inboxUnreadCount(mailboxes ?? []));
+  }, [mailboxes]);
+  useEffect(() => () => showUnreadCount(0), []);
+
+  /** 通知から開く。受信トレイに切り替えて、そのメールを表示する。 */
+  const openFromNotification = useCallback((messageId: string | null) => {
+    setSidebarOpen(false);
+    setSelectedAccountId(null);
+    setSelectedMailboxId(null);
+    setSelectedMessageId(messageId);
+    if (messageId) {
+      // 一覧に無くても開けるので、既読にするのは一覧の有無に関係なく行う。
+      performActionRef.current([messageId], {
+        action: "set_flags",
+        seen: true,
+      });
+    }
+  }, []);
+
+  // 新着メールの通知。前回この端末で有効にしていれば、送り先を登録し直す。
+  useEffect(() => {
+    let active = true;
+    void syncNotifications().then((status) => {
+      if (active) setNotificationStatus(status);
+    });
+    const unsubscribe = onNotificationOpen(openFromNotification);
+    // 通知から新しく開かれた場合は、URL でメールが指定されている。
+    const params = new URLSearchParams(window.location.search);
+    const messageId = params.get("message");
+    if (messageId) {
+      window.history.replaceState(null, "", window.location.pathname);
+      if (MESSAGE_ID.test(messageId)) openFromNotification(messageId);
+    }
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [openFromNotification]);
+
+  function handleNotificationChange(enabled: boolean) {
+    setNotificationBusy(true);
+    void (enabled ? enableNotifications() : disableNotifications())
+      .then((status) => {
+        setNotificationStatus(status);
+        if (enabled && status === "blocked") {
+          setNotice({ message: NOTIFICATION_BLOCKED, tone: "error" });
+        }
+      })
+      .finally(() => setNotificationBusy(false));
+  }
+
+  /** 失敗した操作をやり直す。結果は、サーバーからの通知で一覧に反映される。 */
+  function handleRetryFailures(targets: FailedOperation[]) {
+    setFailureBusy(true);
+    setNotice(null);
+    void (async () => {
+      let message: string | null = null;
+      for (const failure of targets) {
+        try {
+          await retryFailure(failure.id);
+        } catch (error) {
+          // 404 は、ほかの端末ですでにやり直したか破棄したもの。
+          if (error instanceof ApiError && error.status === 404) continue;
+          message =
+            error instanceof ApiError && error.status === 410
+              ? RETRY_GONE
+              : RETRY_ERROR;
+        }
+      }
+      if (message) setNotice({ message, tone: "error" });
+      await loadFailures();
+      void loadFirstPage(selectionRef.current, false);
+      void loadMailboxes();
+      setFailureBusy(false);
+    })();
+  }
+
+  function handleDismissFailures(targets: FailedOperation[]) {
+    const ids = new Set(targets.map((failure) => failure.id));
+    setFailureBusy(true);
+    setFailures((current) => current.filter((item) => !ids.has(item.id)));
+    void Promise.all(
+      targets.map((failure) => dismissFailure(failure.id).catch(() => {})),
+    )
+      .then(loadFailures)
+      .finally(() => setFailureBusy(false));
+  }
 
   // 前回この端末で書きかけていたメールがあれば、続きから書けるようにする。
   useEffect(() => {
@@ -234,7 +381,7 @@ export function MailApp({ user }: { user: User }) {
     queueRef.current = queue;
     const unsubscribe = queue.onRejected(() => {
       // 画面に先に反映した内容を取り消すため、サーバーの状態を取り直す。
-      setActionError(ACTION_ERROR);
+      setNotice({ message: ACTION_ERROR, tone: "error" });
       void loadFirstPage(selectionRef.current, false);
       void loadMailboxes();
       setRefreshKey((key) => key + 1);
@@ -254,7 +401,6 @@ export function MailApp({ user }: { user: User }) {
         messageIds,
         ...input,
       };
-      setActionError(null);
       setMessages((current) => current && applyActions(current, [action]));
       if (input.action !== "set_flags") {
         setSelectedMessageId((current) =>
@@ -265,6 +411,9 @@ export function MailApp({ user }: { user: User }) {
     },
     [],
   );
+
+  const performActionRef = useRef(performAction);
+  performActionRef.current = performAction;
 
   /** メールを開く。未読なら既読にする。 */
   function handleSelectMessage(id: string) {
@@ -317,6 +466,14 @@ export function MailApp({ user }: { user: User }) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let first = true;
     const unsubscribe = subscribeEvents((event) => {
+      if (event.event === "mail") {
+        // Web Push が使えるときは、サービスワーカーが通知を出す。
+        if (notificationStatusRef.current !== "page") return;
+        for (const notification of parseMailEvent(event.data)) {
+          void showPageNotification(notification, openFromNotification);
+        }
+        return;
+      }
       if (event.event !== "ready" && event.event !== "change") return;
       // 最初の ready は、直前に行った初回の読み込みと重なるので何もしない。
       if (first && event.event === "ready") {
@@ -331,6 +488,7 @@ export function MailApp({ user }: { user: User }) {
         void loadAccounts();
         void loadMailboxes();
         void loadOutgoing();
+        void loadFailures();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
@@ -339,7 +497,14 @@ export function MailApp({ user }: { user: User }) {
       unsubscribe();
       if (timer) clearTimeout(timer);
     };
-  }, [loadAccounts, loadMailboxes, loadFirstPage, loadOutgoing]);
+  }, [
+    loadAccounts,
+    loadMailboxes,
+    loadFirstPage,
+    loadOutgoing,
+    loadFailures,
+    openFromNotification,
+  ]);
 
   /** 作成画面を開く。書きかけのメールがあれば、上書きせずにそちらを開く。 */
   function openCompose(create: () => ComposeDraft | null) {
@@ -602,6 +767,9 @@ export function MailApp({ user }: { user: User }) {
               });
           }}
           onSignOut={() => void signOut()}
+          notificationStatus={notificationStatus}
+          notificationBusy={notificationBusy}
+          onNotificationChange={handleNotificationChange}
         />
       </aside>
 
@@ -641,14 +809,6 @@ export function MailApp({ user }: { user: User }) {
             onEdit={handleEditOutgoing}
             onRemove={handleRemoveOutgoing}
           />
-          {actionError && (
-            <p
-              role="alert"
-              className="shrink-0 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs"
-            >
-              {actionError}
-            </p>
-          )}
           {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
               枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
           <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -756,6 +916,23 @@ export function MailApp({ user }: { user: User }) {
         }}
         onDiscard={clearDraft}
       />
+      <ToastRegion>
+        {notice && (
+          <NoticeToast
+            message={notice.message}
+            tone={notice.tone}
+            onClose={() => setNotice(null)}
+          />
+        )}
+        <FailureToast
+          failures={failures}
+          accounts={accounts ?? []}
+          mailboxes={mailboxes ?? []}
+          busy={failureBusy}
+          onRetry={handleRetryFailures}
+          onDismiss={handleDismissFailures}
+        />
+      </ToastRegion>
       <DeleteAccountDialog
         account={deleteTarget}
         onClose={() => setDeleteTarget(null)}

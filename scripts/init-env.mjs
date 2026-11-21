@@ -4,7 +4,7 @@
 //   pnpm env:init
 //
 // 既に値が入っている項目は変更しない (鍵を作り直すと保存済みの認証情報を復号できなくなるため)。
-import { randomBytes } from "node:crypto";
+import { createECDH, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,7 @@ const envPath = fileURLToPath(new URL(".env", root));
 const examplePath = fileURLToPath(new URL(".env.example", root));
 
 /** 乱数で埋める項目。どちらも base64 で表した 32 バイト。 */
+// (Web Push の鍵は形式が違うので、下で別に作る。)
 const SECRET_KEYS = ["BETTER_AUTH_SECRET", "CREDENTIALS_ENCRYPTION_KEY"];
 
 const created = !existsSync(envPath);
@@ -28,6 +29,26 @@ for (const key of SECRET_KEYS) {
     generated.push(key);
   } else if (!new RegExp(`^${key}=`, "m").test(content)) {
     content = `${content.replace(/\s*$/, "")}\n${key}=${secret}\n`;
+    generated.push(key);
+  }
+}
+
+// 新着メールの通知 (Web Push) に使う VAPID の鍵の組。公開鍵と秘密鍵は対なので、
+// どちらかが空なら両方を作り直す (作り直すと、各ブラウザーで通知を有効にし直す必要がある)。
+const emptyOrMissing = (key) =>
+  !new RegExp(`^${key}=[ \\t]*\\S`, "m").test(content);
+if (emptyOrMissing("VAPID_PUBLIC_KEY") || emptyOrMissing("VAPID_PRIVATE_KEY")) {
+  const ecdh = createECDH("prime256v1");
+  ecdh.generateKeys();
+  const values = {
+    VAPID_PUBLIC_KEY: ecdh.getPublicKey().toString("base64url"),
+    VAPID_PRIVATE_KEY: ecdh.getPrivateKey().toString("base64url"),
+  };
+  for (const [key, value] of Object.entries(values)) {
+    const line = new RegExp(`^${key}=.*$`, "m");
+    content = line.test(content)
+      ? content.replace(line, `${key}=${value}`)
+      : `${content.replace(/\s*$/, "")}\n${key}=${value}\n`;
     generated.push(key);
   }
 }

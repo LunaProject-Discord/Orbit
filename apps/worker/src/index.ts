@@ -3,16 +3,20 @@ import {
   graphWebhookBaseUrl,
   loadEncryptionKey,
   loadMicrosoftOAuthConfig,
+  loadWebPushConfig,
   sweepAttachments,
 } from "@mail/core";
 import { createDb } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
+import { PushSender, webPushTransport } from "./new-mail.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL が設定されていません。");
 }
 const encryptionKey = loadEncryptionKey(process.env.CREDENTIALS_ENCRYPTION_KEY);
+
+const webPush = loadWebPushConfig(process.env);
 
 const { db, pool } = createDb(databaseUrl);
 const manager = new AccountManager(
@@ -24,11 +28,18 @@ const manager = new AccountManager(
   graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
   // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
   process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
+  // 新着メールの通知 (Web Push)。VAPID の鍵が無ければ送らない。
+  webPush && new PushSender(db, webPushTransport(webPush)),
 );
 await manager.start();
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
 );
+if (!webPush) {
+  console.log(
+    "VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY が未設定のため、Web Push の通知は送りません。",
+  );
+}
 
 // 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。
 

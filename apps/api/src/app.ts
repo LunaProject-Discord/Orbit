@@ -9,9 +9,11 @@ import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
+import { failureRoutes } from "./routes/failures.js";
 import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
+import { pushRoutes } from "./routes/push.js";
 import { sendRoutes } from "./routes/send.js";
 import { syncRoutes } from "./routes/sync.js";
 import { webhookRoutes } from "./routes/webhooks.js";
@@ -25,6 +27,7 @@ export type AppOptions = {
   encryptionKey: Buffer;
   allowPrivateMailHosts: boolean;
   microsoft: RouteDeps["microsoft"];
+  webPushPublicKey: string | null;
 };
 
 export function createApp({
@@ -35,6 +38,7 @@ export function createApp({
   encryptionKey,
   allowPrivateMailHosts,
   microsoft,
+  webPushPublicKey,
 }: AppOptions) {
   const app = new Hono();
 
@@ -80,13 +84,22 @@ export function createApp({
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
   authed.get("/me", (c) => c.json({ user: c.var.user }));
-  const deps = { db, encryptionKey, allowPrivateMailHosts, microsoft };
+  const deps = {
+    db,
+    encryptionKey,
+    allowPrivateMailHosts,
+    microsoft,
+    webPushPublicKey,
+  };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes());
-  // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) を登録する。
+  authed.route("/push", pushRoutes(deps));
+  // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) と
+  // 反映の失敗 (/messages/failures) を登録する。
   authed.route("/messages", sendRoutes(deps));
+  authed.route("/messages", failureRoutes(deps));
   authed.route("/messages", messageRoutes(deps));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);
