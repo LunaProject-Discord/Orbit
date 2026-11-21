@@ -5,6 +5,7 @@ import type {
   OutgoingMail,
   UploadedAttachment,
 } from "@/lib/api";
+import { splitAttachments } from "@/lib/attachments";
 import { addressFull, formatFullDate } from "@/lib/format";
 
 /** 作成画面の種類。reply と replyAll は、送信時にはどちらも「返信」として扱う。 */
@@ -26,6 +27,14 @@ export type ComposeDraft = {
   html: string;
   /** サーバーに受け取ってもらった添付ファイル。 */
   attachments: UploadedAttachment[];
+  /**
+   * 転送する元のメールの添付ファイルのうち、まだ送信用に複製してもらっていないもの。
+   * 作成画面が複製を頼み、終わったら attachments へ移す。
+   */
+  forwardAttachments?: {
+    messageId: string;
+    files: UploadedAttachment[];
+  } | null;
   mode: "new" | "reply" | "forward";
   /** 返信・転送の元になったメッセージ。 */
   sourceMessageId: string | null;
@@ -238,9 +247,21 @@ export function buildDraftFrom(
         ? [`Cc: ${message.cc.map(addressFull).join(", ")}`]
         : []),
     ].join("\n");
+    // 本文に埋め込まれた画像 (署名のロゴなど) は、引用した本文には入らないので付けない。
+    const files = splitAttachments(
+      message.bodyHtml,
+      message.attachments,
+    ).listed.map((file) => ({
+      id: file.id,
+      filename: file.filename || "attachment",
+      contentType: file.contentType,
+      size: file.size,
+    }));
     return {
       ...draft,
       mode: "forward",
+      forwardAttachments:
+        files.length > 0 ? { messageId: message.id, files } : null,
       subject: withPrefix(message.subject, "Fwd"),
       html: `${head}${EMPTY_LINE}<div data-quote="">${linesToHtml(header)}${EMPTY_LINE}${body}</div>`,
     };

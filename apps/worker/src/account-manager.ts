@@ -1,5 +1,7 @@
 import {
+  type AttachmentFetchNotification,
   CHANNEL_ACCOUNTS,
+  CHANNEL_ATTACHMENT_FETCH,
   CHANNEL_FOCUS,
   CHANNEL_GRAPH_PUSH,
   CHANNEL_NEW_MAIL,
@@ -13,6 +15,7 @@ import { type Database, mailAccounts } from "@mail/db";
 import { inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";
+import { notifyAttachmentReady } from "./attachment-fetch.js";
 import { GraphAccountSync } from "./graph-account-sync.js";
 import { type PushSender, parseNewMailNotification } from "./new-mail.js";
 import { accountsWithPendingOutbox } from "./outbox.js";
@@ -50,7 +53,7 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * API サーバーからの NOTIFY (アカウントの追加・削除) ですぐに反映し、
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
  * 送信待ちキューに操作が積まれた通知、利用者が開いているフォルダの通知、
- * Microsoft Graph の変更通知も受け取り、該当のアカウントへ伝える。
+ * Microsoft Graph の変更通知、添付ファイルの取得の依頼も受け取り、該当のアカウントへ伝える。
  * 新着メールの知らせは、Web Push で端末へ送る。
  */
 export class AccountManager {
@@ -122,6 +125,24 @@ export class AccountManager {
         }
         return;
       }
+      if (message.channel === CHANNEL_ATTACHMENT_FETCH) {
+        const payload = parsePayload<AttachmentFetchNotification>(
+          message.payload,
+        );
+        if (!payload || typeof payload.attachmentId !== "string") return;
+        const sync = this.running.get(payload.accountId)?.sync;
+        if (sync) {
+          sync.notifyAttachment(payload.attachmentId);
+        } else {
+          // 同期していないアカウント (再ログインが必要、など)。待たせずに失敗を返す。
+          void notifyAttachmentReady(
+            this.db,
+            payload.attachmentId,
+            "account_unavailable",
+          ).catch(() => {});
+        }
+        return;
+      }
       if (message.channel === CHANNEL_GRAPH_PUSH) {
         const payload = parsePayload<GraphPushNotification>(message.payload);
         const sync = payload && this.running.get(payload.accountId)?.sync;
@@ -140,6 +161,7 @@ export class AccountManager {
       .then(() => client.query(`LISTEN ${CHANNEL_OUTBOX}`))
       .then(() => client.query(`LISTEN ${CHANNEL_FOCUS}`))
       .then(() => client.query(`LISTEN ${CHANNEL_GRAPH_PUSH}`))
+      .then(() => client.query(`LISTEN ${CHANNEL_ATTACHMENT_FETCH}`))
       .then(() =>
         this.pushSender ? client.query(`LISTEN ${CHANNEL_NEW_MAIL}`) : null,
       )

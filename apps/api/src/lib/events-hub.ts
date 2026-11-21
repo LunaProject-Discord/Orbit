@@ -1,4 +1,7 @@
 import {
+  type AttachmentFetchError,
+  type AttachmentReadyNotification,
+  CHANNEL_ATTACHMENT_READY,
   CHANNEL_CHANGES,
   CHANNEL_NEW_MAIL,
   type ChangeNotification,
@@ -14,13 +17,16 @@ export type HubEvent =
   | { type: "mail"; notifications: PushMessage[] };
 
 type Listener = (event: HubEvent) => void;
+type AttachmentWaiter = (error: AttachmentFetchError | null) => void;
 
 /**
  * 同期ワーカーが NOTIFY で知らせる変更と新着メールを受け取り、該当する利用者の
  * SSE 接続へ配る。LISTEN 用に専用の接続を 1 本持ち、切れたら張り直す。
+ * 添付ファイルの取得が終わった知らせも、同じ接続で受け取る。
  */
 export class EventsHub {
   private listeners = new Map<string, Set<Listener>>();
+  private attachmentWaiters = new Map<string, Set<AttachmentWaiter>>();
   private client: pg.Client | null = null;
   private stopped = false;
   private retryTimer: NodeJS.Timeout | null = null;
@@ -38,6 +44,19 @@ export class EventsHub {
     const client = new pg.Client({ connectionString: this.connectionString });
     client.on("notification", (message) => {
       if (!message.payload) return;
+      if (message.channel === CHANNEL_ATTACHMENT_READY) {
+        try {
+          const { attachmentId, error } = JSON.parse(
+            message.payload,
+          ) as AttachmentReadyNotification;
+          for (const waiter of this.attachmentWaiters.get(attachmentId) ?? []) {
+            waiter(error ?? null);
+          }
+        } catch {
+          // 形式の違う通知は無視する。
+        }
+        return;
+      }
       try {
         if (message.channel === CHANNEL_NEW_MAIL) {
           const payload = JSON.parse(message.payload) as NewMailNotification;
@@ -72,6 +91,7 @@ export class EventsHub {
     await client.connect();
     await client.query(`LISTEN ${CHANNEL_CHANGES}`);
     await client.query(`LISTEN ${CHANNEL_NEW_MAIL}`);
+    await client.query(`LISTEN ${CHANNEL_ATTACHMENT_READY}`);
     this.client = client;
     // 切れていた間の通知は失われるので、接続中の全端末に再取得を促す。
     for (const listeners of this.listeners.values()) {
@@ -100,6 +120,36 @@ export class EventsHub {
       set.delete(listener);
       if (set.size === 0) this.listeners.delete(userId);
     };
+  }
+
+  /**
+   * 添付ファイルの取得が終わるのを待つ。先に待ち受けを始めてから request (同期ワーカーへの
+   * 依頼) を呼ぶので、すぐに終わった場合も取りこぼさない。時間切れなら "timeout" を返す。
+   */
+  async waitForAttachment(
+    attachmentId: string,
+    request: () => Promise<void>,
+    timeoutMs: number,
+  ): Promise<AttachmentFetchError | "timeout" | null> {
+    let waiter: AttachmentWaiter | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const set = this.attachmentWaiters.get(attachmentId) ?? new Set();
+    this.attachmentWaiters.set(attachmentId, set);
+    try {
+      const result = new Promise<AttachmentFetchError | "timeout" | null>(
+        (resolve) => {
+          waiter = resolve;
+          set.add(resolve);
+          timer = setTimeout(() => resolve("timeout"), timeoutMs);
+        },
+      );
+      await request();
+      return await result;
+    } finally {
+      clearTimeout(timer);
+      if (waiter) set.delete(waiter);
+      if (set.size === 0) this.attachmentWaiters.delete(attachmentId);
+    }
   }
 
   async stop() {
