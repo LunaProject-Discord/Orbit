@@ -53,8 +53,10 @@ import {
   type MessageAction,
   type MessageDetail,
   type MessageSummary,
+  markMailboxRead,
   type OutgoingMail,
   oauthProviderOf,
+  resetMailboxOrder,
   retryFailure,
   type SearchParams,
   type ServerDraft,
@@ -63,6 +65,7 @@ import {
   saveMailboxOrder,
   sendFocus,
   startOAuthLogin,
+  syncAccountNow,
   type User,
 } from "@/lib/api";
 import {
@@ -84,6 +87,7 @@ import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import {
   mailboxLabel,
+  refreshMailboxes,
   showsRecipients,
   sortAccounts,
   withSortOrder,
@@ -146,6 +150,10 @@ const emptySearch: SearchParams = {
 };
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+const MARK_READ_ERROR =
+  "既読にできませんでした。時間をおいて、もう一度お試しください。";
+const SYNC_NOW_ERROR =
+  "同期を始められませんでした。時間をおいて、もう一度お試しください。";
 const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
 const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
 const RETRY_ERROR =
@@ -375,6 +383,8 @@ export function MailApp({ user }: { user: User }) {
   const loadMailboxes = useCallback(async () => {
     try {
       setMailboxes(await listAllMailboxes());
+      // 移動先のメニューなど、フォルダ一覧を別に持っている場所も更新する。
+      refreshMailboxes();
     } catch {
       // 一覧は次の通知や操作でまた取得する。
     }
@@ -1336,6 +1346,41 @@ export function MailApp({ user }: { user: User }) {
     accounts?.find((account) => account.id === selectedAccountId) ?? null;
   const selectedMailbox =
     mailboxes?.find((mailbox) => mailbox.id === selectedMailboxId) ?? null;
+  /** フォルダの未読をすべて既読にする。画面にはすぐ反映し、失敗したらサーバーの状態に戻す。 */
+  const handleMarkAllRead = (target: MailboxSummary) => {
+    setMailboxes(
+      (current) =>
+        current?.map((mailbox) =>
+          mailbox.id === target.id ? { ...mailbox, unreadCount: 0 } : mailbox,
+        ) ?? null,
+    );
+    setMessages(
+      (current) =>
+        current?.map((message) =>
+          message.mailboxId === target.id && !message.seen
+            ? { ...message, seen: true }
+            : message,
+        ) ?? null,
+    );
+    markMailboxRead(target.id).catch(() => {
+      setNotice({ message: MARK_READ_ERROR, tone: "error" });
+      void loadMailboxes();
+      void loadFirstPage(selectionRef.current, false);
+    });
+  };
+  /** メールのアカウントすべてに迷惑メールのフォルダがある (迷惑メールとして扱える)。 */
+  const junkAvailable = (rows: MessageSummary[]) =>
+    rows.length > 0 &&
+    rows.every(
+      (row) =>
+        row.mailboxId !== null &&
+        mailboxes?.some(
+          (mailbox) =>
+            mailbox.accountId === row.accountId &&
+            mailbox.specialUse === "junk" &&
+            mailbox.id !== row.mailboxId,
+        ),
+    );
   const accountName = selectedAccount
     ? selectedAccount.displayName || selectedAccount.email
     : null;
@@ -1474,6 +1519,7 @@ export function MailApp({ user }: { user: User }) {
       const flags = (input: { seen?: boolean; flagged?: boolean }) =>
         performBulk(checkedRows, { action: "set_flags", ...input });
       const inTrash = selectedMailbox?.specialUse === "trash";
+      const inJunk = selectedMailbox?.specialUse === "junk";
       let handled = true;
       switch (command) {
         case "close":
@@ -1504,6 +1550,13 @@ export function MailApp({ user }: { user: User }) {
           break;
         case "move":
           setBulkMoveRequest((count) => count + 1);
+          break;
+        case "junk":
+          if (inJunk) {
+            performBulk(checkedRows, { action: "move", destination: "inbox" });
+          } else if (junkAvailable(checkedRows)) {
+            performBulk(checkedRows, { action: "move", destination: "junk" });
+          }
           break;
         default:
           handled = false;
@@ -1564,6 +1617,15 @@ export function MailApp({ user }: { user: User }) {
       case "move":
         setMoveRequest((count) => count + 1);
         break;
+      case "junk":
+        if (selectedMailbox?.specialUse === "junk") {
+          performAction(id, { action: "move", destination: "inbox" });
+          open(neighbor);
+        } else if (junkAvailable([message])) {
+          performAction(id, { action: "move", destination: "junk" });
+          open(neighbor);
+        }
+        break;
       case "reply":
       case "replyAll":
       case "forward":
@@ -1618,6 +1680,36 @@ export function MailApp({ user }: { user: User }) {
           onReorderMailboxes={(ids) => {
             setMailboxes((current) => current && withSortOrder(current, ids));
             saveOrder(() => saveMailboxOrder(ids));
+          }}
+          menuActions={{
+            onMarkAllRead: handleMarkAllRead,
+            onResetOrder: (ids) => {
+              const reset = new Set(ids);
+              setMailboxes(
+                (current) =>
+                  current?.map((mailbox) =>
+                    reset.has(mailbox.id)
+                      ? { ...mailbox, sortOrder: null }
+                      : mailbox,
+                  ) ?? null,
+              );
+              saveOrder(() => resetMailboxOrder(ids));
+            },
+            onSyncNow: (account) => {
+              syncAccountNow(account.id).catch(() =>
+                setNotice({ message: SYNC_NOW_ERROR, tone: "error" }),
+              );
+            },
+            onEditSignature: (account) => {
+              setSidebarOpen(false);
+              setSignatureTarget(account);
+            },
+            onDeleteAccount: (account) => {
+              setSidebarOpen(false);
+              setDeleteTarget(account);
+            },
+            onOpenSettings: () => handleSelectSpecial("settings"),
+            onReauth: handleReauth,
           }}
           draftCount={visibleDrafts?.length ?? 0}
           draftsSelected={draftsSelected}
@@ -1691,6 +1783,7 @@ export function MailApp({ user }: { user: User }) {
                 rows={checkedRows}
                 total={messages?.length ?? 0}
                 mailbox={selectedMailbox}
+                junkAvailable={junkAvailable(checkedRows)}
                 moveRequest={bulkMoveRequest}
                 onAction={performBulk}
                 onSelectAll={(checked) =>

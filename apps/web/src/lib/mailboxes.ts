@@ -5,10 +5,29 @@ import { listMailboxes } from "@/lib/offline";
 /** フォルダ一覧は頻繁には変わらないので、アカウントごとに覚えておく。 */
 const mailboxCache = new Map<string, Mailbox[]>();
 
+const refreshListeners = new Set<() => void>();
+
+/**
+ * フォルダが変わった (追加、並び替えなど) ことを知らせ、表示中のメニューやツールバーに
+ * フォルダ一覧を取得し直させる。
+ */
+export function refreshMailboxes() {
+  for (const listener of refreshListeners) listener();
+}
+
 export function useMailboxes(accountId: string): Mailbox[] {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>(
     () => mailboxCache.get(accountId) ?? [],
   );
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const listener = () => setVersion((current) => current + 1);
+    refreshListeners.add(listener);
+    return () => {
+      refreshListeners.delete(listener);
+    };
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version が変わったら取得し直す。
   useEffect(() => {
     const controller = new AbortController();
     setMailboxes(mailboxCache.get(accountId) ?? []);
@@ -21,7 +40,7 @@ export function useMailboxes(accountId: string): Mailbox[] {
         // 取得できなければ、移動先を選べないだけで他の操作は使える。
       });
     return () => controller.abort();
-  }, [accountId]);
+  }, [accountId, version]);
   return mailboxes;
 }
 
@@ -50,14 +69,16 @@ export function mailboxLabel(
   );
 }
 
-export type MailboxNode = {
-  mailbox: MailboxSummary;
-  children: MailboxNode[];
+type TreeMailbox = Mailbox & { unreadCount?: number };
+
+export type MailboxNode<T extends TreeMailbox = MailboxSummary> = {
+  mailbox: T;
+  children: MailboxNode<T>[];
   /** このフォルダと、その下のフォルダすべての未読数の合計。 */
   unreadTotal: number;
 };
 
-function order(mailbox: MailboxSummary): number {
+function order(mailbox: Mailbox): number {
   const index = mailbox.specialUse
     ? specialOrder.indexOf(mailbox.specialUse)
     : -1;
@@ -68,7 +89,7 @@ function order(mailbox: MailboxSummary): number {
  * 並び替えた順 (sortOrder) があればそれに従う。並び替えた後にできたフォルダは
  * 順番を持たないので、後ろに既定の順で並べる。
  */
-function compare(a: MailboxNode, b: MailboxNode): number {
+function compare(a: { mailbox: Mailbox }, b: { mailbox: Mailbox }): number {
   return (
     (a.mailbox.sortOrder ?? Number.POSITIVE_INFINITY) -
       (b.mailbox.sortOrder ?? Number.POSITIVE_INFINITY) ||
@@ -81,15 +102,17 @@ function compare(a: MailboxNode, b: MailboxNode): number {
  * アカウント 1 件分のフォルダを、親子関係 (parentId) からツリーに組み立てる。
  * 親が一覧に無いフォルダは最上位に置く。
  */
-export function buildMailboxTree(mailboxes: MailboxSummary[]): MailboxNode[] {
-  const nodes = new Map<string, MailboxNode>(
+export function buildMailboxTree<T extends TreeMailbox = MailboxSummary>(
+  mailboxes: T[],
+): MailboxNode<T>[] {
+  const nodes = new Map<string, MailboxNode<T>>(
     mailboxes.map((mailbox) => [
       mailbox.id,
-      { mailbox, children: [], unreadTotal: mailbox.unreadCount },
+      { mailbox, children: [], unreadTotal: mailbox.unreadCount ?? 0 },
     ]),
   );
   /** 親をたどると自分に戻る (壊れたデータ) 場合は、最上位として扱う。 */
-  const hasCycle = (start: MailboxNode): boolean => {
+  const hasCycle = (start: MailboxNode<T>): boolean => {
     const seen = new Set([start.mailbox.id]);
     let parentId = start.mailbox.parentId;
     while (parentId) {
@@ -100,7 +123,7 @@ export function buildMailboxTree(mailboxes: MailboxSummary[]): MailboxNode[] {
     return false;
   };
 
-  const roots: MailboxNode[] = [];
+  const roots: MailboxNode<T>[] = [];
   for (const node of nodes.values()) {
     const parent = node.mailbox.parentId
       ? nodes.get(node.mailbox.parentId)
@@ -109,17 +132,42 @@ export function buildMailboxTree(mailboxes: MailboxSummary[]): MailboxNode[] {
     else roots.push(node);
   }
 
-  const finish = (list: MailboxNode[]): number => {
+  const finish = (list: MailboxNode<T>[]): number => {
     list.sort(compare);
     let unread = 0;
     for (const node of list) {
-      node.unreadTotal = node.mailbox.unreadCount + finish(node.children);
+      node.unreadTotal =
+        (node.mailbox.unreadCount ?? 0) + finish(node.children);
       unread += node.unreadTotal;
     }
     return unread;
   };
   finish(roots);
   return roots;
+}
+
+/** 一覧に出すフォルダ 1 件。depth は階層の深さ (最上位は 0)。 */
+export type MailboxEntry<T extends Mailbox = Mailbox> = {
+  mailbox: T;
+  depth: number;
+};
+
+/**
+ * フォルダを、サイドバーに表示するのと同じ順 (親のすぐ下に子) に並べる。
+ * 移動先のメニューなど、ツリーを 1 列で見せる場所で使う。
+ */
+export function orderMailboxes<T extends Mailbox>(
+  mailboxes: T[],
+): MailboxEntry<T>[] {
+  const result: MailboxEntry<T>[] = [];
+  const walk = (nodes: MailboxNode<T>[], depth: number) => {
+    for (const node of nodes) {
+      result.push({ mailbox: node.mailbox, depth });
+      walk(node.children, depth + 1);
+    }
+  };
+  walk(buildMailboxTree(mailboxes), 0);
+  return result;
 }
 
 /**
@@ -200,6 +248,9 @@ export function actionTargets(
       ? mailboxes.find((mailbox) => mailbox.specialUse === "all")
       : undefined);
   const trash = mailboxes.find((mailbox) => mailbox.specialUse === "trash");
+  const junk = mailboxes.find((mailbox) => mailbox.specialUse === "junk");
+  const inbox = mailboxes.find((mailbox) => mailbox.specialUse === "inbox");
+  const inJunk = current?.specialUse === "junk";
   return {
     /** アーカイブ先。無いか、すでにそこにあるなら null。 */
     archive: archive && archive.id !== currentMailboxId ? archive : null,
@@ -207,9 +258,19 @@ export function actionTargets(
     trash: trash ?? null,
     /** ごみ箱の中にある (削除は完全な削除になる)。 */
     inTrash: current?.specialUse === "trash",
-    /** 移動先に選べるフォルダ。下書きなど、受信したメールを入れる場所でないものは除く。 */
-    destinations: mailboxes.filter(
-      (mailbox) =>
+    /**
+     * 迷惑メールとして扱うときの移動先。迷惑メールのフォルダが無いか、
+     * すでにその中にあるなら null。
+     */
+    junk: junk && !inJunk ? junk : null,
+    /** 迷惑メールから戻すときの移動先 (受信トレイ)。迷惑メールの中にあるときだけ。 */
+    notJunk: inJunk && inbox ? inbox : null,
+    /**
+     * 移動先に選べるフォルダ。サイドバーと同じ順に並べる。
+     * 下書きなど、受信したメールを入れる場所でないものは除く。
+     */
+    destinations: orderMailboxes(mailboxes).filter(
+      ({ mailbox }) =>
         mailbox.id !== currentMailboxId &&
         mailbox.specialUse !== "drafts" &&
         mailbox.specialUse !== "sent" &&
