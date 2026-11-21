@@ -25,6 +25,7 @@ const app = createApp({
   allowPrivateMailHosts: env.allowPrivateMailHosts,
   microsoft: env.microsoft,
   google: env.google,
+  webPushPublicKey: env.webPushPublicKey,
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

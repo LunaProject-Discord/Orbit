@@ -2,6 +2,7 @@ import {
   loadEncryptionKey,
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
+  loadWebPushConfig,
 } from "@mail/core";
 
 function required(name: string): string {
@@ -40,6 +41,8 @@ export function loadEnv() {
     /** localhost や社内 IP のメールサーバーを登録できるようにする (開発用)。 */
     allowPrivateMailHosts: process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
     /** Microsoft アカウント (Exchange Online、Outlook.com) の追加。未設定なら null で無効。 */
+    /** Web Push の公開鍵。端末が通知の送り先を登録するときに使う。未設定なら null。 */
+    webPushPublicKey: loadWebPushConfig(process.env)?.publicKey ?? null,
     microsoft: microsoftConfig && {
       config: microsoftConfig,
       /** ログイン後に戻る Web の URL。Entra のアプリ登録のリダイレクト URI と一致させる。 */

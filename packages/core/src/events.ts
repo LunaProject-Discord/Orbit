@@ -36,6 +36,32 @@ export type GraphPushNotification = {
 };
 
 /**
+ * ワーカー → API とワーカー自身: 受信トレイに新しいメールが届いた。
+ * API は SSE で開いている画面へ伝え、ワーカーは Web Push で端末へ通知する。
+ */
+export const CHANNEL_NEW_MAIL = "mail_new_mail";
+
+/** 新着メール 1 通分。通知に出す内容だけを持つ。 */
+export type NewMailItem = {
+  /** messages.id */
+  id: string;
+  /** 差出人の表示名 (無ければメールアドレス)。 */
+  from: string;
+  subject: string;
+};
+
+/**
+ * CHANNEL_NEW_MAIL の payload。NOTIFY は 8000 バイトまでなので、messages には
+ * 先頭の数件だけを入れ、全体の件数は count で伝える。
+ */
+export type NewMailNotification = {
+  userId: string;
+  accountId: string;
+  messages: NewMailItem[];
+  count: number;
+};
+
+/**
  * API → ワーカー: 受信メールの添付ファイルの実体を取得してほしい。
  * 実体はメールサーバーに置いたままにしてあり、開いたときにだけ取得して置き場に保存する。
  */

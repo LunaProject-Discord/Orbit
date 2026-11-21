@@ -1,3 +1,4 @@
+import type { NewMailCandidate } from "@mail/core";
 import {
   attachments,
   type Database,
@@ -28,6 +29,7 @@ import {
   type SyncAccount,
 } from "./mailbox-store.js";
 import { type AttachmentInfo, clean, makeSnippet } from "./message-parse.js";
+import { announceNewMail } from "./new-mail.js";
 import { loadPendingGuard } from "./outbox.js";
 
 const BODY_BATCH = 20;
@@ -120,6 +122,8 @@ async function applyPage(
   account: SyncAccount,
   mailboxId: string,
   items: GraphMessage[],
+  /** 新しく取り込んだメールを、新着として端末へ通知する。 */
+  announce: boolean,
 ) {
   const removedIds = items
     .filter((item) => item["@removed"])
@@ -163,6 +167,7 @@ async function applyPage(
     );
 
     const changed: string[] = [];
+    const arrived: NewMailCandidate[] = [];
     let added = 0;
     for (const item of upserts) {
       // 移動・削除中のメッセージは取り込み直さない (反映後の差分で所在が決まる)。
@@ -182,6 +187,7 @@ async function applyPage(
             .where(eq(messages.id, messageId));
         }
       } else {
+        const receivedAt = values.receivedAt ?? values.sentAt ?? new Date();
         const [row] = await tx
           .insert(messages)
           .values({
@@ -189,7 +195,7 @@ async function applyPage(
             accountId: account.id,
             providerMessageId: item.id,
             threadKey: values.threadKey ?? item.id,
-            receivedAt: values.receivedAt ?? values.sentAt ?? new Date(),
+            receivedAt,
           })
           .onConflictDoNothing({
             target: [messages.accountId, messages.providerMessageId],
@@ -199,6 +205,15 @@ async function applyPage(
         if (!row) continue;
         messageId = row.id;
         added++;
+        if (announce && !values.draft) {
+          arrived.push({
+            id: row.id,
+            from: values.from ?? [],
+            subject: values.subject ?? "",
+            seen: values.seen ?? false,
+            receivedAt,
+          });
+        }
       }
       // Graph のメッセージは常に 1 つのフォルダにだけ存在する。
       await tx
@@ -216,6 +231,7 @@ async function applyPage(
       changed.push(messageId);
     }
     await recordChanges(tx, account.userId, "message", "upsert", changed);
+    await announceNewMail(tx, account, arrived);
     return { added, removed };
   });
 }
@@ -230,7 +246,12 @@ export async function syncGraphFolder(
   db: Database,
   client: GraphClient,
   account: SyncAccount,
-  mailbox: { id: string; path: string; syncState: string | null },
+  mailbox: {
+    id: string;
+    path: string;
+    syncState: string | null;
+    specialUse?: string | null;
+  },
   signal?: AbortSignal,
 ): Promise<{ added: number; removed: number }> {
   const full = mailbox.syncState === null;
@@ -267,7 +288,14 @@ export async function syncGraphFolder(
     for (const item of page.value) {
       if (!item["@removed"]) seen.add(item.id);
     }
-    const result = await applyPage(db, account, mailbox.id, page.value);
+    const result = await applyPage(
+      db,
+      account,
+      mailbox.id,
+      page.value,
+      // 受信トレイの差分で届いたメールだけを通知する (初回や取り直しの全件は通知しない)。
+      !full && mailbox.specialUse === "inbox",
+    );
     added += result.added;
     removed += result.removed;
     deltaLink = page["@odata.deltaLink"];

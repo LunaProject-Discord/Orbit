@@ -130,6 +130,28 @@ export const devices = pgTable(
   (t) => [index("devices_user_idx").on(t.userId)],
 );
 
+/**
+ * Web Push の送り先 (ブラウザーごと)。新着メールの通知を、画面を閉じていても届ける。
+ * endpoint はブラウザーのプッシュサービスが発行する URL で、端末を一意に表す。
+ */
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text().notNull().unique(),
+    /** 通知の内容を暗号化するための、端末の公開鍵と共有の秘密の値 (base64url)。 */
+    p256dh: text().notNull(),
+    auth: text().notNull(),
+    userAgent: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("push_subscriptions_user_idx").on(t.userId)],
+);
+
 // ---------------------------------------------------------------------------
 // メールアカウントとフォルダ
 // ---------------------------------------------------------------------------

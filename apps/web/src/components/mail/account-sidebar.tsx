@@ -19,6 +19,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { NotificationToggle } from "@/components/mail/notification-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -33,6 +34,7 @@ import {
   type MailboxNode,
   mailboxLabel,
 } from "@/lib/mailboxes";
+import type { NotificationStatus } from "@/lib/notifications";
 
 const statusLabel: Partial<Record<Account["status"], string>> = {
   auth_required: "再ログインが必要です",
@@ -108,6 +110,10 @@ type Props = {
   /** 再ログインが必要な Google / Microsoft のアカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
   onSignOut: () => void;
+  /** 新着メールの通知の状態と、その切り替え。 */
+  notificationStatus: NotificationStatus;
+  notificationBusy: boolean;
+  onNotificationChange: (enabled: boolean) => void;
 };
 
 export function AccountSidebar({
@@ -125,6 +131,9 @@ export function AccountSidebar({
   onEditSignature,
   onReauth,
   onSignOut,
+  notificationStatus,
+  notificationBusy,
+  onNotificationChange,
 }: Props) {
   const { collapsed, toggle } = useCollapsed();
   const trees = useMemo(() => {
@@ -294,6 +303,11 @@ export function AccountSidebar({
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
         </div>
+        <NotificationToggle
+          status={notificationStatus}
+          busy={notificationBusy}
+          onChange={onNotificationChange}
+        />
         <ThemeToggle />
         <Button
           variant="outline"

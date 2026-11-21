@@ -3,9 +3,9 @@ import {
   type OutboxOperation,
   type OutboxTarget,
 } from "@mail/core";
-import { type Database, mailboxes, outbox } from "@mail/db";
+import { type Database, mailAccounts, mailboxes, outbox } from "@mail/db";
 import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
-import type { Tx } from "./changes.js";
+import { recordChanges, type Tx } from "./changes.js";
 
 /** 一時的な失敗 (接続が切れたなど) でやり直す回数の上限。超えたら失敗として扱う。 */
 const MAX_ATTEMPTS = 5;
@@ -119,15 +119,28 @@ export async function processOutbox(
             ),
           );
       }
+      // 失敗したことを端末へ知らせる (画面に通知を出し、やり直せるようにする)。
+      const [account] = await tx
+        .select({ userId: mailAccounts.userId })
+        .from(mailAccounts)
+        .where(eq(mailAccounts.id, accountId));
+      if (account) {
+        await recordChanges(tx, account.userId, "account", "upsert", [
+          accountId,
+        ]);
+      }
     });
   }
 
+  // 反映済みの記録と、やり直されないまま残った失敗の記録は、期間を過ぎたら消す
+  // (送信の失敗は、利用者が破棄するまで残す)。
   await db
     .delete(outbox)
     .where(
       and(
         eq(outbox.accountId, accountId),
-        eq(outbox.status, "done"),
+        ne(outbox.kind, "send"),
+        inArray(outbox.status, ["done", "failed"]),
         lt(outbox.updatedAt, new Date(Date.now() - KEEP_DONE_MS)),
       ),
     );
