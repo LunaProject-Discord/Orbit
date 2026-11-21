@@ -8,6 +8,7 @@ import {
   PenLineIcon,
   PlusIcon,
 } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AccountSidebar } from "@/components/mail/account-sidebar";
@@ -20,7 +21,10 @@ import {
   NoticeToast,
   ToastRegion,
 } from "@/components/mail/failure-toast";
-import { MessageList } from "@/components/mail/message-list";
+import {
+  MessageList,
+  type MessageListHandle,
+} from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
 import { OutgoingList } from "@/components/mail/outgoing-list";
 import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
@@ -83,7 +87,6 @@ import {
   disableNotifications,
   enableNotifications,
   inboxUnreadCount,
-  MESSAGE_ID,
   type NotificationStatus,
   onNotificationOpen,
   parseMailEvent,
@@ -105,6 +108,14 @@ import {
   useOnline,
   useQueuedSends,
 } from "@/lib/offline";
+import {
+  buildRoute,
+  historyMode,
+  type MailRoute,
+  NEW_COMPOSE,
+  parseRoute,
+  sameSearch,
+} from "@/lib/route";
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
@@ -198,20 +209,28 @@ function mergeFirstPage(
 
 export function MailApp({ user }: { user: User }) {
   const { signOut } = useAuth();
+  // 開いたときの URL が指す表示から始める (再読み込み、ブックマーク、通知から開いた場合)。
+  // ログイン画面から移ってきた直後は window.location がまだ前の画面を指していることがあるので、
+  // 描画中のページの URL を Next.js から受け取る。
+  const searchParams = useSearchParams();
+  const [initialRoute] = useState(() => parseRoute(searchParams.toString()));
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
-    null,
+    initialRoute.accountId,
   );
   const [selectedMailboxId, setSelectedMailboxId] = useState<string | null>(
-    null,
+    initialRoute.mailboxId,
   );
   const [mailboxes, setMailboxes] = useState<MailboxSummary[] | null>(null);
   const [messages, setMessages] = useState<MessageSummary[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  /** メール一覧をスクロールさせている要素と、一覧を操作する窓口。 */
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<MessageListHandle>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
-    null,
+    initialRoute.messageId,
   );
   const [refreshKey, setRefreshKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
@@ -220,9 +239,13 @@ export function MailApp({ user }: { user: User }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   /** 検索欄の内容。 */
-  const [searchInput, setSearchInput] = useState<SearchParams>(emptySearch);
+  const [searchInput, setSearchInput] = useState<SearchParams>(
+    initialRoute.search ?? emptySearch,
+  );
   /** 実行中の検索 (入力が止まってから反映する)。null なら通常の一覧を表示する。 */
-  const [search, setSearch] = useState<SearchParams | null>(null);
+  const [search, setSearch] = useState<SearchParams | null>(
+    initialRoute.search,
+  );
   const searchRef = useRef<SearchParams | null>(null);
   searchRef.current = search;
   /** 検索結果で目立たせる語 (サーバーが検索欄の入力から求める)。 */
@@ -271,7 +294,7 @@ export function MailApp({ user }: { user: User }) {
   /** サーバーに保存してある下書き (どの端末で書いたものも含む)。読み込み前は null。 */
   const [drafts, setDrafts] = useState<ServerDraft[] | null>(null);
   /** 下書きの一覧を表示している。 */
-  const [draftsSelected, setDraftsSelected] = useState(false);
+  const [draftsSelected, setDraftsSelected] = useState(initialRoute.drafts);
   /** 作成画面で開いているメール。閉じると、内容は下書きとしてサーバーに残る。 */
   const [draft, setDraft] = useState<ComposeDraft | null>(null);
   /** 開いてから内容を変えたか。変えていない新規のメールは、閉じたら残さない。 */
@@ -296,6 +319,19 @@ export function MailApp({ user }: { user: User }) {
   } | null>(null);
   /** まだ送り終えていないメール (送信中、やり直し待ち、失敗)。 */
   const [outgoing, setOutgoing] = useState<OutgoingMail[]>([]);
+  /**
+   * URL が指していて、まだ開けていない作成画面 (下書きの ID か NEW_COMPOSE)。
+   * アカウントと下書きの一覧を読み込んでから開く。
+   */
+  const [composeTarget, setComposeTarget] = useState<string | null>(
+    initialRoute.composeId,
+  );
+  /** true にすると、次の URL の更新は履歴に積まずに書き換える (無くなった表示の後始末など)。 */
+  const replaceNextRef = useRef(false);
+  /** 履歴を 1 つ戻している途中。戻り終えるまで URL には触らない。 */
+  const backPendingRef = useRef(false);
+  /** 増やすと、表示と URL を照らし合わせ直す。 */
+  const [routeSync, setRouteSync] = useState(0);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -469,6 +505,9 @@ export function MailApp({ user }: { user: User }) {
   /** 通知から開く。受信トレイに切り替えて、そのメールを表示する。 */
   const openFromNotification = useCallback((messageId: string | null) => {
     setSidebarOpen(false);
+    setDraftsSelected(false);
+    setSearchInput(emptySearch);
+    setSearch(null);
     setSelectedAccountId(null);
     setSelectedMailboxId(null);
     // 既読にするのは、開いた本文側が行う。
@@ -481,14 +520,9 @@ export function MailApp({ user }: { user: User }) {
     void syncNotifications().then((status) => {
       if (active) setNotificationStatus(status);
     });
+    // 通知から新しく開かれた場合は URL (?message=) でメールが指定されていて、
+    // 開いたときの URL としてすでに表示に反映している。
     const unsubscribe = onNotificationOpen(openFromNotification);
-    // 通知から新しく開かれた場合は、URL でメールが指定されている。
-    const params = new URLSearchParams(window.location.search);
-    const messageId = params.get("message");
-    if (messageId) {
-      window.history.replaceState(null, "", window.location.pathname);
-      if (MESSAGE_ID.test(messageId)) openFromNotification(messageId);
-    }
     return () => {
       active = false;
       unsubscribe();
@@ -735,10 +769,25 @@ export function MailApp({ user }: { user: User }) {
       mailboxes &&
       !mailboxes.some((mailbox) => mailbox.id === selectedMailboxId)
     ) {
+      replaceNextRef.current = true;
       setSelectedMailboxId(null);
       setSelectedMessageId(null);
     }
   }, [mailboxes, selectedMailboxId]);
+
+  // 表示中のアカウントが無くなったら (古い URL を開いた場合など)、全アカウントの表示に戻す。
+  useEffect(() => {
+    if (
+      selectedAccountId &&
+      accounts &&
+      !accounts.some((account) => account.id === selectedAccountId)
+    ) {
+      replaceNextRef.current = true;
+      setSelectedAccountId(null);
+      setSelectedMailboxId(null);
+      setSelectedMessageId(null);
+    }
+  }, [accounts, selectedAccountId]);
 
   // サーバーからの変更通知で、アカウントとフォルダの一覧、表示中の一覧を取得し直す。
   useEffect(() => {
@@ -1031,7 +1080,121 @@ export function MailApp({ user }: { user: User }) {
     setDraftsSelected(true);
   }
 
-  const handleMissing = useCallback(() => setSelectedMessageId(null), []);
+  const handleMissing = useCallback(() => {
+    // 無くなったメールの URL は、履歴に残さない。
+    replaceNextRef.current = true;
+    setSelectedMessageId(null);
+  }, []);
+
+  /** 作成画面で開いているメールの、URL での表し方。 */
+  const openComposeId =
+    draft && composeOpen
+      ? draft.mode === "new" &&
+        !draftDirty &&
+        saverRef.current?.revisionOf(draft.idempotencyKey) == null
+        ? NEW_COMPOSE
+        : draft.idempotencyKey
+      : null;
+  /** いまの表示を表す URL (? 以降)。 */
+  const routeQuery = buildRoute({
+    accountId: selectedAccountId,
+    mailboxId: selectedMailboxId,
+    drafts: draftsSelected,
+    messageId: selectedMessageId,
+    composeId: openComposeId ?? composeTarget,
+    search,
+  });
+
+  // 表示が変わったら URL に反映する。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: routeSync は照らし合わせ直すきっかけとして使う
+  useEffect(() => {
+    if (backPendingRef.current) return;
+    const currentQuery = window.location.search;
+    const forceReplace = replaceNextRef.current;
+    replaceNextRef.current = false;
+    if (routeQuery === currentQuery) return;
+    const url = `${window.location.pathname}${routeQuery}`;
+    const from: unknown = window.history.state?.mailFrom;
+    let mode = forceReplace
+      ? "replace"
+      : historyMode(parseRoute(currentQuery), parseRoute(routeQuery));
+    if (mode === "close") {
+      if (from === routeQuery) {
+        // 開く前の表示が 1 つ前の履歴にあるので、そこへ戻る。
+        backPendingRef.current = true;
+        window.history.back();
+        return;
+      }
+      mode = "replace";
+    }
+    if (mode === "push") {
+      window.history.pushState({ mailFrom: currentQuery }, "", url);
+    } else {
+      window.history.replaceState({ mailFrom: from }, "", url);
+    }
+  }, [routeQuery, routeSync]);
+
+  /** URL が指す表示に切り替える (ブラウザーの「戻る」「進む」)。 */
+  const applyRouteRef = useRef<(route: MailRoute) => void>(() => {});
+  applyRouteRef.current = (route) => {
+    setSidebarOpen(false);
+    if (
+      route.accountId !== selectedAccountId ||
+      route.mailboxId !== selectedMailboxId ||
+      route.drafts !== draftsSelected
+    ) {
+      clearSelection();
+      anchorRef.current = null;
+    }
+    setSelectedAccountId(route.accountId);
+    setSelectedMailboxId(route.mailboxId);
+    setDraftsSelected(route.drafts);
+    setSelectedMessageId(route.messageId);
+    // 検索の内容が同じなら、一覧を読み込み直さない (スクロールの位置も保つ)。
+    if (!sameSearch(route.search, search)) {
+      setSearchInput(route.search ?? emptySearch);
+      setSearch(route.search);
+    }
+    if (!route.composeId) {
+      setComposeTarget(null);
+      if (draft) closeCompose();
+    } else if (route.composeId !== openComposeId) {
+      setComposeTarget(route.composeId);
+    }
+  };
+  useEffect(() => {
+    const onPopState = () => {
+      if (backPendingRef.current) {
+        // 自分で戻した分。表示はすでに変えてあるので、URL と合っているかだけ確かめる。
+        backPendingRef.current = false;
+        setRouteSync((count) => count + 1);
+        return;
+      }
+      applyRouteRef.current(parseRoute(window.location.search));
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // URL が指す作成画面を開く。下書きが見つからなければ、URL から外すだけにする。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 開く処理は毎回の描画で作り直すので、きっかけになる値だけを見る
+  useEffect(() => {
+    if (!composeTarget || accounts === null || drafts === null) return;
+    setComposeTarget(null);
+    if (composeTarget === openComposeId) return;
+    if (composeTarget === NEW_COMPOSE) {
+      if (draft) return;
+      if (accounts.length > 0) handleNewMail();
+      else replaceNextRef.current = true;
+      return;
+    }
+    const saved = drafts.find((item) => item.id === composeTarget);
+    // サーバーへ保存し終える前に閉じた下書きは、この端末にだけ残っている。
+    const unsaved = saverRef.current?.pendingDraft(composeTarget);
+    if (saved) handleOpenDraft(saved);
+    else if (unsaved) showInCompose(unsaved, true);
+    else replaceNextRef.current = true;
+  }, [composeTarget, accounts, drafts]);
 
   // 接続後に送るメールの下書きは、送信したものとして一覧に出さない。
   const queuedIds = new Set(queuedSends.map((item) => item.id));
@@ -1170,9 +1333,7 @@ export function MailApp({ user }: { user: User }) {
     const open = (message: MessageSummary | undefined) => {
       if (!message) return;
       handleSelectMessage(message.id);
-      document
-        .querySelector(`[data-message-id="${message.id}"]`)
-        ?.scrollIntoView({ block: "nearest" });
+      messageListRef.current?.scrollToMessage(message.id);
     };
 
     if (command === "next" || command === "previous") {
@@ -1299,7 +1460,11 @@ export function MailApp({ user }: { user: User }) {
                 // 失敗してもサイドバーの表示はそのままなので、もう一度押せる。
               });
           }}
-          onSignOut={() => void signOut()}
+          onSignOut={() => {
+            // ログアウトしたあとに別の利用者がログインしても、この表示には戻さない。
+            window.history.replaceState(null, "", window.location.pathname);
+            void signOut();
+          }}
           notificationStatus={notificationStatus}
           notificationBusy={notificationBusy}
           onNotificationChange={handleNotificationChange}
@@ -1395,7 +1560,10 @@ export function MailApp({ user }: { user: User }) {
           />
           {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
               枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div
+            ref={listScrollRef}
+            className="relative flex min-h-0 flex-1 flex-col overflow-y-auto"
+          >
             {noAccounts ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
                 <InboxIcon
@@ -1425,6 +1593,8 @@ export function MailApp({ user }: { user: User }) {
               />
             ) : (
               <MessageList
+                ref={messageListRef}
+                scrollRef={listScrollRef}
                 messages={messages}
                 error={listError}
                 selectedId={selectedMessage?.id ?? selectedMessageId}
@@ -1569,6 +1739,9 @@ export function MailApp({ user }: { user: User }) {
             (current) =>
               current?.filter((mailbox) => mailbox.accountId !== id) ?? null,
           );
+          if (selectedMessageId || selectedAccountId === id) {
+            replaceNextRef.current = true;
+          }
           setSelectedMessageId(null);
           if (selectedAccountId === id) {
             setSelectedAccountId(null);

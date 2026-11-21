@@ -64,6 +64,8 @@ function forgetUser(): void {
   if (user) void clearOffline(user.id);
 }
 
+import { safeReturnPath } from "@/lib/route";
+
 type AuthState =
   | { status: "loading"; user: null }
   | { status: "signed-out"; user: null }
@@ -166,6 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 /**
  * ログイン状態に応じて画面を出し分ける。
  * 未ログインなら /login へ、ログイン済みで /login に来たら / へ移す。
+ * 開こうとしていた URL は /login?next= に控えておき、ログインしたらそこへ戻す。
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   const auth = useAuth();
@@ -175,13 +178,23 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   const redirectTo =
     auth.status === "signed-out" && !onLoginPage
-      ? "/login"
+      ? "login"
       : auth.status === "signed-in" && onLoginPage
-        ? "/"
+        ? "app"
         : null;
 
   useEffect(() => {
-    if (redirectTo) router.replace(redirectTo);
+    if (redirectTo === "login") {
+      const next = safeReturnPath(
+        `${window.location.pathname}${window.location.search}`,
+      );
+      router.replace(
+        next ? `/login?next=${encodeURIComponent(next)}` : "/login",
+      );
+    } else if (redirectTo === "app") {
+      const params = new URLSearchParams(window.location.search);
+      router.replace(safeReturnPath(params.get("next")) ?? "/");
+    }
   }, [redirectTo, router]);
 
   if (auth.status === "unreachable") {
