@@ -56,6 +56,7 @@ import {
 } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
+import { bodyStyle, usePreferences } from "@/lib/preferences";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
@@ -76,7 +77,12 @@ export function hasRemoteImages(html: string): boolean {
  * allowRemoteImages が true のときだけ、https の画像の読み込みを許可する
  * (スクリプト、フォント、外部のスタイルシートなどは引き続き止める)。
  */
-export function buildSrcDoc(html: string, allowRemoteImages = false): string {
+export function buildSrcDoc(
+  html: string,
+  allowRemoteImages = false,
+  /** 本文のフォント、大きさ、行間 (設定で変えられる)。メール側の指定があれば、そちらが使われる。 */
+  style = "font-family:system-ui,sans-serif;font-size:14px;line-height:1.6",
+): string {
   const imgSrc = allowRemoteImages ? "data: https:" : "data:";
   return [
     "<!doctype html><html><head>",
@@ -85,7 +91,7 @@ export function buildSrcDoc(html: string, allowRemoteImages = false): string {
     '<meta name="referrer" content="no-referrer">',
     '<base target="_blank">',
     '<meta charset="utf-8">',
-    "<style>html{background:#fff;color:#111}body{margin:16px;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6;overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>",
+    `<style>html{background:#fff;color:#111}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>`,
     "</head><body>",
     html,
     "</body></html>",
@@ -164,6 +170,15 @@ export function MessageView({
   });
   /** 取得済みの本文。返信・転送の元にする。 */
   const details = useRef(new Map<string, MessageDetail>());
+  const preferences = usePreferences();
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+  /** 「少し待ってから既読にする」設定での待ち時間。別のメールへ移るか閉じたら取り消す。 */
+  const readTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 開いているメールが変わるたびに取り消す
+  useEffect(() => () => clearTimeout(readTimer.current), [messageId]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey は再取得のきっかけとして使う
   useEffect(() => {
@@ -195,17 +210,29 @@ export function MessageView({
         setState({ status: "ready", thread });
 
         // 開いたら既読にする (1 回だけ。あとから未読に戻した場合は、そのままにする)。
+        // 設定によって、すぐに、少し待ってから、または自動では既読にしない。
         if (current.markedRead) return;
+        const { markRead, markReadDelay } = preferencesRef.current;
+        if (markRead === "never") return;
         current.markedRead = true;
-        const row = summaryRef.current;
-        const unread = thread
-          .filter((message) => !message.seen)
-          .map((message) => message.id);
-        if (unread.length > 0 || (row && !row.seen)) {
-          onActionRef.current(
-            [...new Set([...(row?.threadMessageIds ?? []), ...unread])],
-            { action: "set_flags", seen: true },
-          );
+        const mark = () => {
+          const row = summaryRef.current;
+          const unread = thread
+            .filter((message) => !message.seen)
+            .map((message) => message.id);
+          if (unread.length > 0 || (row && !row.seen)) {
+            onActionRef.current(
+              [...new Set([...(row?.threadMessageIds ?? []), ...unread])],
+              { action: "set_flags", seen: true },
+            );
+          }
+        };
+        if (markRead === "immediately") mark();
+        else {
+          readTimer.current = setTimeout(() => {
+            // 待っている間に別のメールへ移っていたら、既読にしない。
+            if (session.current === current) mark();
+          }, markReadDelay * 1000);
         }
       })
       .catch((error) => {
@@ -295,17 +322,20 @@ export function MessageView({
     sender && own.has(sender.address.toLowerCase())
       ? (last?.to[0] ?? sender)
       : sender;
-  const quickReplyBox = last && replyTo && !last.draft && (
-    <div className="shrink-0 px-4 pt-2 pb-4 sm:px-6">
-      <QuickReply
-        // 別のメールを開いたり、新しいメールが届いたりしたら、宛先が変わるので作り直す。
-        key={last.id}
-        recipient={addressLabel(replyTo)}
-        onSend={quickReply}
-        onExpand={(text) => compose("reply", text)}
-      />
-    </div>
-  );
+  const quickReplyBox = preferences.quickReply &&
+    last &&
+    replyTo &&
+    !last.draft && (
+      <div className="shrink-0 px-4 pt-2 pb-4 sm:px-6">
+        <QuickReply
+          // 別のメールを開いたり、新しいメールが届いたりしたら、宛先が変わるので作り直す。
+          key={last.id}
+          recipient={addressLabel(replyTo)}
+          onSend={quickReply}
+          onExpand={(text) => compose("reply", text)}
+        />
+      </div>
+    );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -461,6 +491,7 @@ function ThreadItem({
   onToggle: () => void;
   onDetail: (message: MessageDetail) => void;
 }) {
+  const preferences = usePreferences();
   const sender = message.from[0];
   const name = addressLabel(sender);
   const recipients = [...message.to, ...message.cc];
@@ -500,7 +531,7 @@ function ThreadItem({
                   recipients.length > 0
                     ? `宛先: ${recipients.map(addressLabel).join("、")} · `
                     : ""
-                }${formatFullDate(message.receivedAt)}`
+                }${formatFullDate(message.receivedAt, preferences)}`
               : message.snippet}
           </span>
         </span>
@@ -521,7 +552,7 @@ function ThreadItem({
             dateTime={message.receivedAt}
             className="shrink-0 text-muted-foreground text-xs tabular-nums"
           >
-            {formatListDate(message.receivedAt)}
+            {formatListDate(message.receivedAt, new Date(), preferences)}
           </time>
         )}
         <ChevronDownIcon
@@ -869,7 +900,10 @@ function MessageContent({
 }) {
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
   const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
-  const showImages = imagesShownFor === message.id;
+  const preferences = usePreferences();
+  const showImages =
+    preferences.remoteImages === "always" || imagesShownFor === message.id;
+  const frameStyle = bodyStyle(preferences);
   const { embedded, listed } = useMemo(
     () => splitAttachments(message.bodyHtml, message.attachments),
     [message.bodyHtml, message.attachments],
@@ -881,9 +915,10 @@ function MessageContent({
         ? buildSrcDoc(
             replaceCidReferences(message.bodyHtml, embeddedUrls),
             showImages,
+            frameStyle,
           )
         : null,
-    [message.bodyHtml, embeddedUrls, showImages],
+    [message.bodyHtml, embeddedUrls, showImages, frameStyle],
   );
   const imagesBlocked =
     !showImages &&
@@ -929,7 +964,7 @@ function MessageContent({
           <dt className="text-muted-foreground">日時</dt>
           <dd>
             <time dateTime={message.receivedAt}>
-              {formatFullDate(message.receivedAt)}
+              {formatFullDate(message.receivedAt, preferences)}
             </time>
           </dd>
         </dl>
@@ -981,7 +1016,13 @@ function MessageContent({
               : "min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
           }
         >
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+          <p
+            className="whitespace-pre-wrap break-words"
+            style={{
+              fontSize: preferences.bodyFontSize,
+              lineHeight: preferences.bodyLineHeight,
+            }}
+          >
             {message.bodyText}
           </p>
         </div>

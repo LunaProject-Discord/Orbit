@@ -11,6 +11,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PlusIcon,
+  RotateCcwIcon,
   SignatureIcon,
   SunIcon,
   Trash2Icon,
@@ -22,10 +23,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@/components/ui/native-select";
+import {
   ACCOUNT_COLORS,
   type AccountColorName,
   accountColorName,
 } from "@/lib/account-colors";
+import {
+  ACCOUNT_ICONS,
+  type AccountIconName,
+  AccountMark,
+} from "@/lib/account-icons";
 import {
   type Account,
   oauthProviderOf,
@@ -34,6 +44,16 @@ import {
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
 import type { NotificationStatus } from "@/lib/notifications";
+import {
+  BODY_FONT_SIZES,
+  BODY_LINE_HEIGHTS,
+  cleanFontName,
+  FONT_SIZES,
+  MARK_READ_DELAYS,
+  resetPreferences,
+  updatePreferences,
+  usePreferences,
+} from "@/lib/preferences";
 import type { SyncStatus } from "@/lib/sync-status";
 
 const notificationDescriptions: Record<NotificationStatus, string> = {
@@ -111,6 +131,8 @@ export function SettingsView({
   onSignOut,
 }: Props) {
   const { theme, setTheme } = useTheme();
+  const preferences = usePreferences();
+  const set = updatePreferences;
   // テーマはこの端末に保存した値なので、サーバーで作った HTML と食い違わないよう、表示してから読む。
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -138,7 +160,7 @@ export function SettingsView({
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 p-4 sm:p-6">
           <Section
             title="表示"
-            description="画面の配色を選びます。システムにすると、端末の設定に合わせて切り替わります。"
+            description="配色、フォント、文字の大きさを選びます。ここから下の「操作」までの設定は、この端末 (ブラウザー) だけに保存します。"
           >
             <div
               role="radiogroup"
@@ -165,6 +187,188 @@ export function SettingsView({
                   </button>
                 );
               })}
+            </div>
+            <SettingGroup>
+              <SelectRow
+                label="フォント"
+                description="標準は Gen Interface JP です。"
+                value={preferences.font}
+                onChange={(font) => set({ font })}
+                options={[
+                  ["default", "標準 (Gen Interface JP)"],
+                  ["system", "端末のフォント"],
+                  ["serif", "明朝体"],
+                  ["mono", "等幅"],
+                  ["custom", "名前を指定"],
+                ]}
+              />
+              {preferences.font === "custom" && (
+                <CustomFontRow
+                  value={preferences.customFont}
+                  onChange={(customFont) => set({ customFont })}
+                />
+              )}
+              <SelectRow
+                label="文字の大きさ"
+                description="画面全体が同じ比率で変わります。"
+                value={preferences.fontSize}
+                onChange={(fontSize) => set({ fontSize })}
+                options={FONT_SIZES.map((size) => [
+                  size,
+                  size === 100 ? "100% (標準)" : `${size}%`,
+                ])}
+              />
+              <SwitchRow
+                label="動きを減らす"
+                description="画面の切り替えなどの動きを止めます。オフのときは、端末の設定に従います。"
+                checked={preferences.motion === "off"}
+                onChange={(off) => set({ motion: off ? "off" : "system" })}
+              />
+            </SettingGroup>
+          </Section>
+
+          <Section title="メール一覧">
+            <SettingGroup>
+              <SelectRow
+                label="行の間隔"
+                value={preferences.density}
+                onChange={(density) => set({ density })}
+                options={[
+                  ["compact", "せまい"],
+                  ["standard", "標準"],
+                  ["comfortable", "ひろい"],
+                ]}
+              />
+              <SelectRow
+                label="本文のプレビュー"
+                description="件名の下に出す本文の行数です。"
+                value={preferences.previewLines}
+                onChange={(previewLines) => set({ previewLines })}
+                options={[
+                  [0, "表示しない"],
+                  [1, "1 行"],
+                  [2, "2 行 (標準)"],
+                  [3, "3 行"],
+                ]}
+              />
+              <SwitchRow
+                label="添付・スター・返信済みの印"
+                checked={preferences.showListIcons}
+                onChange={(showListIcons) => set({ showListIcons })}
+              />
+              <SwitchRow
+                label="アカウントの色の点"
+                description="複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示します。"
+                checked={preferences.showAccountMark}
+                onChange={(showAccountMark) => set({ showAccountMark })}
+              />
+              <SelectRow
+                label="日付"
+                value={preferences.listDate}
+                onChange={(listDate) => set({ listDate })}
+                options={[
+                  ["auto", "今日は時刻、それ以外は日付"],
+                  ["datetime", "常に日付と時刻"],
+                ]}
+              />
+              <SelectRow
+                label="時刻"
+                value={preferences.hour12 ? "12" : "24"}
+                onChange={(value) => set({ hour12: value === "12" })}
+                options={[
+                  ["24", "24 時間 (14:30)"],
+                  ["12", "12 時間 (午後2:30)"],
+                ]}
+              />
+            </SettingGroup>
+          </Section>
+
+          <Section title="メールの表示">
+            <SettingGroup>
+              <SelectRow
+                label="既読にするタイミング"
+                description="メールを開いたときの動作です。"
+                value={preferences.markRead}
+                onChange={(markRead) => set({ markRead })}
+                options={[
+                  ["immediately", "開いたらすぐ"],
+                  ["delay", "少し待ってから"],
+                  ["never", "自動では既読にしない"],
+                ]}
+              />
+              {preferences.markRead === "delay" && (
+                <SelectRow
+                  label="既読にするまでの時間"
+                  value={preferences.markReadDelay}
+                  onChange={(markReadDelay) => set({ markReadDelay })}
+                  options={MARK_READ_DELAYS.map((seconds) => [
+                    seconds,
+                    `${seconds} 秒`,
+                  ])}
+                />
+              )}
+              <SelectRow
+                label="本文のフォント"
+                description="メール側でフォントや大きさを指定している場合は、そちらが使われます。"
+                value={preferences.bodyFont}
+                onChange={(bodyFont) => set({ bodyFont })}
+                options={[
+                  ["sans", "ゴシック体 (標準)"],
+                  ["serif", "明朝体"],
+                  ["mono", "等幅"],
+                ]}
+              />
+              <SelectRow
+                label="本文の文字の大きさ"
+                value={preferences.bodyFontSize}
+                onChange={(bodyFontSize) => set({ bodyFontSize })}
+                options={BODY_FONT_SIZES.map((size) => [
+                  size,
+                  size === 14 ? "14 px (標準)" : `${size} px`,
+                ])}
+              />
+              <SelectRow
+                label="本文の行間"
+                value={preferences.bodyLineHeight}
+                onChange={(bodyLineHeight) => set({ bodyLineHeight })}
+                options={BODY_LINE_HEIGHTS.map((height) => [
+                  height,
+                  height === 1.6 ? "1.6 (標準)" : String(height),
+                ])}
+              />
+              <SelectRow
+                label="外部の画像"
+                description="常に表示すると、メールを開いたことが差出人に伝わる場合があります。"
+                value={preferences.remoteImages}
+                onChange={(remoteImages) => set({ remoteImages })}
+                options={[
+                  ["ask", "メールごとに確認 (標準)"],
+                  ["always", "常に表示"],
+                ]}
+              />
+              <SwitchRow
+                label="簡易返信欄"
+                description="メールの下に、すぐ返信を書ける欄を出します。"
+                checked={preferences.quickReply}
+                onChange={(quickReply) => set({ quickReply })}
+              />
+            </SettingGroup>
+          </Section>
+
+          <Section title="操作">
+            <SettingGroup>
+              <SwitchRow
+                label="ショートカットキー"
+                description="J / K や C などの 1 文字のキーで操作します。一覧は下にあります。"
+                checked={preferences.shortcuts}
+                onChange={(shortcuts) => set({ shortcuts })}
+              />
+            </SettingGroup>
+            <div>
+              <Button variant="outline" size="sm" onClick={resetPreferences}>
+                <RotateCcwIcon />
+                表示と操作の設定を標準に戻す
+              </Button>
             </div>
           </Section>
 
@@ -204,7 +408,7 @@ export function SettingsView({
 
           <Section
             title="メールアカウント"
-            description="表示名、色、署名はすべての端末で共通です。並び順は、サイドバーでドラッグして変えられます。"
+            description="表示名、色、アイコン、署名はすべての端末で共通です。並び順は、サイドバーでドラッグして変えられます。"
           >
             {accounts === null ? (
               <p className="text-muted-foreground text-sm">読み込み中…</p>
@@ -325,6 +529,7 @@ function AccountCard({
   const problem = accountProblems[account.status];
   const provider = oauthProviderOf(account);
   const color = accountColorName(accounts, account.id);
+  const colorItem = ACCOUNT_COLORS.find((item) => item.name === color);
 
   const save = (patch: Parameters<typeof updateAccount>[1]) => {
     setError(null);
@@ -341,10 +546,19 @@ function AccountCard({
   };
   const chooseColor = (next: AccountColorName) => {
     if (next === account.color) return;
+    saveNow({ color: next });
+  };
+  const chooseIcon = (next: AccountIconName | null) => {
+    if (next === account.icon) return;
+    saveNow({ icon: next });
+  };
+  const saveNow = (
+    patch: { color: AccountColorName } | { icon: AccountIconName | null },
+  ) => {
     // 押してすぐ画面に反映し、保存できなければ元に戻す。
-    onUpdated({ ...account, color: next });
+    onUpdated({ ...account, ...patch });
     setError(null);
-    updateAccount(account.id, { color: next })
+    updateAccount(account.id, patch)
       .then(onUpdated)
       .catch(() => {
         onUpdated(account);
@@ -355,13 +569,7 @@ function AccountCard({
   return (
     <li className="flex flex-col gap-3 rounded-lg border p-3">
       <div className="flex items-start gap-3">
-        <span
-          aria-hidden="true"
-          className={cn(
-            "mt-1.5 size-2.5 shrink-0 rounded-full",
-            ACCOUNT_COLORS.find((item) => item.name === color)?.dot,
-          )}
-        />
+        <AccountMark accounts={accounts} account={account} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">
             {account.displayName || account.email}
@@ -440,6 +648,52 @@ function AccountCard({
         </div>
       </div>
 
+      <div className="flex flex-col gap-1.5">
+        <span id={`${id}-icon`} className="text-xs">
+          アイコン
+        </span>
+        <div
+          role="radiogroup"
+          aria-labelledby={`${id}-icon`}
+          className="flex flex-wrap gap-1"
+        >
+          {[
+            { name: null, label: "なし (色の点)", icon: null },
+            ...ACCOUNT_ICONS,
+          ].map((item) => {
+            const selected = (account.icon ?? null) === item.name;
+            return (
+              // biome-ignore lint/a11y/useSemanticElements: アイコンの見本をそのまま選択肢にするため、radio の役割を持つボタンにしている
+              <button
+                key={item.name ?? "none"}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                aria-label={item.label}
+                title={item.label}
+                onClick={() => chooseIcon(item.name)}
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-md border border-transparent text-muted-foreground outline-none transition-colors hover:bg-muted focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
+                  selected && cn("border-border bg-muted", colorItem?.text),
+                )}
+              >
+                {item.icon ? (
+                  <item.icon aria-hidden="true" />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "size-2 rounded-full",
+                      selected ? colorItem?.dot : "bg-muted-foreground/60",
+                    )}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {error && (
         <p role="alert" className="text-destructive text-xs">
           {error}
@@ -477,5 +731,152 @@ function AccountCard({
         </Button>
       </div>
     </li>
+  );
+}
+
+/** 設定の行をまとめる枠。行の間に区切り線を引く。 */
+function SettingGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col divide-y rounded-lg border">{children}</div>
+  );
+}
+
+function SettingRow(props: {
+  label: string;
+  labelFor?: string;
+  labelId?: string;
+  description?: string | undefined;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2.5">
+      <div className="min-w-0 flex-1 basis-48">
+        {props.labelFor ? (
+          <label htmlFor={props.labelFor} className="font-medium text-sm">
+            {props.label}
+          </label>
+        ) : (
+          <span id={props.labelId} className="font-medium text-sm">
+            {props.label}
+          </span>
+        )}
+        {props.description && (
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            {props.description}
+          </p>
+        )}
+      </div>
+      {props.children}
+    </div>
+  );
+}
+
+/** 選択肢から 1 つ選ぶ行。値は文字列でも数でもよい。 */
+function SelectRow<T extends string | number>(props: {
+  label: string;
+  description?: string;
+  value: T;
+  onChange: (value: T) => void;
+  options: readonly (readonly [value: T, label: string])[];
+}) {
+  const id = useId();
+  return (
+    <SettingRow
+      label={props.label}
+      labelFor={id}
+      description={props.description}
+    >
+      <NativeSelect
+        id={id}
+        size="sm"
+        value={String(props.value)}
+        onChange={(event) => {
+          const option = props.options.find(
+            ([value]) => String(value) === event.target.value,
+          );
+          if (option) props.onChange(option[0]);
+        }}
+      >
+        {props.options.map(([value, label]) => (
+          <NativeSelectOption key={String(value)} value={String(value)}>
+            {label}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
+    </SettingRow>
+  );
+}
+
+/** オンとオフを切り替える行。 */
+function SwitchRow(props: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <SettingRow
+      label={props.label}
+      labelId={id}
+      description={props.description}
+    >
+      <button
+        type="button"
+        role="switch"
+        aria-checked={props.checked}
+        aria-labelledby={id}
+        onClick={() => props.onChange(!props.checked)}
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+          props.checked ? "bg-primary" : "bg-input",
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute top-0.5 left-0.5 size-4 rounded-full bg-background shadow-sm transition-transform",
+            props.checked && "translate-x-4",
+          )}
+        />
+      </button>
+    </SettingRow>
+  );
+}
+
+/** フォントを名前で指定する行。入力を終えたときに反映する。 */
+function CustomFontRow(props: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = useId();
+  const [name, setName] = useState(props.value);
+  return (
+    <SettingRow
+      label="フォントの名前"
+      labelFor={id}
+      description="この端末に入っているフォントの名前を入力します (例: BIZ UDPGothic)。見つからなければ標準のフォントになります。"
+    >
+      <Input
+        id={id}
+        value={name}
+        maxLength={100}
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="フォントの名前"
+        onChange={(event) => setName(event.target.value)}
+        onBlur={() => {
+          const cleaned = cleanFontName(name);
+          setName(cleaned);
+          props.onChange(cleaned);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+            event.currentTarget.blur();
+          }
+        }}
+        className="h-8 w-48"
+      />
+    </SettingRow>
   );
 }

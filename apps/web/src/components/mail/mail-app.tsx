@@ -114,6 +114,7 @@ import {
   useOnline,
   useQueuedSends,
 } from "@/lib/offline";
+import { usePreferences } from "@/lib/preferences";
 import {
   buildRoute,
   historyMode,
@@ -228,6 +229,7 @@ function mergeFirstPage(
 }
 
 export function MailApp({ user }: { user: User }) {
+  const preferences = usePreferences();
   const { signOut } = useAuth();
   // 開いたときの URL が指す表示から始める (再読み込み、ブックマーク、通知から開いた場合)。
   // ログイン画面から移ってきた直後は window.location がまだ前の画面を指していることがあるので、
@@ -1428,6 +1430,8 @@ export function MailApp({ user }: { user: User }) {
   // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (event) => {
+    // 設定でショートカットキーを止めていても、Esc で閉じる操作は残す。
+    if (!preferences.shortcuts && event.key !== "Escape") return;
     const command = resolveShortcut(event);
     if (!command || isTypingTarget(event.target)) return;
     // ダイアログやメニューを開いている間は、そちらのキー操作を優先する。

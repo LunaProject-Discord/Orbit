@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Account, ServerDraft } from "@/lib/api";
 import { addressLabel, formatListDate } from "@/lib/format";
+import { usePreferences } from "@/lib/preferences";
 
 type Props = {
   /** サーバーに保存してある下書き。読み込み前は null。 */
@@ -35,6 +36,7 @@ export function DraftList({
   onOpen,
   onDiscard,
 }: Props) {
+  const preferences = usePreferences();
   if (drafts === null) {
     return (
       <div className="flex flex-col" aria-busy="true">
@@ -88,7 +90,7 @@ export function DraftList({
                   dateTime={draft.updatedAt}
                   className="shrink-0 text-muted-foreground text-xs tabular-nums"
                 >
-                  {formatListDate(draft.updatedAt)}
+                  {formatListDate(draft.updatedAt, new Date(), preferences)}
                 </time>
               </span>
               <span className="truncate font-medium text-sm">{subject}</span>

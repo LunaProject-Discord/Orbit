@@ -5,14 +5,34 @@ import type { Account } from "@/lib/api";
  * 名前は API (apps/api の accounts.ts) と揃える。
  */
 export const ACCOUNT_COLORS = [
-  { name: "sky", label: "水色", dot: "bg-sky-500" },
-  { name: "violet", label: "紫", dot: "bg-violet-500" },
-  { name: "emerald", label: "緑", dot: "bg-emerald-500" },
-  { name: "amber", label: "黄", dot: "bg-amber-500" },
-  { name: "rose", label: "赤", dot: "bg-rose-500" },
-  { name: "teal", label: "青緑", dot: "bg-teal-500" },
-  { name: "orange", label: "オレンジ", dot: "bg-orange-500" },
-  { name: "slate", label: "グレー", dot: "bg-slate-500" },
+  { name: "sky", label: "水色", dot: "bg-sky-500", text: "text-sky-500" },
+  {
+    name: "violet",
+    label: "紫",
+    dot: "bg-violet-500",
+    text: "text-violet-500",
+  },
+  {
+    name: "emerald",
+    label: "緑",
+    dot: "bg-emerald-500",
+    text: "text-emerald-500",
+  },
+  { name: "amber", label: "黄", dot: "bg-amber-500", text: "text-amber-500" },
+  { name: "rose", label: "赤", dot: "bg-rose-500", text: "text-rose-500" },
+  { name: "teal", label: "青緑", dot: "bg-teal-500", text: "text-teal-500" },
+  {
+    name: "orange",
+    label: "オレンジ",
+    dot: "bg-orange-500",
+    text: "text-orange-500",
+  },
+  {
+    name: "slate",
+    label: "グレー",
+    dot: "bg-slate-500",
+    text: "text-slate-500",
+  },
 ] as const;
 
 export type AccountColorName = (typeof ACCOUNT_COLORS)[number]["name"];
