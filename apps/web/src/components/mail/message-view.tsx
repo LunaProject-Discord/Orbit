@@ -11,7 +11,7 @@ import {
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,8 +25,6 @@ import type { MessageActionInput } from "@/lib/actions";
 import {
   ApiError,
   getMessage,
-  listMailboxes,
-  type Mailbox,
   type MessageDetail,
   type MessageSummary,
 } from "@/lib/api";
@@ -36,6 +34,7 @@ import {
   formatFullDate,
   formatSize,
 } from "@/lib/format";
+import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
@@ -82,6 +81,8 @@ type Props = {
    */
   summary: MessageSummary | null;
   onAction: (messageIds: string[], input: MessageActionInput) => void;
+  /** 値が増えると、移動先のメニューを開く (ショートカットキー用)。 */
+  moveRequest: number;
   onBack: () => void;
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
@@ -97,6 +98,7 @@ export function MessageView({
   refreshKey,
   summary,
   onAction,
+  moveRequest,
   onBack,
   onMissing,
 }: Props) {
@@ -144,6 +146,7 @@ export function MessageView({
           <MessageToolbar
             message={state.message}
             summary={summary}
+            moveRequest={moveRequest}
             onAction={onAction}
           />
         )}
@@ -166,67 +169,33 @@ export function MessageView({
   );
 }
 
-/** フォルダ一覧は頻繁には変わらないので、アカウントごとに覚えておく。 */
-const mailboxCache = new Map<string, Mailbox[]>();
-
-function useMailboxes(accountId: string): Mailbox[] {
-  const [mailboxes, setMailboxes] = useState<Mailbox[]>(
-    () => mailboxCache.get(accountId) ?? [],
-  );
-  useEffect(() => {
-    const controller = new AbortController();
-    setMailboxes(mailboxCache.get(accountId) ?? []);
-    listMailboxes(accountId, controller.signal)
-      .then((list) => {
-        mailboxCache.set(accountId, list);
-        setMailboxes(list);
-      })
-      .catch(() => {
-        // 取得できなければ、移動先を選べないだけで他の操作は使える。
-      });
-    return () => controller.abort();
-  }, [accountId]);
-  return mailboxes;
-}
-
-const mailboxLabels: Partial<
-  Record<NonNullable<Mailbox["specialUse"]>, string>
-> = {
-  inbox: "受信トレイ",
-  sent: "送信済み",
-  drafts: "下書き",
-  trash: "ごみ箱",
-  junk: "迷惑メール",
-  archive: "アーカイブ",
-};
-
 /** 既読、スター、アーカイブ、削除、移動のボタン。 */
 function MessageToolbar({
   message,
   summary,
+  moveRequest,
   onAction,
 }: {
   message: MessageDetail;
   summary: MessageSummary | null;
+  moveRequest: number;
   onAction: Props["onAction"];
 }) {
   const mailboxes = useMailboxes(message.accountId);
   const seen = summary?.seen ?? message.seen;
   const flagged = summary?.flagged ?? message.flagged;
-  const currentMailboxId = summary?.mailboxId ?? null;
-  const current = mailboxes.find((mailbox) => mailbox.id === currentMailboxId);
-  const archive = mailboxes.find((mailbox) => mailbox.specialUse === "archive");
-  const trash = mailboxes.find((mailbox) => mailbox.specialUse === "trash");
-  const inTrash = current?.specialUse === "trash";
-  // 移動先に選べるフォルダ。下書きなど、受信したメールを入れる場所でないものは除く。
-  const destinations = mailboxes.filter(
-    (mailbox) =>
-      mailbox.id !== currentMailboxId &&
-      mailbox.specialUse !== "drafts" &&
-      mailbox.specialUse !== "sent" &&
-      mailbox.specialUse !== "all" &&
-      mailbox.specialUse !== "flagged",
+  const { archive, trash, inTrash, destinations } = actionTargets(
+    mailboxes,
+    summary?.mailboxId ?? null,
   );
+  // 移動先のメニュー。ショートカットキー (V) からも開く。
+  const [moveOpen, setMoveOpen] = useState(false);
+  const handledMoveRequest = useRef(moveRequest);
+  useEffect(() => {
+    if (moveRequest === handledMoveRequest.current) return;
+    handledMoveRequest.current = moveRequest;
+    setMoveOpen(true);
+  }, [moveRequest]);
   const act = (input: MessageActionInput) => onAction([message.id], input);
 
   return (
@@ -258,7 +227,7 @@ function MessageToolbar({
           {flagged ? "スターを外す" : "スターを付ける"}
         </span>
       </Button>
-      {archive && archive.id !== currentMailboxId && (
+      {archive && (
         <Button
           variant="ghost"
           size="sm"
@@ -287,7 +256,7 @@ function MessageToolbar({
         </Button>
       )}
       {destinations.length > 0 && (
-        <DropdownMenu>
+        <DropdownMenu open={moveOpen} onOpenChange={setMoveOpen}>
           <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
             <FolderInputIcon />
             <span className="sr-only sm:not-sr-only">移動</span>
@@ -298,10 +267,7 @@ function MessageToolbar({
                 key={mailbox.id}
                 onClick={() => act({ action: "move", mailboxId: mailbox.id })}
               >
-                <span className="truncate">
-                  {(mailbox.specialUse && mailboxLabels[mailbox.specialUse]) ||
-                    mailbox.name}
-                </span>
+                <span className="truncate">{mailboxLabel(mailbox)}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
