@@ -61,8 +61,15 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1795281729647,
-      "tag": "0008_push_subscriptions",
+      "when": 1795281575464,
+      "tag": "0008_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795281901448,
+      "tag": "0009_push_subscriptions",
       "breakpoints": true
     }
   ]

@@ -14,6 +14,7 @@ import { AccountSidebar } from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
 import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
+import { DraftList } from "@/components/mail/draft-list";
 import {
   FailureToast,
   NoticeToast,
@@ -35,11 +36,13 @@ import {
 import {
   type Account,
   ApiError,
+  deleteDraft,
   deleteOutgoing,
   dismissFailure,
   type FailedOperation,
   listAccounts,
   listAllMailboxes,
+  listDrafts,
   listFailures,
   listMessages,
   listOutgoing,
@@ -51,6 +54,8 @@ import {
   oauthProviderOf,
   retryFailure,
   type SearchParams,
+  type ServerDraft,
+  saveDraft,
   searchMessages,
   sendFocus,
   startOAuthLogin,
@@ -61,10 +66,14 @@ import {
   type ComposeDraft,
   type ComposeMode,
   draftFromOutgoing,
-  loadStoredDraft,
+  draftFromServer,
+  draftSaveInput,
+  loadUnsavedDrafts,
   newDraft,
-  storeDraft,
+  removeUnsavedDraft,
+  storeUnsavedDraft,
 } from "@/lib/compose";
+import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { subscribeEvents } from "@/lib/events";
 import { mailboxLabel, showsRecipients } from "@/lib/mailboxes";
 import {
@@ -104,8 +113,37 @@ const NOTIFICATION_BLOCKED =
   "ブラウザーの設定で通知が拒否されています。ブラウザーの設定で、このサイトの通知を許可してください。";
 /** 短い知らせを出しておく時間。 */
 const NOTICE_MS = 8_000;
-const DRAFT_NOTICE =
-  "書きかけのメールがあります。送信するか破棄すると、新しいメールを作成できます。";
+const DRAFT_UPDATED_NOTICE = "ほかの端末での変更を反映しました。";
+const DRAFT_CONFLICT_NOTICE =
+  "ほかの端末でこの下書きが変更されていたため、この端末の内容は別の下書きとして保存しました。";
+const DRAFT_GONE_NOTICE =
+  "この下書きは、ほかの端末で送信または破棄されました。この端末の内容は新しい下書きとして保存します。";
+/** 入力が止まってから、まだ保存していない下書きをこの端末に置くまでの時間。 */
+const LOCAL_COPY_DELAY_MS = 300;
+
+/** 下書きを 1 回サーバーへ保存し、結果を保存の係 (DraftSaver) が扱う形にする。 */
+async function saveDraftOnce(
+  draft: ComposeDraft,
+  baseRevision: number | null,
+): Promise<DraftSaveResult> {
+  try {
+    const saved = await saveDraft(
+      draft.idempotencyKey,
+      draftSaveInput(draft, baseRevision),
+    );
+    return { status: "saved", revision: saved.revision };
+  } catch (error) {
+    if (!(error instanceof ApiError)) return { status: "retry" };
+    if (error.status === 409) {
+      const current = (error.body as { draft?: { revision?: number } | null })
+        ?.draft;
+      return { status: "conflict", revision: current?.revision ?? null };
+    }
+    if (error.status === 410) return { status: "gone" };
+    if (error.status === 429 || error.status >= 500) return { status: "retry" };
+    return { status: "rejected" };
+  }
+}
 
 /** 表示する一覧。mailboxId が null なら受信トレイ (accountId も null なら全アカウント分)。 */
 type Selection = { accountId: string | null; mailboxId: string | null };
@@ -200,13 +238,27 @@ export function MailApp({ user }: { user: User }) {
   const anchorRef = useRef<string | null>(null);
   /** 増やすと、選択したメールの移動先メニューが開く (ショートカットキー用)。 */
   const [bulkMoveRequest, setBulkMoveRequest] = useState(0);
-  /** 作成中のメール。作成画面を閉じても、送信するか破棄するまで残す。 */
+  /** サーバーに保存してある下書き (どの端末で書いたものも含む)。読み込み前は null。 */
+  const [drafts, setDrafts] = useState<ServerDraft[] | null>(null);
+  /** 下書きの一覧を表示している。 */
+  const [draftsSelected, setDraftsSelected] = useState(false);
+  /** 作成画面で開いているメール。閉じると、内容は下書きとしてサーバーに残る。 */
   const [draft, setDraft] = useState<ComposeDraft | null>(null);
+  /** 開いてから内容を変えたか。変えていない新規のメールは、閉じたら残さない。 */
   const [draftDirty, setDraftDirty] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeNotice, setComposeNotice] = useState<string | null>(null);
-  /** 下書きをこの端末に保存した時刻。 */
+  /** 下書きをサーバーに保存した時刻。 */
   const [draftSavedAt, setDraftSavedAt] = useState<Date | null>(null);
+  const [draftSaveProblem, setDraftSaveProblem] = useState<
+    "offline" | "rejected" | null
+  >(null);
+  /** 増やすと、作成画面の本文を下書きの内容で作り直す。 */
+  const [draftVersion, setDraftVersion] = useState(0);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  /** 下書きをサーバーへ保存する係。 */
+  const saverRef = useRef<DraftSaver | null>(null);
   /** 表示中のメールへの返信・転送の依頼 (ショートカットキー用)。 */
   const [composeRequest, setComposeRequest] = useState<{
     count: number;
@@ -247,6 +299,44 @@ export function MailApp({ user }: { user: User }) {
     }
   }, []);
 
+  /**
+   * 下書きの一覧を取得する。開いている下書きが他の端末で変わっていたら、
+   * この端末に保存していない変更が無い場合に限って、その内容に差し替える。
+   */
+  const loadDrafts = useCallback(async () => {
+    const saver = saverRef.current;
+    const before = saver?.version;
+    let list: ServerDraft[];
+    try {
+      list = await listDrafts();
+    } catch {
+      // 次の通知や操作でまた取得する。
+      return;
+    }
+    setDrafts(list);
+    const current = draftRef.current;
+    // 取得している間にこの端末から保存していたら、一覧のほうが古いかもしれない。
+    if (!current || !saver || saver.version !== before) return;
+    const id = current.idempotencyKey;
+    const known = saver.revisionOf(id);
+    if (known === null || saver.isBusy(id)) return;
+    const remote = list.find((item) => item.id === id);
+    if (!remote) {
+      // 他の端末で送信または破棄された。
+      void saver.forget(id);
+      removeUnsavedDraft(id);
+      setDraft(null);
+      setDraftDirty(false);
+      setComposeOpen(false);
+      setComposeNotice(null);
+    } else if (remote.revision > known) {
+      saver.track(id, remote.revision);
+      setDraft(draftFromServer(remote));
+      setDraftVersion((version) => version + 1);
+      setDraftSavedAt(new Date(remote.updatedAt));
+      setComposeNotice(DRAFT_UPDATED_NOTICE);
+    }
+  }, []);
   /** 一覧を 1 ページ取得する。検索中は検索結果、そうでなければ表示中のフォルダ。 */
   const fetchPage = useCallback(
     async ({ accountId, mailboxId }: Selection, cursor: string | null) => {
@@ -302,7 +392,8 @@ export function MailApp({ user }: { user: User }) {
     void loadMailboxes();
     void loadOutgoing();
     void loadFailures();
-  }, [loadAccounts, loadMailboxes, loadOutgoing, loadFailures]);
+    void loadDrafts();
+  }, [loadAccounts, loadMailboxes, loadOutgoing, loadFailures, loadDrafts]);
 
   // 短い知らせは、しばらくしたら消す。
   useEffect(() => {
@@ -395,26 +486,71 @@ export function MailApp({ user }: { user: User }) {
       .finally(() => setFailureBusy(false));
   }
 
-  // 前回この端末で書きかけていたメールがあれば、続きから書けるようにする。
+  // 下書きをサーバーへ保存する係を用意する。前回この端末で保存し終えていなかった
+  // 下書きがあれば、ここで保存する (保存できると下書きの一覧に出る)。
   useEffect(() => {
-    const stored = loadStoredDraft();
-    if (!stored) return;
-    setDraft(stored);
-    setDraftDirty(true);
-  }, []);
+    const saver = new DraftSaver({
+      save: saveDraftOnce,
+      onEvent: (event) => {
+        const openId = draftRef.current?.idempotencyKey;
+        if (event.type === "saved") {
+          if (event.settled) removeUnsavedDraft(event.id);
+          if (event.id === openId) {
+            setDraftSavedAt(new Date());
+            setDraftSaveProblem(null);
+          }
+          void loadDrafts();
+        } else if (event.type === "moved") {
+          removeUnsavedDraft(event.from);
+          const moved = saver.pendingDraft(event.to);
+          if (moved) storeUnsavedDraft({ draft: moved, baseRevision: null });
+          if (event.from === openId) {
+            setDraft((current) =>
+              current?.idempotencyKey === event.from
+                ? { ...current, idempotencyKey: event.to }
+                : current,
+            );
+            setComposeNotice(
+              event.reason === "conflict"
+                ? DRAFT_CONFLICT_NOTICE
+                : DRAFT_GONE_NOTICE,
+            );
+          }
+        } else if (event.id === openId) {
+          setDraftSaveProblem(event.retrying ? "offline" : "rejected");
+        }
+      },
+    });
+    saverRef.current = saver;
+    for (const { draft: unsaved, baseRevision } of loadUnsavedDrafts()) {
+      saver.track(unsaved.idempotencyKey, baseRevision);
+      saver.schedule(unsaved);
+    }
+    void saver.flush();
+    return () => {
+      saver.stop();
+      saverRef.current = null;
+    };
+  }, [loadDrafts]);
 
-  // 書きかけのメールを、入力が止まったらこの端末に保存する。
+  // サーバーへ保存し終えるまでの間、書きかけの内容をこの端末にも置いておく。
   useEffect(() => {
     if (!draft || !draftDirty) return;
-    const timer = setTimeout(() => {
-      if (storeDraft(draft)) setDraftSavedAt(new Date());
-    }, 800);
+    const keep = () => {
+      const saver = saverRef.current;
+      // 保存し終えた内容を置き直すと、次に開いたときに古い内容で上書きしかねない。
+      if (!saver?.isBusy(draft.idempotencyKey)) return;
+      storeUnsavedDraft({
+        draft,
+        baseRevision: saver.revisionOf(draft.idempotencyKey),
+      });
+    };
+    const timer = setTimeout(keep, LOCAL_COPY_DELAY_MS);
     // 保存を待っている間にページを閉じたり再読み込みしたりしても、内容を失わない。
-    const flush = () => storeDraft(draft);
-    window.addEventListener("pagehide", flush);
+    window.addEventListener("pagehide", keep);
     return () => {
       clearTimeout(timer);
-      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("pagehide", keep);
     };
   }, [draft, draftDirty]);
 
@@ -456,6 +592,13 @@ export function MailApp({ user }: { user: User }) {
 
   /** メールを開く。既読にするのは、会話を読み込んだ本文側が行う。 */
   function handleSelectMessage(id: string) {
+    // 下書きフォルダにある、このアプリの下書きの控えは、作成画面で続きを書く。
+    const draftId = messages?.find((item) => item.id === id)?.draftId;
+    const own = draftId ? drafts?.find((item) => item.id === draftId) : null;
+    if (own) {
+      handleOpenDraft(own);
+      return;
+    }
     setSelectedMessageId(id);
     anchorRef.current = id;
   }
@@ -560,6 +703,7 @@ export function MailApp({ user }: { user: User }) {
         void loadMailboxes();
         void loadOutgoing();
         void loadFailures();
+        void loadDrafts();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
@@ -574,67 +718,93 @@ export function MailApp({ user }: { user: User }) {
     loadFirstPage,
     loadOutgoing,
     loadFailures,
+    loadDrafts,
     openFromNotification,
   ]);
 
-  /** 作成画面を開く。書きかけのメールがあれば、上書きせずにそちらを開く。 */
-  function openCompose(create: () => ComposeDraft | null) {
-    if (draft && draftDirty) {
-      setComposeNotice(DRAFT_NOTICE);
-    } else {
-      const next = create();
-      if (!next) return;
-      setDraft(next);
-      setDraftDirty(false);
-      setDraftSavedAt(null);
-      setComposeNotice(null);
-    }
+  /**
+   * 作成画面でメールを開く。それまで開いていたメールは、下書きとしてサーバーに残る。
+   * dirty は、開いた時点でまだ保存していない内容があること。
+   */
+  function showInCompose(next: ComposeDraft, dirty: boolean) {
+    // 入力が止まるのを待たずに、開いていたメールを保存する。
+    if (draft && draftDirty) void saverRef.current?.flush();
+    setDraft(next);
+    setDraftDirty(dirty);
+    setDraftVersion((version) => version + 1);
+    setDraftSavedAt(null);
+    setDraftSaveProblem(null);
+    setComposeNotice(null);
     setComposeOpen(true);
+    if (dirty) saverRef.current?.schedule(next);
   }
 
   function handleNewMail() {
-    if (draft) {
-      // 「作成」は、書きかけがあればその続きを開く。
-      setComposeNotice(null);
+    const accountId = selectedAccountId ?? accounts?.[0]?.id;
+    if (!accountId) return;
+    const account = accounts?.find((item) => item.id === accountId);
+    showInCompose(newDraft(accountId, account?.signatureHtml), false);
+  }
+
+  /** 下書きの一覧から選んだ下書きを、作成画面で開く。 */
+  function handleOpenDraft(item: ServerDraft) {
+    if (draft?.idempotencyKey === item.id) {
       setComposeOpen(true);
       return;
     }
-    openCompose(() => {
-      const accountId = selectedAccountId ?? accounts?.[0]?.id;
-      if (!accountId) return null;
-      const account = accounts?.find((item) => item.id === accountId);
-      return newDraft(accountId, account?.signatureHtml);
-    });
+    const saver = saverRef.current;
+    // この端末に保存していない変更が残っていれば、そちらが新しい。
+    const pending = saver?.pendingDraft(item.id);
+    if (!pending && !saver?.isBusy(item.id))
+      saver?.track(item.id, item.revision);
+    showInCompose(pending ?? draftFromServer(item), false);
+    setDraftSavedAt(new Date(item.updatedAt));
   }
 
   const handleCompose = (
     mode: Exclude<ComposeMode, "new">,
     message: MessageDetail,
   ) => {
-    openCompose(() => buildDraftFrom(mode, message, accounts ?? []));
+    showInCompose(buildDraftFrom(mode, message, accounts ?? []), false);
   };
 
-  function clearDraft() {
-    storeDraft(null);
-    setDraftSavedAt(null);
+  /** 作成画面を閉じる。内容を変えていれば、下書きとしてサーバーに残る。 */
+  function closeCompose() {
+    if (draft && draftDirty) void saverRef.current?.flush();
     setDraft(null);
     setDraftDirty(false);
     setComposeNotice(null);
     setComposeOpen(false);
   }
 
-  function handleEditOutgoing(mail: OutgoingMail) {
-    if (draft && draftDirty) {
-      setComposeNotice(DRAFT_NOTICE);
-      setComposeOpen(true);
-      return;
-    }
+  /** 送信または破棄した下書きを、画面とこの端末から消す。 */
+  function dropDraft(id: string) {
+    removeUnsavedDraft(id);
+    setDrafts(
+      (current) => current?.filter((item) => item.id !== id) ?? current,
+    );
+    if (draftRef.current?.idempotencyKey !== id) return;
+    setDraft(null);
+    setDraftDirty(false);
     setDraftSavedAt(null);
-    setDraft(draftFromOutgoing(mail));
-    // 内容は下書きに移したので、閉じただけで消えないよう書きかけとして扱う。
-    setDraftDirty(true);
     setComposeNotice(null);
-    setComposeOpen(true);
+    setComposeOpen(false);
+  }
+
+  /** 下書きを破棄する。サーバーからも、付けていたファイルごと消える。 */
+  function handleDiscardDraft(id: string) {
+    dropDraft(id);
+    void (async () => {
+      // 保存の途中なら終わるのを待つ (あとから保存が届いて作り直されないように)。
+      await saverRef.current?.forget(id);
+      await deleteDraft(id).catch(() => {});
+      void loadDrafts();
+    })();
+  }
+
+  function handleEditOutgoing(mail: OutgoingMail) {
+    // 内容は下書きに移すので、すぐに保存の対象にする。
+    showInCompose(draftFromOutgoing(mail), true);
     handleRemoveOutgoing(mail);
   }
 
@@ -690,6 +860,7 @@ export function MailApp({ user }: { user: User }) {
   ) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
+    setDraftsSelected(false);
     // フォルダを選んだら検索を終えて、そのフォルダの一覧を表示する。
     setSearchInput(emptySearch);
     setSearch(null);
@@ -697,6 +868,17 @@ export function MailApp({ user }: { user: User }) {
     anchorRef.current = null;
     setSelectedAccountId(accountId);
     setSelectedMailboxId(mailboxId);
+  }
+
+  function handleSelectDrafts() {
+    setSidebarOpen(false);
+    setSelectedMessageId(null);
+    // 下書きの一覧は検索の対象ではないので、検索は終える。
+    setSearchInput(emptySearch);
+    setSearch(null);
+    clearSelection();
+    anchorRef.current = null;
+    setDraftsSelected(true);
   }
 
   const handleMissing = useCallback(() => setSelectedMessageId(null), []);
@@ -708,11 +890,13 @@ export function MailApp({ user }: { user: User }) {
   const accountName = selectedAccount
     ? selectedAccount.displayName || selectedAccount.email
     : null;
-  const title = selectedMailbox
-    ? mailboxLabel(selectedMailbox)
-    : (accountName ?? "すべての受信トレイ");
+  const title = draftsSelected
+    ? "下書き"
+    : selectedMailbox
+      ? mailboxLabel(selectedMailbox)
+      : (accountName ?? "すべての受信トレイ");
   /** フォルダを表示している間は、どのアカウントのフォルダかを添える。 */
-  const subtitle = selectedMailbox ? accountName : null;
+  const subtitle = !draftsSelected && selectedMailbox ? accountName : null;
   const noAccounts = accounts !== null && accounts.length === 0;
   const searching = search !== null;
   /** 検索結果の各行に出す、メールのある場所。アカウントを選んでいなければアカウント名も添える。 */
@@ -769,6 +953,8 @@ export function MailApp({ user }: { user: User }) {
       }
       return;
     }
+    // 下書きの一覧を表示している間は、メールの一覧への操作は受け付けない。
+    if (draftsSelected) return;
     const list = messages ?? [];
     const index = selectedMessage ? list.indexOf(selectedMessage) : -1;
 
@@ -922,6 +1108,9 @@ export function MailApp({ user }: { user: User }) {
           selectedAccountId={selectedAccountId}
           selectedMailboxId={selectedMailboxId}
           onSelect={handleSelectFolder}
+          draftCount={drafts?.length ?? 0}
+          draftsSelected={draftsSelected}
+          onSelectDrafts={handleSelectDrafts}
           onAdd={() => {
             setSidebarOpen(false);
             setAddOpen(true);
@@ -998,10 +1187,10 @@ export function MailApp({ user }: { user: User }) {
               {!noAccounts && accounts !== null && (
                 <Button size="sm" onClick={handleNewMail}>
                   <PenLineIcon />
-                  {draft ? "下書きを開く" : "作成"}
+                  作成
                 </Button>
               )}
-              {(messages?.length ?? 0) > 0 && (
+              {!draftsSelected && (messages?.length ?? 0) > 0 && (
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -1015,7 +1204,7 @@ export function MailApp({ user }: { user: User }) {
               )}
             </header>
           )}
-          {!noAccounts && accounts !== null && (
+          {!noAccounts && accounts !== null && !draftsSelected && (
             <SearchBar
               value={searchInput}
               onChange={setSearchInput}
@@ -1054,6 +1243,14 @@ export function MailApp({ user }: { user: User }) {
                   アカウントを追加
                 </Button>
               </div>
+            ) : draftsSelected ? (
+              <DraftList
+                drafts={drafts}
+                accounts={accounts ?? []}
+                openId={draft?.idempotencyKey ?? null}
+                onOpen={handleOpenDraft}
+                onDiscard={(item) => handleDiscardDraft(item.id)}
+              />
             ) : (
               <MessageList
                 messages={messages}
@@ -1130,23 +1327,35 @@ export function MailApp({ user }: { user: User }) {
         accounts={accounts ?? []}
         notice={composeNotice}
         savedAt={draftSavedAt}
+        saveProblem={draftSaveProblem}
+        contentVersion={draftVersion}
         onOpenChange={(open) => {
-          setComposeOpen(open);
-          if (!open) {
-            setComposeNotice(null);
-            // 何も書いていない下書きは残さない。
-            if (!draftDirty) setDraft(null);
-          }
+          if (open) setComposeOpen(true);
+          else closeCompose();
         }}
         onChange={(next) => {
           setDraft(next);
           setDraftDirty(true);
+          saverRef.current?.schedule(next);
+        }}
+        onBeforeSend={async () => {
+          if (draft) await saverRef.current?.cancel(draft.idempotencyKey);
+        }}
+        onSendFailed={() => {
+          // 送信の前に止めた保存をやり直す。
+          if (draftRef.current) saverRef.current?.schedule(draftRef.current);
         }}
         onSent={() => {
-          clearDraft();
+          // 送信したメールの下書きは、サーバーが消している。
+          if (draft) {
+            void saverRef.current?.forget(draft.idempotencyKey);
+            dropDraft(draft.idempotencyKey);
+          }
           void loadOutgoing();
         }}
-        onDiscard={clearDraft}
+        onDiscard={() => {
+          if (draft) handleDiscardDraft(draft.idempotencyKey);
+        }}
       />
       <ToastRegion>
         {notice && (
