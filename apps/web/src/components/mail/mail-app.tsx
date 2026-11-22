@@ -58,6 +58,7 @@ import {
 } from "@/lib/actions";
 import {
   type Account,
+  type Address,
   ApiError,
   deleteDraft,
   deleteOutgoing,
@@ -1020,6 +1021,29 @@ export function MailApp({ user }: { user: User }) {
     if (!accountId) return;
     const account = accounts?.find((item) => item.id === accountId);
     showInCompose(newDraft(accountId, account?.signatureHtml), false);
+  }
+
+  /** プロフィールカードから、そのアドレス宛ての新しいメールを書き始める。 */
+  function handleComposeTo(address: Address, accountId: string) {
+    const account = accounts?.find((item) => item.id === accountId);
+    if (!account) return;
+    const next = newDraft(account.id, account.signatureHtml);
+    showInCompose(
+      { ...next, to: { list: [address], text: "" } },
+      // 宛先を入れてあるので、下書きとして保存する。
+      true,
+    );
+  }
+
+  /** プロフィールカードから、そのアドレスとやり取りしたメールをすべてのフォルダから検索する。 */
+  function handleSearchAddress(address: Address) {
+    const next: SearchParams = { ...emptySearch, text: address.address };
+    setSearchInput(next);
+    setSearch(next);
+    // 一覧とメールを同時に出せない幅では、検索結果が見えるようにメールを閉じる。
+    if (!window.matchMedia("(min-width: 1024px)").matches) {
+      setSelectedMessageId(null);
+    }
   }
 
   /** 下書きの一覧から選んだ下書きを、作成画面で開く。 */
@@ -2098,6 +2122,8 @@ export function MailApp({ user }: { user: User }) {
               composeRequest={composeRequest}
               onCompose={handleCompose}
               onQuickReply={handleQuickReply}
+              onSearchAddress={handleSearchAddress}
+              onComposeTo={handleComposeTo}
               onBack={() => setSelectedMessageId(null)}
               onMissing={handleMissing}
             />

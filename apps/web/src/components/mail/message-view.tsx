@@ -24,6 +24,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
 import { MailboxIcon, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
+import {
+  type ProfileActions,
+  ProfileName,
+  ProfileNames,
+} from "@/components/mail/profile-card";
 import { QuickReply } from "@/components/mail/quick-reply";
 import {
   ToolbarButton,
@@ -46,6 +51,7 @@ import { AccountListMark } from "@/lib/account-icons";
 import type { MessageActionInput } from "@/lib/actions";
 import {
   type Account,
+  type Address,
   ApiError,
   type Attachment,
   type MailboxSummary,
@@ -59,12 +65,7 @@ import {
   splitAttachments,
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
-import {
-  addressFull,
-  addressLabel,
-  formatFullDate,
-  formatListDate,
-} from "@/lib/format";
+import { addressLabel, formatFullDate, formatListDate } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
 import {
@@ -166,6 +167,10 @@ type Props = {
   onCompose: (mode: ReplyMode, message: MessageDetail, text?: string) => void;
   /** 本文の下の返信欄から、そのまま返信を送る。送れたら true。 */
   onQuickReply: (message: MessageDetail, text: string) => Promise<boolean>;
+  /** 差出人や宛先のプロフィールカードから、そのアドレスのメールを検索する。 */
+  onSearchAddress: (address: Address) => void;
+  /** プロフィールカードから、そのアドレス宛てのメールを書き始める。accountId は開いているメールのアカウント。 */
+  onComposeTo: (address: Address, accountId: string) => void;
   onBack: () => void;
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
@@ -188,6 +193,8 @@ export function MessageView({
   composeRequest,
   onCompose,
   onQuickReply,
+  onSearchAddress,
+  onComposeTo,
   onBack,
   onMissing,
 }: Props) {
@@ -418,6 +425,10 @@ export function MessageView({
             refreshKey={refreshKey}
             meta={meta}
             mailbox={mailbox}
+            profile={{
+              onSearch: onSearchAddress,
+              onCompose: (address) => onComposeTo(address, first.accountId),
+            }}
             onDetail={handleDetail}
           />
           {quickReplyBox}
@@ -473,6 +484,7 @@ function LoadedMessage({
   inThread = false,
   meta,
   mailbox,
+  profile,
   onDetail,
 }: {
   id: string;
@@ -481,6 +493,7 @@ function LoadedMessage({
   meta?: React.ReactNode;
   /** メールのあるフォルダ。折りたたんだ見出しのアイコンに使う。 */
   mailbox?: MailboxSummary;
+  profile?: ProfileActions;
   /** 会話の中の 1 通として表示する (件名と宛先の見出しは会話側で出す)。 */
   inThread?: boolean;
   onDetail: (message: MessageDetail) => void;
@@ -513,6 +526,7 @@ function LoadedMessage({
         inThread={inThread}
         meta={meta}
         mailbox={mailbox}
+        profile={profile}
       />
     );
   }
@@ -1004,10 +1018,13 @@ function MessageContent({
   inThread = false,
   meta,
   mailbox,
+  profile,
 }: {
   message: MessageDetail;
   meta?: React.ReactNode;
   mailbox?: MailboxSummary;
+  /** 差出人や宛先のプロフィールカードから始める操作。 */
+  profile?: ProfileActions;
   /** 会話の中の 1 通として表示する (件名と差出人は会話側の見出しに出ている)。 */
   inThread?: boolean;
 }) {
@@ -1093,8 +1110,16 @@ function MessageContent({
               <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
                 <UserRoundIcon className="size-4 shrink-0" aria-hidden="true" />
                 <span className="sr-only">差出人</span>
-                <span className="min-w-0 shrink truncate font-medium text-foreground">
-                  {addressLabel(message.from[0])}
+                <span className="flex max-w-[55%] shrink-0 font-medium text-foreground">
+                  {message.from[0] ? (
+                    <ProfileName
+                      address={message.from[0]}
+                      className="truncate"
+                      {...profile}
+                    />
+                  ) : (
+                    addressLabel(undefined)
+                  )}
                 </span>
                 {message.to.length > 0 && (
                   <>
@@ -1109,7 +1134,11 @@ function MessageContent({
                     </Hint>
                     <span className="sr-only">宛先</span>
                     <span className="min-w-0 shrink-[2] truncate">
-                      {message.to.map(addressLabel).join("、")}
+                      <ProfileNames
+                        addresses={message.to}
+                        separator="、"
+                        {...profile}
+                      />
                     </span>
                   </>
                 )}
@@ -1138,15 +1167,21 @@ function MessageContent({
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                 <dt className="text-muted-foreground">差出人</dt>
                 <dd className="min-w-0 break-words">
-                  {message.from.length > 0
-                    ? message.from.map(addressFull).join(", ")
-                    : addressLabel(undefined)}
+                  {message.from.length > 0 ? (
+                    <ProfileNames addresses={message.from} full {...profile} />
+                  ) : (
+                    addressLabel(undefined)
+                  )}
                 </dd>
                 {senderShown && (
                   <>
                     <dt className="text-muted-foreground">代理送信</dt>
                     <dd className="min-w-0 break-words">
-                      {(message.sender ?? []).map(addressFull).join(", ")}
+                      <ProfileNames
+                        addresses={message.sender ?? []}
+                        full
+                        {...profile}
+                      />
                     </dd>
                   </>
                 )}
@@ -1154,7 +1189,7 @@ function MessageContent({
                   <>
                     <dt className="text-muted-foreground">宛先</dt>
                     <dd className="min-w-0 break-words">
-                      {message.to.map(addressFull).join(", ")}
+                      <ProfileNames addresses={message.to} full {...profile} />
                     </dd>
                   </>
                 )}
@@ -1162,7 +1197,7 @@ function MessageContent({
                   <>
                     <dt className="text-muted-foreground">Cc</dt>
                     <dd className="min-w-0 break-words">
-                      {message.cc.map(addressFull).join(", ")}
+                      <ProfileNames addresses={message.cc} full {...profile} />
                     </dd>
                   </>
                 )}
@@ -1170,7 +1205,7 @@ function MessageContent({
                   <>
                     <dt className="text-muted-foreground">Bcc</dt>
                     <dd className="min-w-0 break-words">
-                      {message.bcc.map(addressFull).join(", ")}
+                      <ProfileNames addresses={message.bcc} full {...profile} />
                     </dd>
                   </>
                 )}
@@ -1178,7 +1213,11 @@ function MessageContent({
                   <>
                     <dt className="text-muted-foreground">返信先</dt>
                     <dd className="min-w-0 break-words">
-                      {message.replyTo.map(addressFull).join(", ")}
+                      <ProfileNames
+                        addresses={message.replyTo}
+                        full
+                        {...profile}
+                      />
                     </dd>
                   </>
                 )}
