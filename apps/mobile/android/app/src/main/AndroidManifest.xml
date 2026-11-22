@@ -22,6 +22,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!--
+                アプリ専用の URL (jp.lunaproject.orbit.mail://oauth/…)。
+                外のブラウザーでの Google / Microsoft のログインから、アプリへ戻るときに使う。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="@string/custom_url_scheme" android:host="oauth" />
+            </intent-filter>
+
         </activity>
 
         <!-- 新着メールの通知 (FCM)。アイコン、色、通知の分類の既定値。 -->

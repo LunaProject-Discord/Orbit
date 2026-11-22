@@ -5,6 +5,7 @@
  */
 
 import type { AccountIconName } from "@/lib/account-icons";
+import { isNativeApp } from "@/lib/native/app";
 import { reportReachable } from "@/lib/offline/network";
 import { apiUrl } from "@/lib/server-url";
 
@@ -538,7 +539,14 @@ export async function startOAuthLogin(
 ): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
     `/v1/accounts/${provider}/authorize`,
-    { method: "POST", body: accountId ? { accountId } : {} },
+    {
+      method: "POST",
+      body: {
+        ...(accountId ? { accountId } : {}),
+        // スマホアプリでは、ログイン後に Web 版のページからアプリへ戻してもらう。
+        ...(isNativeApp() ? { app: true } : {}),
+      },
+    },
   );
   return url;
 }

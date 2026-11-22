@@ -64,6 +64,8 @@ function forgetUser(): void {
   if (user) void clearOffline(user.id);
 }
 
+import { isNativeApp } from "@/lib/native/app";
+import { isAppOAuthReturn } from "@/lib/native/oauth";
 import { safeReturnPath } from "@/lib/route";
 import { hasServerUrl, isBundledApp } from "@/lib/server-url";
 
@@ -182,15 +184,30 @@ export function AuthGate({ children }: { children: ReactNode }) {
   /** 接続先サーバーの設定画面 (同梱アプリ用)。ログインの前後どちらでも開ける。 */
   const onServerPage = pathname === "/server" || pathname === "/server/";
 
-  const redirectTo = onServerPage
-    ? null
-    : auth.status === "signed-out" && !hasServerUrl()
-      ? "server"
-      : auth.status === "signed-out" && !onLoginPage
-        ? "login"
-        : auth.status === "signed-in" && onLoginPage
-          ? "app"
-          : null;
+  // スマホアプリから始めた Google / Microsoft のログインが、ブラウザーへ戻ってきたとき。
+  // このブラウザーでログインしていなくても、アプリへ引き渡すページをそのまま出す。
+  // (読み込み直後に 1 回だけ調べる。ページ側が URL から code を消したあとも、この扱いを保つ。)
+  const [appReturn, setAppReturn] = useState(false);
+  useEffect(() => {
+    if (
+      !isNativeApp() &&
+      window.location.pathname.startsWith("/oauth/") &&
+      isAppOAuthReturn(window.location.search)
+    ) {
+      setAppReturn(true);
+    }
+  }, []);
+
+  const redirectTo =
+    onServerPage || appReturn
+      ? null
+      : auth.status === "signed-out" && !hasServerUrl()
+        ? "server"
+        : auth.status === "signed-out" && !onLoginPage
+          ? "login"
+          : auth.status === "signed-in" && onLoginPage
+            ? "app"
+            : null;
 
   useEffect(() => {
     if (redirectTo === "server") {
@@ -212,7 +229,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     }
   }, [redirectTo, router]);
 
-  if (onServerPage) return <>{children}</>;
+  if (onServerPage || appReturn) return <>{children}</>;
 
   if (auth.status === "unreachable") {
     return (

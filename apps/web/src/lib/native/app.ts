@@ -75,6 +75,32 @@ export async function applyNativeTheme(mode: ThemeMode): Promise<void> {
   }
 }
 
+/**
+ * アプリ専用の URL (jp.lunaproject.orbit.mail://…) で開かれたときに、その URL を受け取る。
+ * 外のブラウザーでのログインから戻るときに使う。戻り値の関数で解除する。
+ */
+export function listenAppUrl(listener: (url: string) => void): () => void {
+  if (!isNativeApp()) return () => {};
+  let cancelled = false;
+  let remove: (() => void) | null = null;
+  void (async () => {
+    try {
+      const { App } = await import("@capacitor/app");
+      const handle = await App.addListener("appUrlOpen", ({ url }) =>
+        listener(url),
+      );
+      if (cancelled) void handle.remove();
+      else remove = () => void handle.remove();
+    } catch {
+      // 受け取れなければ、ログイン後にアプリへ戻っても追加されない (Web 版で追加できる)。
+    }
+  })();
+  return () => {
+    cancelled = true;
+    remove?.();
+  };
+}
+
 /** 戻るボタンの処理を登録する。戻り値の関数で解除する。 */
 export function listenBackButton(): () => void {
   if (!isNativeApp()) return () => {};
