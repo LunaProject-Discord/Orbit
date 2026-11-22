@@ -122,6 +122,12 @@ SYSTEM_MAIL_PASSWORD=...
 SYSTEM_MAIL_FROM="Orbit <no-reply@example.com>"
 ```
 
+Microsoft 365 のメールボックスから送るときは、SMTP の代わりに Microsoft Graph の `sendMail` を使えます
+(Microsoft 365 の SMTP は、パスワードでのログインが廃止される予定のため)。`SYSTEM_MAIL_GRAPH_SENDER` (差出人のメールボックス) と
+`SYSTEM_MAIL_GRAPH_TENANT` (テナントの ID) を書き、アプリ登録に `Mail.Send` の「アプリケーションの許可」と管理者の同意を付けます。
+手順は [docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md) の「Microsoft 365 から送る」を参照してください。
+SMTP とは、どちらか一方だけを設定します。
+
 - 未設定のとき、開発中 (`NODE_ENV` が `production` 以外) は、送るはずのメールの内容を API サーバーのログに出します
   (リンクをそこから開いて試せます)。本番では、再設定とメールアドレスの変更が使えなくなり、画面にも出しません。
   パスワードの変更、2 段階認証、パスキーは、メールを送れなくても使えます。

@@ -95,8 +95,9 @@ if grep -Eq "^VAPID_(PUBLIC|PRIVATE)_KEY=[[:space:]]*$" .env; then
   base64url() { base64 | tr -d '=\n' | tr '+/' '-_'; }
   key="$(openssl ecparam -name prime256v1 -genkey -noout)"
   # DER の末尾 65 バイトが公開鍵、先頭から 8 バイト目以降の 32 バイトが秘密鍵。
+  # head が先に終わると tail が SIGPIPE で落ち、pipefail で全体が失敗することがあるので、残りは cat で読み捨てる。
   vapid_public="$(printf '%s\n' "$key" | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | base64url)"
-  vapid_private="$(printf '%s\n' "$key" | openssl ec -outform DER 2>/dev/null | tail -c +8 | head -c 32 | base64url)"
+  vapid_private="$(printf '%s\n' "$key" | openssl ec -outform DER 2>/dev/null | tail -c +8 | { head -c 32; cat >/dev/null; } | base64url)"
   awk -v pub="$vapid_public" -v priv="$vapid_private" '
     /^VAPID_PUBLIC_KEY=/ { print "VAPID_PUBLIC_KEY=" pub; next }
     /^VAPID_PRIVATE_KEY=/ { print "VAPID_PRIVATE_KEY=" priv; next }
