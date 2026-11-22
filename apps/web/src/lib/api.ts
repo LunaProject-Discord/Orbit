@@ -153,6 +153,11 @@ export type Account = {
   smtpSecure: boolean;
   /** 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許している。 */
   allowLegacyTls: boolean;
+  /**
+   * 受信トレイ以外のフォルダの変化をすぐ受け取るために足す接続の本数の上限。
+   * null は自動。IMAP のアカウントでだけ使う。
+   */
+  pushConnections: number | null;
   username: string;
   status: AccountStatus;
   lastError: string | null;
@@ -658,6 +663,7 @@ export async function updateAccount(
     color?: string | null;
     icon?: AccountIconName | null;
     allowLegacyTls?: boolean;
+    pushConnections?: number | null;
   },
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(

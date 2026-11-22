@@ -1138,7 +1138,8 @@ function AccountCard({
     patch:
       | { color: string | null }
       | { icon: AccountIconName | null }
-      | { allowLegacyTls: boolean },
+      | { allowLegacyTls: boolean }
+      | { pushConnections: number | null },
   ) => {
     // 押してすぐ画面に反映し、保存できなければ元に戻す。
     onUpdated({ ...account, ...patch });
@@ -1248,6 +1249,48 @@ function AccountCard({
             />
           </div>
         )}
+
+      {/* Microsoft (Graph) は変更通知で全フォルダの変化が届くので、IMAP のアカウントだけ。 */}
+      {account.protocol === "imap" && (
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <p id={`${id}-push-connections`} className="text-xs">
+              ほかのフォルダの変化をすぐ受け取る
+            </p>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              受信トレイ以外のフォルダ用に足す接続の本数です。対応しているサーバーでは
+              1
+              本で全フォルダの変化を受け取り、それ以外では迷惑メール・送信済みなどの大事なフォルダから順に
+              1 本ずつ使います。残りのフォルダは 2
+              分ごとに確認します。ほかのメールソフトが「接続が多すぎる」と表示するときは減らしてください。
+            </p>
+          </div>
+          <Select
+            items={PUSH_CONNECTION_OPTIONS}
+            value={String(account.pushConnections ?? "auto")}
+            onValueChange={(next) =>
+              saveNow({
+                pushConnections: next === "auto" ? null : Number(next),
+              })
+            }
+          >
+            <SelectTrigger
+              size="sm"
+              aria-labelledby={`${id}-push-connections`}
+              className="shrink-0"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end" className="w-auto">
+              {PUSH_CONNECTION_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       {error && (
         <p role="alert" className="text-destructive text-xs">
@@ -1368,6 +1411,16 @@ function SelectRow<T extends string | number>(props: {
     </SettingRow>
   );
 }
+
+/** ほかのフォルダ用に足す接続の本数の選択肢 (サーバー側の上限は 8 本)。 */
+const PUSH_CONNECTION_OPTIONS = [
+  { value: "auto", label: "自動" },
+  { value: "0", label: "使わない" },
+  ...[1, 2, 3, 4, 5, 6, 8].map((count) => ({
+    value: String(count),
+    label: `${count} 本まで`,
+  })),
+];
 
 /** オンとオフを切り替える行。 */
 function SwitchRow(props: {

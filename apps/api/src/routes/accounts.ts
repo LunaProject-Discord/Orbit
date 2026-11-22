@@ -108,6 +108,11 @@ const updateAccountBody = z
     icon: accountIcon.nullable().optional(),
     /** 古い TLS のサーバーへの接続を許す。IMAP / SMTP のアカウントでだけ変えられる。 */
     allowLegacyTls: z.boolean().optional(),
+    /**
+     * 受信トレイ以外のフォルダの変化をすぐ受け取るために足す IMAP 接続の本数の上限。
+     * null なら自動。IMAP / SMTP のアカウントでだけ変えられる。
+     */
+    pushConnections: z.number().int().min(0).max(8).nullable().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -131,6 +136,7 @@ const publicColumns = {
   smtpPort: mailAccounts.smtpPort,
   smtpSecure: mailAccounts.smtpSecure,
   allowLegacyTls: mailAccounts.allowLegacyTls,
+  pushConnections: mailAccounts.pushConnections,
   username: mailAccounts.username,
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
@@ -638,20 +644,27 @@ export function accountRoutes({
             ...(body.allowLegacyTls !== undefined
               ? { allowLegacyTls: body.allowLegacyTls }
               : {}),
+            ...(body.pushConnections !== undefined
+              ? { pushConnections: body.pushConnections }
+              : {}),
           })
           .where(
             and(
               eq(mailAccounts.id, id),
               eq(mailAccounts.userId, user.id),
-              // TLS の設定は、IMAP / SMTP でつなぐアカウントにしか無い。
-              body.allowLegacyTls !== undefined
+              // TLS と接続の本数の設定は、IMAP / SMTP でつなぐアカウントにしか無い。
+              body.allowLegacyTls !== undefined ||
+                body.pushConnections !== undefined
                 ? eq(mailAccounts.protocol, "imap")
                 : undefined,
             ),
           )
           .returning(publicColumns);
         if (!row) return null;
-        if (body.allowLegacyTls !== undefined) {
+        if (
+          body.allowLegacyTls !== undefined ||
+          body.pushConnections !== undefined
+        ) {
           // 同期ワーカーが、新しい設定でつなぎ直す。
           await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);
         }
