@@ -1,9 +1,11 @@
+import { hostname, networkInterfaces } from "node:os";
 import {
   loadEncryptionKey,
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
 } from "@mail/core";
+import { lanOrigins } from "./lib/lan-origins.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -21,12 +23,23 @@ export function loadEnv() {
   if (authSecret.length < 32) {
     throw new Error("BETTER_AUTH_SECRET は 32 文字以上にしてください。");
   }
-  const allowedOrigins = (
+  const configuredOrigins = (
     process.env.ALLOWED_ORIGINS ?? "http://localhost:3000"
   )
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+  // 開発中は、同じ LAN のスマホなどから http://<この PC の IP アドレス>:3000 で開いても使えるようにする。
+  // 本番 (NODE_ENV=production) では足さない。ALLOW_LAN_ORIGINS=false でも止められる。
+  const allowLan =
+    process.env.NODE_ENV !== "production" &&
+    process.env.ALLOW_LAN_ORIGINS !== "false";
+  const allowedOrigins = allowLan
+    ? [
+        ...configuredOrigins,
+        ...lanOrigins(configuredOrigins, hostname(), networkInterfaces()),
+      ]
+    : configuredOrigins;
   const microsoftConfig = loadMicrosoftOAuthConfig(process.env);
   const googleConfig = loadGoogleOAuthConfig(process.env);
   const webOrigin = allowedOrigins[0] ?? "http://localhost:3000";

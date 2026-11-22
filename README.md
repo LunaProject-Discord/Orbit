@@ -38,6 +38,20 @@ Node.js 25 以降には Corepack が同梱されていないため、pnpm は `n
 - Web: http://localhost:3000
 - API: http://localhost:8787 (`/healthz` で DB 接続を確認できます)
 
+### 同じ LAN のスマホなどから開く
+
+`pnpm dev` を動かしている PC の IP アドレスで、`http://192.168.x.x:3000` のように開けます
+(`pnpm dev` を起動したときに `Network:` として表示されるアドレスです)。
+
+- 開発サーバーと API は、起動時にこの PC の名前と IP アドレスを調べて、そこからの通信を許可します。
+  IP アドレスが変わったときや、別の名前で開きたいときは、`pnpm dev` を起動し直すか、
+  `DEV_ALLOWED_ORIGINS` (Web。ホスト名をカンマ区切り) と `ALLOWED_ORIGINS` (API。オリジンをカンマ区切り) に足してください。
+- API の接続先が `localhost` のままでも、画面を開いたのと同じ PC の 8787 番へ自動で向けます。
+- PC のファイアウォールで、3000 番と 8787 番への着信を許可しておいてください。
+- `http://` の IP アドレスで開いた画面では、ブラウザーの決まりで、オフライン用の保存 (サービスワーカー)、
+  閉じているときの通知 (Web Push)、クリップボードへのコピーは使えません。ほかの機能は使えます。
+- 本番 (`NODE_ENV=production`) では、この自動の許可は働きません。開発中に止めたいときは `ALLOW_LAN_ORIGINS=false` にします。
+
 ## 本番への配置 (Oracle Cloud)
 
 Docker Compose で一式 (Web、API、同期ワーカー、PostgreSQL、HTTPS を受ける Caddy、バックアップ) を動かします。
