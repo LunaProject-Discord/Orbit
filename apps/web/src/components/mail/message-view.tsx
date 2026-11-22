@@ -73,18 +73,24 @@ export function hasRemoteImages(html: string): boolean {
 
 /**
  * 本文の iframe の中のスクロールバー。アプリ側 (globals.css) と同じ見た目にする。
- * iframe の中ではスクリプトを動かさないので、太くなるのはつまみに乗ったときだけ。
+ * iframe の中ではスクリプトを動かさず、スクロール中かどうかが分からないので、
+ * 本文にカーソルを乗せている間だけつまみを出し、つまみに乗ったら太くする。
+ * 色は html に持たせた値 (--mail-sb) をつまみが引き継ぐ形にしている
+ * (html:hover をスクロールバーに直接掛けても、表示が切り替わらないため)。
  * 本文の背景は白に固定しているので、色も明るい画面用に固定する。
  */
 const BODY_SCROLLBAR_STYLE = [
-  "<style>@media (hover:hover) and (pointer:fine){",
+  '<style>@property --mail-sb{syntax:"<color>";inherits:true;initial-value:transparent}',
+  "@media (hover:hover) and (pointer:fine){",
+  "html{--mail-sb:transparent;transition:--mail-sb .5s ease-out}",
+  "html:hover{--mail-sb:rgb(0 0 0/.35);transition-duration:.1s}",
   "@supports selector(::-webkit-scrollbar){",
   "::-webkit-scrollbar{width:12px;height:12px;background:transparent}",
   "::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}",
-  "::-webkit-scrollbar-thumb{min-height:32px;min-width:32px;border:solid transparent;border-width:2px 2px 2px 6px;border-radius:999px;background-color:rgb(0 0 0/.28);background-clip:content-box}",
-  "::-webkit-scrollbar-thumb:horizontal{border-width:6px 2px 2px}",
+  "::-webkit-scrollbar-thumb{min-height:36px;min-width:36px;border:solid transparent;border-width:2px 2px 2px 4px;border-radius:999px;background-color:var(--mail-sb);background-clip:content-box}",
+  "::-webkit-scrollbar-thumb:horizontal{border-width:4px 2px 2px}",
   "::-webkit-scrollbar-thumb:hover,::-webkit-scrollbar-thumb:active{border-width:2px;background-color:rgb(0 0 0/.5)}}",
-  "@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:rgb(0 0 0/.28) transparent}}",
+  "@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:var(--mail-sb) transparent}}",
   "}</style>",
 ].join("");
 
