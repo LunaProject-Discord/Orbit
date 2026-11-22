@@ -1,0 +1,18 @@
+# 別のサーバー (中継用のサーバー) から逆プロキシする場合に、compose.yml に重ねる。
+# 利用者からの HTTPS と公開用の証明書は中継用のサーバーが受け持つが、中継用のサーバーとこのサーバーの間は
+# インターネットを通るので、ここでも HTTPS で待ち受ける (メールの内容やログインの情報を平文で流さないため)。
+# 証明書は deploy/setup.sh <ドメイン> relay が deploy/certs/ に作る自己署名のもので、
+# 中継用のサーバーにはその証明書 (relay.crt) を置き、それ以外の相手には繋がないようにする
+# (設定の見本は deploy/apache/mail-relay.conf)。
+# Docker が公開したポートはサーバーのファイアウォール (firewalld など) を通らずに届くので、
+# クラウド側のファイアウォール (セキュリティ・リスト) で、中継用のサーバーからだけに絞ること。
+services:
+  web:
+    environment:
+      SITE_ADDRESS: ":443"
+      SITE_TLS: tls /certs/relay.crt /certs/relay.key
+    ports:
+      - "${LOCAL_BIND:-0.0.0.0}:${LOCAL_PORT:-18080}:443"
+    volumes:
+      # 末尾の z は SELinux が有効なホスト (AlmaLinux など) でコンテナから読めるようにする指定。
+      - ./certs:/certs:ro,z

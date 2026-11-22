@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 本番用の設定ファイル deploy/.env を用意する。
 #   bash deploy/setup.sh mail.example.com relay    別のサーバー (中継用のサーバー) から直接繋ぐ場合
+#                                                  (サーバーの間を HTTPS にする証明書も deploy/certs/ に作る)
 #   bash deploy/setup.sh mail.example.com apache   同じサーバーの Web サーバー (Apache など) から繋ぐ場合 (省略時)
 #   bash deploy/setup.sh mail.example.com caddy    Caddy が 80 / 443 番で直接公開する場合
 # 無ければ .env.example から作り、空の秘密の値を乱数で埋める。
@@ -68,7 +69,7 @@ set_value() {
 
 case "$mode" in
 relay)
-  set_value COMPOSE_FILE compose.yml:compose.proxy.yml
+  set_value COMPOSE_FILE compose.yml:compose.relay.yml
   set_value LOCAL_BIND 0.0.0.0
   ;;
 apache)
@@ -105,6 +106,27 @@ if grep -Eq "^VAPID_(PUBLIC|PRIVATE)_KEY=[[:space:]]*$" .env; then
   echo "生成した値: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY"
 fi
 
+# 中継用のサーバーとの間を HTTPS にするための証明書 (自己署名、10 年)。中継用のサーバーには relay.crt を置き、
+# その証明書の相手にだけ繋ぐようにする。作り直すと中継用のサーバーの側も置き換えが要るので、既にあれば触らない
+# (作り直すときは deploy/certs/ を消してから、もう一度実行する)。
+if grep -q '^COMPOSE_FILE=.*compose\.relay\.yml' .env && [ ! -s certs/relay.crt ]; then
+  relay_domain="$(sed -n 's/^DOMAIN=//p' .env | head -n 1)"
+  mkdir -p certs
+  (
+    umask 077
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+      -days 3650 -subj "/CN=$relay_domain" \
+      -addext "subjectAltName=DNS:$relay_domain" \
+      -addext "basicConstraints=critical,CA:FALSE" \
+      -keyout certs/relay.key -out certs/relay.crt 2>/dev/null
+  )
+  chmod 644 certs/relay.crt
+  echo "生成した証明書: deploy/certs/relay.crt (中継用のサーバーに置く。期限は 10 年後)"
+fi
+
 echo
+if grep -q "^BACKUP_PUBLIC_KEY=[[:space:]]*$" .env || ! grep -q "^BACKUP_PUBLIC_KEY=" .env; then
+  echo "バックアップは、まだ暗号化されません。bash deploy/backup-key.sh で鍵を作ると、暗号化して書き出すようになります。"
+fi
 echo "CREDENTIALS_ENCRYPTION_KEY は、サーバーの外 (パスワード管理ソフトなど) にも控えてください。"
 echo "失うと、バックアップから DB を戻してもメールアカウントの認証情報を復号できません。"

@@ -94,6 +94,9 @@ cd deploy && docker compose up -d --build
   - その他のメール。IMAP / SMTP のサーバーを手動で設定し、パスワード (アプリ用パスワードを含む) でログインします。
 - メールアカウントのパスワードやリフレッシュトークンは AES-256-GCM で暗号化して保存します。鍵は `CREDENTIALS_ENCRYPTION_KEY` で、
   DB には入りません。鍵を失うと復号できなくなるため、安全な場所に控えてください。
+- メールの本文や添付ファイルは、サーバー側の検索などに使うため、DB やディスクにはそのままの形で保存します
+  (ディスクの暗号化は、サーバーや端末の機能に任せています)。本番の構成では、サーバーの間の通信は HTTPS で、
+  バックアップは公開鍵で暗号化して書き出せます ([docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md))。
 - ローカルの IMAP サーバー (localhost や内部 IP) で試す場合は、`.env` で `ALLOW_PRIVATE_MAIL_HOSTS=true` にします。
 
 ## Gmail (Google でログイン)
