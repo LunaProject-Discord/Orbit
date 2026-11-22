@@ -18,6 +18,7 @@ import {
   PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
+  SignatureIcon,
   StarIcon,
   Trash2Icon,
   UserRoundIcon,
@@ -59,6 +60,7 @@ import {
   type MailboxSummary,
   type MessageDetail,
   type MessageSummary,
+  type SignatureRule,
   type ThreadMessage,
 } from "@/lib/api";
 import {
@@ -76,6 +78,7 @@ import {
   usePreferences,
 } from "@/lib/preferences";
 import { shortcutLabels } from "@/lib/shortcuts";
+import { findContactRule, findThreadRule } from "@/lib/signatures";
 import { unsubscribeLinks } from "@/lib/unsubscribe";
 
 /**
@@ -177,6 +180,16 @@ type Props = {
   onSearchAddress: (address: Address) => void;
   /** プロフィールカードから、そのアドレス宛てのメールを書き始める。accountId は開いているメールのアカウント。 */
   onComposeTo: (address: Address, accountId: string) => void;
+  /** 連絡先ごと、会話ごとの署名 (設定済みかどうかの表示に使う)。 */
+  signatureRules: readonly SignatureRule[];
+  /** プロフィールカードから、そのアドレス宛てのメールに使う署名を決める。 */
+  onContactSignature: (address: Address, accountId: string) => void;
+  /** 開いている会話への返信・転送に使う署名を決める。 */
+  onThreadSignature: (thread: {
+    accountId: string;
+    threadKey: string;
+    subject: string;
+  }) => void;
   onBack: () => void;
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
@@ -204,6 +217,9 @@ export function MessageView({
   onQuickReply,
   onSearchAddress,
   onComposeTo,
+  signatureRules,
+  onContactSignature,
+  onThreadSignature,
   onBack,
   onMissing,
 }: Props) {
@@ -390,12 +406,20 @@ export function MessageView({
       const accountId = thread?.[0]?.accountId;
       if (accountId) onComposeTo(address, accountId);
     },
+    onSignature: (address) => {
+      const accountId = thread?.[0]?.accountId;
+      if (accountId) onContactSignature(address, accountId);
+    },
+    hasSignature: (address) =>
+      findContactRule(signatureRules, address.address) !== null,
   };
   const handleDetail = (message: MessageDetail) => {
     details.current.set(message.id, message);
   };
   const first = thread?.[0];
   const last = thread?.at(-1);
+  // 会話のキー。端末に保存してあった古い内容には無いので、一覧の行からも探す。
+  const threadKey = first?.threadKey ?? summary?.threadKey ?? null;
 
   // 見出しの下に出す、メールのある場所 (アカウントとフォルダ)。
   const account = accounts.find((item) => item.id === first?.accountId);
@@ -479,6 +503,21 @@ export function MessageView({
             moveRequest={moveRequest}
             onAction={act}
             onCompose={compose}
+            signatureSet={
+              threadKey !== null &&
+              findThreadRule(signatureRules, first.accountId, threadKey) !==
+                null
+            }
+            onSignature={
+              threadKey === null
+                ? null
+                : () =>
+                    onThreadSignature({
+                      accountId: first.accountId,
+                      threadKey,
+                      subject: first.subject,
+                    })
+            }
           />
         )}
       </div>
@@ -764,7 +803,13 @@ function MessageToolbar({
   moveRequest,
   onAction,
   onCompose,
+  signatureSet,
+  onSignature,
 }: {
+  /** この会話に署名を決めてあるか。 */
+  signatureSet: boolean;
+  /** この会話の署名を決める画面を開く。会話のキーが分からなければ null (ボタンを出さない)。 */
+  onSignature: (() => void) | null;
   accountId: string;
   /** 既読、アーカイブ、削除、移動の対象。 */
   targetIds: string[];
@@ -823,6 +868,20 @@ function MessageToolbar({
         >
           <ForwardIcon />
         </ToolbarButton>
+        {onSignature && (
+          <ToolbarButton
+            label={
+              signatureSet ? "この会話の署名 (設定済み)" : "この会話の署名"
+            }
+            aria-pressed={signatureSet}
+            onClick={onSignature}
+            className="max-sm:hidden"
+          >
+            <SignatureIcon
+              className={signatureSet ? "text-primary" : undefined}
+            />
+          </ToolbarButton>
+        )}
         <ToolbarSeparator className="max-sm:hidden" />
         <span className="flex-1 sm:hidden" aria-hidden="true" />
         <ToolbarButton
@@ -913,6 +972,12 @@ function MessageToolbar({
               <ForwardIcon />
               転送
             </DropdownMenuItem>
+            {onSignature && (
+              <DropdownMenuItem onClick={onSignature}>
+                <SignatureIcon />
+                {signatureSet ? "この会話の署名を変更" : "この会話の署名を設定"}
+              </DropdownMenuItem>
+            )}
             {destinations.length > 0 && (
               <>
                 <DropdownMenuSeparator />
