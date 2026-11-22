@@ -12,6 +12,7 @@ export type ShortcutCommand =
   | "delete"
   | "move"
   | "junk"
+  | "undo"
   | "compose"
   | "search"
   | "reply"
@@ -84,6 +85,9 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       return "delete";
     case "v":
       return "move";
+    // 直前の削除や移動を元に戻す (Gmail と同じキー)。
+    case "z":
+      return "undo";
     case "c":
       return "compose";
     case "/":

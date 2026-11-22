@@ -28,6 +28,7 @@ import {
   FailureToast,
   NoticeToast,
   ToastRegion,
+  UndoToast,
 } from "@/components/mail/failure-toast";
 import {
   FolderDialogs,
@@ -196,6 +197,13 @@ import {
   type ThreadRows,
 } from "@/lib/thread-rows";
 import {
+  affectedRows,
+  isUndoable,
+  restoreRows,
+  UNDO_MS,
+  undoMessage,
+} from "@/lib/undo";
+import {
   type BuiltinView,
   builtinLabel,
   builtinStyle,
@@ -225,6 +233,7 @@ const emptySearch: SearchParams = {
   filters: emptyFilters,
   scope: "all",
 };
+const UNDO_ERROR = "すでにサーバーへ反映済みのため、元に戻せませんでした。";
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
 const MARK_READ_ERROR =
@@ -953,6 +962,47 @@ export function MailApp({ user }: { user: User }) {
     };
   }, [loadFirstPage, loadMailboxes]);
 
+  // 削除や移動の「元に戻す」。操作は画面にすぐ反映するが、知らせを出している間は
+  // サーバーへ送らずに待ち、「元に戻す」を押されたら送らずに取り消す。
+  const [undo, setUndo] = useState<{ id: number; message: string } | null>(
+    null,
+  );
+  const undoRef = useRef<{
+    id: number;
+    actions: MessageAction[];
+    /** 操作の前の行 (会話)。元に戻すときに一覧へ入れ直す。 */
+    rows: MessageSummary[];
+    selection: Selection;
+    /** 操作の前に開いていたメール。 */
+    openId: string | null;
+    /** 同じ操作のまとまり (複数選択など) を受け付けている間は true。 */
+    open: boolean;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const undoSeq = useRef(0);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const mailboxesRef = useRef(mailboxes);
+  mailboxesRef.current = mailboxes;
+  const selectedMessageIdRef = useRef(selectedMessageId);
+  selectedMessageIdRef.current = selectedMessageId;
+
+  /** 「元に戻す」の受け付けを終えて、待たせていた操作をサーバーへ送る。 */
+  const commitUndo = useCallback(() => {
+    const group = undoRef.current;
+    if (!group) return;
+    undoRef.current = null;
+    clearTimeout(group.timer);
+    for (const action of group.actions) {
+      queueRef.current?.release(action.idempotencyKey);
+      // オフラインで開き直しても操作後の状態で出るよう、端末に保存した内容にも反映する。
+      applyActionLocally(action);
+    }
+    setUndo((current) => (current?.id === group.id ? null : current));
+  }, []);
+  // 画面を離れるときは、待たせていた操作をそのまま送る。
+  useEffect(() => commitUndo, [commitUndo]);
+
   /** 操作を画面にすぐ反映し、サーバーへは待ち行列から送る。 */
   const performAction = useCallback(
     (messageIds: string[], input: MessageActionInput) => {
@@ -961,6 +1011,43 @@ export function MailApp({ user }: { user: User }) {
         messageIds,
         ...input,
       };
+      const undoable = isUndoable(input);
+      if (undoable) {
+        let group = undoRef.current;
+        // 続けて行った別の操作は、前の操作を確定してから受け付ける。
+        // 複数選択の操作 (同じ処理の中で続けて呼ばれる) は、1 つにまとめる。
+        if (!group?.open) {
+          commitUndo();
+          const created = {
+            id: ++undoSeq.current,
+            actions: [],
+            rows: [],
+            selection: selectionRef.current,
+            openId: selectedMessageIdRef.current,
+            open: true,
+            timer: setTimeout(commitUndo, UNDO_MS),
+          };
+          group = created;
+          undoRef.current = created;
+          queueMicrotask(() => {
+            created.open = false;
+          });
+        }
+        group.actions.push(action);
+        group.rows.push(
+          ...affectedRows(messagesRef.current ?? [], messageIds).filter(
+            (row) => !group.rows.some((saved) => saved.id === row.id),
+          ),
+        );
+        setUndo({
+          id: group.id,
+          message: undoMessage(
+            input,
+            mailboxesRef.current ?? [],
+            Math.max(group.rows.length, group.actions.length),
+          ),
+        });
+      }
       setMessages((current) => current && applyActions(current, [action]));
       setThreadRows((current) => applyActionToThreads(current, action));
       if (input.action !== "set_flags") {
@@ -968,12 +1055,46 @@ export function MailApp({ user }: { user: User }) {
           current && messageIds.includes(current) ? null : current,
         );
       }
-      queueRef.current?.enqueue(action);
+      queueRef.current?.enqueue(action, { hold: undoable });
       // オフラインで開き直しても操作後の状態で出るよう、端末に保存した内容にも反映する。
-      applyActionLocally(action);
+      // 元に戻せる操作は、確定したとき (commitUndo) に反映する。
+      if (!undoable) applyActionLocally(action);
     },
-    [],
+    [commitUndo],
   );
+
+  /** 直前の削除や移動を元に戻す。まだサーバーへ送っていないので、送らずに取り消す。 */
+  const handleUndo = useCallback(() => {
+    const group = undoRef.current;
+    if (!group) return;
+    undoRef.current = null;
+    clearTimeout(group.timer);
+    setUndo(null);
+    const cancelled = group.actions.filter((action) =>
+      queueRef.current?.cancel(action.idempotencyKey),
+    );
+    if (cancelled.length < group.actions.length) {
+      setNotice({ message: UNDO_ERROR, tone: "error" });
+    }
+    if (cancelled.length === 0) return;
+    const now = selectionRef.current;
+    if (
+      now.accountId === group.selection.accountId &&
+      now.mailboxId === group.selection.mailboxId &&
+      now.unifiedId === group.selection.unifiedId
+    ) {
+      // 一覧を取得し直すのを待たずに、控えておいた行を戻す。
+      setMessages(
+        (current) =>
+          current && restoreRows(current, group.rows, compareMessages),
+      );
+      // 開いていたメールを操作で閉じていたら、開き直す。
+      // (操作のあとに隣のメールへ移っていた場合も、元のメールへ戻る。)
+      if (group.openId) setSelectedMessageId(group.openId);
+    }
+    void loadFirstPage(selectionRef.current, false);
+    setRefreshKey((key) => key + 1);
+  }, [loadFirstPage]);
 
   // 一覧の行のスワイプ。何をするかは設定で選び、移動先はそのメールのアカウントの
   // フォルダの役割 (アプリ内で上書きした役割を含む) から決める。
@@ -1955,6 +2076,12 @@ export function MailApp({ user }: { user: User }) {
       toggleSidebarFolded();
       return;
     }
+    if (command === "undo") {
+      if (!undo) return;
+      event.preventDefault();
+      handleUndo();
+      return;
+    }
     if (command === "search") {
       const input = document.getElementById(SEARCH_INPUT_ID);
       if (!(input instanceof HTMLInputElement)) return;
@@ -2749,6 +2876,14 @@ export function MailApp({ user }: { user: User }) {
         }}
       />
       <ToastRegion>
+        {undo && (
+          <UndoToast
+            key={undo.id}
+            message={undo.message}
+            onUndo={handleUndo}
+            onClose={commitUndo}
+          />
+        )}
         {notice && (
           <NoticeToast
             message={notice.message}

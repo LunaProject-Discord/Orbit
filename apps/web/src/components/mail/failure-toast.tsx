@@ -1,10 +1,12 @@
 "use client";
 
+import { cn } from "cn";
 import {
   CheckIcon,
   CircleAlertIcon,
   CopyIcon,
   InfoIcon,
+  Undo2Icon,
   XIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -28,7 +30,8 @@ import { formatFullDate } from "@/lib/format";
 /** 画面の下に重ねて出す知らせの置き場。操作の邪魔にならないよう、中身だけがクリックを受ける。 */
 export function ToastRegion({ children }: { children: React.ReactNode }) {
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex flex-col items-center gap-2 px-4">
+    // スマホ幅では、右下の「作成」ボタンに重ならない高さに出す。
+    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex flex-col items-center gap-2 px-4 max-sm:bottom-24">
       {children}
     </div>
   );
@@ -71,6 +74,54 @@ export function NoticeToast({
         <XIcon />
       </Button>
     </div>
+  );
+}
+
+/**
+ * 削除や移動のあとに出す知らせ。「元に戻す」を押すと、操作を取り消す。
+ * 出ている間は、操作をまだサーバーへ送っていない。
+ */
+export function UndoToast({
+  message,
+  onUndo,
+  onClose,
+}: {
+  message: string;
+  onUndo: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <output
+      data-slot="undo-toast"
+      className={cn(
+        toastClass,
+        // 暗い地に明るい文字にして、一覧の上でも目に入るようにする。
+        "border-transparent bg-foreground py-2 pr-2 text-background",
+      )}
+    >
+      <p className="min-w-0 py-1">{message}</p>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onUndo}
+        className="shrink-0 font-semibold text-background hover:bg-background/15 hover:text-background dark:hover:bg-background/15"
+      >
+        <Undo2Icon data-icon="inline-start" />
+        元に戻す
+        <kbd className="ml-1 hidden font-normal font-sans text-background/60 text-xs pointer-fine:inline">
+          Z
+        </kbd>
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="閉じる"
+        onClick={onClose}
+        className="shrink-0 text-background/70 hover:bg-background/15 hover:text-background dark:hover:bg-background/15"
+      >
+        <XIcon />
+      </Button>
+    </output>
   );
 }
 
