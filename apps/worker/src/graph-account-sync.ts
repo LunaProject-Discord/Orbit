@@ -1,4 +1,5 @@
 import {
+  type BodyFetchPriority,
   decryptCredentials,
   encryptCredentials,
   type GraphLifecycleEvent,
@@ -64,6 +65,8 @@ const FOLDER_SYNC_MS = 10 * 60_000;
 const OTHER_POLL_MS = 2 * 60_000;
 /** アクセストークンは、期限のこれだけ前に取り直す。 */
 const TOKEN_MARGIN_MS = 5 * 60_000;
+/** 利用者が見ているメールの本文を、同期とは別に先に取得するときの同時数。 */
+const ON_DEMAND_BODY_CONCURRENCY = 2;
 
 type AccountRow = typeof mailAccounts.$inferSelect;
 type Status = AccountRow["status"];
@@ -148,12 +151,13 @@ export class GraphAccountSync {
       account,
       graphBodyFetcher(db, onDemand, this.abort.signal),
       (message) => this.log(message),
+      ON_DEMAND_BODY_CONCURRENCY,
     );
   }
 
-  /** 利用者が開いたメールの本文を、取り込みの順番を待たずに取得してほしい。 */
-  notifyBody(messageId: string) {
-    if (!this.stopped) void this.bodyRequests.request(messageId);
+  /** 利用者が見ているメールの本文を、取り込みの順番を待たずに取得してほしい。 */
+  notifyBody(messageIds: string[], priority: BodyFetchPriority) {
+    if (!this.stopped) this.bodyRequests.request(messageIds, priority);
   }
 
   /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期の周期とは別に、すぐ取得する。 */

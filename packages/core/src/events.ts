@@ -62,17 +62,30 @@ export type NewMailNotification = {
 };
 
 /**
- * API → ワーカー: 利用者が開いたメールの本文を、取り込みの順番を待たずに取得してほしい。
- * 本文は一覧より後に新しい順で取り込むので、取り込みの途中で開いたメールはこれで先に取得する。
+ * API → ワーカー: 利用者が見ているメールの本文を、取り込みの順番を待たずに取得してほしい。
+ * 本文は一覧より後に新しい順で取り込むので、取り込みの途中で見ているメールはこれで先に取得する。
  * 取得が終わったことは、通常の変更通知 (CHANNEL_CHANGES) で端末へ伝わる。
  */
 export const CHANNEL_BODY_FETCH = "mail_body_fetch";
 
+/**
+ * 本文を先に取得する理由。上にあるものほど先に取得する。
+ * - open: 利用者が開いたメール。
+ * - hover: 一覧でカーソルを載せたメール (次に開きそう)。
+ * - visible: 一覧の、いま画面に見えている行。
+ */
+export const BODY_FETCH_PRIORITIES = ["open", "hover", "visible"] as const;
+export type BodyFetchPriority = (typeof BODY_FETCH_PRIORITIES)[number];
+
+/** 1 回の依頼で頼める本文の数。 */
+export const MAX_BODY_FETCH_IDS = 50;
+
 /** CHANNEL_BODY_FETCH の payload。 */
 export type BodyFetchNotification = {
   accountId: string;
-  /** messages.id */
-  messageId: string;
+  /** messages.id。先頭ほど先に取得する。 */
+  messageIds: string[];
+  priority: BodyFetchPriority;
 };
 
 /**
