@@ -39,6 +39,18 @@ describe("parsePreferences", () => {
     expect(result).toEqual({ ...DEFAULT_PREFERENCES, bodyFontSize: 16 });
   });
 
+  it("アカウントの印は、標準では設定したアイコンを出す", () => {
+    expect(parsePreferences(null).accountMarkStyle).toBe("icon");
+    expect(
+      parsePreferences(JSON.stringify({ accountMarkStyle: "dot" }))
+        .accountMarkStyle,
+    ).toBe("dot");
+    expect(
+      parsePreferences(JSON.stringify({ accountMarkStyle: "big" }))
+        .accountMarkStyle,
+    ).toBe("icon");
+  });
+
   it("フォント名から CSS を壊す文字を取り除く", () => {
     const result = parsePreferences(
       JSON.stringify({

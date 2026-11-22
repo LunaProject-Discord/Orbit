@@ -49,7 +49,7 @@ import {
 import { SignatureDialog } from "@/components/mail/signature-dialog";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
-import { accountColor } from "@/lib/account-colors";
+import { AccountListMark } from "@/lib/account-icons";
 import {
   type ActionQueue,
   applyActions,
@@ -1470,7 +1470,7 @@ export function MailApp({ user }: { user: User }) {
   });
   /**
    * 複数のアカウントのメールが並ぶ一覧 (すべての受信トレイ、スター付き、全体の検索) で、
-   * どのアカウントのメールかを色の点で示す。
+   * どのアカウントのメールかを、アカウントの印 (設定したアイコンか色の点) で示す。
    */
   const accountMark =
     selectedAccountId === null && (accounts?.length ?? 0) > 1
@@ -1480,7 +1480,13 @@ export function MailApp({ user }: { user: User }) {
           );
           return account
             ? {
-                color: accountColor(accounts ?? [], account.id),
+                mark: (
+                  <AccountListMark
+                    accounts={accounts ?? []}
+                    account={account}
+                    dotClass="size-1.5"
+                  />
+                ),
                 name: account.displayName || account.email,
               }
             : null;

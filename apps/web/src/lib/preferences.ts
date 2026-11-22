@@ -17,6 +17,8 @@ export type Preferences = {
   previewLines: 0 | 1 | 2 | 3;
   /** メール一覧に、アカウントの色の点を出す。 */
   showAccountMark: boolean;
+  /** 一覧などで、どのアカウントかを示す印。icon は設定したアイコン (無ければ色の点)、dot は常に色の点。 */
+  accountMarkStyle: "icon" | "dot";
   /** メール一覧に、添付・スター・返信済みの印を出す。 */
   showListIcons: boolean;
   /** 一覧の日付。auto は今日なら時刻だけ、datetime は常に日付と時刻。 */
@@ -55,6 +57,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   density: "standard",
   previewLines: 2,
   showAccountMark: true,
+  accountMarkStyle: "icon",
   showListIcons: true,
   listDate: "auto",
   hour12: false,
@@ -84,6 +87,7 @@ const choices: {
   fontSize: FONT_SIZES,
   density: ["compact", "standard", "comfortable"],
   previewLines: [0, 1, 2, 3],
+  accountMarkStyle: ["icon", "dot"],
   listDate: ["auto", "datetime"],
   markRead: ["immediately", "delay", "never"],
   markReadDelay: MARK_READ_DELAYS,
