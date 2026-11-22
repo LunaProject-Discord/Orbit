@@ -100,6 +100,10 @@ export async function loadMailboxStates(
       lastSyncedAt: mailboxes.lastSyncedAt,
       total: sql<number>`count(${messageMailboxes.messageId})::int`,
       unseen: sql<number>`(count(*) filter (where ${messages.seen} = false))::int`,
+      /** いちばん新しいメールの日時。通知を受ける接続を張るフォルダの順番に使う。 */
+      latestAt: sql<Date | null>`max(${messages.receivedAt})`.mapWith(
+        (value: string | Date) => new Date(value),
+      ),
     })
     .from(mailboxes)
     .leftJoin(messageMailboxes, eq(messageMailboxes.mailboxId, mailboxes.id))
