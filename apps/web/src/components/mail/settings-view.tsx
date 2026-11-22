@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
+import { IconPicker } from "@/components/mail/icon-picker";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,11 +32,7 @@ import {
   type AccountColorName,
   accountColorName,
 } from "@/lib/account-colors";
-import {
-  ACCOUNT_ICONS,
-  type AccountIconName,
-  AccountMark,
-} from "@/lib/account-icons";
+import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
   type Account,
   oauthProviderOf,
@@ -648,50 +645,17 @@ function AccountCard({
         </div>
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col items-start gap-1.5">
         <span id={`${id}-icon`} className="text-xs">
           アイコン
         </span>
-        <div
-          role="radiogroup"
-          aria-labelledby={`${id}-icon`}
-          className="flex flex-wrap gap-1"
-        >
-          {[
-            { name: null, label: "なし (色の点)", icon: null },
-            ...ACCOUNT_ICONS,
-          ].map((item) => {
-            const selected = (account.icon ?? null) === item.name;
-            return (
-              // biome-ignore lint/a11y/useSemanticElements: アイコンの見本をそのまま選択肢にするため、radio の役割を持つボタンにしている
-              <button
-                key={item.name ?? "none"}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                aria-label={item.label}
-                title={item.label}
-                onClick={() => chooseIcon(item.name)}
-                className={cn(
-                  "flex size-8 items-center justify-center rounded-md border border-transparent text-muted-foreground outline-none transition-colors hover:bg-muted focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
-                  selected && cn("border-border bg-muted", colorItem?.text),
-                )}
-              >
-                {item.icon ? (
-                  <item.icon aria-hidden="true" />
-                ) : (
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "size-2 rounded-full",
-                      selected ? colorItem?.dot : "bg-muted-foreground/60",
-                    )}
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+        <IconPicker
+          value={account.icon}
+          onChange={chooseIcon}
+          labelledBy={`${id}-icon`}
+          colorClass={colorItem?.text}
+          dotClass={colorItem?.dot}
+        />
       </div>
 
       {error && (

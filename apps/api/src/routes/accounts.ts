@@ -75,29 +75,15 @@ const ACCOUNT_COLOR_NAMES = [
   "slate",
 ] as const;
 
-/** アカウントに付けられるアイコンの名前。画面側 (apps/web の account-icons.tsx) と揃える。 */
-const ACCOUNT_ICON_NAMES = [
-  "mail",
-  "user",
-  "users",
-  "briefcase",
-  "building",
-  "home",
-  "graduation-cap",
-  "heart",
-  "star",
-  "shopping-cart",
-  "wallet",
-  "code",
-  "gamepad",
-  "globe",
-  "book",
-  "music",
-  "camera",
-  "plane",
-  "wrench",
-  "bell",
-] as const;
+/**
+ * アカウントに付けるアイコンの名前。Lucide のアイコンの名前 (house、briefcase など) で、
+ * 画面側が全アイコンから選ばせる。アイコンは増えたり名前が変わったりするので、
+ * ここでは名前の形だけを確かめる (知らない名前は、画面側が色の点として出す)。
+ */
+const accountIconName = z
+  .string()
+  .max(64)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/);
 
 const updateAccountBody = z
   .object({
@@ -108,7 +94,7 @@ const updateAccountBody = z
     /** 画面でアカウントを見分ける色。null なら並び順から決める。 */
     color: z.enum(ACCOUNT_COLOR_NAMES).nullable().optional(),
     /** 画面でアカウントに付けるアイコン。null なら色の点を出す。 */
-    icon: z.enum(ACCOUNT_ICON_NAMES).nullable().optional(),
+    icon: accountIconName.nullable().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
