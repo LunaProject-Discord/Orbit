@@ -206,7 +206,7 @@ export async function showPageNotification(
   const options = {
     body: notification.body,
     tag: notification.tag,
-    icon: "/favicon.ico",
+    icon: "/icons/icon-192.png",
     data: { messageId: notification.messageId },
   };
   try {

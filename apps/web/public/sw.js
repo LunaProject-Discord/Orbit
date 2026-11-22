@@ -188,7 +188,7 @@ self.addEventListener("push", (event) => {
       body: typeof data.body === "string" ? data.body : "",
       // 同じメールの通知は置き換える (再送や複数のタブで二重に出さない)。
       tag: typeof data.tag === "string" ? data.tag : undefined,
-      icon: "/favicon.ico",
+      icon: "/icons/icon-192.png",
       data: {
         messageId: typeof data.messageId === "string" ? data.messageId : null,
       },

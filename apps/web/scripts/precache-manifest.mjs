@@ -8,7 +8,18 @@ import { fileURLToPath } from "node:url";
 
 const out = fileURLToPath(new URL("../out", import.meta.url));
 const OUTPUT = "precache-manifest.json";
-const EXTENSIONS = new Set([".html", ".txt", ".js", ".css", ".ico", ".json"]);
+const EXTENSIONS = new Set([
+  ".html",
+  ".txt",
+  ".js",
+  ".css",
+  ".ico",
+  ".json",
+  // アイコンと Web アプリの manifest (ホーム画面に追加したアプリや通知で使う)
+  ".png",
+  ".svg",
+  ".webmanifest",
+]);
 
 function walk(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
