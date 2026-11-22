@@ -178,7 +178,14 @@ export async function storeReceivedAttachment(
     await rename(partial, path);
     return size;
   } catch (error) {
-    file.destroy();
+    // 閉じ終わるのを待ってから消す。ファイルを開いている途中で消すと、
+    // 消したあとに開き終わって、書きかけが残ってしまう。
+    if (!file.closed) {
+      await new Promise<void>((done) => {
+        file.once("close", done);
+        file.destroy();
+      });
+    }
     await rm(partial, { force: true });
     throw error;
   }

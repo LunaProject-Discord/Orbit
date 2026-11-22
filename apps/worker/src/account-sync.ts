@@ -1,8 +1,10 @@
 import {
+  type BodyFetchPriority,
   decryptCredentials,
   GoogleAccessTokenSource,
   type GoogleOAuthConfig,
   GoogleOAuthError,
+  legacyTlsOptions,
 } from "@mail/core";
 import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
@@ -11,6 +13,7 @@ import {
   AttachmentRequests,
   ImapAttachmentDownloader,
 } from "./attachment-fetch.js";
+import { BodyRequests, imapBodyFetcher } from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { imapDraftRemote } from "./draft-imap.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -22,10 +25,13 @@ import {
   type SpecialUse,
   syncPriority,
 } from "./mailbox-list.js";
+import { renameMailboxPaths } from "./mailbox-operations.js";
 import {
   fetchBodies,
+  fetchHeaders,
   loadMailboxStates,
   mailboxesWithPendingBodies,
+  mailboxesWithPendingHeaders,
   STATUS_QUERY,
   syncMailbox,
   syncMailboxList,
@@ -108,6 +114,7 @@ export class AccountSync {
   private sending: Promise<void> = Promise.resolve();
   private readonly attachmentDownloader: ImapAttachmentDownloader;
   private readonly attachmentRequests: AttachmentRequests;
+  private readonly bodyRequests: BodyRequests;
   /** OAuth2 のアカウント (Gmail) のアクセストークン。最初に使うときに用意する。 */
   private tokens: GoogleAccessTokenSource | null = null;
   /** 書く手が止まるのを待っている下書きを、メールサーバーへ置きに戻るためのタイマー。 */
@@ -136,11 +143,25 @@ export class AccountSync {
       this.attachmentDownloader.download,
       (message) => this.log(message),
     );
+    this.bodyRequests = new BodyRequests(
+      db,
+      account,
+      imapBodyFetcher(db, (task) => this.attachmentDownloader.withClient(task)),
+      (message) => this.log(message),
+    );
   }
 
   /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期用とは別の接続で取得する。 */
   notifyAttachment(attachmentId: string) {
     if (!this.stopped) this.attachmentRequests.request(attachmentId);
+  }
+
+  /**
+   * 利用者が見ているメールの本文を、取り込みの順番を待たずに取得してほしい。
+   * 同期用の接続は一覧の取り込みで長く塞がることがあるので、別の接続で 1 通ずつ取得する。
+   */
+  notifyBody(messageIds: string[], priority: BodyFetchPriority) {
+    if (!this.stopped) this.bodyRequests.request(messageIds, priority);
   }
 
   private log(message: string, error?: unknown) {
@@ -308,6 +329,7 @@ export class AccountSync {
         username: this.account.username,
         ...auth,
         allowInsecure: this.allowInsecureSmtp,
+        allowLegacyTls: this.account.allowLegacyTls,
       },
       message,
     );
@@ -426,6 +448,7 @@ export class AccountSync {
       host: this.account.imapHost,
       port: this.account.imapPort,
       secure: this.account.imapSecure,
+      tls: legacyTlsOptions(this.account.allowLegacyTls),
       auth:
         "accessToken" in auth
           ? { user: this.account.username, accessToken: auth.accessToken }
@@ -574,26 +597,35 @@ export class AccountSync {
   /**
    * 本文をまだ取得していないメッセージの本文を、フォルダごとに取得する。
    * 時間がかかるので、新しい変化が来たら中断して同期を優先する。
+   * priorityOnly は、他のフォルダの一覧の取り込みがまだ残っている間の呼び出し。
+   * 利用者が開いているフォルダと受信トレイの分だけを、一定時間だけ進める。
    */
-  private async fetchPendingBodies(client: ImapFlow) {
+  private async fetchPendingBodies(client: ImapFlow, priorityOnly = false) {
     const deadline = Date.now() + BACKGROUND_SLICE_MS;
     const interrupted = () =>
       this.stopped ||
       this.syncRequested ||
-      this.foldersDue ||
+      (!priorityOnly && this.foldersDue) ||
       this.focusDue !== null;
     // 利用者が開いているフォルダを最初に、あとは決まった順に取得する。
     const rank = (mailbox: { id: string; specialUse: SpecialUse | null }) =>
       mailbox.id === this.focus?.mailboxId
         ? -1
         : syncPriority(mailbox.specialUse);
-    const pending = (
-      await mailboxesWithPendingBodies(this.db, this.account.id)
-    ).sort((a, b) => rank(a) - rank(b));
+    const pending = (await mailboxesWithPendingBodies(this.db, this.account.id))
+      .filter(
+        (mailbox) =>
+          !priorityOnly ||
+          mailbox.id === this.focus?.mailboxId ||
+          mailbox.path === INBOX,
+      )
+      .sort((a, b) => rank(a) - rank(b));
     for (const mailbox of pending) {
       if (interrupted()) return;
-      // 受信トレイを開いている間は通知が届くので、時間で区切らなくてよい。
-      const expired = () => mailbox.path !== INBOX && Date.now() > deadline;
+      // 受信トレイを開いている間は通知が届くので、時間で区切らなくてよい
+      // (他のフォルダの一覧の取り込みが残っている場合は、そちらへ戻るために区切る)。
+      const expired = () =>
+        (priorityOnly || mailbox.path !== INBOX) && Date.now() > deadline;
       const lock = await this.openMailbox(client, mailbox.path);
       if (!lock) continue;
       let remaining = true;
@@ -610,6 +642,43 @@ export class AccountSync {
         lock.release();
       }
       if (remaining && expired()) {
+        // 受信トレイを確認してから続きを取得する。
+        if (!priorityOnly) this.syncRequested = true;
+        return;
+      }
+    }
+  }
+
+  /**
+   * 代理送信やメーリングリストの情報を、これらの項目を足す前に取り込んだメールへ補う。
+   * 急がない作業なので、本文の取得がすべて終わってから、他の作業の合間に進める。
+   */
+  private async fetchPendingHeaders(client: ImapFlow) {
+    const deadline = Date.now() + BACKGROUND_SLICE_MS;
+    const interrupted = () =>
+      this.stopped ||
+      this.syncRequested ||
+      this.foldersDue ||
+      this.focusDue !== null;
+    const pending = await mailboxesWithPendingHeaders(this.db, this.account.id);
+    for (const mailbox of pending) {
+      if (interrupted()) return;
+      const lock = await this.openMailbox(client, mailbox.path);
+      if (!lock) continue;
+      let remaining = true;
+      try {
+        while (remaining && !interrupted() && Date.now() <= deadline) {
+          remaining = await fetchHeaders(
+            this.db,
+            client,
+            this.account,
+            mailbox.id,
+          );
+        }
+      } finally {
+        lock.release();
+      }
+      if (remaining && Date.now() > deadline) {
         // 受信トレイを確認してから続きを取得する。
         this.syncRequested = true;
         return;
@@ -666,7 +735,17 @@ export class AccountSync {
         const outbox = await processOutbox(
           this.db,
           this.account.id,
-          (operation) => applyImapOperation(client, operation),
+          async (operation) => {
+            const result = await applyImapOperation(client, operation);
+            if (result.ok && operation.kind === "mailbox_rename") {
+              await renameMailboxPaths(
+                this.db,
+                this.account,
+                operation.payload,
+              );
+            }
+            return result;
+          },
           (message) => this.log(message),
         );
         // 移動先のフォルダなど、受信トレイ以外にも変化がある。
@@ -684,14 +763,24 @@ export class AccountSync {
           this.focusDue = null;
           await this.syncFocused(client, kind);
         }
+        let foldersRemain = false;
         if (this.foldersDue && !this.syncRequested && !this.focusDue) {
           // 確認中に次の時刻が来た場合に取りこぼさないよう、先に下ろしておく。
           this.foldersDue = false;
-          if (!(await this.syncOtherFolders(client))) this.foldersDue = true;
+          if (!(await this.syncOtherFolders(client))) {
+            this.foldersDue = true;
+            foldersRemain = true;
+          }
         }
         const pending = () =>
           this.syncRequested || this.foldersDue || this.focusDue !== null;
         if (!pending()) await this.fetchPendingBodies(client);
+        else if (foldersRemain && !this.syncRequested && !this.focusDue) {
+          // メールの多いアカウントでは、他のフォルダの一覧の取り込みに長くかかる。
+          // その間も、開いているフォルダと受信トレイの本文は交互に少しずつ進める。
+          await this.fetchPendingBodies(client, true);
+        }
+        if (!this.stopped && !pending()) await this.fetchPendingHeaders(client);
         if (this.stopped || pending()) continue;
 
         // IDLE で通知を受けるフォルダを受信トレイに戻す。

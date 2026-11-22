@@ -99,9 +99,23 @@ function load(): MessageAction[] {
 export type ActionQueue = {
   /** まだサーバーへ送れていない操作 (古い順)。 */
   pending: () => MessageAction[];
-  enqueue: (action: MessageAction) => void;
+  /**
+   * 操作を送信待ちに入れる。hold を true にすると、release を呼ぶまでサーバーへ送らない
+   * (「元に戻す」を受け付ける間、送るのを待つ)。待っている間にページを閉じた場合は、
+   * 次に開いたときに送る。
+   */
+  enqueue: (action: MessageAction, options?: { hold?: boolean }) => void;
+  /** 送るのを待たせていた操作を送る。 */
+  release: (idempotencyKey: string) => void;
+  /**
+   * 送るのを待たせていた操作を取り消す。取り消せたら true。
+   * すでに送ったか、送っている途中なら false。
+   */
+  cancel: (idempotencyKey: string) => boolean;
   /** サーバーに拒否されて取り消された操作を受け取る。戻り値の関数で解除する。 */
   onRejected: (listener: (action: MessageAction) => void) => () => void;
+  /** 送れていない操作の数が変わるたびに呼ぶ。戻り値の関数で解除する。 */
+  onChange: (listener: (count: number) => void) => () => void;
   stop: () => void;
 };
 
@@ -115,13 +129,42 @@ export function createActionQueue(
   let timer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(action: MessageAction) => void>();
 
+  const changeListeners = new Set<(count: number) => void>();
+
+  /** 「元に戻す」を受け付けている間、送るのを待たせている操作。 */
+  const held = new Set<string>();
+
   const save = () => {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
     } catch {
       // 保存できなくても、このページを開いている間は送り続ける。
     }
+    // 待たせている操作は、まだ「送れていない」ものには数えない。
+    const count = items.filter((item) => !held.has(item.idempotencyKey)).length;
+    for (const listener of changeListeners) listener(count);
   };
+
+  /**
+   * 次に送る操作。待たせている操作と、それと同じメールを対象にする後ろの操作は飛ばす
+   * (同じメールへの操作は、行った順に送る)。
+   */
+  const next = (): MessageAction | undefined => {
+    const waiting = new Set<string>();
+    for (const item of items) {
+      if (
+        held.has(item.idempotencyKey) ||
+        item.messageIds.some((id) => waiting.has(id))
+      ) {
+        for (const id of item.messageIds) waiting.add(id);
+        continue;
+      }
+      return item;
+    }
+    return undefined;
+  };
+  /** いまサーバーへ送っている操作。 */
+  let sending: string | null = null;
 
   const flush = async () => {
     if (flushing || stopped) return;
@@ -130,9 +173,10 @@ export function createActionQueue(
     timer = null;
     try {
       for (;;) {
-        const action = items[0];
+        const action = next();
         if (!action || stopped) return;
         try {
+          sending = action.idempotencyKey;
           await send(action);
         } catch (error) {
           const retryable =
@@ -156,6 +200,7 @@ export function createActionQueue(
         save();
       }
     } finally {
+      sending = null;
       flushing = false;
     }
   };
@@ -169,14 +214,36 @@ export function createActionQueue(
 
   return {
     pending: () => items,
-    enqueue(action) {
+    enqueue(action, options) {
+      if (options?.hold) held.add(action.idempotencyKey);
       items = [...items, action].slice(-MAX_PENDING);
       save();
       void flush();
     },
+    release(idempotencyKey) {
+      if (!held.delete(idempotencyKey)) return;
+      save();
+      void flush();
+    },
+    cancel(idempotencyKey) {
+      if (sending === idempotencyKey) return false;
+      if (!items.some((item) => item.idempotencyKey === idempotencyKey)) {
+        return false;
+      }
+      held.delete(idempotencyKey);
+      items = items.filter((item) => item.idempotencyKey !== idempotencyKey);
+      save();
+      // この操作の後ろで待っていた操作があれば、送る。
+      void flush();
+      return true;
+    },
     onRejected(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
     },
     stop() {
       stopped = true;

@@ -1,9 +1,12 @@
+import { hostname, networkInterfaces } from "node:os";
 import {
   loadEncryptionKey,
+  loadFcmConfig,
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
 } from "@mail/core";
+import { lanOrigins } from "./lib/lan-origins.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -15,21 +18,41 @@ function required(name: string): string {
   return value;
 }
 
+/** スマホ版 (Capacitor) の画面のオリジン。Android は https://localhost、iOS は capacitor://localhost。 */
+const APP_ORIGINS = ["https://localhost", "capacitor://localhost"];
+
 /** 環境変数を読み込む。不足があれば起動時に止める。 */
 export function loadEnv() {
   const authSecret = required("BETTER_AUTH_SECRET");
   if (authSecret.length < 32) {
     throw new Error("BETTER_AUTH_SECRET は 32 文字以上にしてください。");
   }
-  const allowedOrigins = (
+  const configuredOrigins = (
     process.env.ALLOWED_ORIGINS ?? "http://localhost:3000"
   )
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+  // 開発中は、同じ LAN のスマホなどから http://<この PC の IP アドレス>:3000 で開いても使えるようにする。
+  // 本番 (NODE_ENV=production) では足さない。ALLOW_LAN_ORIGINS=false でも止められる。
+  const allowLan =
+    process.env.NODE_ENV !== "production" &&
+    process.env.ALLOW_LAN_ORIGINS !== "false";
+  // 同梱アプリの画面のオリジンは固定なので、設定しなくても通す。
+  // 認証は Authorization ヘッダーのトークンで行い Cookie を使わないため、オリジンを足しても
+  // 他のサイトから利用者の権限で呼ばれることはない。
+  const allowedOrigins = [
+    ...new Set([
+      ...configuredOrigins,
+      ...(allowLan
+        ? lanOrigins(configuredOrigins, hostname(), networkInterfaces())
+        : []),
+      ...APP_ORIGINS,
+    ]),
+  ];
   const microsoftConfig = loadMicrosoftOAuthConfig(process.env);
   const googleConfig = loadGoogleOAuthConfig(process.env);
-  const webOrigin = allowedOrigins[0] ?? "http://localhost:3000";
+  const webOrigin = configuredOrigins[0] ?? "http://localhost:3000";
   return {
     databaseUrl: required("DATABASE_URL"),
     port: Number(process.env.API_PORT ?? 8787),
@@ -43,6 +66,8 @@ export function loadEnv() {
     /** Microsoft アカウント (Exchange Online、Outlook.com) の追加。未設定なら null で無効。 */
     /** Web Push の公開鍵。端末が通知の送り先を登録するときに使う。未設定なら null。 */
     webPushPublicKey: loadWebPushConfig(process.env)?.publicKey ?? null,
+    /** スマホアプリへの通知 (FCM)。送るのは同期ワーカーで、API は送れるかどうかだけを端末に伝える。 */
+    fcmEnabled: loadFcmConfig(process.env) !== null,
     microsoft: microsoftConfig && {
       config: microsoftConfig,
       /** ログイン後に戻る Web の URL。Entra のアプリ登録のリダイレクト URI と一致させる。 */

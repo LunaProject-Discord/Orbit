@@ -9,6 +9,7 @@ import {
   replaceSignature,
   resolveRecipients,
   sanitizeHtml,
+  withReplyText,
 } from "@/lib/compose";
 
 describe("parseAddressList", () => {
@@ -183,6 +184,69 @@ describe("buildDraftFrom", () => {
     expect(text).toContain("---------- 転送メッセージ ----------");
     expect(text).toContain("差出人: 山田 <yamada@example.com>");
     expect(text).toContain("明日の 10 時でいかがですか。\n\n<b>念のため</b>");
+  });
+});
+
+describe("連絡先・会話ごとの署名", () => {
+  const rule = (
+    kind: "contact" | "thread",
+    key: string,
+    signatureHtml: string | null,
+  ) => ({
+    id: `${kind}:${key}`,
+    kind,
+    accountId: kind === "thread" ? "acc1" : null,
+    key,
+    label: null,
+    signatureHtml,
+    updatedAt: "2026-11-22T00:00:00.000Z",
+  });
+
+  it("返信の宛先に連絡先の署名があれば、アカウントの署名の代わりに入れる", () => {
+    const draft = buildDraftFrom("reply", original, signed, [
+      rule("contact", "yamada@example.com", "<div>山田さん向け</div>"),
+    ]);
+    expect(draft.html).toContain(
+      '<div data-signature=""><div>山田さん向け</div></div>',
+    );
+    expect(draft.html).not.toContain("aoi@example.com");
+  });
+
+  it("会話の署名は連絡先の署名より優先し、転送にも入る", () => {
+    const rules = [
+      rule("contact", "yamada@example.com", "<div>山田さん向け</div>"),
+      rule("thread", "t1", "<div>この会話用</div>"),
+    ];
+    for (const mode of ["reply", "forward"] as const) {
+      const draft = buildDraftFrom(mode, original, signed, rules);
+      expect(draft.threadKey).toBe("t1");
+      expect(draft.html).toContain(
+        '<div data-signature=""><div>この会話用</div></div>',
+      );
+    }
+  });
+
+  it("「署名を付けない」の会話では、署名を入れない", () => {
+    const draft = buildDraftFrom("reply", original, signed, [
+      rule("thread", "t1", null),
+    ]);
+    expect(draft.html).not.toContain("data-signature");
+  });
+});
+
+describe("withReplyText", () => {
+  it("書いた文章を、引用の前に入れる", () => {
+    const draft = withReplyText(build("reply"), "了解です。\n\n<よろしく>");
+    expect(
+      draft.html.startsWith(
+        '<div>了解です。</div><div><br></div><div>&lt;よろしく&gt;</div><div><br></div><div data-quote="">',
+      ),
+    ).toBe(true);
+  });
+
+  it("何も書いていなければ、下書きを変えない", () => {
+    const draft = build("reply");
+    expect(withReplyText(draft, "  \n")).toBe(draft);
   });
 });
 

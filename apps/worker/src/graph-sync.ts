@@ -6,7 +6,7 @@ import {
   messageMailboxes,
   messages,
 } from "@mail/db";
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import {
   type GraphClient,
@@ -28,6 +28,7 @@ import {
   removePlacements,
   type SyncAccount,
 } from "./mailbox-store.js";
+import { listInfoFromGraph } from "./message-headers.js";
 import { type AttachmentInfo, clean, makeSnippet } from "./message-parse.js";
 import { announceNewMail } from "./new-mail.js";
 import { loadPendingGuard } from "./outbox.js";
@@ -35,6 +36,7 @@ import { loadPendingGuard } from "./outbox.js";
 const BODY_BATCH = 20;
 /** 本文を同時に取得する数。Outlook の制限 (1 メールボックスあたり同時 4 件) より少なくする。 */
 const BODY_CONCURRENCY = 3;
+const HEADER_BATCH = 20;
 
 type GraphFolder = {
   id: string;
@@ -362,6 +364,76 @@ export async function listGraphAttachments(
   return toAttachmentInfos(items);
 }
 
+/** 本文を取得するメッセージ。 */
+export type GraphBodyTarget = {
+  messageId: string;
+  providerMessageId: string | null;
+  snippet: string;
+  hasAttachments: boolean;
+};
+
+/**
+ * メッセージ 1 通の本文 (と添付ファイルの一覧) を取得して保存する。
+ * 変更の通知 (recordChanges) は呼び出し側で行う。
+ */
+export async function fetchGraphBody(
+  db: Database,
+  client: GraphClient,
+  row: GraphBodyTarget,
+  signal?: AbortSignal,
+) {
+  let body: GraphMessage["body"] = null;
+  let files: AttachmentInfo[] | null = null;
+  let headers: GraphMessage["internetMessageHeaders"] = null;
+  if (row.providerMessageId) {
+    try {
+      const message = await client.get<GraphMessage>(
+        `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=body,internetMessageHeaders`,
+        signal,
+      );
+      body = message.body;
+      headers = message.internetMessageHeaders;
+      // 本文に埋め込まれた画像 (cid:) だけのメールは hasAttachments が false になる。
+      if (row.hasAttachments || /\bcid:/i.test(message.body?.content ?? "")) {
+        files = await listGraphAttachments(
+          client,
+          row.providerMessageId,
+          signal,
+        );
+      }
+    } catch (error) {
+      // サーバーから消えていた場合は空のまま取得済みにする (次の差分でメッセージごと消える)。
+      if (!(error instanceof GraphError && error.notFound)) throw error;
+    }
+  }
+  const { bodyText, bodyHtml } = toBody(body);
+  await db.transaction(async (tx) => {
+    if (files) {
+      await tx
+        .delete(attachments)
+        .where(eq(attachments.messageId, row.messageId));
+      if (files.length > 0) {
+        await tx
+          .insert(attachments)
+          .values(files.map((file) => ({ messageId: row.messageId, ...file })));
+      }
+    }
+    await tx
+      .update(messages)
+      .set({
+        bodyText,
+        bodyHtml,
+        // 一覧の取得で受け取った冒頭 (bodyPreview) があれば、それを使い続ける。
+        snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
+        bodyFetchedAt: new Date(),
+        // メーリングリストの情報は、本文と同じ取得で受け取る。
+        ...listInfoFromGraph(headers),
+        headersFetchedAt: new Date(),
+      })
+      .where(eq(messages.id, row.messageId));
+  });
+}
+
 /**
  * 本文をまだ取得していないメッセージを、フォルダに関係なく新しい順に 1 回分だけ取得する。
  * preferMailboxId (利用者が開いているフォルダ) に未取得のものがあれば、そちらを先に取得する。
@@ -417,56 +489,7 @@ export async function fetchGraphBodies(
   for (let i = 0; i < batch.length; i += BODY_CONCURRENCY) {
     await Promise.all(
       batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
-        let body: GraphMessage["body"] = null;
-        let files: AttachmentInfo[] | null = null;
-        if (row.providerMessageId) {
-          try {
-            const message = await client.get<GraphMessage>(
-              `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=body`,
-              signal,
-            );
-            body = message.body;
-            // 本文に埋め込まれた画像 (cid:) だけのメールは hasAttachments が false になる。
-            if (
-              row.hasAttachments ||
-              /\bcid:/i.test(message.body?.content ?? "")
-            ) {
-              files = await listGraphAttachments(
-                client,
-                row.providerMessageId,
-                signal,
-              );
-            }
-          } catch (error) {
-            // サーバーから消えていた場合は空のまま取得済みにする (次の差分でメッセージごと消える)。
-            if (!(error instanceof GraphError && error.notFound)) throw error;
-          }
-        }
-        const { bodyText, bodyHtml } = toBody(body);
-        await db.transaction(async (tx) => {
-          if (files) {
-            await tx
-              .delete(attachments)
-              .where(eq(attachments.messageId, row.messageId));
-            if (files.length > 0) {
-              await tx
-                .insert(attachments)
-                .values(
-                  files.map((file) => ({ messageId: row.messageId, ...file })),
-                );
-            }
-          }
-          await tx
-            .update(messages)
-            .set({
-              bodyText,
-              bodyHtml,
-              // 一覧の取得で受け取った冒頭 (bodyPreview) があれば、それを使い続ける。
-              snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
-              bodyFetchedAt: new Date(),
-            })
-            .where(eq(messages.id, row.messageId));
-        });
+        await fetchGraphBody(db, client, row, signal);
         done.push(row.messageId);
       }),
     );
@@ -475,4 +498,80 @@ export async function fetchGraphBodies(
     recordChanges(tx, account.userId, "message", "upsert", done),
   );
   return preferred || pending.length > BODY_BATCH;
+}
+
+/**
+ * 代理送信 (sender) とメーリングリストの情報をまだ取り込んでいないメッセージを、
+ * 新しい順に 1 回分だけ補う。これらの項目を足す前に本文まで取り込んだメールが対象
+ * (本文がまだのメールは、本文の取得のときに一緒に取り込む)。
+ * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
+ */
+export async function fetchGraphHeaders(
+  db: Database,
+  client: GraphClient,
+  account: SyncAccount,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const pending = await db
+    .select({
+      messageId: messages.id,
+      providerMessageId: messages.providerMessageId,
+      from: messages.from,
+    })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.accountId, account.id),
+        isNull(messages.headersFetchedAt),
+        isNotNull(messages.bodyFetchedAt),
+      ),
+    )
+    .orderBy(desc(messages.receivedAt))
+    .limit(HEADER_BATCH + 1);
+  const batch = pending.slice(0, HEADER_BATCH);
+  if (batch.length === 0) return false;
+
+  const changed: string[] = [];
+  for (let i = 0; i < batch.length; i += BODY_CONCURRENCY) {
+    await Promise.all(
+      batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
+        let message: GraphMessage | null = null;
+        if (row.providerMessageId) {
+          try {
+            message = await client.get<GraphMessage>(
+              `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=sender,internetMessageHeaders`,
+              signal,
+            );
+          } catch (error) {
+            // サーバーから消えていた場合は、空のまま取り込み済みにする。
+            if (!(error instanceof GraphError && error.notFound)) throw error;
+          }
+        }
+        const sender = toMessageValues({
+          id: row.providerMessageId ?? "",
+          sender: message?.sender ?? null,
+        }).sender;
+        const list = listInfoFromGraph(message?.internetMessageHeaders);
+        await db
+          .update(messages)
+          .set({ sender, ...list, headersFetchedAt: new Date() })
+          .where(eq(messages.id, row.messageId));
+        // 画面に出る内容が増えたメールだけ、端末へ変更を知らせる。
+        const fromAddresses = new Set(
+          row.from.map((item) => item.address.toLowerCase()),
+        );
+        if (
+          list.listId !== null ||
+          list.listUnsubscribe.length > 0 ||
+          sender?.some((item) => !fromAddresses.has(item.address.toLowerCase()))
+        ) {
+          changed.push(row.messageId);
+        }
+      }),
+    );
+  }
+  await db.transaction((tx) =>
+    recordChanges(tx, account.userId, "message", "upsert", changed),
+  );
+  return pending.length > HEADER_BATCH;
 }

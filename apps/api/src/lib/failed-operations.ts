@@ -27,9 +27,18 @@ import { recordChanges, removePlacements, type Tx } from "./message-actions.js";
 export type FailedOperation = {
   id: string;
   accountId: string;
-  kind: "set_flags" | "move" | "delete" | "append";
-  /** 対象のメールの数。 */
+  kind:
+    | "set_flags"
+    | "move"
+    | "delete"
+    | "append"
+    | "mailbox_create"
+    | "mailbox_rename"
+    | "mailbox_delete";
+  /** 対象のメールの数 (フォルダへの操作では 1)。 */
   count: number;
+  /** フォルダへの操作の対象 (作成と名前の変更では、付けようとした名前)。 */
+  mailboxName: string | null;
   /** set_flags で変えようとした内容。 */
   seen: boolean | null;
   flagged: boolean | null;
@@ -42,7 +51,18 @@ export type FailedOperation = {
   failedAt: Date;
 };
 
-const FAILURE_KINDS = ["set_flags", "move", "delete", "append"] as const;
+const FAILURE_KINDS = [
+  "set_flags",
+  "move",
+  "delete",
+  "append",
+  "mailbox_create",
+  "mailbox_rename",
+  "mailbox_delete",
+] as const;
+
+/** メッセージを対象にする操作。やり直すときに、対象がまだあるかを確かめる。 */
+const MESSAGE_KINDS: readonly string[] = ["set_flags", "move", "delete"];
 
 function targetsOf(payload: Record<string, unknown>): OutboxTarget[] {
   return Array.isArray(payload.targets)
@@ -70,6 +90,9 @@ function toFailedOperation(row: {
     kind: row.kind as FailedOperation["kind"],
     // 控えの保存 (append) は対象を持たないが、メール 1 通分。
     count: Math.max(messageIds.size, 1),
+    mailboxName: row.kind.startsWith("mailbox_")
+      ? String((row.payload as { name?: unknown }).name ?? "")
+      : null,
     seen: row.kind === "set_flags" ? (flags.seen ?? null) : null,
     flagged: row.kind === "set_flags" ? (flags.flagged ?? null) : null,
     answered: row.kind === "set_flags" ? (flags.answered ?? null) : null,
@@ -224,18 +247,40 @@ async function resolveTargets(
     }
   }
 
+  return matchTargets(targets, validity, byUid, byProviderId);
+}
+
+/**
+ * 失敗した操作の対象を、いまの DB の内容と突き合わせる。
+ * validity はフォルダの ID から今の UIDVALIDITY、byUid は「フォルダの ID:UID」から、
+ * byProviderId は Microsoft Graph の不変 ID から、今の messages.id を引く。
+ */
+export function matchTargets(
+  targets: OutboxTarget[],
+  validity: Map<string, string | null>,
+  byUid: Map<string, string>,
+  byProviderId: Map<string, string>,
+) {
   /** DB に今もあるもの (messageId は今の値に直す)。 */
   const present: OutboxTarget[] = [];
   /** DB には無いが、まだ実行できるかもしれないもの。 */
   const absent: OutboxTarget[] = [];
   for (const target of targets) {
-    // フォルダが消えた、または UID が振り直された。もう同じメールを指せない。
+    // フォルダが消えた。もう同じメールを指せない。
     if (!validity.has(target.mailboxId)) continue;
     if (target.uid !== null) {
-      if (validity.get(target.mailboxId) !== target.uidValidity) continue;
+      const current = validity.get(target.mailboxId) ?? null;
+      // フォルダの最初の取り込みが終わる前に受け付けた操作は、UIDVALIDITY を持っていない
+      // (以前は取り込みが終わるまで保存していなかった)。今の値を補ってやり直せるようにする。
+      const resolved: OutboxTarget =
+        target.uidValidity === null && current !== null
+          ? { ...target, uidValidity: current }
+          : target;
+      // UID が振り直された。もう同じメールを指せない。
+      if (current !== resolved.uidValidity) continue;
       const messageId = byUid.get(`${target.mailboxId}:${target.uid}`);
-      if (messageId) present.push({ ...target, messageId });
-      else absent.push(target);
+      if (messageId) present.push({ ...resolved, messageId });
+      else absent.push(resolved);
     } else if (target.providerMessageId !== null) {
       const messageId = byProviderId.get(target.providerMessageId);
       if (messageId) present.push({ ...target, messageId });
@@ -262,7 +307,7 @@ export async function retryFailedOperation(
     const accountId = row.accountId;
     let payload = row.payload;
 
-    if (row.kind !== "append") {
+    if (MESSAGE_KINDS.includes(row.kind)) {
       const { present, absent } = await resolveTargets(
         tx,
         accountId,

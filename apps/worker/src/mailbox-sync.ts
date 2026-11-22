@@ -21,6 +21,11 @@ import { recordChanges } from "./changes.js";
 import { toListedMailboxes } from "./mailbox-list.js";
 import { applyMailboxList, type SyncAccount } from "./mailbox-store.js";
 import {
+  FETCH_HEADERS,
+  LIST_HEADERS,
+  parseListHeaders,
+} from "./message-headers.js";
+import {
   analyzeStructure,
   clean,
   flagsOf,
@@ -36,6 +41,7 @@ import { resolveThreadKey } from "./thread-key.js";
 
 const FETCH_CHUNK = 100;
 const BODY_BATCH = 20;
+const HEADER_BATCH = 200;
 /** 本文 1 パートあたりの上限。これを超える分は切り捨てる。 */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -131,6 +137,113 @@ export async function mailboxesWithPendingBodies(
     );
 }
 
+/** 代理送信やメーリングリストの情報をまだ取り込んでいないメッセージがあるフォルダ。 */
+export async function mailboxesWithPendingHeaders(
+  db: Database,
+  accountId: string,
+) {
+  return db
+    .selectDistinct({ id: mailboxes.id, path: mailboxes.path })
+    .from(messages)
+    .innerJoin(messageMailboxes, eq(messageMailboxes.messageId, messages.id))
+    .innerJoin(mailboxes, eq(mailboxes.id, messageMailboxes.mailboxId))
+    .where(
+      and(
+        eq(messages.accountId, accountId),
+        isNull(messages.headersFetchedAt),
+        isNotNull(messageMailboxes.uid),
+      ),
+    );
+}
+
+/**
+ * 代理送信 (Sender) とメーリングリストの情報をまだ取り込んでいないメッセージを、
+ * 新しい順に 1 回分だけ補う。これらの項目を足す前に取り込んだメールが対象。
+ * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
+ */
+export async function fetchHeaders(
+  db: Database,
+  client: ImapFlow,
+  account: SyncAccount,
+  mailboxId: string,
+): Promise<boolean> {
+  const pending = await db
+    .select({
+      uid: messageMailboxes.uid,
+      messageId: messages.id,
+      from: messages.from,
+    })
+    .from(messageMailboxes)
+    .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
+    .where(
+      and(
+        eq(messageMailboxes.mailboxId, mailboxId),
+        isNotNull(messageMailboxes.uid),
+        isNull(messages.headersFetchedAt),
+      ),
+    )
+    .orderBy(desc(messages.receivedAt))
+    .limit(HEADER_BATCH + 1);
+  const batch = pending.slice(0, HEADER_BATCH);
+  if (batch.length === 0) return false;
+
+  const fetched = new Map<number, FetchMessageObject>();
+  for await (const message of client.fetch(
+    batch.map((row) => Number(row.uid)),
+    { uid: true, envelope: true, headers: LIST_HEADERS },
+    { uid: true },
+  )) {
+    fetched.set(message.uid, message);
+  }
+
+  const changed: string[] = [];
+  await db.transaction(async (tx) => {
+    for (const row of batch) {
+      // サーバーから消えていた場合は、空のまま取り込み済みにする (次の同期でメッセージごと消える)。
+      const message = fetched.get(Number(row.uid));
+      const sender = toAddresses(message?.envelope?.sender);
+      const list = parseListHeaders(message?.headers);
+      await tx
+        .update(messages)
+        .set({ sender, ...list, headersFetchedAt: new Date() })
+        .where(eq(messages.id, row.messageId));
+      // 画面に出る内容が増えたメールだけ、端末へ変更を知らせる。
+      const fromAddresses = new Set(
+        row.from.map((item) => item.address.toLowerCase()),
+      );
+      if (
+        list.listId !== null ||
+        list.listUnsubscribe.length > 0 ||
+        sender.some((item) => !fromAddresses.has(item.address.toLowerCase()))
+      ) {
+        changed.push(row.messageId);
+      }
+    }
+    await recordChanges(tx, account.userId, "message", "upsert", changed);
+  });
+  return pending.length > HEADER_BATCH;
+}
+
+/**
+ * フォルダを開いた時点で保存する UIDVALIDITY の更新内容。変わっていなければ null。
+ *
+ * 取り込みが終わってから保存すると、最初の取り込みの途中 (Gmail のようにメールが多いと
+ * 数分かかる) で開いたメールへの既読などの操作が、UIDVALIDITY を持たないまま受け付けられ、
+ * 反映時に「フォルダが作り直された」と誤って判定される。そのため取り込む前に保存する。
+ * 値が変わった場合は、前の番号体系の同期状態 (UIDNEXT や変更番号) も捨てて、
+ * 取り込みが途中で切れても次回に最初から突き合わせるようにする。
+ */
+export function uidValidityUpdate(stored: bigint | null, remote: bigint) {
+  if (stored === remote) return null;
+  if (stored === null) return { uidValidity: remote };
+  return {
+    uidValidity: remote,
+    uidNext: null,
+    highestModseq: null,
+    lastSyncedAt: null,
+  };
+}
+
 /**
  * 選択中のフォルダ (呼び出し側がロックを持っていること) を DB と突き合わせる。
  * UID の一覧を比べて追加と削除を求め、フラグは CONDSTORE があれば差分だけ取る。
@@ -162,6 +275,17 @@ export async function syncMailbox(
     mailbox.uidValidity !== null && mailbox.uidValidity !== remote.uidValidity;
   if (uidValidityChanged) {
     await removeMessages(db, account, mailbox.id, null);
+  }
+  // UIDVALIDITY は、メッセージを取り込む前に保存する (理由は uidValidityUpdate を参照)。
+  const validityUpdate = uidValidityUpdate(
+    mailbox.uidValidity,
+    remote.uidValidity,
+  );
+  if (validityUpdate) {
+    await db
+      .update(mailboxes)
+      .set(validityUpdate)
+      .where(eq(mailboxes.id, mailbox.id));
   }
 
   const local = await db
@@ -230,7 +354,7 @@ export async function syncMailbox(
         bodyStructure: true,
         internalDate: true,
         size: true,
-        headers: ["references"],
+        headers: FETCH_HEADERS,
       },
       { uid: true },
     )) {
@@ -421,6 +545,9 @@ async function insertMessages(
           cc: toAddresses(envelope.cc),
           bcc: toAddresses(envelope.bcc),
           replyTo: toAddresses(envelope.replyTo),
+          sender: toAddresses(envelope.sender),
+          ...parseListHeaders(message.headers),
+          headersFetchedAt: new Date(),
           sentAt,
           receivedAt,
           size: message.size ?? 0,
@@ -520,6 +647,18 @@ async function readText(
   return clean(Buffer.concat(chunks).toString("utf8"));
 }
 
+/** 選択中のフォルダにあるメッセージ 1 通の本文 (テキストと HTML) を読む。 */
+export async function readBody(
+  client: ImapFlow,
+  uid: number,
+  structure: Pick<ReturnType<typeof analyzeStructure>, "textPart" | "htmlPart">,
+) {
+  return {
+    bodyText: await readText(client, uid, structure.textPart),
+    bodyHtml: await readText(client, uid, structure.htmlPart),
+  };
+}
+
 /**
  * 本文をまだ取得していないメッセージを、新しい順に 1 回分だけ取得する。
  * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
@@ -559,14 +698,11 @@ export async function fetchBodies(
   for (const row of batch) {
     const uid = Number(row.uid);
     const structure = structures.get(uid);
-    let bodyText: string | null = null;
-    let bodyHtml: string | null = null;
     // サーバーから消えていた場合は structure が無い。空のまま取得済みにする
     // (次の同期でメッセージごと消える)。
-    if (structure) {
-      bodyText = await readText(client, uid, structure.textPart);
-      bodyHtml = await readText(client, uid, structure.htmlPart);
-    }
+    const { bodyText, bodyHtml } = structure
+      ? await readBody(client, uid, structure)
+      : { bodyText: null, bodyHtml: null };
     await db
       .update(messages)
       .set({

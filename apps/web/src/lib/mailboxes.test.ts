@@ -3,9 +3,11 @@ import type { MailboxSummary } from "@/lib/api";
 import {
   actionTargets,
   buildMailboxTree,
+  hasFixedRole,
   mailboxLabel,
   moveBy,
   moveTo,
+  orderMailboxes,
   sortAccounts,
   withSortOrder,
 } from "@/lib/mailboxes";
@@ -81,6 +83,41 @@ describe("mailboxLabel", () => {
     expect(mailboxLabel(mailbox("x", { name: "プロジェクト" }))).toBe(
       "プロジェクト",
     );
+  });
+
+  it("アプリ内で付けた名前があれば、役割の名前より優先する", () => {
+    expect(
+      mailboxLabel(
+        mailbox("x", {
+          name: "Spam",
+          specialUse: "junk",
+          displayName: "迷惑メール (ドコモ)",
+        }),
+      ),
+    ).toBe("迷惑メール (ドコモ)");
+    expect(
+      mailboxLabel(mailbox("x", { name: "Spam", displayName: null })),
+    ).toBe("Spam");
+  });
+});
+
+describe("hasFixedRole", () => {
+  it("受信トレイなどは役割を付け替えられない", () => {
+    expect(
+      hasFixedRole(
+        mailbox("x", { specialUse: "inbox", detectedSpecialUse: "inbox" }),
+      ),
+    ).toBe(true);
+    expect(
+      hasFixedRole(
+        mailbox("x", { specialUse: "junk", detectedSpecialUse: null }),
+      ),
+    ).toBe(false);
+    expect(
+      hasFixedRole(
+        mailbox("x", { specialUse: "trash", detectedSpecialUse: "trash" }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -188,5 +225,51 @@ describe("フォルダの並び替え", () => {
       "old",
       "new",
     ]);
+  });
+});
+
+describe("移動先の並び", () => {
+  const list = [
+    mailbox("inbox", { specialUse: "inbox", sortOrder: 1 }),
+    mailbox("work", { sortOrder: 0 }),
+    mailbox("work/b", { parentId: "work", sortOrder: 0 }),
+    mailbox("work/a", { parentId: "work", sortOrder: 1 }),
+    mailbox("junk", { specialUse: "junk" }),
+    mailbox("sent", { specialUse: "sent" }),
+    mailbox("trash", { specialUse: "trash" }),
+  ];
+
+  it("サイドバーと同じ順に、子は親のすぐ下へ階層を付けて並べる", () => {
+    expect(
+      orderMailboxes(list).map(({ mailbox, depth }) => [mailbox.id, depth]),
+    ).toEqual([
+      ["work", 0],
+      ["work/b", 1],
+      ["work/a", 1],
+      ["inbox", 0],
+      ["sent", 0],
+      ["junk", 0],
+      ["trash", 0],
+    ]);
+  });
+
+  it("移動先は並び順を保ち、いまのフォルダと送信済みなどを除く", () => {
+    const { destinations } = actionTargets(list, "inbox");
+    expect(destinations.map(({ mailbox }) => mailbox.id)).toEqual([
+      "work",
+      "work/b",
+      "work/a",
+      "junk",
+      "trash",
+    ]);
+  });
+
+  it("迷惑メールのフォルダがあれば迷惑メールとして扱え、その中では戻せる", () => {
+    expect(actionTargets(list, "inbox").junk?.id).toBe("junk");
+    expect(actionTargets(list, "inbox").notJunk).toBeNull();
+    expect(actionTargets(list, "junk").junk).toBeNull();
+    expect(actionTargets(list, "junk").notJunk?.id).toBe("inbox");
+    const withoutJunk = list.filter((item) => item.specialUse !== "junk");
+    expect(actionTargets(withoutJunk, "inbox").junk).toBeNull();
   });
 });

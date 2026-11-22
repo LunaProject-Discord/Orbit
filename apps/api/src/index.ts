@@ -26,6 +26,7 @@ const app = createApp({
   microsoft: env.microsoft,
   google: env.google,
   webPushPublicKey: env.webPushPublicKey,
+  fcmEnabled: env.fcmEnabled,
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

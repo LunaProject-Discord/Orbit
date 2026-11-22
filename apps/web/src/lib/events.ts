@@ -28,29 +28,47 @@ const MAX_DELAY = 60_000;
 /**
  * GET /v1/events に接続し、イベントを受けるたびに onEvent を呼ぶ。
  * EventSource は Authorization ヘッダーを付けられないので fetch のストリームで読む。
- * 切れたら間隔を広げながら繋ぎ直す。戻り値の関数で停止する。
+ * 切れたら間隔を広げながら繋ぎ直す (ネットワークが戻ったら、すぐに繋ぎ直す)。
+ * 戻り値の関数で停止する。
  */
 export function subscribeEvents(
   onEvent: (event: ServerEvent) => void,
+  options: {
+    /** 端末ごとの ID。サーバーが、接続している端末を数えるのに使う。 */
+    deviceId?: string;
+    /** 接続できた、または切れたときに呼ぶ。 */
+    onState?: (connected: boolean) => void;
+  } = {},
 ): () => void {
   const controller = new AbortController();
   let delay = MIN_DELAY;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  let wake: (() => void) | null = null;
   const wait = (ms: number) =>
     new Promise<void>((resolve) => {
+      wake = resolve;
       timer = setTimeout(resolve, ms);
     });
+  const onOnline = () => {
+    delay = MIN_DELAY;
+    wake?.();
+  };
+  window.addEventListener("online", onOnline);
 
   const run = async () => {
     while (!controller.signal.aborted) {
       if (!getToken()) return;
       try {
-        const response = await apiFetch("/v1/events", {
-          signal: controller.signal,
-        });
+        const response = await apiFetch(
+          options.deviceId
+            ? `/v1/events?device=${options.deviceId}`
+            : "/v1/events",
+          { signal: controller.signal },
+        );
         const reader = response.body?.getReader();
         if (!reader) throw new Error("stream unavailable");
+        options.onState?.(true);
         const decoder = new TextDecoder();
         let buffer = "";
         for (;;) {
@@ -71,6 +89,7 @@ export function subscribeEvents(
         if (error instanceof ApiError && error.status === 401) return;
       }
       if (controller.signal.aborted) return;
+      options.onState?.(false);
       await wait(delay + Math.random() * 500);
       delay = Math.min(delay * 2, MAX_DELAY);
     }
@@ -80,5 +99,6 @@ export function subscribeEvents(
   return () => {
     controller.abort();
     if (timer) clearTimeout(timer);
+    window.removeEventListener("online", onOnline);
   };
 }

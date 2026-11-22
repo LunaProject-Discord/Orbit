@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { decryptText, encryptText } from "./credentials.js";
+import { fetchOrExplain } from "./network-error.js";
 
 /**
  * Google の OAuth2。認可コードフロー + PKCE で、Gmail の IMAP / SMTP に
@@ -144,16 +145,21 @@ async function requestToken(
   params: Record<string, string>,
   fetchFn: Fetch,
 ): Promise<GoogleTokens> {
-  const response = await fetchFn(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      ...params,
-    }).toString(),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const response = await fetchOrExplain(
+    fetchFn,
+    TOKEN_URL,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        ...params,
+      }).toString(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
+    "Google のログインサーバー",
+  );
   const body = (await response.json().catch(() => ({}))) as {
     access_token?: string;
     refresh_token?: string;
@@ -213,10 +219,15 @@ export async function fetchGoogleEmail(
   accessToken: string,
   fetchFn: Fetch = fetch,
 ): Promise<string> {
-  const response = await fetchFn(USERINFO_URL, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const response = await fetchOrExplain(
+    fetchFn,
+    USERINFO_URL,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
+    "Google",
+  );
   const body = (await response.json().catch(() => ({}))) as {
     email?: string;
   };

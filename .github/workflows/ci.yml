@@ -44,14 +44,45 @@ jobs:
           echo "UUID version: $version"
           test "$version" = "7"
 
-  # 本番用のイメージ (deploy/compose.yml が使うもの) がビルドできることを確認する。
+  # 本番用の構成 (deploy/) でイメージをビルドし、実際に起動できることを確認する。
+  # 本番のサーバーは arm64 (Oracle Cloud の Ampere A1) なので、arm64 でも確認する。
   docker:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: deploy
     steps:
       - uses: actions/checkout@v4
-      - name: 設定ファイルを用意
-        run: bash deploy/setup.sh mail.example.com
-      - name: Compose の構成を検証
-        run: docker compose -f deploy/compose.yml config --quiet
+      - name: 設定ファイルを用意 (別のサーバーから逆プロキシする構成)
+        run: |
+          bash setup.sh mail.example.com relay
+          grep -x 'LOCAL_BIND=0.0.0.0' .env
+          grep -x 'COMPOSE_FILE=compose.yml:compose.proxy.yml' .env
+      - name: Caddy が直接公開する構成も検証
+        run: COMPOSE_FILE=compose.yml:compose.caddy.yml docker compose config --quiet
       - name: イメージをビルド
-        run: docker compose -f deploy/compose.yml build
+        run: docker compose build
+      - name: 起動
+        run: docker compose up -d
+      - name: Web と API が応答することを確認
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz; then
+              echo
+              curl -fsS -o /dev/null -w 'login: %{http_code}\n' http://127.0.0.1:18080/login
+              curl -fsS -o /dev/null -w 'v1: %{http_code}\n' http://127.0.0.1:18080/v1
+              # 変更の通知 (SSE) には、手前の逆プロキシにため込ませないための指定が付く。
+              curl -sS -D - -o /dev/null http://127.0.0.1:18080/v1/events | grep -i '^x-accel-buffering: no'
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps -a
+          docker compose logs --tail=50
+          exit 1
+      - name: バックアップを 1 回取る
+        run: docker compose run --rm backup once

@@ -14,10 +14,14 @@ import { failureRoutes } from "./routes/failures.js";
 import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
+import { notificationActionRoutes } from "./routes/notification-actions.js";
 import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { sendRoutes } from "./routes/send.js";
+import { settingsRoutes } from "./routes/settings.js";
+import { signatureRoutes } from "./routes/signatures.js";
 import { syncRoutes } from "./routes/sync.js";
+import { unifiedRoutes } from "./routes/unified.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 
 export type AppOptions = {
@@ -31,6 +35,7 @@ export type AppOptions = {
   microsoft: RouteDeps["microsoft"];
   google: RouteDeps["google"];
   webPushPublicKey: string | null;
+  fcmEnabled: boolean;
 };
 
 export function createApp({
@@ -43,6 +48,7 @@ export function createApp({
   microsoft,
   google,
   webPushPublicKey,
+  fcmEnabled,
 }: AppOptions) {
   const app = new Hono();
 
@@ -85,6 +91,9 @@ export function createApp({
     }),
   );
 
+  // 通知のボタンから呼ばれる。ログインの代わりに、通知に付けた合言葉で確かめる。
+  v1.route("/", notificationActionRoutes({ db, encryptionKey }));
+
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
   authed.get("/me", (c) => c.json({ user: c.var.user }));
@@ -95,9 +104,13 @@ export function createApp({
     microsoft,
     google,
     webPushPublicKey,
+    fcmEnabled,
   };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
+  authed.route("/unified", unifiedRoutes(deps));
+  authed.route("/settings", settingsRoutes(deps));
+  authed.route("/signatures", signatureRoutes(deps));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));
   authed.route("/push", pushRoutes(deps));

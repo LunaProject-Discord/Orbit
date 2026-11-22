@@ -4,9 +4,10 @@
  * セッショントークンを localStorage に置いて Authorization ヘッダーで送る。
  */
 
-export const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
-).replace(/\/+$/, "");
+import type { AccountIconName } from "@/lib/account-icons";
+import { isNativeApp } from "@/lib/native/app";
+import { reportReachable } from "@/lib/offline/network";
+import { apiUrl } from "@/lib/server-url";
 
 const TOKEN_KEY = "mail.session-token";
 
@@ -25,6 +26,11 @@ function setToken(token: string | null) {
   } catch {
     // localStorage が使えない環境では保存を諦める (その場合は再読み込みでログアウトになる)。
   }
+}
+
+/** この端末のログイン情報を消す (接続先サーバーを替えたときなど)。サーバーには知らせない。 */
+export function forgetSession() {
+  setToken(null);
 }
 
 type UnauthorizedListener = () => void;
@@ -80,7 +86,7 @@ export async function apiFetch(
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    response = await fetch(`${apiUrl()}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -91,8 +97,10 @@ export async function apiFetch(
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
     }
+    reportReachable(false);
     throw new NetworkError();
   }
+  reportReachable(true);
 
   if (response.status === 401 && handle401) {
     handleUnauthorized();
@@ -143,6 +151,8 @@ export type Account = {
   smtpHost: string | null;
   smtpPort: number | null;
   smtpSecure: boolean;
+  /** 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許している。 */
+  allowLegacyTls: boolean;
   username: string;
   status: AccountStatus;
   lastError: string | null;
@@ -150,6 +160,10 @@ export type Account = {
   signatureHtml: string | null;
   /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null。 */
   sortOrder: number | null;
+  /** 見分けるための色 ("#rrggbb")。null なら追加した順に割り当てる。 */
+  color: string | null;
+  /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
+  icon: AccountIconName | null;
   createdAt: string;
 };
 
@@ -165,6 +179,8 @@ export type CreateAccountInput = {
   /** 省略するとメールアドレスを使う。 */
   username?: string;
   password: string;
+  /** 古い TLS のサーバーへの接続を許す (接続先を手で設定したときだけ効く)。 */
+  allowLegacyTls?: boolean;
 };
 
 /** ログイン画面へ移動して追加するサービス (OAuth2)。 */
@@ -180,6 +196,8 @@ export type MessageSummary = {
   to: Address[];
   receivedAt: string;
   snippet: string;
+  /** 本文をまだ取り込んでいない (フォルダの一覧でだけ入る)。 */
+  bodyPending?: boolean;
   hasAttachments: boolean;
   seen: boolean;
   flagged: boolean;
@@ -201,6 +219,8 @@ export type MessageSummary = {
 export type ThreadMessage = {
   id: string;
   accountId: string;
+  /** 会話のキー。端末に保存してあった古い内容には無いことがある。 */
+  threadKey?: string;
   subject: string;
   from: Address[];
   to: Address[];
@@ -235,6 +255,13 @@ export type MessageDetail = {
   cc: Address[];
   bcc: Address[];
   replyTo: Address[];
+  /**
+   * 代理で送った人 (Sender ヘッダー)、メーリングリストの ID、配信停止の URL (https / mailto)。
+   * 端末に保存してあった古い内容には無いことがある。
+   */
+  sender?: Address[];
+  listId?: string | null;
+  listUnsubscribe?: string[];
   sentAt: string | null;
   receivedAt: string;
   snippet: string;
@@ -250,6 +277,15 @@ export type MessageDetail = {
   draft: boolean;
   attachments: Attachment[];
 };
+
+/** アプリ内で付けられる役割。"none" は、役割なし (ふつうのフォルダ) として扱う。 */
+export type MailboxRoleOverride =
+  | "sent"
+  | "drafts"
+  | "archive"
+  | "junk"
+  | "trash"
+  | "none";
 
 export type Mailbox = {
   id: string;
@@ -268,13 +304,24 @@ export type Mailbox = {
     | "all"
     | "flagged"
     | null;
+  /**
+   * メールサーバーが知らせてきた役割。specialUse は、これに利用者の上書き (roleOverride) を
+   * 当てはめた「実際に使う役割」。
+   */
+  detectedSpecialUse?: Mailbox["specialUse"];
+  /** アプリ内で付けた役割。"none" は役割なしとして扱う。付けていなければ null。 */
+  roleOverride?: MailboxRoleOverride | null;
+  /** アプリ内での表示名・アイコン (Lucide の名前か絵文字)・色 ("#rrggbb")。付けていなければ null。 */
+  displayName?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  /** 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null。 */
+  sortOrder: number | null;
 };
 
 /** フォルダ一覧用。全アカウント分をまとめて取得する。 */
 export type MailboxSummary = Mailbox & {
   accountId: string;
-  /** 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null。 */
-  sortOrder: number | null;
   /** 同期が一度終わっていれば、その時刻。 */
   lastSyncedAt: string | null;
   totalCount: number;
@@ -347,9 +394,18 @@ export type OutgoingMail = {
 export type FailedOperation = {
   id: string;
   accountId: string;
-  kind: "set_flags" | "move" | "delete" | "append";
-  /** 対象のメールの数。 */
+  kind:
+    | "set_flags"
+    | "move"
+    | "delete"
+    | "append"
+    | "mailbox_create"
+    | "mailbox_rename"
+    | "mailbox_delete";
+  /** 対象のメールの数 (フォルダへの操作では 1)。 */
   count: number;
+  /** フォルダへの操作の対象 (作成と名前の変更では、付けようとした名前)。 */
+  mailboxName: string | null;
   /** set_flags で変えようとした内容。変えなかった項目は null。 */
   seen: boolean | null;
   flagged: boolean | null;
@@ -483,7 +539,14 @@ export async function startOAuthLogin(
 ): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
     `/v1/accounts/${provider}/authorize`,
-    { method: "POST", body: accountId ? { accountId } : {} },
+    {
+      method: "POST",
+      body: {
+        ...(accountId ? { accountId } : {}),
+        // スマホアプリでは、ログイン後に Web 版のページからアプリへ戻してもらう。
+        ...(isNativeApp() ? { app: true } : {}),
+      },
+    },
   );
   return url;
 }
@@ -523,6 +586,83 @@ export async function updateAccountSignature(
   const { account } = await apiJson<{ account: Account }>(
     `/v1/accounts/${id}`,
     { method: "PATCH", body: { signatureHtml } },
+  );
+  return account;
+}
+
+/**
+ * 連絡先 (宛先のアドレス) ごと、会話ごとの署名。アカウントの署名より優先して使う。
+ * 優先順位は lib/signatures.ts の resolveSignature を参照。
+ */
+export type SignatureRule = {
+  id: string;
+  kind: "contact" | "thread";
+  /** 会話のあるアカウント。連絡先の決まりでは null (すべてのアカウントに効く)。 */
+  accountId: string | null;
+  /** 連絡先は小文字のメールアドレス、会話は会話のキー (threadKey)。 */
+  key: string;
+  /** 一覧に出す名前 (連絡先の名前、会話の件名)。 */
+  label: string | null;
+  /** 使う署名 (書式付き)。null は「署名を付けない」。 */
+  signatureHtml: string | null;
+  updatedAt: string;
+};
+
+export async function listSignatureRules(
+  signal?: AbortSignal,
+): Promise<SignatureRule[]> {
+  const { rules } = await apiJson<{ rules: SignatureRule[] }>(
+    "/v1/signatures",
+    { signal },
+  );
+  return rules;
+}
+
+/** 連絡先の署名を決める。signatureHtml が null なら、その相手には署名を付けない。 */
+export async function saveContactSignature(input: {
+  address: string;
+  label: string | null;
+  signatureHtml: string | null;
+}): Promise<SignatureRule> {
+  const { rule } = await apiJson<{ rule: SignatureRule }>(
+    "/v1/signatures/contact",
+    { method: "PUT", body: input },
+  );
+  return rule;
+}
+
+/** 会話の署名を決める。signatureHtml が null なら、その会話では署名を付けない。 */
+export async function saveThreadSignature(input: {
+  accountId: string;
+  threadKey: string;
+  label: string | null;
+  signatureHtml: string | null;
+}): Promise<SignatureRule> {
+  const { rule } = await apiJson<{ rule: SignatureRule }>(
+    "/v1/signatures/thread",
+    { method: "PUT", body: input },
+  );
+  return rule;
+}
+
+/** 連絡先や会話の署名の決まりを消す (1 つ下の優先順位の署名に戻る)。 */
+export async function deleteSignatureRule(id: string): Promise<void> {
+  await apiJson(`/v1/signatures/${id}`, { method: "DELETE" });
+}
+
+/** アカウントの表示名、色、アイコン、TLS の設定を変える。指定した項目だけが変わる。 */
+export async function updateAccount(
+  id: string,
+  patch: {
+    displayName?: string | null;
+    color?: string | null;
+    icon?: AccountIconName | null;
+    allowLegacyTls?: boolean;
+  },
+): Promise<Account> {
+  const { account } = await apiJson<{ account: Account }>(
+    `/v1/accounts/${id}`,
+    { method: "PATCH", body: patch },
   );
   return account;
 }
@@ -580,6 +720,8 @@ export async function searchMessages(
     accountId?: string | null;
     /** scope が folder のときに探すフォルダ。省略すると受信トレイ。 */
     mailboxId?: string | null;
+    /** scope が folder のときに探す統合フォルダ (指定すると mailboxId より優先)。 */
+    unifiedId?: string | null;
     cursor?: string | null;
     limit?: number;
   },
@@ -593,6 +735,7 @@ export async function searchMessages(
   });
   if (params.accountId) query.set("accountId", params.accountId);
   if (params.mailboxId) query.set("mailboxId", params.mailboxId);
+  if (params.unifiedId) query.set("unifiedId", params.unifiedId);
   if (params.cursor) query.set("cursor", params.cursor);
   if (filters.from.trim()) query.set("from", filters.from.trim());
   if (filters.to.trim()) query.set("to", filters.to.trim());
@@ -610,6 +753,178 @@ export async function searchMessages(
     // 取得できなければ、サーバーの既定 (UTC) で区切られる。
   }
   return apiJson<SearchPage>(`/v1/messages/search?${query}`, { signal });
+}
+
+/** 統合フォルダが集めるフォルダの役割。 */
+export type UnifiedRole =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "archive"
+  | "junk"
+  | "trash";
+
+/** 統合フォルダが集めるメールの場所。 */
+export type UnifiedScope = {
+  /** すべてのフォルダ (ごみ箱と迷惑メールを除く)。true なら下の 2 つは見ない。 */
+  all: boolean;
+  /** 全アカウントの、この役割のフォルダ。 */
+  roles: UnifiedRole[];
+  /** 個別に選んだフォルダ。 */
+  mailboxIds: string[];
+};
+
+/** 統合フォルダに並べるメールの条件 (指定したものすべてに当てはまるメール)。 */
+export type UnifiedFilters = {
+  unread: boolean;
+  flagged: boolean;
+  hasAttachment: boolean;
+  from: string;
+  to: string;
+  subject: string;
+  /** 件名・差出人・宛先・本文のどこかに含む文字 (検索欄と同じ書き方)。 */
+  text: string;
+  /** 受信してからこの日数以内。null なら期間を問わない。 */
+  withinDays: number | null;
+};
+
+/** 利用者が作った統合フォルダ。 */
+export type UnifiedFolder = {
+  id: string;
+  name: string;
+  /** アイコンの名前か絵文字。null なら既定のアイコン。 */
+  icon: string | null;
+  /** アイコンの色 ("#rrggbb")。null なら色を付けない。 */
+  color: string | null;
+  scope: UnifiedScope;
+  filters: UnifiedFilters;
+  createdAt: string;
+  unreadCount: number;
+};
+
+export type UnifiedFolderInput = Pick<
+  UnifiedFolder,
+  "name" | "icon" | "color" | "scope" | "filters"
+>;
+
+/**
+ * サイドバー上部の項目の並び順と、隠している項目。項目は、初めからあるものの名前
+ * (inbox / starred / drafts / outgoing) か、統合フォルダの ID。
+ */
+export type SidebarLayout = { order: string[]; hidden: string[] };
+
+/** 初めからある項目に付けた見た目。null は初期の設定のまま。 */
+export type BuiltinStyle = {
+  name: string | null;
+  icon: string | null;
+  color: string | null;
+};
+
+export type UnifiedState = {
+  folders: UnifiedFolder[];
+  layout: SidebarLayout;
+  /** 初めからある項目 (inbox など) に付けた名前・アイコン・色。変えていない項目は載らない。 */
+  builtins: Record<string, BuiltinStyle>;
+};
+
+/** 初めからある項目の名前・アイコン・色を保存する。すべて null なら初期の設定に戻る。 */
+export async function saveBuiltinStyle(
+  view: string,
+  style: BuiltinStyle,
+): Promise<Record<string, BuiltinStyle>> {
+  const { builtins } = await apiJson<{
+    builtins: Record<string, BuiltinStyle>;
+  }>(`/v1/unified/builtins/${view}`, { method: "PUT", body: style });
+  return builtins;
+}
+
+/** 一覧の行を左右にスワイプしたときの操作。 */
+export type SwipeAction =
+  | "none"
+  | "toggle_read"
+  | "star"
+  | "archive"
+  | "delete"
+  | "junk"
+  | "move";
+
+/** 左へスワイプしたときと、右へスワイプしたときの操作。どの端末でも同じになる。 */
+export type SwipeSettings = { left: SwipeAction; right: SwipeAction };
+
+/** 新着メールの通知に付けられるボタン。 */
+export type NotificationAction =
+  | "read"
+  | "star"
+  | "archive"
+  | "delete"
+  | "junk";
+
+/** どの端末でも同じにする設定。 */
+export type SharedSettings = {
+  swipe: SwipeSettings;
+  /** 通知に付けるボタン (出す順)。 */
+  notificationActions: NotificationAction[];
+};
+
+/** どの端末でも同じにする設定を取得する。 */
+export async function getSettings(
+  signal?: AbortSignal,
+): Promise<SharedSettings> {
+  return apiJson<SharedSettings>("/v1/settings", { signal });
+}
+
+export async function saveNotificationActions(
+  actions: NotificationAction[],
+): Promise<void> {
+  await apiFetch("/v1/settings/notification-actions", {
+    method: "PUT",
+    body: { actions },
+  });
+}
+
+export async function saveSwipeSettings(swipe: SwipeSettings): Promise<void> {
+  await apiFetch("/v1/settings/swipe", { method: "PUT", body: swipe });
+}
+
+export async function listUnified(signal?: AbortSignal): Promise<UnifiedState> {
+  return apiJson<UnifiedState>("/v1/unified", { signal });
+}
+
+export async function createUnifiedFolder(
+  input: UnifiedFolderInput,
+): Promise<UnifiedFolder> {
+  const { folder } = await apiJson<{
+    folder: Omit<UnifiedFolder, "unreadCount">;
+  }>("/v1/unified", { method: "POST", body: input });
+  return { ...folder, unreadCount: 0 };
+}
+
+export async function updateUnifiedFolder(
+  id: string,
+  input: Partial<UnifiedFolderInput>,
+): Promise<void> {
+  await apiFetch(`/v1/unified/${id}`, { method: "PATCH", body: input });
+}
+
+export async function deleteUnifiedFolder(id: string): Promise<void> {
+  await apiFetch(`/v1/unified/${id}`, { method: "DELETE" });
+}
+
+export async function saveSidebarLayout(layout: SidebarLayout): Promise<void> {
+  await apiFetch("/v1/unified/layout", { method: "PUT", body: layout });
+}
+
+/** 統合フォルダのメールの一覧。フォルダの一覧と同じ形で、会話ごとに 1 行。 */
+export async function listUnifiedMessages(
+  id: string,
+  params: { cursor?: string | null; limit?: number },
+  signal?: AbortSignal,
+): Promise<MessagePage> {
+  const query = new URLSearchParams({ limit: String(params.limit ?? 50) });
+  if (params.cursor) query.set("cursor", params.cursor);
+  return apiJson<MessagePage>(`/v1/unified/${id}/messages?${query}`, {
+    signal,
+  });
 }
 
 export async function getMessage(
@@ -670,6 +985,77 @@ export async function saveMailboxOrder(mailboxIds: string[]): Promise<void> {
   });
 }
 
+/**
+ * フォルダを作る。メールサーバーに作ってから取り込むので、画面に出るまで少し間がある。
+ * parentId が null なら最上位に作る。
+ */
+export async function createMailbox(
+  accountId: string,
+  parentId: string | null,
+  name: string,
+): Promise<void> {
+  await apiFetch("/v1/mailboxes", {
+    method: "POST",
+    body: { accountId, parentId, name },
+  });
+}
+
+/** フォルダの名前を変える。 */
+export async function renameMailbox(
+  mailboxId: string,
+  name: string,
+): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}`, {
+    method: "PATCH",
+    body: { name },
+  });
+}
+
+/** フォルダを、中のメールごとメールサーバーから削除する。 */
+export async function deleteMailbox(mailboxId: string): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}`, { method: "DELETE" });
+}
+
+/** フォルダの、アプリ内での役割・表示名・アイコン・色。null の項目は上書きしない。 */
+export type MailboxOverrides = {
+  role: MailboxRoleOverride | null;
+  displayName: string | null;
+  icon: string | null;
+  color: string | null;
+};
+
+/**
+ * フォルダの役割・表示名・アイコン・色を、アプリ内でだけ上書きする
+ * (メールサーバー上のフォルダは変わらない。どの端末でも同じ内容になる)。
+ */
+export async function saveMailboxOverrides(
+  mailboxId: string,
+  overrides: MailboxOverrides,
+): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}/overrides`, {
+    method: "PUT",
+    body: overrides,
+  });
+}
+
+/** 並び替えたフォルダを、既定の順に戻す。 */
+export async function resetMailboxOrder(mailboxIds: string[]): Promise<void> {
+  await apiFetch("/v1/mailboxes/order/reset", {
+    method: "POST",
+    body: { mailboxIds },
+  });
+}
+
+/** フォルダの未読のメールを、すべて既読にする。 */
+export async function markMailboxRead(mailboxId: string): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}/read`, { method: "POST" });
+}
+
+/** 次の定期確認を待たずに、アカウントの全フォルダをいますぐ確認させる。 */
+export async function syncAccountNow(accountId: string): Promise<void> {
+  await apiFetch(`/v1/accounts/${accountId}/sync`, { method: "POST" });
+}
+
 /** アカウントの並び順を保存する。 */
 export async function saveAccountOrder(accountIds: string[]): Promise<void> {
   await apiFetch("/v1/accounts/order", {
@@ -689,6 +1075,20 @@ export async function sendFocus(
   await apiFetch("/v1/focus", {
     method: "POST",
     body: { accountId, mailboxId },
+  });
+}
+
+/**
+ * 見ているメール (カーソルを載せた行、画面に見えている行) の本文を、取り込みの順番を
+ * 待たずに取得するようサーバーへ頼む。取得が終わると、変更の知らせで一覧と本文が更新される。
+ */
+export async function prefetchBodies(
+  ids: string[],
+  reason: "hover" | "visible",
+): Promise<void> {
+  await apiFetch("/v1/messages/prefetch", {
+    method: "POST",
+    body: { ids, reason },
   });
 }
 
@@ -751,6 +1151,29 @@ export async function getPushPublicKey(): Promise<string | null> {
   return publicKey;
 }
 
+/** サーバーがスマホアプリへ通知 (FCM) を送れるか。古いサーバーは答えないので false。 */
+export async function getNativePushAvailable(): Promise<boolean> {
+  const { fcm } = await apiJson<{ fcm?: boolean }>("/v1/push/config");
+  return fcm === true;
+}
+
+/** この端末 (スマホアプリ) を、新着メールの通知の送り先として登録する。 */
+export async function savePushDevice(device: {
+  platform: "android";
+  token: string;
+  name?: string;
+}): Promise<void> {
+  await apiFetch("/v1/push/devices", { method: "POST", body: device });
+}
+
+export async function deletePushDevice(token: string): Promise<void> {
+  await apiFetch("/v1/push/devices", {
+    method: "DELETE",
+    body: { token },
+    handle401: false,
+  });
+}
+
 /** このブラウザーを、新着メールの通知 (Web Push) の送り先として登録する。 */
 export async function savePushSubscription(subscription: {
   endpoint: string;
@@ -808,7 +1231,7 @@ export function uploadAttachment(
   // fetch では送信の進み具合が分からないので、XMLHttpRequest を使う。
   const xhr = new XMLHttpRequest();
   const promise = new Promise<UploadedAttachment>((resolve, reject) => {
-    xhr.open("POST", `${API_URL}/v1/attachments`);
+    xhr.open("POST", `${apiUrl()}/v1/attachments`);
     const token = getToken();
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.setRequestHeader(
@@ -820,7 +1243,10 @@ export function uploadAttachment(
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(event.loaded / event.total);
     };
-    xhr.onerror = () => reject(new NetworkError());
+    xhr.onerror = () => {
+      reportReachable(false);
+      reject(new NetworkError());
+    };
     xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
     xhr.onload = () => {
       const data: unknown = xhr.response;

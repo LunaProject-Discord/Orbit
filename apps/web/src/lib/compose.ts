@@ -6,10 +6,13 @@ import type {
   RecipientField,
   SaveDraftInput,
   ServerDraft,
+  SignatureRule,
   UploadedAttachment,
 } from "@/lib/api";
 import { splitAttachments } from "@/lib/attachments";
 import { addressFull, formatFullDate } from "@/lib/format";
+import { type ResolvedSignature, resolveSignature } from "@/lib/signatures";
+import { randomUuid } from "@/lib/uuid";
 
 /** 作成画面の種類。reply と replyAll は、送信時にはどちらも「返信」として扱う。 */
 export type ComposeMode = "new" | "reply" | "replyAll" | "forward";
@@ -43,6 +46,11 @@ export type ComposeDraft = {
   mode: "new" | "reply" | "forward";
   /** 返信・転送の元になったメッセージ。 */
   sourceMessageId: string | null;
+  /**
+   * 返信・転送の元になった会話のキー。会話ごとの署名を探すために使う。
+   * サーバーには保存しないので、保存した下書きを開き直すと無くなる。
+   */
+  threadKey?: string | null;
 };
 
 /** 1 通あたりの添付ファイルの合計の上限 (サーバー側と同じ値)。 */
@@ -200,7 +208,7 @@ export function newDraft(
   signatureHtml?: string | null,
 ): ComposeDraft {
   return {
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey: randomUuid(),
     accountId,
     to: field(),
     cc: field(),
@@ -231,14 +239,28 @@ export function buildDraftFrom(
   mode: Exclude<ComposeMode, "new">,
   message: MessageDetail,
   accounts: SignatureAccount[],
+  /** 連絡先ごと、会話ごとの署名。アカウントの署名より優先して使う。 */
+  rules: readonly SignatureRule[] = [],
 ): ComposeDraft {
   const account =
     accounts.find((entry) => entry.id === message.accountId) ?? accounts[0];
   const draft = newDraft(account?.id ?? message.accountId);
   draft.sourceMessageId = message.id;
+  // 別のアカウントから送るときは、この会話の署名は当てはまらない。
+  draft.threadKey =
+    account?.id === message.accountId ? message.threadKey : null;
   const sender = message.from[0];
   const date = formatFullDate(message.sentAt ?? message.receivedAt);
-  const head = draftHead(account?.signatureHtml) || EMPTY_LINE;
+  const headFor = (to: Address[]) =>
+    draftHead(
+      resolveSignature({
+        rules,
+        accountId: draft.accountId,
+        accountSignature: account?.signatureHtml,
+        threadKey: draft.threadKey,
+        to,
+      }).html,
+    ) || EMPTY_LINE;
   const body = quotedBodyOf(message);
 
   if (mode === "forward") {
@@ -268,7 +290,7 @@ export function buildDraftFrom(
       forwardAttachments:
         files.length > 0 ? { messageId: message.id, files } : null,
       subject: withPrefix(message.subject, "Fwd"),
-      html: `${head}${EMPTY_LINE}<div data-quote="">${linesToHtml(header)}${EMPTY_LINE}${body}</div>`,
+      html: `${headFor([])}${EMPTY_LINE}<div data-quote="">${linesToHtml(header)}${EMPTY_LINE}${body}</div>`,
     };
   }
 
@@ -299,8 +321,20 @@ export function buildDraftFrom(
     to: field(to),
     cc: field(cc),
     subject: withPrefix(message.subject, "Re"),
-    html: `${head}${EMPTY_LINE}<div data-quote=""><div>${escapeHtml(attribution)}</div><blockquote>${body}</blockquote></div>`,
+    html: `${headFor(to)}${EMPTY_LINE}<div data-quote=""><div>${escapeHtml(attribution)}</div><blockquote>${body}</blockquote></div>`,
   };
+}
+
+/**
+ * 本文の下の返信欄に書いた文章を、返信の下書きの先頭に入れる。
+ * 下書きの先頭にある「書き始める空行」は、書いた文章と入れ替える。
+ */
+export function withReplyText(draft: ComposeDraft, text: string): ComposeDraft {
+  if (text.trim() === "") return draft;
+  const rest = draft.html.startsWith(EMPTY_LINE)
+    ? draft.html.slice(EMPTY_LINE.length)
+    : draft.html;
+  return { ...draft, html: `${linesToHtml(text)}${rest}` };
 }
 
 /**
@@ -327,11 +361,27 @@ export function replaceSignature(
   return `${html || EMPTY_LINE}${EMPTY_LINE}${next}`;
 }
 
+/** 書いているメールの差出人・会話・宛先から、入れる署名を決める。 */
+export function draftSignature(
+  draft: Pick<ComposeDraft, "accountId" | "threadKey" | "to">,
+  accounts: SignatureAccount[],
+  rules: readonly SignatureRule[],
+): ResolvedSignature {
+  return resolveSignature({
+    rules,
+    accountId: draft.accountId,
+    accountSignature: accounts.find((entry) => entry.id === draft.accountId)
+      ?.signatureHtml,
+    threadKey: draft.threadKey,
+    to: draft.to.list,
+  });
+}
+
 /** 送信できなかったメールを、編集して送り直すための下書きに戻す。 */
 export function draftFromOutgoing(mail: OutgoingMail): ComposeDraft {
   return {
     // 前回の送信とは別の依頼として扱ってもらうため、ID は作り直す。
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey: randomUuid(),
     accountId: mail.accountId,
     to: field(mail.to),
     cc: field(mail.cc),

@@ -20,31 +20,46 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "cn";
 import {
-  ArchiveIcon,
   ChevronRightIcon,
   CircleAlertIcon,
-  FilePenLineIcon,
-  FolderIcon,
-  InboxIcon,
-  LogOutIcon,
-  MailIcon,
-  MailsIcon,
-  OctagonAlertIcon,
+  EyeOffIcon,
+  FolderOpenIcon,
+  LayersPlusIcon,
+  ListChecksIcon,
+  PencilIcon,
+  PenSquareIcon,
   PlusIcon,
-  SendIcon,
-  SignatureIcon,
-  StarIcon,
+  SettingsIcon,
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { NotificationToggle } from "@/components/mail/notification-toggle";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { OrbitLogo } from "@/components/brand/orbit-logo";
+import { Hint } from "@/components/hint";
+import { MailboxMark } from "@/components/mail/mailbox-icon";
+import {
+  AccountMenuItems,
+  FolderMenuItems,
+  MoveItems,
+  type SidebarMenuActions,
+} from "@/components/mail/sidebar-menus";
+import { SyncIndicator } from "@/components/mail/sync-indicator";
+import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AccountMark } from "@/lib/account-icons";
 import {
   type Account,
   type MailboxSummary,
   oauthProviderOf,
+  type UnifiedFolder,
+  type UnifiedState,
   type User,
 } from "@/lib/api";
 import {
@@ -54,26 +69,20 @@ import {
   moveBy,
   moveTo,
 } from "@/lib/mailboxes";
-import type { NotificationStatus } from "@/lib/notifications";
+import type { SpecialView } from "@/lib/route";
+import type { SyncStatus } from "@/lib/sync-status";
+import {
+  type BuiltinView,
+  builtinLabel,
+  builtinStyle,
+  type SidebarEntry,
+  sidebarEntries,
+} from "@/lib/unified";
 
 const statusLabel: Partial<Record<Account["status"], string>> = {
   auth_required: "再ログインが必要です",
   error: "同期でエラーが発生しています",
   disabled: "同期を停止しています",
-};
-
-const folderIcons: Record<
-  NonNullable<MailboxSummary["specialUse"]>,
-  React.ReactNode
-> = {
-  inbox: <InboxIcon />,
-  flagged: <StarIcon />,
-  drafts: <FilePenLineIcon />,
-  sent: <SendIcon />,
-  archive: <ArchiveIcon />,
-  all: <MailsIcon />,
-  junk: <OctagonAlertIcon />,
-  trash: <Trash2Icon />,
 };
 
 const COLLAPSED_KEY = "mail.sidebar-collapsed";
@@ -113,12 +122,26 @@ type SortData = {
   group: string;
   /** 同じ group の項目の ID (いまの表示順)。 */
   ids: string[];
-  kind: "account" | "mailbox";
+  kind: "account" | "mailbox" | "view";
   /** 読み上げに使う名前。 */
   label: string;
 };
 
 const ACCOUNT_GROUP = "accounts";
+const VIEW_GROUP = "views";
+
+/** サイドバー上部の項目 (初めからある項目と統合フォルダ) の右クリックメニューから呼ぶ操作。 */
+export type ViewMenuActions = {
+  onCreate: () => void;
+  onEdit: (folder: UnifiedFolder) => void;
+  /** 初めからある項目の名前・アイコン・色を変える。 */
+  onEditBuiltin: (view: BuiltinView) => void;
+  onDelete: (folder: UnifiedFolder) => void;
+  /** 項目をサイドバーから隠す。key は初めからある項目の名前か、統合フォルダの ID。 */
+  onHide: (key: string) => void;
+  /** 表示する項目を選ぶ画面 (設定) を開く。 */
+  onManage: () => void;
+};
 
 /** ドラッグ中の項目と同じ並びの項目だけを、入れ替え先の候補にする。 */
 const sameGroup: CollisionDetection = (args) => {
@@ -193,17 +216,30 @@ type Props = {
   /** 下書きの一覧を表示している。その間はフォルダを選択中として扱わない。 */
   draftsSelected: boolean;
   onSelectDrafts: () => void;
+  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。その間もフォルダを選択中として扱わない。 */
+  special: SpecialView | null;
+  onSelectSpecial: (view: SpecialView) => void;
+  /** 統合フォルダと、サイドバー上部の項目の並び順。 */
+  unified: UnifiedState;
+  /** 表示している統合フォルダ。その間もフォルダを選択中として扱わない。 */
+  selectedUnifiedId: string | null;
+  onSelectUnified: (id: string) => void;
+  /** サイドバー上部の項目を並び替えた。keys は、見えている項目の新しい表示順。 */
+  onReorderViews: (keys: string[]) => void;
+  viewActions: ViewMenuActions;
+  /** まだ送り終えていないメールの数と、その中に送信できなかったものがあるか。 */
+  outgoingCount: number;
+  outgoingFailed: boolean;
+  /** 新しいメールを書き始める。アカウントが無い間は null。 */
+  onCompose: (() => void) | null;
   onAdd: () => void;
-  onDelete: (account: Account) => void;
-  /** アカウントの署名を編集する。 */
-  onEditSignature: (account: Account) => void;
+  /** アカウントとフォルダの右クリックメニューから呼ぶ操作。 */
+  menuActions: SidebarMenuActions;
   /** 再ログインが必要な Google / Microsoft のアカウントで、ログインし直す。 */
   onReauth: (account: Account) => void;
-  onSignOut: () => void;
-  /** 新着メールの通知の状態と、その切り替え。 */
-  notificationStatus: NotificationStatus;
-  notificationBusy: boolean;
-  onNotificationChange: (enabled: boolean) => void;
+  syncStatus: SyncStatus;
+  /** 見出しの左端に置くもの (サイドバーを折りたたむボタン)。 */
+  headerStart?: React.ReactNode;
 };
 
 export function AccountSidebar({
@@ -218,30 +254,47 @@ export function AccountSidebar({
   draftCount,
   draftsSelected,
   onSelectDrafts,
+  special,
+  onSelectSpecial,
+  unified,
+  selectedUnifiedId,
+  onSelectUnified,
+  onReorderViews,
+  viewActions,
+  outgoingCount,
+  outgoingFailed,
+  onCompose,
   onAdd,
-  onDelete,
-  onEditSignature,
+  menuActions,
   onReauth,
-  onSignOut,
-  notificationStatus,
-  notificationBusy,
-  onNotificationChange,
+  syncStatus,
+  headerStart,
 }: Props) {
+  /** フォルダの一覧を表示している (下書きやスター付きなどではない)。 */
+  const folderView =
+    !draftsSelected && special === null && selectedUnifiedId === null;
   const { collapsed, toggle } = useCollapsed();
-  const trees = useMemo(() => {
-    const byAccount = new Map<string, MailboxSummary[]>();
+  const views = useMemo(() => sidebarEntries(unified).visible, [unified]);
+  const viewKeys = views.map((entry) => entry.key);
+  const byAccount = useMemo(() => {
+    const result = new Map<string, MailboxSummary[]>();
     for (const mailbox of mailboxes ?? []) {
-      const list = byAccount.get(mailbox.accountId);
+      const list = result.get(mailbox.accountId);
       if (list) list.push(mailbox);
-      else byAccount.set(mailbox.accountId, [mailbox]);
+      else result.set(mailbox.accountId, [mailbox]);
     }
-    return new Map(
-      [...byAccount].map(([accountId, list]) => [
-        accountId,
-        buildMailboxTree(list),
-      ]),
-    );
+    return result;
   }, [mailboxes]);
+  const trees = useMemo(
+    () =>
+      new Map(
+        [...byAccount].map(([accountId, list]) => [
+          accountId,
+          buildMailboxTree(list),
+        ]),
+      ),
+    [byAccount],
+  );
   const inboxUnread = (mailboxes ?? []).reduce(
     (sum, mailbox) =>
       mailbox.specialUse === "inbox" ? sum + mailbox.unreadCount : sum,
@@ -266,10 +319,36 @@ export function AccountSidebar({
     if (!id) return;
     refocusRef.current = null;
     document.querySelector<HTMLElement>(`[data-sort-id="${id}"]`)?.focus();
-  }, [accounts, mailboxes]);
+  }, [accounts, mailboxes, unified]);
+
+  /**
+   * タッチでは、長押しがドラッグの開始と右クリックメニューの両方に当たる。
+   * 動かさずに押し続けてメニューが開いたら、始まっていたドラッグを取り消す
+   * (ドラッグは Escape で取り消せるので、それを使う)。指を離したときのクリックで
+   * フォルダが開かないよう、離すまではクリックも抑える。
+   */
+  const menuPressRef = useRef(false);
+  const handleMenuOpenChange = (open: boolean) => {
+    if (!open || !draggedRef.current) return;
+    menuPressRef.current = true;
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", code: "Escape" }),
+    );
+    const release = () => {
+      window.removeEventListener("touchend", release, true);
+      window.removeEventListener("touchcancel", release, true);
+      setTimeout(() => {
+        menuPressRef.current = false;
+        draggedRef.current = false;
+      }, 50);
+    };
+    window.addEventListener("touchend", release, true);
+    window.addEventListener("touchcancel", release, true);
+  };
 
   const move = (data: SortData, ids: string[], id: string) => {
     if (data.kind === "account") onReorderAccounts(ids);
+    else if (data.kind === "view") onReorderViews(ids);
     else onReorderMailboxes(ids);
     setAnnouncement(
       `${data.label} を ${ids.length} 件中 ${ids.indexOf(id) + 1} 番目に移動しました`,
@@ -292,55 +371,137 @@ export function AccountSidebar({
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 shrink-0 items-center px-4">
-        <span className="font-heading font-semibold text-xl tracking-tight">
-          Mail
+      <div className="flex h-14 shrink-0 items-center gap-2 px-4">
+        {headerStart}
+        <span className="flex flex-1 items-center">
+          <OrbitLogo className="h-7" />
         </span>
       </div>
+      {onCompose && (
+        // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
+        <div className="shrink-0 pr-3 pb-2 pl-2">
+          <Hint label="新規作成" shortcut="C">
+            <Button onClick={onCompose} className="w-full justify-center gap-2">
+              <PenSquareIcon />
+              新規作成
+            </Button>
+          </Hint>
+        </div>
+      )}
 
       <nav
         aria-label="メールアカウントとフォルダ"
-        className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-1"
+        // 右側は、重ねて表示するスクロールバーが項目に触れないよう少し広く空ける。
+        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pr-3 pl-2"
         onClickCapture={(event) => {
           if (!draggedRef.current) return;
           event.preventDefault();
           event.stopPropagation();
         }}
       >
-        <SidebarItem
-          icon={<InboxIcon />}
-          label="すべての受信トレイ"
-          count={inboxUnread}
-          selected={!draftsSelected && selectedAccountId === null}
-          onClick={() => onSelect(null, null)}
-        />
-        <SidebarItem
-          icon={<FilePenLineIcon />}
-          label="下書き"
-          count={draftCount}
-          countLabel="件数"
-          selected={draftsSelected}
-          onClick={onSelectDrafts}
-        />
-        {accounts === null ? (
-          <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
-            <Skeleton className="h-5 w-40" />
-            <Skeleton className="h-5 w-32" />
-          </div>
-        ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={sameGroup}
-            modifiers={[restrictToVerticalAxis]}
-            accessibility={{ announcements: dragAnnouncements }}
-            onDragStart={() => {
-              draggedRef.current = true;
-            }}
-            onDragEnd={handleDragEnd}
-            onDragCancel={() => {
-              draggedRef.current = false;
-            }}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={sameGroup}
+          modifiers={[restrictToVerticalAxis]}
+          accessibility={{ announcements: dragAnnouncements }}
+          onDragStart={() => {
+            draggedRef.current = true;
+          }}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => {
+            // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
+            if (!menuPressRef.current) draggedRef.current = false;
+          }}
+        >
+          <SortableContext
+            items={viewKeys}
+            strategy={verticalListSortingStrategy}
           >
+            {views.map((entry) => {
+              const view = entry.builtin;
+              const outgoingProblem = view === "outgoing" && outgoingFailed;
+              return (
+                <ViewItem
+                  key={entry.key}
+                  entry={entry}
+                  label={
+                    entry.folder
+                      ? entry.folder.name
+                      : builtinLabel(unified, entry.builtin)
+                  }
+                  keys={viewKeys}
+                  icon={
+                    entry.folder ? (
+                      <UnifiedMark folder={entry.folder} className="mt-0.5" />
+                    ) : outgoingProblem ? (
+                      <CircleAlertIcon className="text-destructive" />
+                    ) : (
+                      <BuiltinMark
+                        view={entry.builtin}
+                        style={builtinStyle(unified, entry.builtin)}
+                        className="mt-0.5"
+                      />
+                    )
+                  }
+                  count={
+                    entry.folder
+                      ? entry.folder.unreadCount
+                      : view === "inbox"
+                        ? inboxUnread
+                        : view === "drafts"
+                          ? draftCount
+                          : view === "outgoing"
+                            ? outgoingCount
+                            : undefined
+                  }
+                  countLabel={
+                    view === "drafts"
+                      ? "件数"
+                      : view === "outgoing"
+                        ? outgoingFailed
+                          ? "送信できなかったメールあり、件数"
+                          : "件数"
+                        : undefined
+                  }
+                  selected={
+                    entry.folder
+                      ? selectedUnifiedId === entry.folder.id
+                      : view === "inbox"
+                        ? folderView && selectedAccountId === null
+                        : view === "drafts"
+                          ? draftsSelected
+                          : special === view
+                  }
+                  onOpen={() => {
+                    if (entry.folder) onSelectUnified(entry.folder.id);
+                    else if (view === "inbox") onSelect(null, null);
+                    else if (view === "drafts") onSelectDrafts();
+                    else if (view === "starred" || view === "outgoing") {
+                      onSelectSpecial(view);
+                    }
+                  }}
+                  onKeyboardMove={moveByKeyboard}
+                  actions={viewActions}
+                  onMenuOpenChange={handleMenuOpenChange}
+                />
+              );
+            })}
+          </SortableContext>
+          <button
+            type="button"
+            onClick={viewActions.onCreate}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0"
+          >
+            <LayersPlusIcon />
+            統合フォルダを作成
+          </button>
+          <span className="h-2 shrink-0" aria-hidden="true" />
+          {accounts === null ? (
+            <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-5 w-32" />
+            </div>
+          ) : (
             <SortableContext
               items={accountIds}
               strategy={verticalListSortingStrategy}
@@ -353,23 +514,27 @@ export function AccountSidebar({
                   tree={trees.get(account.id) ?? []}
                   collapsed={collapsed}
                   onToggle={toggle}
-                  selected={!draftsSelected && selectedAccountId === account.id}
+                  accounts={accounts}
+                  selected={folderView && selectedAccountId === account.id}
                   selectedMailboxId={selectedMailboxId}
                   onSelect={onSelect}
                   onMove={move}
                   onKeyboardMove={moveByKeyboard}
-                  onDelete={onDelete}
-                  onEditSignature={onEditSignature}
                   onReauth={onReauth}
+                  mailboxes={byAccount.get(account.id) ?? NO_MAILBOXES}
+                  menuActions={menuActions}
+                  onMenuOpenChange={handleMenuOpenChange}
                 />
               ))}
             </SortableContext>
-          </DndContext>
-        )}
+          )}
+        </DndContext>
         <Button
           variant="ghost"
           onClick={onAdd}
-          className="mt-1 justify-start gap-2 px-2 text-muted-foreground"
+          // ボタンには 1px の枠があるので、その分を引いてアイコンを上の項目の列に揃える。
+          // タッチ操作ではボタンの左右の余白が広がるので、同じ値に戻す。
+          className="mt-1 justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
         >
           <PlusIcon />
           アカウントを追加
@@ -379,26 +544,28 @@ export function AccountSidebar({
         </span>
       </nav>
 
-      <div className="flex shrink-0 items-center gap-2 border-t p-3">
+      <SyncIndicator
+        status={syncStatus}
+        // アイコンと文字を、上の項目のアイコンの列 (16px) と文字の列 (40px) に揃える。
+        className="shrink-0 gap-2.5 border-t py-2 pr-3 pl-4"
+      />
+      <div className="flex shrink-0 items-center gap-2 border-t py-3 pr-3 pl-4">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
         </div>
-        <NotificationToggle
-          status={notificationStatus}
-          busy={notificationBusy}
-          onChange={onNotificationChange}
-        />
-        <ThemeToggle />
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="ログアウト"
-          title="ログアウト"
-          onClick={onSignOut}
-        >
-          <LogOutIcon />
-        </Button>
+        <Hint label="設定" side="top">
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="設定"
+            aria-current={special === "settings" ? "page" : undefined}
+            onClick={() => onSelectSpecial("settings")}
+            className={cn(special === "settings" && "bg-sidebar-accent")}
+          >
+            <SettingsIcon />
+          </Button>
+        </Hint>
       </div>
     </div>
   );
@@ -406,8 +573,122 @@ export function AccountSidebar({
 
 type MoveHandler = (data: SortData, ids: string[], id: string) => void;
 
+/**
+ * サイドバー上部の 1 項目 (初めからある項目か、統合フォルダ)。
+ * ドラッグや Alt+↑↓ で並び替えられ、右クリックで編集や非表示などのメニューを出す。
+ */
+function ViewItem({
+  entry,
+  label,
+  keys,
+  icon,
+  count,
+  countLabel,
+  selected,
+  onOpen,
+  onKeyboardMove,
+  actions,
+  onMenuOpenChange,
+}: {
+  entry: SidebarEntry;
+  label: string;
+  /** 見えている項目 (いまの表示順)。 */
+  keys: string[];
+  icon: React.ReactNode;
+  count: number | undefined;
+  countLabel: string | undefined;
+  selected: boolean;
+  onOpen: () => void;
+  onKeyboardMove: MoveHandler;
+  actions: ViewMenuActions;
+  onMenuOpenChange: (open: boolean) => void;
+}) {
+  const sortData: SortData = {
+    group: VIEW_GROUP,
+    ids: keys,
+    kind: "view",
+    label,
+  };
+  const item = useSortableItem(entry.key, sortData, onKeyboardMove);
+  const { folder } = entry;
+  return (
+    <div
+      ref={item.setNodeRef}
+      style={item.style}
+      className={cn("relative", item.isDragging && "z-10 opacity-70")}
+    >
+      <ContextMenu onOpenChange={onMenuOpenChange}>
+        <ContextMenuTrigger render={<div />}>
+          <Hint label={label} side="right" whenClipped>
+            <SidebarItem
+              icon={icon}
+              label={label}
+              {...(count !== undefined ? { count } : {})}
+              {...(countLabel !== undefined ? { countLabel } : {})}
+              selected={selected}
+              onClick={onOpen}
+              handle={item.handle}
+              className={cn(item.isDragging && "bg-sidebar-accent")}
+            />
+          </Hint>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-60">
+          <ContextMenuItem onClick={onOpen}>
+            <FolderOpenIcon />
+            開く
+          </ContextMenuItem>
+          <ContextMenuItem
+            onClick={() =>
+              folder
+                ? actions.onEdit(folder)
+                : actions.onEditBuiltin(entry.builtin)
+            }
+          >
+            <PencilIcon />
+            {folder ? "編集…" : "名前・アイコン・色を変更…"}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <MoveItems
+            id={entry.key}
+            ids={keys}
+            onReorder={(ids) => onKeyboardMove(sortData, ids, entry.key)}
+          />
+          <ContextMenuItem onClick={() => actions.onHide(entry.key)}>
+            <EyeOffIcon />
+            サイドバーから隠す
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={actions.onCreate}>
+            <LayersPlusIcon />
+            統合フォルダを作成…
+          </ContextMenuItem>
+          <ContextMenuItem onClick={actions.onManage}>
+            <ListChecksIcon />
+            表示する項目を選ぶ…
+          </ContextMenuItem>
+          {folder && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                variant="destructive"
+                onClick={() => actions.onDelete(folder)}
+              >
+                <Trash2Icon />
+                削除…
+              </ContextMenuItem>
+            </>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
+    </div>
+  );
+}
+
+const NO_MAILBOXES: MailboxSummary[] = [];
+
 function AccountItem({
   account,
+  accounts,
   accountIds,
   tree,
   collapsed,
@@ -417,11 +698,14 @@ function AccountItem({
   onSelect,
   onMove,
   onKeyboardMove,
-  onDelete,
-  onEditSignature,
   onReauth,
+  mailboxes,
+  menuActions,
+  onMenuOpenChange,
 }: {
   account: Account;
+  /** 色を決めるのに使う、すべてのアカウント。 */
+  accounts: Account[];
   accountIds: string[];
   tree: MailboxNode[];
   collapsed: ReadonlySet<string>;
@@ -431,86 +715,83 @@ function AccountItem({
   onSelect: Props["onSelect"];
   onMove: MoveHandler;
   onKeyboardMove: MoveHandler;
-  onDelete: Props["onDelete"];
-  onEditSignature: Props["onEditSignature"];
   onReauth: Props["onReauth"];
+  /** このアカウントのフォルダ。 */
+  mailboxes: MailboxSummary[];
+  menuActions: SidebarMenuActions;
+  onMenuOpenChange: (open: boolean) => void;
 }) {
   const problem = statusLabel[account.status];
   const open = !collapsed.has(account.id);
   const name = account.displayName || account.email;
-  const item = useSortableItem(
-    account.id,
-    {
-      group: ACCOUNT_GROUP,
-      ids: accountIds,
-      kind: "account",
-      label: name,
-    },
-    onKeyboardMove,
-  );
+  const sortData: SortData = {
+    group: ACCOUNT_GROUP,
+    ids: accountIds,
+    kind: "account",
+    label: name,
+  };
+  const item = useSortableItem(account.id, sortData, onKeyboardMove);
   return (
     <div
       ref={item.setNodeRef}
       style={item.style}
       className={cn(
-        "group/account relative",
+        "group/account relative mt-2",
         item.isDragging && "z-10 opacity-70",
       )}
     >
-      <div className="flex items-start">
-        <ToggleButton
-          open={open}
-          label={`${name} のフォルダ`}
-          onClick={() => onToggle(account.id)}
-          className="mt-2"
-        />
-        <SidebarItem
-          icon={
-            problem ? (
-              <CircleAlertIcon className="text-destructive" />
+      <ContextMenu onOpenChange={onMenuOpenChange}>
+        <ContextMenuTrigger render={<div className="flex items-start" />}>
+          <AccountToggle
+            open={open}
+            label={`${name} のフォルダ`}
+            // フォルダが無いアカウントは開閉できないので、印だけを出す。
+            onClick={tree.length > 0 ? () => onToggle(account.id) : null}
+          >
+            {problem ? (
+              <CircleAlertIcon
+                className="size-4 text-destructive"
+                aria-hidden="true"
+              />
             ) : (
-              <MailIcon />
-            )
-          }
-          label={name}
-          sublabel={account.displayName ? account.email : undefined}
-          problem={
-            problem
-              ? account.lastError
-                ? `${problem}: ${account.lastError}`
-                : problem
-              : undefined
-          }
-          // フォルダを表示している間は、選択中のフォルダの行を強調する。
-          selected={
-            selected &&
-            (!open || tree.length === 0) &&
-            selectedMailboxId === null
-          }
-          onClick={() => onSelect(account.id, null)}
-          className="min-w-0 flex-1 pr-16 pl-1"
-          handle={item.handle}
-        />
-      </div>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        aria-label={`${account.email} の署名を編集`}
-        title="署名を編集"
-        onClick={() => onEditSignature(account)}
-        className="absolute top-2 right-8 opacity-0 focus-visible:opacity-100 group-hover/account:opacity-100 pointer-coarse:opacity-100"
-      >
-        <SignatureIcon />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        aria-label={`${account.email} を削除`}
-        onClick={() => onDelete(account)}
-        className="absolute top-2 right-1.5 opacity-0 focus-visible:opacity-100 group-hover/account:opacity-100 pointer-coarse:opacity-100"
-      >
-        <Trash2Icon />
-      </Button>
+              <AccountMark accounts={accounts} account={account} />
+            )}
+          </AccountToggle>
+          <SidebarItem
+            icon={null}
+            label={name}
+            sublabel={account.displayName ? account.email : undefined}
+            problem={
+              problem
+                ? account.lastError
+                  ? `${problem}: ${account.lastError}`
+                  : problem
+                : undefined
+            }
+            // フォルダを表示している間は、選択中のフォルダの行を強調する。
+            selected={
+              selected &&
+              (!open || tree.length === 0) &&
+              selectedMailboxId === null
+            }
+            onClick={() => onSelect(account.id, null)}
+            className="min-w-0 flex-1 pl-1"
+            handle={item.handle}
+          />
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-60">
+          <AccountMenuItems
+            account={account}
+            accountIds={accountIds}
+            mailboxes={mailboxes}
+            open={open}
+            onOpen={() => onSelect(account.id, null)}
+            onToggle={() => onToggle(account.id)}
+            onReorder={(ids) => onKeyboardMove(sortData, ids, account.id)}
+            actions={menuActions}
+          />
+        </ContextMenuContent>
+      </ContextMenu>
       {account.status === "auth_required" && oauthProviderOf(account) && (
         <Button
           variant="outline"
@@ -532,6 +813,9 @@ function AccountItem({
           onKeyboardMove={onKeyboardMove}
           collapsed={collapsed}
           onToggle={onToggle}
+          menuActions={menuActions}
+          account={account}
+          onMenuOpenChange={onMenuOpenChange}
           isSelected={(mailbox) =>
             selected &&
             (selectedMailboxId === null
@@ -550,6 +834,49 @@ function AccountItem({
   );
 }
 
+/**
+ * アカウントの印 (アイコンか色の点)。印の上にポインターを置くか、キーボードで選ぶと
+ * 開閉の矢印に入れ替わり、押すとフォルダを折りたたむ / 開く。
+ */
+function AccountToggle(props: {
+  open: boolean;
+  label: string;
+  /** null なら開閉できない (印だけを出す)。 */
+  onClick: (() => void) | null;
+  children: React.ReactNode;
+}) {
+  // 左に 4px 空けて、アイコンの中心を上の項目 (受信トレイなど) のアイコンの列に揃える。
+  // タッチ操作では名前の行が上下に 6px ずつ広がるので、同じだけ下げて中心を揃える。
+  const frame =
+    "mt-1 ml-1 flex size-6 shrink-0 items-center justify-center pointer-coarse:mt-2.5";
+  if (!props.onClick) return <span className={frame}>{props.children}</span>;
+  return (
+    <Hint label={props.open ? "折りたたむ" : "開く"}>
+      <button
+        type="button"
+        aria-expanded={props.open}
+        aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
+        onClick={props.onClick}
+        className={cn(
+          frame,
+          "group/toggle relative pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5 rounded-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50",
+        )}
+      >
+        <span className="flex transition-opacity group-hover/toggle:opacity-0 group-focus-visible/toggle:opacity-0">
+          {props.children}
+        </span>
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "absolute size-3.5 text-muted-foreground opacity-0 transition-[opacity,transform] group-hover/toggle:opacity-100 group-focus-visible/toggle:opacity-100",
+            props.open && "rotate-90",
+          )}
+        />
+      </button>
+    </Hint>
+  );
+}
+
 /** 開閉の切り替え。open で下向き、閉じていれば右向きの矢印になる。 */
 function ToggleButton(props: {
   open: boolean;
@@ -564,7 +891,9 @@ function ToggleButton(props: {
       aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
       onClick={props.onClick}
       className={cn(
-        "flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+        // タッチ操作でも大きさは変えず (フォルダのアイコンの列がずれるため)、押せる範囲だけを
+        // 行の高さいっぱいと左側へ広げる。右側はフォルダの行に重ならない幅にとどめる。
+        "relative flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-y-3 pointer-coarse:after:-right-1.5 pointer-coarse:after:-left-3.5 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
         props.className,
       )}
     >
@@ -588,7 +917,7 @@ function UnreadCount({
 }) {
   if (count <= 0) return null;
   return (
-    <span className="shrink-0 font-medium text-muted-foreground text-xs tabular-nums">
+    <span className="shrink-0 font-medium text-muted-foreground text-xs tabular-nums leading-5">
       <span className="sr-only">{label} </span>
       {count > 9999 ? "9999+" : count}
     </span>
@@ -606,6 +935,11 @@ type FolderListProps = {
   onToggle: (id: string) => void;
   isSelected: (mailbox: MailboxSummary) => boolean;
   onSelect: (mailbox: MailboxSummary) => void;
+  menuActions: SidebarMenuActions;
+  /** フォルダの持ち主のアカウント。 */
+  account: Account;
+  /** 右クリックメニューを開閉したとき (タッチの長押しでドラッグと重なるのを避ける)。 */
+  onMenuOpenChange: (open: boolean) => void;
 };
 
 function FolderList(props: FolderListProps) {
@@ -631,51 +965,79 @@ function FolderItem({
   const open = hasChildren && !props.collapsed.has(mailbox.id);
   const selected = props.isSelected(mailbox);
   const label = mailboxLabel(mailbox);
-  const item = useSortableItem(
-    mailbox.id,
-    { group: props.group, ids, kind: "mailbox", label },
-    props.onKeyboardMove,
-  );
+  const sortData: SortData = {
+    group: props.group,
+    ids,
+    kind: "mailbox",
+    label,
+  };
+  const item = useSortableItem(mailbox.id, sortData, props.onKeyboardMove);
   return (
     <li
       ref={item.setNodeRef}
       style={item.style}
       className={cn("relative", item.isDragging && "z-10 opacity-70")}
     >
-      <div
-        className="flex items-center"
-        style={{ paddingLeft: `${props.depth * 0.75}rem` }}
-      >
-        {hasChildren ? (
-          <ToggleButton
-            open={open}
-            label={label}
-            onClick={() => props.onToggle(mailbox.id)}
-          />
-        ) : (
-          <span className="size-5 shrink-0" aria-hidden="true" />
-        )}
-        <button
-          type="button"
-          onClick={() => props.onSelect(mailbox)}
-          aria-current={selected ? "page" : undefined}
-          title={label}
-          className={cn(
-            "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
-            selected &&
-              "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
-            item.isDragging && "bg-sidebar-accent",
-          )}
-          {...item.handle}
+      <ContextMenu onOpenChange={props.onMenuOpenChange}>
+        <ContextMenuTrigger
+          render={
+            <div
+              className="flex items-center"
+              // 開閉の矢印はアカウントのアイコンの列に、フォルダのアイコンはアカウント名の列に揃える。
+              style={{
+                paddingLeft: `calc(${props.depth * 0.75}rem - 0.375rem)`,
+              }}
+            />
+          }
         >
-          {(mailbox.specialUse && folderIcons[mailbox.specialUse]) || (
-            <FolderIcon />
+          {hasChildren ? (
+            <ToggleButton
+              open={open}
+              label={label}
+              onClick={() => props.onToggle(mailbox.id)}
+            />
+          ) : (
+            <span className="size-5 shrink-0" aria-hidden="true" />
           )}
-          <span className="min-w-0 flex-1 truncate">{label}</span>
-          {/* 折りたたんでいる間は、中のフォルダの未読も合わせて表示する。 */}
-          <UnreadCount count={open ? mailbox.unreadCount : node.unreadTotal} />
-        </button>
-      </div>
+          <Hint label={label} side="right" whenClipped>
+            <button
+              type="button"
+              onClick={() => props.onSelect(mailbox)}
+              aria-current={selected ? "page" : undefined}
+              className={cn(
+                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md py-1.5 pr-2 pl-1.5 text-left text-sm pointer-coarse:min-h-11 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                selected &&
+                  "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
+                item.isDragging && "bg-sidebar-accent",
+              )}
+              {...item.handle}
+            >
+              <MailboxMark mailbox={mailbox} />
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+              {/* 折りたたんでいる間は、中のフォルダの未読も合わせて表示する。 */}
+              <UnreadCount
+                count={open ? mailbox.unreadCount : node.unreadTotal}
+              />
+            </button>
+          </Hint>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-60">
+          <FolderMenuItems
+            account={props.account}
+            mailbox={mailbox}
+            unread={mailbox.unreadCount}
+            siblings={props.nodes.map((sibling) => sibling.mailbox)}
+            hasChildren={hasChildren}
+            open={open}
+            onOpen={() => props.onSelect(mailbox)}
+            onToggle={() => props.onToggle(mailbox.id)}
+            onReorder={(next) =>
+              props.onKeyboardMove(sortData, next, mailbox.id)
+            }
+            actions={props.menuActions}
+          />
+        </ContextMenuContent>
+      </ContextMenu>
       {open && (
         <FolderList
           {...props}
@@ -688,7 +1050,18 @@ function FolderItem({
   );
 }
 
-function SidebarItem(props: {
+function SidebarItem({
+  icon,
+  label,
+  sublabel,
+  problem,
+  count,
+  countLabel,
+  selected,
+  className,
+  handle,
+  ...rest
+}: {
   icon: React.ReactNode;
   label: string;
   sublabel?: string | undefined;
@@ -702,38 +1075,39 @@ function SidebarItem(props: {
   className?: string;
   /** 並び替えられる行に付ける、ドラッグとキーボード操作の受け口。 */
   handle?: SortHandle;
-}) {
+  // 説明 (Hint) で包んだときに渡される、ボタンの属性。
+} & Omit<React.ComponentProps<"button">, "onClick" | "className">) {
   return (
     <button
       type="button"
-      onClick={props.onClick}
-      aria-current={props.selected ? "page" : undefined}
-      {...props.handle}
+      aria-current={selected ? "page" : undefined}
+      {...rest}
+      {...handle}
       className={cn(
-        props.handle && "touch-manipulation select-none",
-        "flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
-        props.selected &&
+        handle && "touch-manipulation select-none",
+        // アイコンは 1 行目の文字の中央に合わせて 2px 下げる。枠で包んだ印 (BuiltinMark など) は
+        // 枠の側で下げているので、中の svg まで下げない (二重に下がってしまう)。
+        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
+        selected &&
           "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
-        props.className,
+        className,
       )}
     >
-      {props.icon}
+      {icon}
       <span className="min-w-0 flex-1">
-        <span className="block truncate">{props.label}</span>
-        {props.sublabel && (
+        <span className="block truncate">{label}</span>
+        {sublabel && (
           <span className="block truncate font-normal text-muted-foreground text-xs">
-            {props.sublabel}
+            {sublabel}
           </span>
         )}
-        {props.problem && (
+        {problem && (
           <span className="mt-0.5 line-clamp-3 block font-normal text-destructive text-xs">
-            {props.problem}
+            {problem}
           </span>
         )}
       </span>
-      {props.count !== undefined && (
-        <UnreadCount count={props.count} label={props.countLabel} />
-      )}
+      {count !== undefined && <UnreadCount count={count} label={countLabel} />}
     </button>
   );
 }

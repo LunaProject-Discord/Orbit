@@ -1,4 +1,5 @@
 import type { ComposeDraft } from "@/lib/compose";
+import { randomUuid } from "@/lib/uuid";
 
 /**
  * 下書き 1 回分の保存の結果。
@@ -70,7 +71,7 @@ export class DraftSaver {
     this.delayMs = options.delayMs ?? 1_000;
     this.retryMs = options.retryMs ?? 5_000;
     this.maxRetryMs = options.maxRetryMs ?? 60_000;
-    this.newId = options.newId ?? (() => crypto.randomUUID());
+    this.newId = options.newId ?? (() => randomUuid());
   }
 
   /** サーバーから受け取った下書きの revision を覚える。 */

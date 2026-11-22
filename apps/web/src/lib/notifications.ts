@@ -5,6 +5,7 @@ import {
   type MailNotification,
   savePushSubscription,
 } from "@/lib/api";
+import { isNativeApp } from "@/lib/native/app";
 
 /**
  * 新着メールの通知。
@@ -24,7 +25,7 @@ export type NotificationStatus =
 const SETTING_KEY = "mail.notifications";
 /** メッセージの ID (UUID) の形。通知や URL から受け取った値を確かめる。 */
 export const MESSAGE_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const APP_NAME = "Mail";
+const APP_NAME = "Orbit";
 
 /** 受信トレイの未読数の合計 (全アカウント分)。 */
 export function inboxUnreadCount(
@@ -144,6 +145,10 @@ async function subscribePush(
  * 画面を開いたときに呼ぶ (ログインし直したあとの送り先の登録もここで行う)。
  */
 export async function syncNotifications(): Promise<NotificationStatus> {
+  if (isNativeApp()) {
+    const { syncNativePush } = await import("@/lib/native/push");
+    return syncNativePush(isEnabled());
+  }
   if (!supported()) return "unsupported";
   if (Notification.permission === "denied") return "blocked";
   if (!isEnabled() || Notification.permission !== "granted") return "off";
@@ -153,6 +158,12 @@ export async function syncNotifications(): Promise<NotificationStatus> {
 
 /** 通知を有効にする。ブラウザーが許可を尋ねるので、ボタンを押した操作の中で呼ぶ。 */
 export async function enableNotifications(): Promise<NotificationStatus> {
+  if (isNativeApp()) {
+    const { enableNativePush } = await import("@/lib/native/push");
+    const status = await enableNativePush();
+    if (status === "push") setEnabled(true);
+    return status;
+  }
   if (!supported()) return "unsupported";
   let permission: NotificationPermission = Notification.permission;
   if (permission === "default") {
@@ -173,6 +184,10 @@ export async function enableNotifications(): Promise<NotificationStatus> {
  * (セッションが切れたあとは消せないが、次に送ろうとした時点でサーバー側が消す)。
  */
 export async function releasePush(toServer: boolean): Promise<void> {
+  if (isNativeApp()) {
+    const { releaseNativePush } = await import("@/lib/native/push");
+    return releaseNativePush(toServer);
+  }
   try {
     const registration = await existingRegistration();
     const subscription = await registration?.pushManager?.getSubscription();
@@ -189,6 +204,10 @@ export async function releasePush(toServer: boolean): Promise<void> {
 export async function disableNotifications(): Promise<NotificationStatus> {
   setEnabled(false);
   await releasePush(true);
+  if (isNativeApp()) {
+    const { nativePushOffStatus } = await import("@/lib/native/push");
+    return nativePushOffStatus();
+  }
   if (!supported()) return "unsupported";
   return Notification.permission === "denied" ? "blocked" : "off";
 }
@@ -206,7 +225,7 @@ export async function showPageNotification(
   const options = {
     body: notification.body,
     tag: notification.tag,
-    icon: "/favicon.ico",
+    icon: "/icons/icon-192.png",
     data: { messageId: notification.messageId },
   };
   try {
@@ -233,6 +252,21 @@ export async function showPageNotification(
 export function onNotificationOpen(
   listener: (messageId: string | null) => void,
 ): () => void {
+  const check = (messageId: string | null) =>
+    listener(messageId && MESSAGE_ID.test(messageId) ? messageId : null);
+  if (isNativeApp()) {
+    let cancelled = false;
+    let remove: (() => void) | null = null;
+    void import("@/lib/native/push").then(({ onNativePushOpen }) => {
+      const stop = onNativePushOpen(check);
+      if (cancelled) stop();
+      else remove = stop;
+    });
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
+  }
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
     return () => {};
   }
@@ -240,11 +274,7 @@ export function onNotificationOpen(
     const data = event.data as { type?: unknown; messageId?: unknown } | null;
     if (data?.type !== "open-message") return;
     const { messageId } = data;
-    listener(
-      typeof messageId === "string" && MESSAGE_ID.test(messageId)
-        ? messageId
-        : null,
-    );
+    check(typeof messageId === "string" ? messageId : null);
   };
   navigator.serviceWorker.addEventListener("message", onMessage);
   return () =>

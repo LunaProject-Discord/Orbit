@@ -7,6 +7,7 @@ import {
   type Ref,
   useState,
 } from "react";
+import { Hint } from "@/components/hint";
 import type { Address } from "@/lib/api";
 import {
   mergeAddresses,
@@ -92,24 +93,22 @@ export function RecipientInput({
   return (
     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
       {value.list.map((entry) => (
-        <span
-          key={entry.address}
-          title={addressFull(entry)}
-          className="inline-flex h-7 max-w-full items-center gap-1 rounded-full border bg-muted/60 pr-1 pl-2.5 text-sm"
-        >
-          <span className="truncate">
-            {entry.name?.trim() || entry.address}
+        <Hint key={entry.address} label={addressFull(entry)}>
+          <span className="inline-flex h-7 max-w-full pointer-coarse:h-9 items-center gap-1 rounded-full border bg-muted/60 pr-1 pl-2.5 text-sm">
+            <span className="truncate">
+              {entry.name?.trim() || entry.address}
+            </span>
+            <button
+              type="button"
+              aria-label={`${entry.name?.trim() || entry.address} を宛先から外す`}
+              disabled={disabled}
+              onClick={() => remove(entry)}
+              className="relative flex size-5 shrink-0 items-center justify-center rounded-full pointer-coarse:size-7 pointer-coarse:after:absolute pointer-coarse:after:-inset-2 text-muted-foreground outline-none hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <XIcon className="size-3.5" />
+            </button>
           </span>
-          <button
-            type="button"
-            aria-label={`${entry.name?.trim() || entry.address} を宛先から外す`}
-            disabled={disabled}
-            onClick={() => remove(entry)}
-            className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-          >
-            <XIcon className="size-3.5" />
-          </button>
-        </span>
+        </Hint>
       ))}
       <input
         id={id}
@@ -131,7 +130,7 @@ export function RecipientInput({
           setFocused(false);
           if (value.text.trim()) commit(value.text);
         }}
-        className="h-7 min-w-24 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground aria-invalid:text-destructive md:text-sm"
+        className="h-7 min-w-24 flex-1 pointer-coarse:h-10 bg-transparent text-base outline-none placeholder:text-muted-foreground aria-invalid:text-destructive md:text-sm"
       />
     </div>
   );

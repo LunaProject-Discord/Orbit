@@ -8,10 +8,10 @@ import {
 
 describe("unreadTitle", () => {
   it("未読があれば、題名の先頭に数を付ける", () => {
-    expect(unreadTitle(0)).toBe("Mail");
-    expect(unreadTitle(3)).toBe("(3) Mail");
-    expect(unreadTitle(999)).toBe("(999) Mail");
-    expect(unreadTitle(1000)).toBe("(999+) Mail");
+    expect(unreadTitle(0)).toBe("Orbit");
+    expect(unreadTitle(3)).toBe("(3) Orbit");
+    expect(unreadTitle(999)).toBe("(999) Orbit");
+    expect(unreadTitle(1000)).toBe("(999+) Orbit");
   });
 });
 

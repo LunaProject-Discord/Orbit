@@ -1,4 +1,9 @@
 import type { NewMailItem, NewMailNotification } from "./events.js";
+import {
+  type PushActionSigner,
+  type PushActions,
+  toPushActions,
+} from "./notification-actions.js";
 
 /**
  * 新着メールの通知。同期ワーカーが検出し、Web Push (ブラウザーを閉じていても届く) と
@@ -28,6 +33,8 @@ export type PushMessage = {
   tag: string;
   /** 押したときに開くメール。まとめた通知では null (受信トレイを開く)。 */
   messageId: string | null;
+  /** 通知に付けるボタン。まとめた通知と、ボタンを使わない設定では付けない。 */
+  actions?: PushActions;
 };
 
 /** 取り込んだメールのうち、新着として通知するもの。 */
@@ -71,18 +78,26 @@ export function toNewMailNotification(
   };
 }
 
-/** 新着メールの知らせを、端末に出す通知へ変える。多いときは 1 件にまとめる。 */
+/**
+ * 新着メールの知らせを、端末に出す通知へ変える。多いときは 1 件にまとめる。
+ * signer を渡すと、1 通ずつの通知にボタンを付ける。
+ */
 export function toPushMessages(
   notification: Pick<NewMailNotification, "accountId" | "messages" | "count">,
+  signer?: PushActionSigner | null,
 ): PushMessage[] {
   const { messages, count } = notification;
   if (count <= MAX_SINGLE_NOTIFICATIONS && messages.length >= count) {
-    return messages.map((message) => ({
-      title: message.from || "新着メール",
-      body: message.subject || "(件名なし)",
-      tag: `mail:${message.id}`,
-      messageId: message.id,
-    }));
+    return messages.map((message) => {
+      const actions = toPushActions(signer, message.id);
+      return {
+        title: message.from || "新着メール",
+        body: message.subject || "(件名なし)",
+        tag: `mail:${message.id}`,
+        messageId: message.id,
+        ...(actions ? { actions } : {}),
+      };
+    });
   }
   const senders = [
     ...new Set(messages.map((message) => message.from).filter(Boolean)),

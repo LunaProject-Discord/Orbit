@@ -17,6 +17,7 @@ import {
   SendIcon,
   Trash2Icon,
   UnderlineIcon,
+  WifiOffIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -32,20 +33,27 @@ import {
   useRef,
   useState,
 } from "react";
+import { EmojiPickerButton } from "@/components/emoji-picker";
+import { Hint } from "@/components/hint";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { AccountDot } from "@/lib/account-icons";
 import {
   type Account,
   ApiError,
   deleteAttachment,
   forwardAttachments,
   NetworkError,
-  sendMail,
+  type SignatureRule,
   type UploadedAttachment,
   uploadAttachment,
 } from "@/lib/api";
@@ -53,31 +61,17 @@ import { attachmentErrorMessage } from "@/lib/attachments";
 import {
   attachmentLimit,
   type ComposeDraft,
+  draftSignature,
   htmlToText,
   MAX_ATTACHMENT_COUNT,
   replaceSignature,
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
+import { insertIntoField } from "@/lib/emoji/insert";
 import { formatSize } from "@/lib/format";
-
-/** アカウントを見分けるための色。一覧の順番で割り当てる。 */
-const ACCOUNT_COLORS = [
-  "bg-sky-500",
-  "bg-violet-500",
-  "bg-emerald-500",
-  "bg-amber-500",
-  "bg-rose-500",
-  "bg-teal-500",
-];
-
-export function accountColor(accounts: Account[], accountId: string): string {
-  const index = accounts.findIndex((account) => account.id === accountId);
-  return (
-    ACCOUNT_COLORS[(index < 0 ? 0 : index) % ACCOUNT_COLORS.length] ??
-    "bg-sky-500"
-  );
-}
+import { sendMailOrQueue, useOnline } from "@/lib/offline";
+import { randomUuid } from "@/lib/uuid";
 
 function sendErrorOf(error: unknown, limit: number): string {
   if (error instanceof NetworkError) {
@@ -130,6 +124,8 @@ type Props = {
   draft: ComposeDraft | null;
   open: boolean;
   accounts: Account[];
+  /** 連絡先ごと、会話ごとの署名。宛先や差出人が変わったら、本文の署名を入れ替える。 */
+  signatureRules?: readonly SignatureRule[];
   /** 画面の上部に出す案内 (書きかけのメールを開き直したときなど)。 */
   notice: string | null;
   /** 下書きをサーバーに保存した時刻。 */
@@ -153,10 +149,8 @@ type Props = {
   onDiscard: () => void;
 };
 
-/**
- * メールの作成画面 (新規、返信、転送)。
- * 広い画面では右下に浮かぶ窓で、開いたままほかのメールを読める。狭い画面では全画面になる。
- */
+const NO_RULES: readonly SignatureRule[] = [];
+
 const MAXIMIZED_KEY = "mail.compose-maximized.v1";
 
 function loadMaximized(): boolean {
@@ -176,10 +170,15 @@ function storeMaximized(maximized: boolean): void {
   }
 }
 
+/**
+ * メールの作成画面 (新規、返信、転送)。
+ * 広い画面では右下に浮かぶ窓で、開いたままほかのメールを読める。狭い画面では全画面になる。
+ */
 export function ComposeWindow({
   draft,
   open,
   accounts,
+  signatureRules = NO_RULES,
   notice,
   savedAt,
   saveProblem,
@@ -192,6 +191,7 @@ export function ComposeWindow({
   onDiscard,
 }: Props) {
   const id = useId();
+  const online = useOnline();
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [minimized, setMinimized] = useState(false);
@@ -203,12 +203,28 @@ export function ComposeWindow({
   const [extraShownFor, setExtraShownFor] = useState<string | null>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const subjectRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** 送信中の処理から、最新の下書きを読むためのもの。 */
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  /**
+   * 下書きを変える。変更は必ず最新の下書きに対して行い、次の描画を待たずに draftRef へ反映する。
+   * 添付ファイルの送信が同時にいくつも終わったとき、どれも描画前の同じ下書きに足してしまい、
+   * 最後の 1 件しか残らなかったことがあるため。
+   */
+  const commit = useCallback(
+    (update: (latest: ComposeDraft) => ComposeDraft) => {
+      const latest = draftRef.current;
+      if (!latest) return;
+      const next = update(latest);
+      draftRef.current = next;
+      onChangeRef.current(next);
+    },
+    [],
+  );
   const uploadsRef = useRef(uploads);
   uploadsRef.current = uploads;
 
@@ -268,11 +284,11 @@ export function ComposeWindow({
         });
         if (!latest || latest.idempotencyKey !== draftKey) return;
         if (controller.signal.aborted) return;
-        onChangeRef.current({
-          ...latest,
-          attachments: [...latest.attachments, ...kept],
+        commit((current) => ({
+          ...current,
+          attachments: [...current.attachments, ...kept],
           forwardAttachments: null,
-        });
+        }));
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
@@ -283,10 +299,10 @@ export function ComposeWindow({
             cause instanceof ApiError ? cause.code : null,
           )}`,
         );
-        onChangeRef.current({ ...latest, forwardAttachments: null });
+        commit((current) => ({ ...current, forwardAttachments: null }));
       });
     return () => controller.abort();
-  }, [draftKey, forwardPending]);
+  }, [draftKey, forwardPending, commit]);
 
   const addFiles = useCallback(
     (files: File[]) => {
@@ -312,7 +328,7 @@ export function ComposeWindow({
         }
         total += file.size;
         count++;
-        const key = crypto.randomUUID();
+        const key = randomUuid();
         const owner = current.idempotencyKey;
         const { promise, abort } = uploadAttachment(file, (progress) =>
           setUploads((list) =>
@@ -340,10 +356,10 @@ export function ComposeWindow({
               void deleteAttachment(uploaded.id).catch(() => {});
               return;
             }
-            onChangeRef.current({
-              ...latest,
-              attachments: [...latest.attachments, uploaded],
-            });
+            commit((current) => ({
+              ...current,
+              attachments: [...current.attachments, uploaded],
+            }));
           })
           .catch((cause) => {
             if (cause instanceof DOMException && cause.name === "AbortError") {
@@ -360,7 +376,7 @@ export function ComposeWindow({
           );
       }
     },
-    [accounts],
+    [accounts, commit],
   );
 
   if (!draft || !open) return null;
@@ -372,31 +388,39 @@ export function ComposeWindow({
     draft.bcc.list.length > 0 ||
     draft.bcc.text.trim() !== "";
   const set = <K extends keyof ComposeDraft>(key: K, value: ComposeDraft[K]) =>
-    onChange({ ...draft, [key]: value });
+    commit((current) => ({ ...current, [key]: value }));
   const account = accounts.find((item) => item.id === draft.accountId);
   const limit = attachmentLimit(account ?? { protocol: "imap" });
   const pendingFiles = draft.forwardAttachments?.files ?? [];
   const uploading = uploads.length > 0 || pendingFiles.length > 0;
 
-  /** 差出人を変える。本文の署名も、選んだアカウントのものに入れ替える。 */
+  /**
+   * 差出人や宛先を変える。変えたことで使う署名 (会話、連絡先、アカウントの順に探す) が
+   * 変わるときだけ、本文の署名を入れ替える。変わらなければ、手で直した署名もそのまま残る。
+   */
+  function changeWithSignature(update: (latest: ComposeDraft) => ComposeDraft) {
+    commit((current) => {
+      const next = update(current);
+      const before = draftSignature(current, accounts, signatureRules).html;
+      const after = draftSignature(next, accounts, signatureRules).html;
+      if ((before ?? "") === (after ?? "")) return next;
+      const editor = editorRef.current;
+      const html = replaceSignature(editor?.innerHTML ?? next.html, after);
+      if (editor) editor.innerHTML = html;
+      return { ...next, html };
+    });
+  }
+
   function changeAccount(accountId: string) {
-    if (!draft) return;
-    const next = accounts.find((item) => item.id === accountId);
-    const editor = editorRef.current;
-    const html = replaceSignature(
-      editor?.innerHTML ?? draft.html,
-      next?.signatureHtml,
-    );
-    if (editor) editor.innerHTML = html;
-    onChange({ ...draft, accountId, html });
+    changeWithSignature((current) => ({ ...current, accountId }));
   }
 
   function removeAttachment(file: UploadedAttachment) {
     if (!draft) return;
-    set(
-      "attachments",
-      draft.attachments.filter((item) => item.id !== file.id),
-    );
+    commit((current) => ({
+      ...current,
+      attachments: current.attachments.filter((item) => item.id !== file.id),
+    }));
     void deleteAttachment(file.id).catch(() => {});
   }
 
@@ -437,21 +461,25 @@ export function ComposeWindow({
     try {
       // 送信のあとから保存が届くと、送ったはずの下書きが残ってしまう。
       await onBeforeSend();
-      await sendMail({
-        idempotencyKey: draft.idempotencyKey,
-        accountId: draft.accountId,
-        to: to.addresses,
-        cc: cc.addresses,
-        bcc: bcc.addresses,
-        subject: draft.subject,
-        text: htmlToText(html),
-        html,
-        attachmentIds: draft.attachments.map((file) => file.id),
-        mode: draft.mode,
-        ...(draft.sourceMessageId
-          ? { sourceMessageId: draft.sourceMessageId }
-          : {}),
-      });
+      // サーバーに届かなければ端末で預かり、接続後に自動で送る。
+      await sendMailOrQueue(
+        {
+          idempotencyKey: draft.idempotencyKey,
+          accountId: draft.accountId,
+          to: to.addresses,
+          cc: cc.addresses,
+          bcc: bcc.addresses,
+          subject: draft.subject,
+          text: htmlToText(html),
+          html,
+          attachmentIds: draft.attachments.map((file) => file.id),
+          mode: draft.mode,
+          ...(draft.sourceMessageId
+            ? { sourceMessageId: draft.sourceMessageId }
+            : {}),
+        },
+        draft.attachments,
+      );
       onSent();
     } catch (cause) {
       setError(sendErrorOf(cause, limit));
@@ -615,17 +643,18 @@ export function ComposeWindow({
           >
             <MinusIcon />
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={maximized ? "元の大きさに戻す" : "最大化"}
-            title={maximized ? "元の大きさに戻す" : "最大化"}
-            aria-pressed={maximized}
-            onClick={toggleMaximized}
-          >
-            {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
-          </Button>
+          <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={maximized ? "元の大きさに戻す" : "最大化"}
+              aria-pressed={maximized}
+              onClick={toggleMaximized}
+            >
+              {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+            </Button>
+          </Hint>
           <Button
             type="button"
             variant="ghost"
@@ -645,29 +674,51 @@ export function ComposeWindow({
 
         <Row label="差出人" htmlFor={`${id}-from`}>
           <div className="relative min-w-0 max-w-full">
-            <span
-              aria-hidden="true"
-              className={cn(
-                "pointer-events-none absolute top-1/2 left-3 z-10 size-2 -translate-y-1/2 rounded-full",
-                accountColor(accounts, draft.accountId),
-              )}
+            <AccountDot
+              accounts={accounts}
+              accountId={draft.accountId}
+              className="pointer-events-none absolute top-1/2 left-3 z-10 size-2 -translate-y-1/2"
             />
-            <NativeSelect
-              id={`${id}-from`}
-              size="sm"
+            <Select
+              items={accounts.map((item) => ({
+                value: item.id,
+                label: item.displayName
+                  ? `${item.displayName} <${item.email}>`
+                  : item.email,
+              }))}
               value={draft.accountId}
-              onChange={(event) => changeAccount(event.target.value)}
+              onValueChange={(next) => {
+                if (next) changeAccount(next);
+              }}
               disabled={sending}
-              className="max-w-full [&_select]:pl-7"
             >
-              {accounts.map((item) => (
-                <NativeSelectOption key={item.id} value={item.id}>
-                  {item.displayName
-                    ? `${item.displayName} <${item.email}>`
-                    : item.email}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              <SelectTrigger
+                id={`${id}-from`}
+                size="sm"
+                className="w-auto max-w-full pl-7 *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                align="start"
+                className="w-auto max-w-[calc(100vw-1rem)]"
+              >
+                {accounts.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    <span className="flex items-center gap-2">
+                      <AccountDot
+                        accounts={accounts}
+                        accountId={item.id}
+                        className="size-2"
+                      />
+                      {item.displayName
+                        ? `${item.displayName} <${item.email}>`
+                        : item.email}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </Row>
 
@@ -676,14 +727,16 @@ export function ComposeWindow({
             id={`${id}-to`}
             inputRef={toRef}
             value={draft.to}
-            onChange={(value) => set("to", value)}
+            onChange={(value) =>
+              changeWithSignature((current) => ({ ...current, to: value }))
+            }
             disabled={sending}
           />
           {!showExtra && (
             <button
               type="button"
               onClick={() => setExtraShownFor(draft.idempotencyKey)}
-              className="shrink-0 rounded-sm px-1 text-muted-foreground text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="relative shrink-0 rounded-sm px-1 text-muted-foreground text-xs outline-none pointer-coarse:px-2 pointer-coarse:py-2 pointer-coarse:text-sm pointer-coarse:after:absolute pointer-coarse:after:-inset-1 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               Cc Bcc
             </button>
@@ -711,13 +764,28 @@ export function ComposeWindow({
         )}
         <Row label="件名" htmlFor={`${id}-subject`}>
           <input
+            ref={subjectRef}
             id={`${id}-subject`}
             type="text"
             maxLength={998}
             value={draft.subject}
             onChange={(event) => set("subject", event.target.value)}
             disabled={sending}
-            className="h-7 min-w-0 flex-1 bg-transparent font-medium text-base outline-none md:text-sm"
+            className="h-7 min-w-0 pointer-coarse:h-10 flex-1 bg-transparent font-medium text-base outline-none md:text-sm"
+          />
+          <EmojiPickerButton
+            label="件名に絵文字を入れる"
+            size="icon-sm"
+            disabled={sending}
+            onSelect={(emoji) =>
+              insertIntoField(
+                subjectRef.current,
+                subjectRef.current?.value ?? "",
+                emoji,
+                (next) => set("subject", next),
+              )
+            }
+            className="-mr-2 text-muted-foreground"
           />
         </Row>
 
@@ -754,18 +822,19 @@ export function ComposeWindow({
                 aria-hidden="true"
               />
               {format}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="下書きを破棄"
-                title="下書きを破棄"
-                disabled={sending}
-                onClick={handleDiscard}
-                className="ml-auto"
-              >
-                <Trash2Icon />
-              </Button>
+              <Hint label="下書きを破棄" side="top">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="下書きを破棄"
+                  disabled={sending}
+                  onClick={handleDiscard}
+                  className="ml-auto"
+                >
+                  <Trash2Icon />
+                </Button>
+              </Hint>
             </div>
           )}
         >
@@ -838,11 +907,10 @@ export function ComposeWindow({
                   >
                     <FileTypeIcon contentType={file.contentType} />
                     <span className="truncate">{file.filename}</span>
-                    <progress
+                    <Progress
                       aria-label={`${file.filename} を送信中`}
                       value={percent}
-                      max={100}
-                      className="h-1.5 w-20 shrink-0 overflow-hidden rounded-full [&::-moz-progress-bar]:bg-foreground [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:bg-foreground"
+                      className="w-20 shrink-0"
                     />
                     <span className="w-9 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
                       {percent}%
@@ -864,6 +932,12 @@ export function ComposeWindow({
           <p className="shrink-0 px-4 pb-2 text-muted-foreground text-xs sm:hidden">
             {saved}
           </p>
+          {!online && (
+            <p className="flex shrink-0 items-center gap-2 border-t bg-muted/50 px-4 py-2 text-muted-foreground text-xs">
+              <WifiOffIcon className="size-3.5 shrink-0" aria-hidden="true" />
+              オフラインです。送信すると、接続後に自動で送られます。
+            </p>
+          )}
           {error && (
             <p
               role="alert"
@@ -966,7 +1040,7 @@ export function Editor({
   const [active, setActive] = useState<Record<string, boolean>>({});
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
-  /** リンクを付ける範囲。URL の入力欄へ移る前の選択を覚えておく。 */
+  /** リンクや絵文字を入れる範囲。ほかの入力欄へ移る前の選択を覚えておく。 */
   const savedRange = useRef<Range | null>(null);
   const linkRef = useRef<HTMLInputElement>(null);
 
@@ -1009,14 +1083,7 @@ export function Editor({
   }
 
   function openLink() {
-    const selection = window.getSelection();
-    const editor = editorRef.current;
-    savedRange.current =
-      selection &&
-      selection.rangeCount > 0 &&
-      editor?.contains(selection.anchorNode)
-        ? selection.getRangeAt(0).cloneRange()
-        : null;
+    saveRange();
     setLinkUrl("");
     setLinkOpen(true);
     requestAnimationFrame(() => linkRef.current?.focus());
@@ -1043,6 +1110,38 @@ export function Editor({
     } else {
       document.execCommand("createLink", false, url);
     }
+    emit();
+  }
+
+  /** 本文の中の選択範囲を覚える (ほかの入力欄へフォーカスが移る前に呼ぶ)。 */
+  function saveRange() {
+    const selection = window.getSelection();
+    const editor = editorRef.current;
+    savedRange.current =
+      selection &&
+      selection.rangeCount > 0 &&
+      editor?.contains(selection.anchorNode)
+        ? selection.getRangeAt(0).cloneRange()
+        : null;
+  }
+
+  /** 覚えておいた位置 (無ければ本文の末尾) に、文字を入れる。 */
+  function insertText(text: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const selection = window.getSelection();
+    if (selection) {
+      let range = savedRange.current;
+      if (!range) {
+        range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+      }
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    document.execCommand("insertText", false, text);
     emit();
   }
 
@@ -1116,36 +1215,42 @@ export function Editor({
       {toolbar(
         <>
           {formats.map(({ command, label, icon }) => (
+            <Hint key={command} label={label} side="top">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={label}
+                aria-pressed={active[command] ?? false}
+                disabled={disabled}
+                // 押しても本文の選択が外れないようにする。
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => run(command)}
+                className="aria-pressed:bg-muted"
+              >
+                {icon}
+              </Button>
+            </Hint>
+          ))}
+          <Hint label="リンク" side="top">
             <Button
-              key={command}
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={label}
-              title={label}
-              aria-pressed={active[command] ?? false}
+              aria-label="リンク"
+              aria-expanded={linkOpen}
               disabled={disabled}
-              // 押しても本文の選択が外れないようにする。
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => run(command)}
-              className="aria-pressed:bg-muted"
+              onClick={() => (linkOpen ? setLinkOpen(false) : openLink())}
             >
-              {icon}
+              <LinkIcon />
             </Button>
-          ))}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="リンク"
-            title="リンク"
-            aria-expanded={linkOpen}
+          </Hint>
+          <EmojiPickerButton
             disabled={disabled}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => (linkOpen ? setLinkOpen(false) : openLink())}
-          >
-            <LinkIcon />
-          </Button>
+            onOpen={saveRange}
+            onSelect={insertText}
+          />
         </>,
       )}
     </>

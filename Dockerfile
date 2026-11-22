@@ -19,6 +19,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/
 COPY apps/worker/package.json apps/worker/
 COPY apps/web/package.json apps/web/
+# スマホアプリはイメージに入れないが、pnpm-lock.yaml と食い違わないよう一覧だけは写す。
+COPY apps/mobile/package.json apps/mobile/
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 

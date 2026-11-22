@@ -11,11 +11,16 @@ export type ShortcutCommand =
   | "archive"
   | "delete"
   | "move"
+  | "junk"
+  | "undo"
   | "compose"
   | "search"
   | "reply"
   | "replyAll"
-  | "forward";
+  | "forward"
+  | "toggleSidebar"
+  | "expandThread"
+  | "collapseThread";
 
 type KeyLike = {
   key: string;
@@ -43,6 +48,8 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
         return "markUnread";
       case "#":
         return "delete";
+      case "!":
+        return "junk";
       case "R":
         return "replyAll";
       default:
@@ -56,6 +63,11 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
     case "k":
     case "ArrowUp":
       return "previous";
+    // 一覧で会話を広げて、中のメールを 1 通ずつ並べる。
+    case "ArrowRight":
+      return "expandThread";
+    case "ArrowLeft":
+      return "collapseThread";
     case "u":
     case "Escape":
       return "close";
@@ -73,6 +85,9 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       return "delete";
     case "v":
       return "move";
+    // 直前の削除や移動を元に戻す (Gmail と同じキー)。
+    case "z":
+      return "undo";
     case "c":
       return "compose";
     case "/":
@@ -81,6 +96,9 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       return "reply";
     case "f":
       return "forward";
+    // Thunderbird のフォルダペインの表示切り替えと同じキー。
+    case "F9":
+      return "toggleSidebar";
     default:
       return null;
   }
@@ -105,6 +123,7 @@ export const shortcutLabels = {
   archive: "E",
   delete: "Delete",
   move: "V",
+  junk: "!",
   compose: "C",
   reply: "R",
   replyAll: "Shift+R",

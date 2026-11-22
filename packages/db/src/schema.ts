@@ -113,7 +113,11 @@ export const devicePlatform = pgEnum("device_platform", [
   "ios",
 ]);
 
-/** ログイン中の端末。プッシュ通知 (FCM / APNs) の宛先を持つ。 */
+/**
+ * スマホアプリを入れた端末。新着メールの通知 (Android は FCM) の送り先を持つ。
+ * アプリで通知を有効にしたときに登録し、無効にしたときとログアウトのときに消す。
+ * pushToken は FCM が端末ごとに発行する値で、端末を一意に表す。
+ */
 export const devices = pgTable(
   "devices",
   {
@@ -127,7 +131,10 @@ export const devices = pgTable(
     lastSeenAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [index("devices_user_idx").on(t.userId)],
+  (t) => [
+    index("devices_user_idx").on(t.userId),
+    uniqueIndex("devices_push_token_idx").on(t.pushToken),
+  ],
 );
 
 /**
@@ -198,6 +205,11 @@ export const mailAccounts = pgTable(
     smtpHost: text(),
     smtpPort: integer(),
     smtpSecure: boolean().notNull().default(false),
+    /**
+     * 安全な再ネゴシエーション (RFC 5746) に対応していない古いサーバーへの接続を許す。
+     * 安全性が下がるので、利用者が明示的に許可したアカウントだけ true にする。
+     */
+    allowLegacyTls: boolean().notNull().default(false),
     username: text().notNull(),
     /** リフレッシュトークンまたはパスワードを AES-GCM で暗号化したもの。平文は保存しない。 */
     credentialsEncrypted: text().notNull(),
@@ -210,6 +222,10 @@ export const mailAccounts = pgTable(
     signatureHtml: text(),
     /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null で、追加した順に並ぶ。 */
     sortOrder: integer(),
+    /** 画面でアカウントを見分ける色の名前 (sky など)。選んでいなければ null で、並び順から決まる。 */
+    color: text(),
+    /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
+    icon: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -245,7 +261,27 @@ export const mailboxes = pgTable(
     }),
     name: text().notNull(),
     delimiter: text(),
+    /**
+     * 実際に使う役割。メールサーバーが知らせてきた役割 (detectedSpecialUse) に、
+     * 利用者の上書き (roleOverride) を当てはめた結果で、どちらかが変わるたびに計算し直す
+     * (@mail/core の resolveMailboxRoles)。移動先を探す処理などは、すべてこの列を見る。
+     */
     specialUse: mailboxSpecialUse(),
+    /** メールサーバーが知らせてきた役割 (IMAP の SPECIAL-USE、Graph の既定のフォルダ)。 */
+    detectedSpecialUse: mailboxSpecialUse(),
+    /**
+     * 利用者がアプリ内で付けた役割 (sent / drafts / archive / junk / trash)。"none" は
+     * 「役割なしとして扱う」。付けていなければ null。メールサーバー側には反映しない。
+     */
+    roleOverride: text().$type<
+      "sent" | "drafts" | "archive" | "junk" | "trash" | "none"
+    >(),
+    /** アプリ内での表示名。付けていなければ null (役割の名前か、サーバー上の名前で出す)。 */
+    displayName: text(),
+    /** アプリ内でのアイコン (Lucide の名前か絵文字)。付けていなければ null。 */
+    icon: text(),
+    /** アプリ内でのアイコンの色 ("#rrggbb")。付けていなければ null。 */
+    color: text(),
     /**
      * 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null で、
      * 既定の順 (受信トレイなどの役割、次に名前) に並ぶ。メールサーバー側には反映しない。
@@ -291,6 +327,17 @@ export const messages = pgTable(
     cc: jsonb().$type<Address[]>().notNull().default([]),
     bcc: jsonb().$type<Address[]>().notNull().default([]),
     replyTo: jsonb().$type<Address[]>().notNull().default([]),
+    /** Sender ヘッダー (代理で送った人)。差出人と同じ場合も、サーバーが返した値をそのまま入れる。 */
+    sender: jsonb().$type<Address[]>().notNull().default([]),
+    /** List-Id ヘッダーの ID (メーリングリストやメールマガジンの識別子)。無ければ null。 */
+    listId: text(),
+    /** List-Unsubscribe ヘッダーにあった配信停止の宛先 (https / mailto の URL)。 */
+    listUnsubscribe: jsonb().$type<string[]>().notNull().default([]),
+    /**
+     * sender / listId / listUnsubscribe を取り込んだ時刻。
+     * これらの項目を足す前に取り込んだメールは null で、同期ワーカーが後から補う。
+     */
+    headersFetchedAt: timestamp({ withTimezone: true }),
     sentAt: timestamp({ withTimezone: true }),
     receivedAt: timestamp({ withTimezone: true }).notNull(),
     snippet: text().notNull().default(""),
@@ -348,6 +395,10 @@ export const messages = pgTable(
     index("messages_account_thread_idx").on(t.accountId, t.threadKey),
     index("messages_account_received_idx").on(t.accountId, t.receivedAt),
     index("messages_message_id_header_idx").on(t.messageIdHeader),
+    // ヘッダーの補完がまだのメールを探すための索引。補完が終われば空になる。
+    index("messages_headers_pending_idx")
+      .on(t.accountId)
+      .where(sql`${t.headersFetchedAt} is null`),
   ],
 );
 
@@ -432,6 +483,9 @@ export const outboxKind = pgEnum("outbox_kind", [
   "move",
   "delete",
   "append",
+  "mailbox_create",
+  "mailbox_rename",
+  "mailbox_delete",
 ]);
 
 export const outboxStatus = pgEnum("outbox_status", [
@@ -531,5 +585,162 @@ export const drafts = pgTable(
   (t) => [
     index("drafts_user_updated_idx").on(t.userId, t.updatedAt),
     index("drafts_account_idx").on(t.accountId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// 統合フォルダ
+// ---------------------------------------------------------------------------
+
+/** 統合フォルダが集めるフォルダの役割 (mailboxes.specialUse のうち選べるもの)。 */
+export type UnifiedRole =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "archive"
+  | "junk"
+  | "trash";
+
+/** 統合フォルダが集めるメールの場所。 */
+export type UnifiedScope = {
+  /** すべてのフォルダ (ごみ箱と迷惑メールを除く) から集める。true なら下の 2 つは見ない。 */
+  all: boolean;
+  /** 全アカウントの、この役割のフォルダ (後から足したアカウントの分も入る)。 */
+  roles: UnifiedRole[];
+  /** 個別に選んだフォルダ (mailboxes.id)。無くなったフォルダの ID は無視する。 */
+  mailboxIds: string[];
+};
+
+/** 統合フォルダに並べるメールの条件。指定したものすべてに当てはまるメールを並べる。 */
+export type UnifiedFilters = {
+  unread: boolean;
+  flagged: boolean;
+  hasAttachment: boolean;
+  /** 差出人 / 宛先 / 件名 / 件名か本文などに含まれる文字。空なら条件にしない。 */
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  /** 受信してからこの日数以内。null なら期間を問わない。 */
+  withinDays: number | null;
+};
+
+/**
+ * 利用者が作った統合フォルダ。複数のアカウントのフォルダを 1 つの一覧にまとめ、
+ * 条件で絞り込める。メールサーバーには何も作らない (画面での見せ方だけ)。
+ */
+export const unifiedFolders = pgTable(
+  "unified_folders",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    /** アイコンの名前か絵文字。選んでいなければ null (既定のアイコンを出す)。 */
+    icon: text(),
+    /** アイコンの色 ("#rrggbb")。選んでいなければ null。 */
+    color: text(),
+    scope: jsonb().$type<UnifiedScope>().notNull(),
+    filters: jsonb().$type<UnifiedFilters>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("unified_folders_user_idx").on(t.userId)],
+);
+
+/** 初めからある項目の見た目。null は初期の設定のまま。 */
+export type BuiltinViewStyle = {
+  name: string | null;
+  icon: string | null;
+  color: string | null;
+};
+
+/**
+ * サイドバー上部の項目 (すべての受信トレイ、スター付き、下書き、送信待ち、統合フォルダ) の
+ * 並び順と、隠している項目。項目は、決まった名前 (inbox など) か統合フォルダの ID で表す。
+ */
+export const sidebarLayouts = pgTable("sidebar_layouts", {
+  userId: uuid()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** 上から順の項目。載っていない項目は、既定の順でその後ろに並ぶ。 */
+  order: jsonb().$type<string[]>().notNull().default([]),
+  hidden: jsonb().$type<string[]>().notNull().default([]),
+  /** 初めからある項目 (inbox など) に付けた名前・アイコン・色。変えていない項目は載らない。 */
+  builtins: jsonb()
+    .$type<Record<string, BuiltinViewStyle>>()
+    .notNull()
+    .default({}),
+  updatedAt: updatedAt(),
+});
+
+/** 一覧の行を左右にスワイプしたときの操作。 */
+export type SwipeAction =
+  | "none"
+  | "toggle_read"
+  | "star"
+  | "archive"
+  | "delete"
+  | "junk"
+  | "move";
+
+/** 左へスワイプしたときと、右へスワイプしたときの操作。 */
+export type SwipeSettings = { left: SwipeAction; right: SwipeAction };
+
+/**
+ * 利用者ごとの、どの端末でも同じにする設定。行の無い利用者は、すべて標準の値。
+ * 画面の大きさなどに依る設定 (フォント、行の間隔など) は端末側に保存する。
+ */
+export const userSettings = pgTable("user_settings", {
+  userId: uuid()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** 一覧のスワイプ操作。null は標準の値。 */
+  swipe: jsonb().$type<SwipeSettings>(),
+  /**
+   * 新着メールの通知に付けるボタン (read、star、archive、delete、junk を出す順に)。
+   * null は標準の値、空の配列はボタンを付けない。
+   */
+  notificationActions: jsonb().$type<string[]>(),
+  updatedAt: updatedAt(),
+});
+
+/** 署名の決まりの種類。contact は宛先のアドレスごと、thread は会話ごと。 */
+export type SignatureRuleKind = "contact" | "thread";
+
+/**
+ * 連絡先 (宛先のアドレス) ごと、会話ごとの署名。アカウントの署名より優先して使う。
+ * 連絡先の決まりは利用者のすべてのアカウントに効き、会話の決まりはその会話のあるアカウントにだけ効く。
+ */
+export const signatureRules = pgTable(
+  "signature_rules",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text().$type<SignatureRuleKind>().notNull(),
+    /** 会話のあるアカウント。連絡先の決まりでは null。 */
+    accountId: uuid().references(() => mailAccounts.id, {
+      onDelete: "cascade",
+    }),
+    /** 連絡先は小文字にしたメールアドレス、会話は会話のキー (messages.thread_key)。 */
+    key: text().notNull(),
+    /** 一覧に出す名前 (連絡先の名前、会話の件名)。分からなければ null。 */
+    label: text(),
+    /** 使う署名 (書式付き)。null は「署名を付けない」。 */
+    signatureHtml: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("signature_rules_contact_idx")
+      .on(t.userId, t.key)
+      .where(sql`${t.kind} = 'contact'`),
+    uniqueIndex("signature_rules_thread_idx")
+      .on(t.accountId, t.key)
+      .where(sql`${t.kind} = 'thread'`),
+    index("signature_rules_user_idx").on(t.userId),
   ],
 );

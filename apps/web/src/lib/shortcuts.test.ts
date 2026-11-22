@@ -28,13 +28,18 @@ describe("resolveShortcut", () => {
     expect(key("Delete")).toBe("delete");
     expect(key("v")).toBe("move");
     expect(key("x")).toBe("select");
-    expect(key("z")).toBeNull();
+    expect(key("F9")).toBe("toggleSidebar");
+    expect(key("ArrowRight")).toBe("expandThread");
+    expect(key("ArrowLeft")).toBe("collapseThread");
+    expect(key("z")).toBe("undo");
+    expect(key("q")).toBeNull();
   });
 
   it("Shift との組み合わせは、割り当てたものだけを受け付ける", () => {
     expect(key("I", { shiftKey: true })).toBe("markRead");
     expect(key("U", { shiftKey: true })).toBe("markUnread");
     expect(key("#", { shiftKey: true })).toBe("delete");
+    expect(key("!", { shiftKey: true })).toBe("junk");
     expect(key("S", { shiftKey: true })).toBeNull();
   });
 
