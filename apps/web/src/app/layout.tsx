@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "gen-interface-jp/400.css";
 import "gen-interface-jp/500.css";
 import "gen-interface-jp/600.css";
@@ -17,6 +17,16 @@ export const metadata: Metadata = {
   title: "Orbit",
   applicationName: "Orbit",
   description: "複数の端末でリアルタイムに同期するメールアプリ",
+  // アイコンは app/ の favicon.ico、icon.svg、apple-icon.png を Next.js が自動で入れる。
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { title: "Orbit", statusBarStyle: "default" },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

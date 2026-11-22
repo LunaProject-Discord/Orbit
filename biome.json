@@ -11,7 +11,10 @@
       "!**/out",
       "!**/drizzle",
       "!apps/web/src/lib/lucide/*.json",
-      "!apps/web/src/lib/emoji/*.json"
+      "!apps/web/src/lib/emoji/*.json",
+      "!apps/web/src/components/brand/brand-data.ts",
+      "!assets/brand/svg",
+      "!assets/brand/data"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },

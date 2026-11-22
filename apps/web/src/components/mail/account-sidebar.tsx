@@ -33,6 +33,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { OrbitLogo } from "@/components/brand/orbit-logo";
 import { Hint } from "@/components/hint";
 import { MailboxIcon } from "@/components/mail/mailbox-icon";
 import {
@@ -372,8 +373,8 @@ export function AccountSidebar({
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       <div className="flex h-14 shrink-0 items-center gap-2 px-4">
         {headerStart}
-        <span className="flex-1 font-heading font-semibold text-xl tracking-tight">
-          Orbit
+        <span className="flex flex-1 items-center">
+          <OrbitLogo className="h-7" />
         </span>
       </div>
       {onCompose && (
