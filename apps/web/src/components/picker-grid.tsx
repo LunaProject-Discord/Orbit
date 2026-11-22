@@ -4,13 +4,18 @@ import { cn } from "cn";
 import { ClockIcon, SearchIcon, XIcon } from "lucide-react";
 import {
   type KeyboardEvent,
+  memo,
+  type PointerEvent,
   type ReactNode,
+  useCallback,
+  useDeferredValue,
   useEffect,
   useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
@@ -44,6 +49,11 @@ export type PickerSource = {
  * 絵文字を選ぶ画面のような一覧。検索欄、分類のタブ、最近使ったもの、
  * 分類ごとの見出し付きの一覧、下部のプレビューを持つ。
  * 行の高さが決まっているので、見えている行だけを描く。
+ *
+ * スクロール・カーソルの移動・矢印キーは続けて何度も起きるので、そのたびに全体を
+ * 描き直さないようにしている: 行とタブは中身が変わったものだけを描き直し、
+ * カーソルを置いたものの名前は下部の表示だけに伝え、スクロールは見えている行が
+ * 変わったときだけ反映する。
  * 検索欄にフォーカスを置いたまま、矢印キーと Enter で選べる。
  */
 export function PickerGrid({
@@ -93,9 +103,13 @@ export function PickerGrid({
   const [query, setQuery] = useState("");
   /** キーボードで選んでいるアイコンの位置。-1 なら、まだ選んでいない。 */
   const [active, setActive] = useState(-1);
-  /** カーソルを置いているアイコンの名前。 */
-  const [hovered, setHovered] = useState<string | null>(null);
+  /** カーソルを置いているものの id。下部の表示だけが使う。 */
+  const hover = useMemo(createHoverStore, []);
   const [scrollTop, setScrollTop] = useState(0);
+  /** scrollTop を反映したときの、いちばん上に見えていた行。 */
+  const topRow = useRef(0);
+  // 入力は止めずに、一覧の作り直し (検索) は手が空いたときに行う。
+  const deferredQuery = useDeferredValue(query);
   const [box, setBox] = useState({ width: 0, height: 0, rem: 16 });
   /** 検索をやめた後に、位置を合わせる分類。 */
   const [pendingSection, setPendingSection] = useState<string | null>(null);
@@ -133,7 +147,7 @@ export function PickerGrid({
   const heading = HEADING_REM * box.rem;
   // 左右の余白 (px-2) を除いた幅に、入るだけ並べる。
   const columns = Math.max(1, Math.floor((box.width - box.rem) / cell));
-  const searching = query.trim() !== "";
+  const searching = deferredQuery.trim() !== "";
 
   const layout = useMemo(() => {
     if (!source) return null;
@@ -142,7 +156,7 @@ export function PickerGrid({
           {
             id: SEARCH_SECTION,
             label: "検索結果",
-            items: source.search(query),
+            items: source.search(deferredQuery),
           },
         ]
       : [
@@ -174,20 +188,15 @@ export function PickerGrid({
       }
     });
     return { rows, count, tops, rowOf, names, headingRow, height: top };
-  }, [source, searching, query, recent, columns, cell, heading]);
+  }, [source, searching, deferredQuery, recent, columns, cell, heading]);
 
   // 見えている範囲の行だけを描く。
   let first = 0;
   let last = -1;
   if (layout && layout.rows.length > 0) {
     const { tops, rows } = layout;
-    let low = 0;
-    let high = rows.length - 1;
-    while (low < high) {
-      const middle = (low + high + 1) >> 1;
-      if (tops[middle] <= scrollTop) low = middle;
-      else high = middle - 1;
-    }
+    const low = rowAt(tops, scrollTop);
+    topRow.current = low;
     first = Math.max(0, low - OVERSCAN);
     last = low;
     while (last < rows.length - 1 && tops[last + 1] < scrollTop + box.height) {
@@ -235,6 +244,16 @@ export function PickerGrid({
     return () => tabs.removeEventListener("wheel", onWheel);
   }, []);
 
+  // スクロールのたびではなく、いちばん上に見えている行が変わったときだけ描き直す
+  // (上下に余分な行を描いてあるので、その間は描いてある行だけで足りる)。
+  const onScroll = () => {
+    const element = scrollRef.current;
+    if (!element || !layout) return;
+    if (rowAt(layout.tops, element.scrollTop) !== topRow.current) {
+      setScrollTop(element.scrollTop);
+    }
+  };
+
   const scrollTo = (top: number) => {
     const element = scrollRef.current;
     if (!element) return;
@@ -249,7 +268,7 @@ export function PickerGrid({
   };
 
   const jumpTo = (section: string) => {
-    if (searching) {
+    if (searching || query.trim() !== "") {
       // 検索をやめて分類の一覧に戻す。並びが変わるので、位置は描き直した後に合わせる。
       setQuery("");
       setActive(-1);
@@ -340,31 +359,60 @@ export function PickerGrid({
       }
       case "Enter": {
         // 探している途中なら、選んでいなくても先頭の結果を選ぶ。
-        const index = active >= 0 ? active : searching ? 0 : -1;
-        if (index < 0) return;
+        const chosen =
+          active >= 0
+            ? layout.names[active]
+            : query.trim() !== ""
+              ? // 一覧の作り直しが入力に追い付いていなくても、いまの言葉で探した先頭を選ぶ。
+                query === deferredQuery
+                ? layout.names[0]
+                : source?.search(query)[0]
+              : undefined;
+        if (chosen === undefined) return;
         event.preventDefault();
-        onChoose(layout.names[index]);
+        onChoose(chosen);
         break;
       }
     }
   };
 
-  const shown =
-    hovered ?? (active >= 0 ? (layout?.names[active] ?? null) : value);
-  const tabs: PickerSource["tabs"] = source
-    ? [
-        ...(recent.some((item) => source.has(item))
-          ? [
-              {
-                id: RECENT_SECTION,
-                label: "最近使ったもの",
-                icon: <ClockIcon aria-hidden="true" />,
-              },
-            ]
-          : []),
-        ...source.tabs,
-      ]
-    : [];
+  const hasRecent = source ? recent.some((item) => source.has(item)) : false;
+  const tabs = useMemo<PickerSource["tabs"]>(
+    () =>
+      source
+        ? [
+            ...(hasRecent
+              ? [
+                  {
+                    id: RECENT_SECTION,
+                    label: "最近使ったもの",
+                    icon: <ClockIcon aria-hidden="true" />,
+                  },
+                ]
+              : []),
+            ...source.tabs,
+          ]
+        : [],
+    [source, hasRecent],
+  );
+
+  // 行とタブに渡す関数は、描き直しても同じものにする (中身は毎回いまのものを呼ぶ)。
+  const latest = useRef({ jumpTo, onChoose });
+  latest.current = { jumpTo, onChoose };
+  const jump = useCallback(
+    (section: string) => latest.current.jumpTo(section),
+    [],
+  );
+  const choose = useCallback(
+    (item: string) => latest.current.onChoose(item),
+    [],
+  );
+  // カーソルを置いたものは、マスごとではなく一覧全体で 1 か所で受ける。
+  const onPointerOver = (event: PointerEvent<HTMLDivElement>) => {
+    const item = (event.target as Element).closest?.("[data-item]");
+    if (item) hover.set(item.getAttribute("data-item"));
+  };
+  const activeItem = active >= 0 ? (layout?.names[active] ?? null) : null;
 
   return (
     <>
@@ -415,37 +463,16 @@ export function PickerGrid({
           aria-label="分類"
           className="relative flex gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {tabs.map((tab) => {
-            const selected = tab.id === currentSection;
-            return (
-              <Hint key={tab.id} label={tab.label}>
-                <button
-                  type="button"
-                  data-section={tab.id}
-                  aria-label={tab.label}
-                  aria-pressed={selected}
-                  tabIndex={-1}
-                  // 押しても検索欄からフォーカスを移さない (キーボードで続けて選べるように)。
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => jumpTo(tab.id)}
-                  className={cn(
-                    "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground [&_svg]:size-4",
-                    selected && "bg-muted text-foreground",
-                  )}
-                >
-                  {tab.icon}
-                </button>
-              </Hint>
-            );
-          })}
+          <PickerTabs tabs={tabs} current={currentSection} onJump={jump} />
           {!source && <div className="h-7" />}
         </div>
       </div>
 
       <div
         ref={scrollRef}
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        onPointerLeave={() => setHovered(null)}
+        onScroll={onScroll}
+        onPointerOver={onPointerOver}
+        onPointerLeave={() => hover.set(null)}
         className="relative min-h-24 flex-1 basis-72 overflow-y-auto overscroll-contain"
       >
         {!layout ? (
@@ -497,11 +524,23 @@ export function PickerGrid({
                       : null
                   }
                   source={source}
-                  value={value}
-                  active={active}
+                  // 行の中に無ければ変わらない値にして、関係のない行を描き直さない。
+                  value={
+                    row.kind === "items" &&
+                    value !== null &&
+                    row.names.includes(value)
+                      ? value
+                      : null
+                  }
+                  active={
+                    row.kind === "items" &&
+                    active >= row.offset &&
+                    active < row.offset + row.names.length
+                      ? active
+                      : -1
+                  }
                   currentClass={currentClass}
-                  onChoose={onChoose}
-                  onHover={setHovered}
+                  onChoose={choose}
                 />
               );
             })}
@@ -510,25 +549,138 @@ export function PickerGrid({
       </div>
 
       <div className="flex h-11 shrink-0 items-center gap-2 border-t px-2">
-        <span
-          aria-hidden="true"
-          className={cn(
-            "flex size-6 shrink-0 items-center justify-center text-xl leading-none [&_svg]:size-6",
-            shown !== null && shown === value && currentClass,
-          )}
-        >
-          {shown !== null && source ? source.render(shown) : emptyPreview}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-xs" aria-live="polite">
-          {shown !== null && source ? source.label(shown) : emptyLabel}
-        </span>
+        <PickerPreview
+          hover={hover}
+          fallback={activeItem ?? value}
+          value={value}
+          source={source}
+          currentClass={currentClass}
+          emptyLabel={emptyLabel}
+          emptyPreview={emptyPreview}
+        />
         {actions}
       </div>
     </>
   );
 }
 
-function PickerRowView({
+/** tops (行の上端の位置) の中で、位置 top にある行の番号。 */
+function rowAt(tops: readonly number[], top: number): number {
+  let low = 0;
+  let high = tops.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (tops[middle] <= top) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+type HoverStore = {
+  get: () => string | null;
+  set: (item: string | null) => void;
+  subscribe: (listener: () => void) => () => void;
+};
+
+/** カーソルを置いているものを、下部の表示だけに伝えるための入れ物。 */
+function createHoverStore(): HoverStore {
+  let current: string | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    set: (item) => {
+      if (item === current) return;
+      current = item;
+      for (const listener of listeners) listener();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
+/** 下部の表示。カーソルを置いたもの (無ければ fallback) の絵と名前を出す。 */
+function PickerPreview({
+  hover,
+  fallback,
+  value,
+  source,
+  currentClass,
+  emptyLabel,
+  emptyPreview,
+}: {
+  hover: HoverStore;
+  fallback: string | null;
+  value: string | null;
+  source: PickerSource | null;
+  currentClass?: string;
+  emptyLabel?: string;
+  emptyPreview?: ReactNode;
+}) {
+  const hovered = useSyncExternalStore(hover.subscribe, hover.get, () => null);
+  const shown = hovered ?? fallback;
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "flex size-6 shrink-0 items-center justify-center text-xl leading-none [&_svg]:size-6",
+          shown !== null && shown === value && currentClass,
+        )}
+      >
+        {shown !== null && source ? source.render(shown) : emptyPreview}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-xs" aria-live="polite">
+        {shown !== null && source ? source.label(shown) : emptyLabel}
+      </span>
+    </>
+  );
+}
+
+/** 分類のタブ。選んでいる分類が変わったときだけ描き直す。 */
+const PickerTabs = memo(function PickerTabs({
+  tabs,
+  current,
+  onJump,
+}: {
+  tabs: PickerSource["tabs"];
+  current: string | null;
+  onJump: (section: string) => void;
+}) {
+  return tabs.map((tab) => {
+    const selected = tab.id === current;
+    return (
+      <Hint key={tab.id} label={tab.label}>
+        <button
+          type="button"
+          data-section={tab.id}
+          aria-label={tab.label}
+          aria-pressed={selected}
+          tabIndex={-1}
+          // 押しても検索欄からフォーカスを移さない (キーボードで続けて選べるように)。
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => onJump(tab.id)}
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground [&_svg]:size-4",
+            selected && "bg-muted text-foreground",
+          )}
+        >
+          {tab.icon}
+        </button>
+      </Hint>
+    );
+  });
+});
+
+/**
+ * 一覧の 1 行。スクロールや矢印キーで関係のない行まで描き直さないよう、memo にしている。
+ * マスの名前は下部の表示に出すので、マスごとのツールチップは付けない
+ * (見えているマスの数だけツールチップを作ると、描き直しが重くなる)。
+ */
+const PickerRowView = memo(function PickerRowView({
   id,
   row,
   top,
@@ -538,7 +690,6 @@ function PickerRowView({
   active,
   currentClass,
   onChoose,
-  onHover,
 }: {
   id: string;
   row: PickerRow;
@@ -546,11 +697,12 @@ function PickerRowView({
   /** 見出しに添える件数。出さないなら null。 */
   count: number | null;
   source: PickerSource | null;
+  /** いま選んでいるもの。この行に無ければ null。 */
   value: string | null;
+  /** キーボードで選んでいる位置。この行に無ければ -1。 */
   active: number;
   currentClass?: string;
   onChoose: (name: string) => void;
-  onHover: (name: string | null) => void;
 }) {
   if (row.kind === "heading") {
     return (
@@ -575,27 +727,26 @@ function PickerRowView({
         const label = source?.label(name) ?? name;
         const current = name === value;
         return (
-          <Hint key={name} label={label} side="top">
-            <button
-              type="button"
-              role="option"
-              id={`${id}-icon-${index}`}
-              aria-selected={index === active}
-              aria-label={label}
-              tabIndex={-1}
-              onClick={() => onChoose(name)}
-              onPointerEnter={() => onHover(name)}
-              className={cn(
-                "flex size-9 shrink-0 items-center justify-center rounded-md text-foreground/80 text-xl leading-none outline-none hover:bg-muted hover:text-foreground [&_svg]:size-5",
-                current && cn("bg-muted", currentClass),
-                index === active && "bg-muted ring-2 ring-ring ring-inset",
-              )}
-            >
-              {source?.render(name)}
-            </button>
-          </Hint>
+          <button
+            key={name}
+            type="button"
+            role="option"
+            id={`${id}-icon-${index}`}
+            data-item={name}
+            aria-selected={index === active}
+            aria-label={label}
+            tabIndex={-1}
+            onClick={() => onChoose(name)}
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-md text-foreground/80 text-xl leading-none outline-none hover:bg-muted hover:text-foreground [&_svg]:size-5",
+              current && cn("bg-muted", currentClass),
+              index === active && "bg-muted ring-2 ring-ring ring-inset",
+            )}
+          >
+            {source?.render(name)}
+          </button>
         );
       })}
     </div>
   );
-}
+});
