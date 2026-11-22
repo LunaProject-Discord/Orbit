@@ -21,6 +21,7 @@ import {
   UserRoundIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { MailboxIcon, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import { QuickReply } from "@/components/mail/quick-reply";
@@ -1038,23 +1039,24 @@ function MessageContent({
 
   const collapsed = preferences.messageHeader === "collapsed";
   const toggle = (
-    <Button
-      variant="ghost"
-      size="icon-xs"
-      aria-expanded={!collapsed}
-      aria-label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}
-      title={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}
-      onClick={() =>
-        updatePreferences({
-          messageHeader: collapsed ? "expanded" : "collapsed",
-        })
-      }
-      className="shrink-0 text-muted-foreground"
-    >
-      <ChevronDownIcon
-        className={cn("transition-transform", !collapsed && "rotate-180")}
-      />
-    </Button>
+    <Hint label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}
+        onClick={() =>
+          updatePreferences({
+            messageHeader: collapsed ? "expanded" : "collapsed",
+          })
+        }
+        className="shrink-0 text-muted-foreground"
+      >
+        <ChevronDownIcon
+          className={cn("transition-transform", !collapsed && "rotate-180")}
+        />
+      </Button>
+    </Hint>
   );
 
   return (
@@ -1079,12 +1081,14 @@ function MessageContent({
                 {message.to.length > 0 && (
                   <>
                     <span aria-hidden="true">・</span>
-                    <span title={mailbox ? mailboxLabel(mailbox) : undefined}>
-                      <MailboxIcon
-                        specialUse={mailbox?.specialUse ?? null}
-                        className="size-4 shrink-0"
-                      />
-                    </span>
+                    <Hint label={mailbox ? mailboxLabel(mailbox) : null}>
+                      <span>
+                        <MailboxIcon
+                          specialUse={mailbox?.specialUse ?? null}
+                          className="size-4 shrink-0"
+                        />
+                      </span>
+                    </Hint>
                     <span className="sr-only">宛先</span>
                     <span className="min-w-0 shrink-[2] truncate">
                       {message.to.map(addressLabel).join("、")}

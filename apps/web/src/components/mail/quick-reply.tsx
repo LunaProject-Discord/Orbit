@@ -3,6 +3,7 @@
 import { Maximize2Icon, ReplyIcon, SendIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { EmojiPickerButton } from "@/components/emoji-picker";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { insertIntoField } from "@/lib/emoji/insert";
@@ -83,15 +84,12 @@ export function QuickReply({ recipient, onSend, onExpand }: Props) {
         className="max-h-64 min-h-20 resize-none border-0 px-1.5 py-1 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
       <div className="flex items-center gap-1">
-        <Button
-          type="submit"
-          size="sm"
-          disabled={empty || sending}
-          title="送信 (Ctrl+Enter)"
-        >
-          <SendIcon />
-          {sending ? "送信中…" : "送信"}
-        </Button>
+        <Hint label="送信" shortcut="Ctrl+Enter">
+          <Button type="submit" size="sm" disabled={empty || sending}>
+            <SendIcon />
+            {sending ? "送信中…" : "送信"}
+          </Button>
+        </Hint>
         <EmojiPickerButton
           size="icon-sm"
           disabled={sending}

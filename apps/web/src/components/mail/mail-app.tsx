@@ -17,6 +17,7 @@ import {
   useState,
 } from "react";
 import { useAuth } from "@/components/auth-provider";
+import { Hint } from "@/components/hint";
 import { AccountSidebar } from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
 import { ComposeWindow } from "@/components/mail/compose-window";
@@ -1941,16 +1942,17 @@ export function MailApp({ user }: { user: User }) {
                 {!draftsSelected &&
                   special !== "outgoing" &&
                   (messages?.length ?? 0) > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="メールを選択"
-                      title="メールを選択 (X)"
-                      onClick={() => setSelectMode(true)}
-                      className="-mr-2"
-                    >
-                      <ListChecksIcon />
-                    </Button>
+                    <Hint label="メールを選択" shortcut="X">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="メールを選択"
+                        onClick={() => setSelectMode(true)}
+                        className="-mr-2"
+                      >
+                        <ListChecksIcon />
+                      </Button>
+                    </Hint>
                   )}
               </header>
             )}

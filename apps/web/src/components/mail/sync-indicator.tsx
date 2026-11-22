@@ -5,6 +5,7 @@ import {
   RefreshCwIcon,
   WifiOffIcon,
 } from "lucide-react";
+import { Hint } from "@/components/hint";
 import type { SyncStatus } from "@/lib/sync-status";
 
 /** 同期の状況 (同期済み、同期中、オフラインなど) を、印と短い文言で出す。 */
@@ -27,25 +28,26 @@ export function SyncIndicator({
           ? WifiOffIcon
           : CircleAlertIcon;
   return (
-    <output
-      // 状況が変わったときだけ、読み上げで知らせる。
-      aria-live="polite"
-      title={short ? status.label : undefined}
-      className={cn(
-        "flex min-w-0 items-center gap-2 text-muted-foreground text-xs",
-        short && "gap-1",
-        className,
-      )}
-    >
-      <Icon
-        aria-hidden="true"
+    <Hint label={short ? status.label : null}>
+      <output
+        // 状況が変わったときだけ、読み上げで知らせる。
+        aria-live="polite"
         className={cn(
-          "size-3.5 shrink-0",
-          status.tone === "ok" && "text-emerald-600 dark:text-emerald-500",
-          status.tone === "error" && "text-destructive",
+          "flex min-w-0 items-center gap-2 text-muted-foreground text-xs",
+          short && "gap-1",
+          className,
         )}
-      />
-      <span className="truncate">{short ? status.short : status.label}</span>
-    </output>
+      >
+        <Icon
+          aria-hidden="true"
+          className={cn(
+            "size-3.5 shrink-0",
+            status.tone === "ok" && "text-emerald-600 dark:text-emerald-500",
+            status.tone === "error" && "text-destructive",
+          )}
+        />
+        <span className="truncate">{short ? status.short : status.label}</span>
+      </output>
+    </Hint>
   );
 }

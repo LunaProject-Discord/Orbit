@@ -13,6 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Hint } from "@/components/hint";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -399,14 +400,15 @@ export function MessageList({
                       />
                     )}
                     {mark && (
-                      <span
-                        role="img"
-                        aria-label={mark.name}
-                        title={mark.name}
-                        className="flex shrink-0"
-                      >
-                        {mark.mark}
-                      </span>
+                      <Hint label={mark.name}>
+                        <span
+                          role="img"
+                          aria-label={mark.name}
+                          className="flex shrink-0"
+                        >
+                          {mark.mark}
+                        </span>
+                      </Hint>
                     )}
                     <time
                       dateTime={message.receivedAt}

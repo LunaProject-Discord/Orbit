@@ -18,15 +18,20 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
+import { Hint } from "@/components/hint";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   ACCOUNT_COLORS,
   type AccountColorName,
@@ -639,25 +644,25 @@ function AccountCard({
             className="flex h-8 items-center gap-1.5"
           >
             {ACCOUNT_COLORS.map((item) => (
-              // biome-ignore lint/a11y/useSemanticElements: 色の見本をそのまま選択肢にするため、radio の役割を持つボタンにしている
-              <button
-                key={item.name}
-                type="button"
-                role="radio"
-                aria-checked={color === item.name}
-                aria-label={item.label}
-                title={item.label}
-                onClick={() => chooseColor(item.name)}
-                className={cn(
-                  "flex size-6 items-center justify-center rounded-full text-white outline-none ring-offset-2 ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring",
-                  item.dot,
-                  color === item.name && "ring-2 ring-foreground/40",
-                )}
-              >
-                {color === item.name && (
-                  <CheckIcon className="size-3.5" aria-hidden="true" />
-                )}
-              </button>
+              <Hint key={item.name} label={item.label}>
+                {/* biome-ignore lint/a11y/useSemanticElements: 色の見本をそのまま選択肢にするため、radio の役割を持つボタンにしている */}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={color === item.name}
+                  aria-label={item.label}
+                  onClick={() => chooseColor(item.name)}
+                  className={cn(
+                    "flex size-6 items-center justify-center rounded-full text-white outline-none ring-offset-2 ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring",
+                    item.dot,
+                    color === item.name && "ring-2 ring-foreground/40",
+                  )}
+                >
+                  {color === item.name && (
+                    <CheckIcon className="size-3.5" aria-hidden="true" />
+                  )}
+                </button>
+              </Hint>
             ))}
           </div>
         </div>
@@ -768,23 +773,30 @@ function SelectRow<T extends string | number>(props: {
       labelFor={id}
       description={props.description}
     >
-      <NativeSelect
-        id={id}
-        size="sm"
+      <Select
+        items={props.options.map(([value, label]) => ({
+          value: String(value),
+          label,
+        }))}
         value={String(props.value)}
-        onChange={(event) => {
+        onValueChange={(next) => {
           const option = props.options.find(
-            ([value]) => String(value) === event.target.value,
+            ([value]) => String(value) === next,
           );
           if (option) props.onChange(option[0]);
         }}
       >
-        {props.options.map(([value, label]) => (
-          <NativeSelectOption key={String(value)} value={String(value)}>
-            {label}
-          </NativeSelectOption>
-        ))}
-      </NativeSelect>
+        <SelectTrigger id={id} size="sm" className="max-w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="end" className="w-auto">
+          {props.options.map(([value, label]) => (
+            <SelectItem key={String(value)} value={String(value)}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </SettingRow>
   );
 }
@@ -803,25 +815,11 @@ function SwitchRow(props: {
       labelId={id}
       description={props.description}
     >
-      <button
-        type="button"
-        role="switch"
-        aria-checked={props.checked}
+      <Switch
         aria-labelledby={id}
-        onClick={() => props.onChange(!props.checked)}
-        className={cn(
-          "relative h-5 w-9 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
-          props.checked ? "bg-primary" : "bg-input",
-        )}
-      >
-        <span
-          aria-hidden="true"
-          className={cn(
-            "absolute top-0.5 left-0.5 size-4 rounded-full bg-background shadow-sm transition-transform",
-            props.checked && "translate-x-4",
-          )}
-        />
-      </button>
+        checked={props.checked}
+        onCheckedChange={(checked) => props.onChange(checked)}
+      />
     </SettingRow>
   );
 }

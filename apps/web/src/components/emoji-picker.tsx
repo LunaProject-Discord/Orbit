@@ -22,6 +22,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Hint } from "@/components/hint";
 import { PickerGrid, type PickerSource } from "@/components/picker-grid";
 import { Button } from "@/components/ui/button";
 import {
@@ -163,39 +164,42 @@ export function EmojiPickerPanel({
               className="flex shrink-0 items-center"
             >
               {SKIN_TONES.map((item) => (
-                // biome-ignore lint/a11y/useSemanticElements: 絵文字の見本をそのまま選択肢にするため、radio の役割を持つボタンにしている
-                <button
-                  key={item.tone}
-                  type="button"
-                  role="radio"
-                  aria-checked={item.tone === tone}
-                  aria-label={item.label}
-                  title={item.label}
-                  onClick={() => chooseTone(item.tone)}
-                  style={EMOJI_STYLE}
-                  className={cn(
-                    "flex size-7 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
-                    item.tone === tone && "bg-muted",
-                  )}
-                >
-                  {catalog
-                    ? withSkinTone(catalog, TONE_SAMPLE, item.tone)
-                    : TONE_SAMPLE}
-                </button>
+                <Hint key={item.tone} label={item.label}>
+                  {/* biome-ignore lint/a11y/useSemanticElements: 絵文字の見本をそのまま選択肢にするため、radio の役割を持つボタンにしている */}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={item.tone === tone}
+                    aria-label={item.label}
+                    onClick={() => chooseTone(item.tone)}
+                    style={EMOJI_STYLE}
+                    className={cn(
+                      "flex size-7 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+                      item.tone === tone && "bg-muted",
+                    )}
+                  >
+                    {catalog
+                      ? withSkinTone(catalog, TONE_SAMPLE, item.tone)
+                      : TONE_SAMPLE}
+                  </button>
+                </Hint>
               ))}
             </div>
           ) : (
-            <button
-              type="button"
-              aria-label="肌の色を変える"
-              title="肌の色を変える"
-              disabled={!catalog}
-              onClick={() => setToneOpen(true)}
-              style={EMOJI_STYLE}
-              className="flex size-7 shrink-0 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              {catalog ? withSkinTone(catalog, TONE_SAMPLE, tone) : TONE_SAMPLE}
-            </button>
+            <Hint label="肌の色を変える">
+              <button
+                type="button"
+                aria-label="肌の色を変える"
+                disabled={!catalog}
+                onClick={() => setToneOpen(true)}
+                style={EMOJI_STYLE}
+                className="flex size-7 shrink-0 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              >
+                {catalog
+                  ? withSkinTone(catalog, TONE_SAMPLE, tone)
+                  : TONE_SAMPLE}
+              </button>
+            </Hint>
           )}
           {!toneOpen && actions}
         </>
@@ -234,21 +238,22 @@ export function EmojiPickerButton({
         setOpen(next);
       }}
     >
-      <PopoverTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            size={size}
-            aria-label={label}
-            title={label}
-            disabled={disabled}
-            className={className}
-          />
-        }
-      >
-        <SmilePlusIcon />
-      </PopoverTrigger>
+      <Hint label={label} side="top">
+        <PopoverTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size={size}
+              aria-label={label}
+              disabled={disabled}
+              className={className}
+            />
+          }
+        >
+          <SmilePlusIcon />
+        </PopoverTrigger>
+      </Hint>
       <PopoverContent
         align="start"
         initialFocus={inputRef}

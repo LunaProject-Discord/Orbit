@@ -13,6 +13,7 @@ import {
   StarIcon,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { accountColor } from "@/lib/account-colors";
 import { AccountMark } from "@/lib/account-icons";
@@ -42,18 +43,19 @@ export function SidebarFoldButton({
     ? "サイドバーを広げたままにする"
     : "サイドバーを折りたたむ";
   return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      aria-label={label}
-      title={`${label} (${SIDEBAR_FOLD_KEY_LABEL})`}
-      aria-expanded={!folded}
-      aria-controls="mail-sidebar"
-      onClick={onToggle}
-      className={className}
-    >
-      {folded ? <PanelLeftOpenIcon /> : <PanelLeftCloseIcon />}
-    </Button>
+    <Hint label={label} shortcut={SIDEBAR_FOLD_KEY_LABEL}>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label={label}
+        aria-expanded={!folded}
+        aria-controls="mail-sidebar"
+        onClick={onToggle}
+        className={className}
+      >
+        {folded ? <PanelLeftOpenIcon /> : <PanelLeftCloseIcon />}
+      </Button>
+    </Hint>
   );
 }
 
@@ -126,14 +128,11 @@ export function SidebarRail({
       </div>
       {onCompose && (
         <div className="shrink-0 pb-2">
-          <Button
-            size="icon"
-            onClick={onCompose}
-            aria-label="新規作成"
-            title="新規作成 (C)"
-          >
-            <PenSquareIcon />
-          </Button>
+          <Hint label="新規作成" shortcut="C" side="right">
+            <Button size="icon" onClick={onCompose} aria-label="新規作成">
+              <PenSquareIcon />
+            </Button>
+          </Hint>
         </div>
       )}
       <nav
@@ -260,28 +259,29 @@ function RailItem({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={badge ? `${label} (${badge})` : label}
-      title={badge ? `${label} (${badge})` : label}
-      aria-current={selected ? "page" : undefined}
-      className={cn(
-        "relative flex size-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
-        selected && "bg-sidebar-accent text-sidebar-accent-foreground",
-      )}
-    >
-      {children}
-      {badge && (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "absolute top-1 right-1 size-2 rounded-full ring-2 ring-sidebar",
-            badgeTones[badgeTone],
-          )}
-        />
-      )}
-    </button>
+    <Hint label={badge ? `${label} (${badge})` : label} side="right">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={badge ? `${label} (${badge})` : label}
+        aria-current={selected ? "page" : undefined}
+        className={cn(
+          "relative flex size-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
+          selected && "bg-sidebar-accent text-sidebar-accent-foreground",
+        )}
+      >
+        {children}
+        {badge && (
+          <span
+            aria-hidden="true"
+            className={cn(
+              "absolute top-1 right-1 size-2 rounded-full ring-2 ring-sidebar",
+              badgeTones[badgeTone],
+            )}
+          />
+        )}
+      </button>
+    </Hint>
   );
 }
 
