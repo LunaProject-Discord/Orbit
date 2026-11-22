@@ -651,7 +651,7 @@ function AccountToggle(props: {
         onClick={props.onClick}
         className={cn(
           frame,
-          "group/toggle relative rounded-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50",
+          "group/toggle relative pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5 rounded-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50",
         )}
       >
         <span className="flex transition-opacity group-hover/toggle:opacity-0 group-focus-visible/toggle:opacity-0">
@@ -683,7 +683,7 @@ function ToggleButton(props: {
       aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
       onClick={props.onClick}
       className={cn(
-        "flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+        "relative flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground pointer-coarse:size-7 pointer-coarse:after:absolute pointer-coarse:after:-inset-2 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
         props.className,
       )}
     >
@@ -787,7 +787,10 @@ function FolderItem({
               onClick={() => props.onToggle(mailbox.id)}
             />
           ) : (
-            <span className="size-5 shrink-0" aria-hidden="true" />
+            <span
+              className="size-5 shrink-0 pointer-coarse:size-7"
+              aria-hidden="true"
+            />
           )}
           <Hint label={label} side="right" whenClipped>
             <button
@@ -795,7 +798,7 @@ function FolderItem({
               onClick={() => props.onSelect(mailbox)}
               aria-current={selected ? "page" : undefined}
               className={cn(
-                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm pointer-coarse:min-h-11 pointer-coarse:text-base outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
                 selected &&
                   "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
                 item.isDragging && "bg-sidebar-accent",
@@ -863,7 +866,7 @@ function SidebarItem(props: {
       {...props.handle}
       className={cn(
         props.handle && "touch-manipulation select-none",
-        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
+        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-2.5 pointer-coarse:text-base outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
         props.selected &&
           "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
         props.className,

@@ -338,3 +338,78 @@ html[data-motion="off"] *::after {
   /* biome-ignore lint/complexity/noImportantStyles: 部品ごとの指定より優先して止める */
   scroll-behavior: auto !important;
 }
+
+/*
+ * スマホ幅では、メニュー (長押しのメニュー、ボタンから開くメニュー) を画面の下から出るシートにする。
+ * 位置の指定は部品側 (menu-sheet.ts) で打ち消し、ここでは見た目を決める。
+ */
+@keyframes menu-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes menu-sheet-out {
+  to {
+    transform: translateY(100%);
+  }
+}
+@media (max-width: 639.98px) {
+  [data-menu-sheet] {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    max-height: 80dvh;
+    padding: 0.5rem 0.5rem max(0.5rem, env(safe-area-inset-bottom));
+    border-radius: 1rem 1rem 0 0;
+    transform-origin: bottom;
+    overscroll-behavior: contain;
+    box-shadow: 0 -8px 30px rgb(0 0 0 / 0.18);
+    animation: menu-sheet-in 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  [data-menu-sheet][data-closed] {
+    animation: menu-sheet-out 0.16s ease-in forwards;
+  }
+  /* つまみ。シートであることが分かるように上端に置く。 */
+  [data-menu-sheet]::before {
+    content: "";
+    display: block;
+    width: 2.25rem;
+    height: 0.25rem;
+    margin: 0.125rem auto 0.5rem;
+    border-radius: 999px;
+    background-color: var(--border);
+  }
+  /* 入れ子のメニューを開いている間は、下になるシートを隠す。 */
+  [data-menu-sheet]:has(
+      [data-menu-sheet-sub-trigger]:is([data-popup-open], [data-open])
+    ) {
+    opacity: 0;
+    pointer-events: none;
+    animation: none;
+  }
+  [data-menu-sheet]
+    :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+    min-height: 3rem;
+    gap: 0.875rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: 0.625rem;
+    font-size: 1rem;
+  }
+  [data-menu-sheet]
+    :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"])
+    > svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+  [data-menu-sheet] [data-menu-sheet-label] {
+    padding: 0.5rem 0.875rem 0.25rem;
+    font-size: 0.8125rem;
+  }
+  [data-menu-sheet] [data-menu-sheet-separator] {
+    margin: 0.375rem 0;
+  }
+  /* キーボードのショートカットは、スマホでは使わないので出さない。 */
+  [data-menu-sheet] [data-menu-sheet-shortcut] {
+    display: none;
+  }
+}
