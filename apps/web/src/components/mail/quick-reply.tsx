@@ -2,8 +2,10 @@
 
 import { Maximize2Icon, ReplyIcon, SendIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { EmojiPickerButton } from "@/components/emoji-picker";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { insertIntoField } from "@/lib/emoji/insert";
 
 type Props = {
   /** 返信の宛先になる相手の名前。 */
@@ -90,6 +92,13 @@ export function QuickReply({ recipient, onSend, onExpand }: Props) {
           <SendIcon />
           {sending ? "送信中…" : "送信"}
         </Button>
+        <EmojiPickerButton
+          size="icon-sm"
+          disabled={sending}
+          onSelect={(emoji) =>
+            insertIntoField(inputRef.current, text, emoji, setText)
+          }
+        />
         <Button
           type="button"
           variant="ghost"

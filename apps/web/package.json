@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build && node scripts/precache-manifest.mjs",
     "icons:generate": "node scripts/generate-lucide-icons.mjs",
+    "emoji:generate": "node scripts/generate-emoji.mjs",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run"
   },
@@ -32,6 +33,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "emojibase-data": "^18.0.0",
     "happy-dom": "^21.0.4",
     "tailwindcss": "4.3.3",
     "typescript": "^5",

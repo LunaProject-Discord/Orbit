@@ -1,16 +1,17 @@
 import { cn } from "cn";
 import { ACCOUNT_COLORS, accountColorName } from "@/lib/account-colors";
 import type { Account } from "@/lib/api";
+import { EMOJI_FONT_FAMILY, isEmojiIcon } from "@/lib/emoji/emoji";
 import { LucideSvg, useIconNode } from "@/lib/lucide/icons";
 
 /**
- * アカウントに付けられるアイコンの名前。Lucide のアイコンの名前 (house、briefcase など) で、
- * 全アイコンから選べる。選んでいないアカウントには、色の点を出す。
+ * アカウントに付けられるアイコン。Lucide のアイコンの名前 (house、briefcase など) か、
+ * 絵文字そのもの (🏠 など)。選んでいないアカウントには、色の点を出す。
  */
 export type AccountIconName = string;
 
 /**
- * アカウントの印。アイコンを選んでいればアカウントの色のアイコン、
+ * アカウントの印。アイコンを選んでいればアカウントの色のアイコン、絵文字ならその絵文字、
  * 選んでいない (または無くなった名前の) ときは、アイコンと同じ幅の枠の中央に色の点を出す。
  */
 export function AccountMark({
@@ -24,7 +25,23 @@ export function AccountMark({
 }) {
   const name = accountColorName(accounts, account.id);
   const color = ACCOUNT_COLORS.find((item) => item.name === name);
-  const node = useIconNode(account.icon);
+  const emoji =
+    account.icon !== null && isEmojiIcon(account.icon) ? account.icon : null;
+  const node = useIconNode(emoji ? null : account.icon);
+  if (emoji) {
+    return (
+      <span
+        aria-hidden="true"
+        style={{ fontFamily: EMOJI_FONT_FAMILY }}
+        className={cn(
+          "flex size-4 shrink-0 items-center justify-center overflow-hidden text-sm leading-none",
+          className,
+        )}
+      >
+        {emoji}
+      </span>
+    );
+  }
   if (node) {
     return (
       <LucideSvg
