@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   appFontFamily,
+  bodyExtraCss,
+  bodyFontFamily,
   bodyStyle,
   cleanFontName,
   DEFAULT_PREFERENCES,
@@ -149,6 +151,35 @@ describe("appFontFamily", () => {
   it("名前が空なら標準のフォントにする", () => {
     expect(appFontFamily({ font: "custom", customFont: "" })).toEqual(
       appFontFamily(DEFAULT_PREFERENCES),
+    );
+  });
+});
+
+describe("bodyExtraCss", () => {
+  it("等幅のフォントを設定していなければ、何も足さない", () => {
+    expect(bodyExtraCss({})).toBe("");
+    expect(bodyExtraCss({ monoFont: '";' })).toBe("");
+  });
+
+  it("等幅のフォントを、フォントの指定が無い等幅の部分に使う", () => {
+    const css = bodyExtraCss({ monoFont: "Cascadia Mono" });
+    expect(css.startsWith("pre,code,")).toBe(true);
+    expect(css).toContain('{font-family:"Cascadia Mono", ');
+    expect(css.endsWith("monospace}")).toBe(true);
+  });
+});
+
+describe("bodyFontFamily", () => {
+  it("一覧から選んだフォントを先頭にし、無いときのためにゴシック体を続ける", () => {
+    expect(
+      bodyFontFamily({
+        bodyFont: "custom",
+        bodyCustomFont: "BIZ UDPGothic",
+        sansFont: "Meiryo",
+      }),
+    ).toBe('"BIZ UDPGothic", "Meiryo", system-ui, sans-serif');
+    expect(bodyFontFamily({ bodyFont: "custom", bodyCustomFont: "" })).toBe(
+      "system-ui, sans-serif",
     );
   });
 });

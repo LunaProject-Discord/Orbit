@@ -82,6 +82,8 @@ import { addressLabel, formatFullDate, formatListDate } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
 import {
+  bodyExtraCss,
+  bodyFontFamily,
   bodyStyle,
   updatePreferences,
   usePreferences,
@@ -138,6 +140,8 @@ export function buildSrcDoc(
   allowRemoteImages = false,
   /** 本文のフォント、大きさ、行間 (設定で変えられる)。メール側の指定があれば、そちらが使われる。 */
   style = "font-family:system-ui,sans-serif;font-size:14px;line-height:1.6",
+  /** 追加のスタイルの規則 (等幅の部分のフォントなど)。メール側のスタイルより前に置く。 */
+  extraCss = "",
 ): string {
   const imgSrc = allowRemoteImages ? "data: https:" : "data:";
   return [
@@ -150,7 +154,7 @@ export function buildSrcDoc(
     // 縦のスクロールは外側 (メール表示) で行うので、枠の中には縦のバーを出さない。
     // 高さは BodyFrame が中身に合わせる。
     // html と body の高さの指定 (100% など) は外す。残すと、枠を伸ばすたびに中身も伸びて高さが定まらない。
-    `<style>html{background:#fff;color:#111;overflow-y:hidden}html,body{height:auto!important}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>`,
+    `<style>html{background:#fff;color:#111;overflow-y:hidden}html,body{height:auto!important}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}${extraCss}</style>`,
     BODY_SCROLLBAR_STYLE,
     "</head><body>",
     html,
@@ -1363,6 +1367,7 @@ function MessageContent({
   const showImages =
     preferences.remoteImages === "always" || imagesShownFor === message.id;
   const frameStyle = bodyStyle(preferences);
+  const frameCss = bodyExtraCss(preferences);
   const { embedded, listed } = useMemo(
     () => splitAttachments(message.bodyHtml, message.attachments),
     [message.bodyHtml, message.attachments],
@@ -1375,9 +1380,10 @@ function MessageContent({
             replaceCidReferences(message.bodyHtml, embeddedUrls),
             showImages,
             frameStyle,
+            frameCss,
           )
         : null,
-    [message.bodyHtml, embeddedUrls, showImages, frameStyle],
+    [message.bodyHtml, embeddedUrls, showImages, frameStyle, frameCss],
   );
   const imagesBlocked =
     !showImages &&
@@ -1638,6 +1644,7 @@ function MessageContent({
           <p
             className="whitespace-pre-wrap break-words"
             style={{
+              fontFamily: bodyFontFamily(preferences),
               fontSize: preferences.bodyFontSize,
               lineHeight: preferences.bodyLineHeight,
             }}

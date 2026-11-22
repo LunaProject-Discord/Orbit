@@ -40,8 +40,13 @@ export type Preferences = {
   markRead: "immediately" | "delay" | "never";
   /** markRead が delay のときに待つ秒数。 */
   markReadDelay: number;
-  /** メール本文のフォント。 */
-  bodyFont: "sans" | "serif" | "mono";
+  /**
+   * フォントの指定が無いメール本文に使うフォント (ブラウザーの「標準フォント」に当たる)。
+   * custom は bodyCustomFont の名前を使う。
+   */
+  bodyFont: "sans" | "serif" | "mono" | "custom";
+  /** bodyFont が custom のときに使う、端末に入っているフォントの名前。 */
+  bodyCustomFont: string;
   /** メール本文の文字の大きさ (px)。メール側で指定があれば、そちらが使われる。 */
   bodyFontSize: number;
   /** メール本文の行間。 */
@@ -88,6 +93,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   markRead: "immediately",
   markReadDelay: 3,
   bodyFont: "sans",
+  bodyCustomFont: "",
   bodyFontSize: 14,
   bodyLineHeight: 1.6,
   remoteImages: "ask",
@@ -117,7 +123,7 @@ const choices: {
   listDate: ["auto", "datetime"],
   markRead: ["immediately", "delay", "never"],
   markReadDelay: MARK_READ_DELAYS,
-  bodyFont: ["sans", "serif", "mono"],
+  bodyFont: ["sans", "serif", "mono", "custom"],
   bodyFontSize: BODY_FONT_SIZES,
   bodyLineHeight: BODY_LINE_HEIGHTS,
   remoteImages: ["ask", "always"],
@@ -151,6 +157,7 @@ export function parsePreferences(raw: string | null): Preferences {
 /** フォントの名前を入れる項目。読むときに cleanFontName を通す。 */
 const FONT_NAME_KEYS: ReadonlySet<keyof Preferences> = new Set([
   "customFont",
+  "bodyCustomFont",
   "sansFont",
   "serifFont",
   "monoFont",
@@ -234,20 +241,40 @@ export function appFontFamily(
   }
 }
 
+type BodyFontPreferences = Pick<Preferences, "bodyFont"> &
+  Partial<GenericFontNames & Pick<Preferences, "bodyCustomFont">>;
+
+/** フォントの指定が無いメール本文に使う font-family。 */
+export function bodyFontFamily(preferences: BodyFontPreferences): string {
+  // 本文のゴシック体は、指定が無ければ今までどおり端末の画面のフォントにする。
+  const sans = withFont(preferences.sansFont ?? "", SYSTEM);
+  switch (preferences.bodyFont) {
+    case "serif":
+    case "mono":
+      return genericFontFamily(preferences.bodyFont, preferences);
+    case "custom":
+      return withFont(preferences.bodyCustomFont ?? "", sans);
+    default:
+      return sans;
+  }
+}
+
 /** メール本文 (iframe の中) に付けるスタイル。 */
 export function bodyStyle(
-  preferences: Pick<
-    Preferences,
-    "bodyFont" | "bodyFontSize" | "bodyLineHeight"
-  > &
-    Partial<GenericFontNames>,
+  preferences: BodyFontPreferences &
+    Pick<Preferences, "bodyFontSize" | "bodyLineHeight">,
 ): string {
-  const family =
-    preferences.bodyFont === "sans"
-      ? // 本文のゴシック体は、指定が無ければ今までどおり端末の画面のフォントにする。
-        withFont(preferences.sansFont ?? "", SYSTEM)
-      : genericFontFamily(preferences.bodyFont, preferences);
-  return `font-family:${family};font-size:${preferences.bodyFontSize}px;line-height:${preferences.bodyLineHeight}`;
+  return `font-family:${bodyFontFamily(preferences)};font-size:${preferences.bodyFontSize}px;line-height:${preferences.bodyLineHeight}`;
+}
+
+/**
+ * メール本文 (iframe の中) に足すスタイルの規則。
+ * 等幅のフォントを設定していれば、フォントの指定が無い等幅の部分 (pre、code など) に使う。
+ * メール側のスタイルより前に置くので、メール側の指定があれば、そちらが使われる。
+ */
+export function bodyExtraCss(preferences: Partial<GenericFontNames>): string {
+  if (!cleanFontName(preferences.monoFont ?? "")) return "";
+  return `pre,code,kbd,samp,tt,listing,plaintext,xmp{font-family:${genericFontFamily("mono", preferences)}}`;
 }
 
 let current: Preferences | null = null;

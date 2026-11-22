@@ -293,7 +293,7 @@ export function SettingsView({
                 <>
                   <FontPickerRow
                     label="ゴシック体のフォント"
-                    description="既定のフォントやメール本文で「ゴシック体」を選んだときに使います。"
+                    description="既定のフォントやメール本文の標準フォントで「ゴシック体」を選んだときに使います。"
                     emptyLabel="自動"
                     value={preferences.sansFont}
                     onChange={(sansFont) => set({ sansFont })}
@@ -307,7 +307,7 @@ export function SettingsView({
                   />
                   <FontPickerRow
                     label="等幅のフォント"
-                    description="「等幅」を選んだときと、エラーの詳細などの等幅の表示に使います。"
+                    description="「等幅」を選んだときと、メール本文のコードなどの等幅の部分に使います。"
                     emptyLabel="自動"
                     monospaceFirst
                     value={preferences.monoFont}
@@ -425,16 +425,33 @@ export function SettingsView({
                 />
               )}
               <SelectRow
-                label="本文のフォント"
-                description="メール側でフォントや大きさを指定している場合は、そちらが使われます。"
+                label="本文の標準フォント"
+                description={
+                  fontList === "none"
+                    ? "フォントの指定が無いメールに使います。メール側でフォントや大きさを指定している場合は、そちらが使われます。"
+                    : "フォントの指定が無いメールに使います。ゴシック体・明朝体・等幅に使うフォントは、上の「表示」で選べます。メール側でフォントや大きさを指定している場合は、そちらが使われます。"
+                }
                 value={preferences.bodyFont}
                 onChange={(bodyFont) => set({ bodyFont })}
                 options={[
                   ["sans", "ゴシック体 (標準)"],
                   ["serif", "明朝体"],
                   ["mono", "等幅"],
+                  // 一覧を取れない環境でも、ほかの端末と同じ形の設定を読めるよう、選んであれば出す。
+                  ...(fontList !== "none" || preferences.bodyFont === "custom"
+                    ? ([["custom", "フォント一覧から選ぶ"]] as const)
+                    : []),
                 ]}
               />
+              {preferences.bodyFont === "custom" && fontList !== "none" && (
+                <FontPickerRow
+                  label="本文に使うフォント"
+                  description="この端末に入っているフォントから選びます。選ばなければゴシック体になります。"
+                  emptyLabel="選んでいません"
+                  value={preferences.bodyCustomFont}
+                  onChange={(bodyCustomFont) => set({ bodyCustomFont })}
+                />
+              )}
               <SelectRow
                 label="本文の文字の大きさ"
                 value={preferences.bodyFontSize}
