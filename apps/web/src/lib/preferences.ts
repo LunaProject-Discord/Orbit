@@ -5,10 +5,21 @@ import { useSyncExternalStore } from "react";
  * 画面の大きさや好みは端末によって違うので、サーバーには保存しない。
  */
 export type Preferences = {
-  /** 画面のフォント。custom は customFont の名前を使う。 */
-  font: "default" | "system" | "serif" | "mono" | "custom";
+  /**
+   * 画面の既定のフォント。default は Gen Interface JP、system は端末の画面のフォント、
+   * sans / serif / mono はゴシック体・明朝体・等幅、custom は customFont の名前を使う。
+   */
+  font: "default" | "system" | "sans" | "serif" | "mono" | "custom";
   /** font が custom のときに使う、端末に入っているフォントの名前。 */
   customFont: string;
+  /**
+   * ゴシック体・明朝体・等幅として使う、端末に入っているフォントの名前。
+   * 空なら、ブラウザーが選ぶフォント (CSS の sans-serif / serif / monospace) に任せる。
+   * 画面の既定のフォントとメール本文のフォントの両方に効く。
+   */
+  sansFont: string;
+  serifFont: string;
+  monoFont: string;
   /** 画面全体の文字の大きさ (標準に対する %)。 */
   fontSize: number;
   /** メール一覧の行の間隔。 */
@@ -63,6 +74,9 @@ export type Preferences = {
 export const DEFAULT_PREFERENCES: Preferences = {
   font: "default",
   customFont: "",
+  sansFont: "",
+  serifFont: "",
+  monoFont: "",
   fontSize: 100,
   density: "standard",
   previewLines: 2,
@@ -95,7 +109,7 @@ const KEY = "mail.preferences.v1";
 const choices: {
   [K in keyof Preferences]?: readonly Preferences[K][];
 } = {
-  font: ["default", "system", "serif", "mono", "custom"],
+  font: ["default", "system", "sans", "serif", "mono", "custom"],
   fontSize: FONT_SIZES,
   density: ["compact", "standard", "comfortable"],
   previewLines: [0, 1, 2, 3],
@@ -127,15 +141,29 @@ export function parsePreferences(raw: string | null): Preferences {
     if (typeof value !== typeof DEFAULT_PREFERENCES[key]) continue;
     const allowed = choices[key] as readonly unknown[] | undefined;
     if (allowed && !allowed.includes(value)) continue;
-    result[key] = key === "customFont" ? cleanFontName(String(value)) : value;
+    result[key] = FONT_NAME_KEYS.has(key)
+      ? cleanFontName(String(value))
+      : value;
   }
   return result as Preferences;
 }
 
-/** フォント名から、CSS の値を壊す文字を取り除く。 */
+/** フォントの名前を入れる項目。読むときに cleanFontName を通す。 */
+const FONT_NAME_KEYS: ReadonlySet<keyof Preferences> = new Set([
+  "customFont",
+  "sansFont",
+  "serifFont",
+  "monoFont",
+]);
+
+/**
+ * フォント名から、CSS の値を壊す文字を取り除く。
+ * 引用符の中に入れて使うので、引用符・バックスラッシュ・タグの記号などは通さない。
+ * 「M+ 1p」「Source Han Sans (JP)」のような名前は使えるよう、+ と () は残す。
+ */
 export function cleanFontName(name: string): string {
   return name
-    .replace(/[^\p{L}\p{N} _.-]/gu, "")
+    .replace(/[^\p{L}\p{N} _.+()-]/gu, "")
     .trim()
     .slice(0, 100);
 }
@@ -143,30 +171,66 @@ export function cleanFontName(name: string): string {
 const SANS = '"Gen Interface JP", ui-sans-serif, system-ui, sans-serif';
 const HEADING = `"Gen Interface JP Display", ${SANS}`;
 const SYSTEM = "system-ui, sans-serif";
+// 種類ごとのフォントを指定していないときは、OS ごとの代表的な日本語フォントを並べ、
+// どれも無ければブラウザーが選ぶフォント (総称ファミリー) に任せる。
+const GOTHIC =
+  '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "YuGothic", "Noto Sans JP", "Noto Sans CJK JP", Meiryo, sans-serif';
 const SERIF =
   '"Noto Serif JP", "Yu Mincho", "YuMincho", "Hiragino Mincho ProN", serif';
 const MONO =
   'ui-monospace, "SFMono-Regular", Consolas, "Noto Sans Mono CJK JP", monospace';
 
-/** 画面のフォント (本文用と見出し用) の font-family。 */
+type GenericFont = "sans" | "serif" | "mono";
+type GenericFontNames = Pick<
+  Preferences,
+  "sansFont" | "serifFont" | "monoFont"
+>;
+
+/** 名前を指定したフォントを先頭に置く。名前が空なら、続きだけを返す。 */
+function withFont(name: string, fallback: string): string {
+  const cleaned = cleanFontName(name);
+  return cleaned ? `"${cleaned}", ${fallback}` : fallback;
+}
+
+/**
+ * ゴシック体・明朝体・等幅の font-family。種類ごとのフォントを設定していれば先頭に置く
+ * (その端末に無いフォントでも、続きのフォントで表示できる)。
+ */
+export function genericFontFamily(
+  kind: GenericFont,
+  preferences: Partial<GenericFontNames> = {},
+): string {
+  switch (kind) {
+    case "serif":
+      return withFont(preferences.serifFont ?? "", SERIF);
+    case "mono":
+      return withFont(preferences.monoFont ?? "", MONO);
+    default:
+      return withFont(preferences.sansFont ?? "", GOTHIC);
+  }
+}
+
+/** 画面のフォント (本文用・見出し用・等幅) の font-family。 */
 export function appFontFamily(
-  preferences: Pick<Preferences, "font" | "customFont">,
-): { sans: string; heading: string } {
+  preferences: Pick<Preferences, "font" | "customFont"> &
+    Partial<GenericFontNames>,
+): { sans: string; heading: string; mono: string } {
+  const mono = genericFontFamily("mono", preferences);
+  const same = (family: string) => ({ sans: family, heading: family, mono });
   switch (preferences.font) {
     case "system":
-      return { sans: SYSTEM, heading: SYSTEM };
+      return same(SYSTEM);
+    case "sans":
     case "serif":
-      return { sans: SERIF, heading: SERIF };
     case "mono":
-      return { sans: MONO, heading: MONO };
+      return same(genericFontFamily(preferences.font, preferences));
     case "custom": {
       const name = cleanFontName(preferences.customFont);
-      if (!name) return { sans: SANS, heading: HEADING };
-      const family = `"${name}", ${SANS}`;
-      return { sans: family, heading: family };
+      if (!name) return { sans: SANS, heading: HEADING, mono };
+      return same(`"${name}", ${SANS}`);
     }
     default:
-      return { sans: SANS, heading: HEADING };
+      return { sans: SANS, heading: HEADING, mono };
   }
 }
 
@@ -175,14 +239,14 @@ export function bodyStyle(
   preferences: Pick<
     Preferences,
     "bodyFont" | "bodyFontSize" | "bodyLineHeight"
-  >,
+  > &
+    Partial<GenericFontNames>,
 ): string {
   const family =
-    preferences.bodyFont === "serif"
-      ? SERIF
-      : preferences.bodyFont === "mono"
-        ? MONO
-        : SYSTEM;
+    preferences.bodyFont === "sans"
+      ? // 本文のゴシック体は、指定が無ければ今までどおり端末の画面のフォントにする。
+        withFont(preferences.sansFont ?? "", SYSTEM)
+      : genericFontFamily(preferences.bodyFont, preferences);
   return `font-family:${family};font-size:${preferences.bodyFontSize}px;line-height:${preferences.bodyLineHeight}`;
 }
 

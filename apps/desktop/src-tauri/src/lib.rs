@@ -3,6 +3,7 @@
 //! (ウィンドウ枠、トレイ、未読数のバッジ、新着メールの通知、外部リンク、自動更新)。
 
 mod badge;
+mod fonts;
 mod settings;
 mod tray;
 mod updater;
@@ -181,7 +182,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![notify_new_mail, set_unread_count])
+        .invoke_handler(tauri::generate_handler![
+            notify_new_mail,
+            set_unread_count,
+            fonts::list_fonts
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             app.manage(AppState {

@@ -4,6 +4,7 @@ import {
   bodyStyle,
   cleanFontName,
   DEFAULT_PREFERENCES,
+  genericFontFamily,
   parsePreferences,
 } from "./preferences";
 
@@ -68,7 +69,66 @@ describe("cleanFontName", () => {
   });
 });
 
+describe("cleanFontName の記号", () => {
+  it("+ と () は残し、CSS を壊す記号は取り除く", () => {
+    expect(cleanFontName("M+ 1p")).toBe("M+ 1p");
+    expect(cleanFontName("Source Han Sans (JP)")).toBe("Source Han Sans (JP)");
+    expect(cleanFontName('a"b\\c<d>e;f')).toBe("abcdef");
+  });
+});
+
+describe("genericFontFamily", () => {
+  it("指定が無ければ、最後は総称ファミリーに任せる", () => {
+    expect(genericFontFamily("sans").endsWith(", sans-serif")).toBe(true);
+    expect(genericFontFamily("serif").endsWith(", serif")).toBe(true);
+    expect(genericFontFamily("mono").endsWith(", monospace")).toBe(true);
+  });
+
+  it("種類ごとのフォントを先頭に置き、無いときのための続きを残す", () => {
+    expect(genericFontFamily("serif", { serifFont: "BIZ UDMincho" })).toBe(
+      `"BIZ UDMincho", ${genericFontFamily("serif")}`,
+    );
+    expect(
+      genericFontFamily("mono", { monoFont: "Cascadia Mono" }).startsWith(
+        '"Cascadia Mono", ',
+      ),
+    ).toBe(true);
+    // ほかの種類のフォントは混ざらない。
+    expect(genericFontFamily("sans", { serifFont: "BIZ UDMincho" })).toBe(
+      genericFontFamily("sans"),
+    );
+  });
+});
+
 describe("appFontFamily", () => {
+  it("ゴシック体・明朝体・等幅は、種類ごとのフォントを使う", () => {
+    const names = {
+      customFont: "",
+      sansFont: "BIZ UDPGothic",
+      serifFont: "BIZ UDPMincho",
+      monoFont: "Cascadia Mono",
+    };
+    expect(appFontFamily({ font: "sans", ...names }).sans).toBe(
+      genericFontFamily("sans", names),
+    );
+    expect(appFontFamily({ font: "serif", ...names }).heading).toBe(
+      genericFontFamily("serif", names),
+    );
+    expect(appFontFamily({ font: "mono", ...names }).sans).toBe(
+      genericFontFamily("mono", names),
+    );
+    // 既定のフォントが何でも、等幅の表示には等幅のフォントを使う。
+    expect(appFontFamily({ font: "default", ...names }).mono).toBe(
+      genericFontFamily("mono", names),
+    );
+  });
+
+  it("システム標準は端末の画面のフォントにする", () => {
+    expect(appFontFamily({ font: "system", customFont: "" }).sans).toBe(
+      "system-ui, sans-serif",
+    );
+  });
+
   it("標準では見出しに Display を使う", () => {
     const family = appFontFamily(DEFAULT_PREFERENCES);
     expect(family.sans).toContain('"Gen Interface JP"');
@@ -98,5 +158,16 @@ describe("bodyStyle", () => {
     expect(
       bodyStyle({ bodyFont: "sans", bodyFontSize: 16, bodyLineHeight: 1.8 }),
     ).toBe("font-family:system-ui, sans-serif;font-size:16px;line-height:1.8");
+  });
+
+  it("種類ごとのフォントを設定していれば、本文にも使う", () => {
+    const names = { sansFont: "BIZ UDPGothic", serifFont: "BIZ UDPMincho" };
+    const base = { bodyFontSize: 14, bodyLineHeight: 1.6 };
+    expect(bodyStyle({ bodyFont: "sans", ...base, ...names })).toContain(
+      'font-family:"BIZ UDPGothic", system-ui, sans-serif;',
+    );
+    expect(bodyStyle({ bodyFont: "serif", ...base, ...names })).toContain(
+      'font-family:"BIZ UDPMincho", ',
+    );
   });
 });

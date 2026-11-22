@@ -18,6 +18,7 @@ import {
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
+import { FontPicker } from "@/components/mail/font-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
@@ -48,6 +49,7 @@ import {
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
 import { isDesktopApp } from "@/lib/desktop/app";
+import { preloadLocalFonts, useFontListSupport } from "@/lib/local-fonts";
 import { isNativeApp } from "@/lib/native/app";
 import {
   changeNotificationActions,
@@ -175,6 +177,11 @@ export function SettingsView({
   const { theme, setTheme } = useTheme();
   const preferences = usePreferences();
   const set = updatePreferences;
+  // フォントの一覧を取れる環境か。尋ねずに取れるときは、選んでいるフォントの名前を出すために先に取る。
+  const fontList = useFontListSupport();
+  useEffect(() => {
+    void preloadLocalFonts();
+  }, []);
   const swipe = useSwipeSettings();
   const [swipeError, setSwipeError] = useState(false);
   const notificationActions = useNotificationActions();
@@ -251,23 +258,62 @@ export function SettingsView({
             </div>
             <SettingGroup>
               <SelectRow
-                label="フォント"
-                description="標準は Gen Interface JP です。"
+                label="既定のフォント"
+                description="画面全体に使うフォントです。デフォルトは Gen Interface JP です。"
                 value={preferences.font}
                 onChange={(font) => set({ font })}
                 options={[
-                  ["default", "標準 (Gen Interface JP)"],
-                  ["system", "端末のフォント"],
+                  ["default", "デフォルト (Gen Interface JP)"],
+                  ["system", "システム標準"],
+                  ["sans", "ゴシック体"],
                   ["serif", "明朝体"],
                   ["mono", "等幅"],
-                  ["custom", "名前を指定"],
+                  [
+                    "custom",
+                    fontList === "none" ? "名前を指定" : "フォント一覧から選ぶ",
+                  ],
                 ]}
               />
-              {preferences.font === "custom" && (
-                <CustomFontRow
-                  value={preferences.customFont}
-                  onChange={(customFont) => set({ customFont })}
-                />
+              {preferences.font === "custom" &&
+                (fontList === "none" ? (
+                  <CustomFontRow
+                    value={preferences.customFont}
+                    onChange={(customFont) => set({ customFont })}
+                  />
+                ) : (
+                  <FontPickerRow
+                    label="使うフォント"
+                    description="この端末に入っているフォントから選びます。選ばなければデフォルトのフォントになります。"
+                    emptyLabel="選んでいません"
+                    value={preferences.customFont}
+                    onChange={(customFont) => set({ customFont })}
+                  />
+                ))}
+              {fontList !== "none" && (
+                <>
+                  <FontPickerRow
+                    label="ゴシック体のフォント"
+                    description="既定のフォントやメール本文で「ゴシック体」を選んだときに使います。"
+                    emptyLabel="自動"
+                    value={preferences.sansFont}
+                    onChange={(sansFont) => set({ sansFont })}
+                  />
+                  <FontPickerRow
+                    label="明朝体のフォント"
+                    description="「明朝体」を選んだときに使います。"
+                    emptyLabel="自動"
+                    value={preferences.serifFont}
+                    onChange={(serifFont) => set({ serifFont })}
+                  />
+                  <FontPickerRow
+                    label="等幅のフォント"
+                    description="「等幅」を選んだときと、エラーの詳細などの等幅の表示に使います。"
+                    emptyLabel="自動"
+                    monospaceFirst
+                    value={preferences.monoFont}
+                    onChange={(monoFont) => set({ monoFont })}
+                  />
+                </>
               )}
               <SelectRow
                 label="文字の大きさ"
@@ -981,6 +1027,33 @@ function SwitchRow(props: {
         checked={props.checked}
         disabled={props.disabled}
         onCheckedChange={(checked) => props.onChange(checked)}
+      />
+    </SettingRow>
+  );
+}
+
+/** この端末に入っているフォントの一覧から選ぶ行。 */
+function FontPickerRow(props: {
+  label: string;
+  description: string;
+  emptyLabel: string;
+  monospaceFirst?: boolean;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = useId();
+  return (
+    <SettingRow
+      label={props.label}
+      labelId={id}
+      description={props.description}
+    >
+      <FontPicker
+        labelledBy={id}
+        value={props.value}
+        onChange={props.onChange}
+        emptyLabel={props.emptyLabel}
+        monospaceFirst={props.monospaceFirst ?? false}
       />
     </SettingRow>
   );
