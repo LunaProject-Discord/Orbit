@@ -176,6 +176,13 @@
       "when": 1795354783200,
       "tag": "0024_notification_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795367874086,
+      "tag": "0025_account_security",
+      "breakpoints": true
     }
   ]
 }

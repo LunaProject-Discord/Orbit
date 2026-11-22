@@ -217,6 +217,42 @@ https://mail.example.com/oauth/google
 
 開発環境で追加したメールアカウントは、本番には引き継がれません (DB が別のため)。本番の画面で追加し直してください。
 
+### 利用者へ送るメール (パスワードの再設定など)
+
+パスワードの再設定とメールアドレスの変更では、Orbit 自身が利用者へメールを送ります。送信用の SMTP サーバーを
+`deploy/.env` に書いてください。未設定でも Orbit は動きますが、この 2 つは使えません (画面にも出ません)。
+パスワードの変更、2 段階認証、パスキーは、設定しなくても使えます。
+
+```sh
+SYSTEM_MAIL_HOST=smtp.example.com
+SYSTEM_MAIL_PORT=587
+SYSTEM_MAIL_USER=no-reply@example.com
+SYSTEM_MAIL_PASSWORD=...
+SYSTEM_MAIL_FROM="Orbit <no-reply@example.com>"
+```
+
+- 送信に使えるのは、SMTP でログインして送れるメールサービスです (独自ドメインのメールサーバー、Gmail のアプリ パスワード、
+  送信専用のサービスなど)。差出人 (`SYSTEM_MAIL_FROM`) は、そのサービスで送ってよいアドレスにします。
+- ポートは 587 (STARTTLS) か 465 (最初から TLS) を使います。Oracle Cloud は、25 番への送信を標準で止めています。
+- 暗号化なしの接続では送りません (587 番では STARTTLS が必須です)。
+- 反映は `docker compose up -d` です。API のログ (`docker compose logs api`) に
+  「SYSTEM_MAIL_HOST が未設定のため…」が出なければ、設定を読めています。
+  実際に送れるかは、ログイン画面の「パスワードを忘れた場合」で確かめてください。送れなかったときは、API のログに
+  「メールを送れませんでした」と理由が出ます (画面には、登録の有無を漏らさないよう、どちらの場合も同じ文を出します)。
+
+**パスキー**は、公開しているドメイン (`DOMAIN`) に結び付きます。追加の設定は要りませんが、ドメインを変えると
+登録済みのパスキーは使えなくなります。ブラウザーの Web 版でだけ使えます (Android アプリとデスクトップ版では使えません。
+理由は README の「ログインとセキュリティ」)。
+
+**ログインできなくなったとき**は、サーバー上でパスワードを付け直せます (新しいパスワードを尋ねられます)。
+認証アプリもバックアップコードも失ったときは、`--reset-two-factor` を付けて 2 段階認証も解除します。
+
+```sh
+cd /opt/mail/deploy
+docker compose run --rm api node apps/api/dist/cli/set-password.js you@example.com
+docker compose run --rm api node apps/api/dist/cli/set-password.js you@example.com --reset-two-factor
+```
+
 ## 8. 更新する
 
 サーバーで次を実行すると、main の最新に更新して起動し直します。マイグレーションも自動で適用されます。
@@ -315,6 +351,12 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump .
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | | 新着メールの通知 (Web Push) の鍵の組 (自動生成)。変えると端末で通知を許可し直す必要がある |
 | `VAPID_SUBJECT` | | プッシュサービスが運営者へ連絡するための宛先。既定は `https://<DOMAIN>` |
 | `FCM_SERVICE_ACCOUNT` | | Android アプリへの新着メールの通知 (FCM) に使う、Firebase のサービスアカウントの鍵 (JSON を base64 にした値)。空なら送らない。手順は [android-app.md](android-app.md) |
+| `SYSTEM_MAIL_HOST` | | 利用者へ送るメール (パスワードの再設定、メールアドレスの変更の確認) の送信用 SMTP サーバー。空なら、この 2 つは使えない |
+| `SYSTEM_MAIL_PORT` | | 既定は 587 (STARTTLS)。465 なら最初から TLS |
+| `SYSTEM_MAIL_USER` / `SYSTEM_MAIL_PASSWORD` | | SMTP サーバーにログインする名前とパスワード |
+| `SYSTEM_MAIL_FROM` | | 差出人 (`Orbit <no-reply@example.com>` の形でもよい)。`SYSTEM_MAIL_HOST` を書いたら必須 |
+| `SYSTEM_MAIL_SECURE` | | `true` なら、ポートに関係なく最初から TLS で繋ぐ。ふつうは不要 |
+| `PASSKEY_RP_ID` | | パスキーを結び付けるドメイン。既定は `DOMAIN`。変えると登録済みのパスキーは使えなくなる |
 | `EXTRA_ALLOWED_ORIGINS` | | Web 以外から API を使うときに許可するオリジン (カンマ区切り)。スマホアプリとデスクトップ版のオリジンは最初から許可しているので、足す必要はない |
 | `BACKUP_HOUR` | | バックアップを取る時刻 (0〜23)。既定は 4 |
 | `BACKUP_KEEP_DAYS` | | バックアップを残す日数。既定は 14 |

@@ -5,6 +5,12 @@
  */
 
 import type { AccountIconName } from "@/lib/account-icons";
+import {
+  AUTH_STATE_HEADER,
+  absorbAuthState,
+  authStateHeader,
+  clearAuthState,
+} from "@/lib/auth-state";
 import { usesAppOAuth } from "@/lib/native/oauth";
 import { reportReachable } from "@/lib/offline/network";
 import { apiUrl } from "@/lib/server-url";
@@ -31,6 +37,7 @@ function setToken(token: string | null) {
 /** この端末のログイン情報を消す (接続先サーバーを替えたときなど)。サーバーには知らせない。 */
 export function forgetSession() {
   setToken(null);
+  clearAuthState();
 }
 
 type UnauthorizedListener = () => void;
@@ -83,6 +90,12 @@ export async function apiFetch(
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
+  // ログインまわりの呼び出しでは、手順の途中でサーバーから預かった値を返す (lib/auth-state.ts)。
+  const isAuthCall = path.startsWith("/v1/auth/");
+  if (isAuthCall) {
+    const state = authStateHeader();
+    if (state) headers[AUTH_STATE_HEADER] = state;
+  }
 
   let response: Response;
   try {
@@ -101,6 +114,7 @@ export async function apiFetch(
     throw new NetworkError();
   }
   reportReachable(true);
+  if (isAuthCall) absorbAuthState(response.headers.get(AUTH_STATE_HEADER));
 
   if (response.status === 401 && handle401) {
     handleUnauthorized();
@@ -475,18 +489,58 @@ export type MessagePage = {
 // 認証
 // ---------------------------------------------------------------------------
 
-export async function signIn(email: string, password: string): Promise<void> {
+/** ログインの結果。two-factor は、続けて 2 段階認証のコードが要る。 */
+export type SignInResult = "signed-in" | "two-factor";
+
+/** 応答のヘッダーで返る署名付きの値を、Bearer トークンとして保存する。 */
+function adoptToken(response: Response): boolean {
+  const token = response.headers.get("set-auth-token");
+  if (!token) return false;
+  setToken(token);
+  return true;
+}
+
+export async function signIn(
+  email: string,
+  password: string,
+): Promise<SignInResult> {
   const response = await apiFetch("/v1/auth/sign-in/email", {
     method: "POST",
     body: { email, password },
     handle401: false,
   });
+  const data = (await response.json().catch(() => null)) as {
+    twoFactorRedirect?: boolean;
+  } | null;
+  // 2 段階認証が有効なら、ここではまだログインにならない
+  // (このとき返るトークンは、サーバーがすぐに無効にしたセッションのものなので使わない)。
+  if (data?.twoFactorRedirect) return "two-factor";
   // JSON の token ではなく、ヘッダーで返る署名付きの値を Bearer トークンとして使う。
-  const token = response.headers.get("set-auth-token");
-  if (!token) {
+  if (!adoptToken(response)) {
     throw new ApiError(response.status, "token_missing", null);
   }
-  setToken(token);
+  return "signed-in";
+}
+
+/**
+ * 2 段階認証のコードを確かめてログインを終える。
+ * kind は、認証アプリの 6 桁のコード (totp) か、バックアップコード (backup)。
+ * trustDevice を付けると、この端末では 30 日間コードを尋ねない。
+ */
+export async function verifyTwoFactorSignIn(
+  kind: "totp" | "backup",
+  code: string,
+  trustDevice: boolean,
+): Promise<void> {
+  const response = await apiFetch(
+    kind === "totp"
+      ? "/v1/auth/two-factor/verify-totp"
+      : "/v1/auth/two-factor/verify-backup-code",
+    { method: "POST", body: { code, trustDevice }, handle401: false },
+  );
+  if (!adoptToken(response)) {
+    throw new ApiError(response.status, "token_missing", null);
+  }
 }
 
 export async function signOut(): Promise<void> {
@@ -506,6 +560,196 @@ export async function signOut(): Promise<void> {
 export async function fetchMe(signal?: AbortSignal): Promise<User> {
   const { user } = await apiJson<{ user: User }>("/v1/me", { signal });
   return user;
+}
+
+// ---------------------------------------------------------------------------
+// ログインまわりの設定 (パスワード、メールアドレス、2 段階認証、パスキー)
+// ---------------------------------------------------------------------------
+
+/** サーバーが、利用者へメールを送れるか (パスワードの再設定とメールアドレスの変更が使えるか)。 */
+export async function fetchAuthFeatures(
+  signal?: AbortSignal,
+): Promise<{ mail: boolean }> {
+  return apiJson<{ mail: boolean }>("/v1/auth-features", {
+    signal,
+    handle401: false,
+  });
+}
+
+export type SecurityStatus = {
+  email: string;
+  twoFactorEnabled: boolean;
+  passkeyCount: number;
+  /** サーバーが利用者へメールを送れるか。 */
+  mail: boolean;
+};
+
+export async function fetchSecurity(
+  signal?: AbortSignal,
+): Promise<SecurityStatus> {
+  return apiJson<SecurityStatus>("/v1/security", { signal });
+}
+
+/** 再設定のリンクをメールで送ってもらう。登録の無いアドレスでも、同じ応答が返る。 */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await apiFetch("/v1/auth/request-password-reset", {
+    method: "POST",
+    body: { email },
+    handle401: false,
+  });
+}
+
+/** メールのリンクに付いていた合言葉で、新しいパスワードを設定する。 */
+export async function resetPassword(
+  token: string,
+  newPassword: string,
+): Promise<void> {
+  await apiFetch("/v1/auth/reset-password", {
+    method: "POST",
+    body: { token, newPassword },
+    handle401: false,
+  });
+}
+
+/**
+ * パスワードを変更する。revokeOtherSessions を付けると、ほかの端末をログアウトさせる
+ * (この端末は、新しく発行されたセッションに切り替わる)。
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  revokeOtherSessions: boolean,
+): Promise<void> {
+  const response = await apiFetch("/v1/auth/change-password", {
+    method: "POST",
+    body: { currentPassword, newPassword, revokeOtherSessions },
+    handle401: false,
+  });
+  adoptToken(response);
+}
+
+/** ログインに使うメールアドレスの変更を申し込む (新しいアドレスへ確認のメールが届く)。 */
+export async function requestEmailChange(
+  newEmail: string,
+  password: string,
+): Promise<void> {
+  await apiFetch("/v1/security/email", {
+    method: "POST",
+    body: { newEmail, password },
+  });
+}
+
+export type TwoFactorSetup = {
+  /** 認証アプリに読み込ませる otpauth:// の URI。 */
+  totpURI: string;
+  backupCodes: string[];
+};
+
+/** 2 段階認証の登録を始める。コードを 1 度確かめる (confirmTwoFactor) まで、有効にはならない。 */
+export async function startTwoFactor(
+  password: string,
+): Promise<TwoFactorSetup> {
+  return apiJson<TwoFactorSetup>("/v1/auth/two-factor/enable", {
+    method: "POST",
+    body: { password },
+    handle401: false,
+  });
+}
+
+/** 認証アプリのコードを確かめて、2 段階認証を有効にする。 */
+export async function confirmTwoFactor(code: string): Promise<void> {
+  const response = await apiFetch("/v1/auth/two-factor/verify-totp", {
+    method: "POST",
+    body: { code },
+    handle401: false,
+  });
+  // 有効にすると、サーバーがセッションを作り直す。
+  adoptToken(response);
+}
+
+export async function disableTwoFactor(password: string): Promise<void> {
+  const response = await apiFetch("/v1/auth/two-factor/disable", {
+    method: "POST",
+    body: { password },
+    handle401: false,
+  });
+  adoptToken(response);
+}
+
+/** バックアップコードを作り直す (前のコードは使えなくなる)。 */
+export async function regenerateBackupCodes(
+  password: string,
+): Promise<string[]> {
+  const { backupCodes } = await apiJson<{ backupCodes: string[] }>(
+    "/v1/auth/two-factor/generate-backup-codes",
+    { method: "POST", body: { password }, handle401: false },
+  );
+  return backupCodes;
+}
+
+export type Passkey = {
+  id: string;
+  name: string | null;
+  /** singleDevice (その端末だけ) か multiDevice (端末の間で同期されるパスキー)。 */
+  deviceType: string;
+  backedUp: boolean;
+  createdAt: string | null;
+  aaguid: string | null;
+};
+
+export async function listPasskeys(signal?: AbortSignal): Promise<Passkey[]> {
+  return apiJson<Passkey[]>("/v1/auth/passkey/list-user-passkeys", { signal });
+}
+
+/** パスキーの登録で、ブラウザーに渡す内容をサーバーからもらう。 */
+export async function passkeyRegisterOptions(): Promise<unknown> {
+  return apiJson<unknown>("/v1/auth/passkey/generate-register-options", {
+    handle401: false,
+  });
+}
+
+export async function passkeyRegister(
+  response: unknown,
+  name: string,
+): Promise<Passkey> {
+  return apiJson<Passkey>("/v1/auth/passkey/verify-registration", {
+    method: "POST",
+    body: { response, name },
+    handle401: false,
+  });
+}
+
+export async function renamePasskey(id: string, name: string): Promise<void> {
+  await apiFetch("/v1/auth/passkey/update-passkey", {
+    method: "POST",
+    body: { id, name },
+  });
+}
+
+export async function deletePasskey(id: string): Promise<void> {
+  await apiFetch("/v1/auth/passkey/delete-passkey", {
+    method: "POST",
+    body: { id },
+  });
+}
+
+/** パスキーでのログインで、ブラウザーに渡す内容をサーバーからもらう。 */
+export async function passkeySignInOptions(): Promise<unknown> {
+  return apiJson<unknown>("/v1/auth/passkey/generate-authenticate-options", {
+    handle401: false,
+  });
+}
+
+/** ブラウザーがパスキーで作った応答を確かめて、ログインする。 */
+export async function passkeySignIn(response: unknown): Promise<void> {
+  const result = await apiFetch("/v1/auth/passkey/verify-authentication", {
+    method: "POST",
+    body: { response },
+    handle401: false,
+  });
+  if (!adoptToken(result)) {
+    throw new ApiError(result.status, "token_missing", null);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -96,6 +96,50 @@ cd deploy && docker compose up -d --build
   DB には入りません。鍵を失うと復号できなくなるため、安全な場所に控えてください。
 - ローカルの IMAP サーバー (localhost や内部 IP) で試す場合は、`.env` で `ALLOW_PRIVATE_MAIL_HOSTS=true` にします。
 
+## ログインとセキュリティ (パスワード、2 段階認証、パスキー)
+
+Orbit 自体のアカウントは、設定画面の「ログインとセキュリティ」で利用者が自分で管理できます。
+
+| できること | 内容 |
+| --- | --- |
+| パスワードの変更 | いまのパスワードを確かめて変更します。「ほかの端末をログアウトする」を選べます |
+| パスワードの再設定 | ログイン画面の「パスワードを忘れた場合」から、再設定のリンクをメールで受け取ります (有効期限 1 時間)。再設定すると、すべての端末がログアウトになります |
+| メールアドレスの変更 | いまのパスワードを確かめたうえで、新しいアドレスへ確認のメールを送ります。リンクを開くと変更が完了します (有効期限 1 時間)。いまのアドレスにも、申し込みがあったことを知らせます |
+| 2 段階認証 | 認証アプリ (TOTP) の 6 桁のコードと、バックアップコード 10 個。「この端末では 30 日間コードを尋ねない」を選べます。コードを 10 回続けて間違えると、15 分間ログインできません |
+| パスキー | 端末の指紋・顔・PIN やセキュリティキーでログインします。パスキーでのログインでは、2 段階認証のコードは尋ねません |
+
+**メールの送信**: パスワードの再設定とメールアドレスの変更は、Orbit 自身がメールを送ります。利用者のメールアカウントとは別に、
+送信用の SMTP サーバーを `SYSTEM_MAIL_*` で設定してください。
+
+```sh
+SYSTEM_MAIL_HOST=smtp.example.com
+SYSTEM_MAIL_PORT=587                          # 既定は 587 (STARTTLS)。465 なら最初から TLS
+SYSTEM_MAIL_USER=no-reply@example.com
+SYSTEM_MAIL_PASSWORD=...
+SYSTEM_MAIL_FROM="Orbit <no-reply@example.com>"
+```
+
+- 未設定のとき、開発中 (`NODE_ENV` が `production` 以外) は、送るはずのメールの内容を API サーバーのログに出します
+  (リンクをそこから開いて試せます)。本番では、再設定とメールアドレスの変更が使えなくなり、画面にも出しません。
+  パスワードの変更、2 段階認証、パスキーは、メールを送れなくても使えます。
+- パスワードを忘れ、メールも送れないときは、サーバー上で `pnpm user:password <メールアドレス>`
+  (本番は [docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md) を参照) でパスワードを付け直せます。
+  `--reset-two-factor` を付けると、2 段階認証も解除します (認証アプリとバックアップコードを両方失ったとき)。
+
+**パスキーを使える環境**: パスキーは Web のドメイン (`PASSKEY_RP_ID`。既定は `ALLOWED_ORIGINS` の先頭の URL のホスト名) に結び付きます。
+
+- ブラウザーで開いた Web 版では使えます (HTTPS か localhost が必要です)。
+- Android アプリ (Capacitor) とデスクトップ版 (Tauri) では、パスキーの登録もログインもできません。アプリの画面は
+  `https://localhost` や `tauri://localhost` といったアプリ内のオリジンで動いていて、WebAuthn の決まりでは、
+  ページのオリジンと違うドメインのパスキーは扱えないためです。アプリではボタンを出さず、パスワード (+ 2 段階認証) でログインします。
+  アプリで使うには、OS のパスキーの仕組み (Android の Credential Manager など) を直接呼ぶ実装が別に必要です。
+- ドメインを変えると、登録済みのパスキーは使えなくなります (登録し直しになります)。
+
+**仕組み**: Better Auth の `twoFactor` と `@better-auth/passkey` を使っています。この API は Cookie を使わないので、
+Better Auth が Cookie に置く途中の値 (2 段階認証の途中のログイン、信頼した端末の印、パスキーのチャレンジの控え) は、
+`X-Auth-State` ヘッダーで画面に預けて、次の呼び出しで返してもらいます (`apps/api/src/lib/auth-state.ts`、
+`apps/web/src/lib/auth-state.ts`)。値は Better Auth が署名しているので、画面側で書き換えても通りません。
+
 ## Gmail (Google でログイン)
 
 Gmail は、Google のログイン画面で許可を受け (OAuth2)、受け取ったトークンで IMAP / SMTP にログインします (XOAUTH2)。
@@ -368,6 +412,13 @@ Web の画面 (Tauri / Capacitor に同梱する場合も同じ) は、サーバ
 | `POST /v1/auth/sign-in/email` | ログイン。レスポンスヘッダー `set-auth-token` がセッショントークン |
 | `POST /v1/auth/sign-out` | ログアウト |
 | `GET /v1/me` | ログイン中の利用者 |
+| `GET /v1/auth-features` | サーバーが利用者へメールを送れるか (ログイン前の画面が、再設定の案内を出すかどうかに使う) |
+| `POST /v1/auth/request-password-reset`、`POST /v1/auth/reset-password` | パスワードの再設定 (メールのリンクの合言葉で新しいパスワードを設定) |
+| `POST /v1/auth/change-password` | パスワードの変更 |
+| `GET /v1/security` | ログインまわりの状態 (2 段階認証が有効か、パスキーの数、メールを送れるか) |
+| `POST /v1/security/email` | メールアドレスの変更の申し込み (`newEmail`、`password`)。確認は `GET /v1/auth/verify-email` (メールのリンク) |
+| `POST /v1/auth/two-factor/*` | 2 段階認証 (`enable`、`verify-totp`、`verify-backup-code`、`generate-backup-codes`、`disable`) |
+| `GET` / `POST /v1/auth/passkey/*` | パスキー (登録、ログイン、一覧、名前の変更、削除) |
 | `GET /v1/accounts` / `POST /v1/accounts` | メールアカウントの一覧 / 追加 (IMAP へのログインを確認してから保存。`provider` が `icloud` か `gmail` なら接続先を省略できる) |
 | `POST /v1/accounts/google/authorize` | Google のログイン画面の URL を取得 (`accountId` を渡すと再ログイン) |
 | `POST /v1/accounts/google/complete` | ログイン後に戻ってきた `code` と `state` を渡して、Gmail アカウントを追加 |
@@ -444,6 +495,7 @@ API は `GET /v1/messages/search` です。`q` のほかに `accountId`、`scope
 | `pnpm db:migrate` | マイグレーションを適用 |
 | `pnpm --filter @mail/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
 | `pnpm user:create <メール> <表示名>` | ログイン用の利用者を作成 |
+| `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
 
 ## UI
 

@@ -44,6 +44,8 @@ export const users = pgTable("users", {
   name: text().notNull(),
   emailVerified: boolean().notNull().default(false),
   image: text(),
+  /** 2 段階認証を有効にしているか (Better Auth の twoFactor プラグインが読み書きする)。 */
+  twoFactorEnabled: boolean().notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -104,6 +106,58 @@ export const verifications = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("verifications_identifier_idx").on(t.identifier)],
+);
+
+/**
+ * 2 段階認証 (認証アプリ) の設定。利用者ごとに 1 行。
+ * secret と backupCodes は、Better Auth が BETTER_AUTH_SECRET で暗号化して保存する。
+ * verified は、認証アプリのコードを 1 度入力して登録を終えたか。
+ */
+export const twoFactors = pgTable(
+  "two_factors",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    secret: text().notNull(),
+    backupCodes: text().notNull(),
+    verified: boolean().notNull().default(true),
+    /** 続けて失敗した回数。上限に達すると lockedUntil までコードを受け付けない。 */
+    failedVerificationCount: integer().notNull().default(0),
+    lockedUntil: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    index("two_factors_user_idx").on(t.userId),
+    index("two_factors_secret_idx").on(t.secret),
+  ],
+);
+
+/** ログインに使うパスキー (WebAuthn の公開鍵)。Better Auth の passkey プラグインが読み書きする。 */
+export const passkeys = pgTable(
+  "passkeys",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 利用者が付けた名前 (「ノート PC」など)。 */
+    name: text(),
+    publicKey: text().notNull(),
+    credentialID: text("credential_id").notNull(),
+    counter: integer().notNull(),
+    /** singleDevice (その端末だけ) か multiDevice (同期されるパスキー)。 */
+    deviceType: text().notNull(),
+    backedUp: boolean().notNull(),
+    transports: text(),
+    /** 認証器の種類を表す ID (「Windows Hello」などの名前を出すのに使う)。 */
+    aaguid: text(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("passkeys_user_idx").on(t.userId),
+    uniqueIndex("passkeys_credential_idx").on(t.credentialID),
+  ],
 );
 
 export const devicePlatform = pgEnum("device_platform", [

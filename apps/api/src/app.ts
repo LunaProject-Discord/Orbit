@@ -6,7 +6,13 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { Auth } from "./auth.js";
 import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
+import {
+  AUTH_STATE_HEADER,
+  withAuthStateCookie,
+  withAuthStateHeader,
+} from "./lib/auth-state.js";
 import type { EventsHub } from "./lib/events-hub.js";
+import type { SystemMailer } from "./lib/system-mail.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { draftRoutes } from "./routes/drafts.js";
@@ -17,6 +23,7 @@ import { messageRoutes } from "./routes/messages.js";
 import { notificationActionRoutes } from "./routes/notification-actions.js";
 import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
+import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
 import { sendRoutes } from "./routes/send.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { signatureRoutes } from "./routes/signatures.js";
@@ -36,6 +43,10 @@ export type AppOptions = {
   google: RouteDeps["google"];
   webPushPublicKey: string | null;
   fcmEnabled: boolean;
+  /** Web の URL (メールのリンクから戻る先)。 */
+  webOrigin: string;
+  /** 利用者へメールを送る手段。null なら再設定とメールアドレスの変更は使えない。 */
+  mailer: SystemMailer | null;
 };
 
 export function createApp({
@@ -49,6 +60,8 @@ export function createApp({
   google,
   webPushPublicKey,
   fcmEnabled,
+  webOrigin,
+  mailer,
 }: AppOptions) {
   const app = new Hono();
 
@@ -57,9 +70,15 @@ export function createApp({
     cors({
       origin: allowedOrigins,
       credentials: true,
-      allowHeaders: ["Content-Type", "Authorization", "X-Filename"],
-      // ログイン時に Better Auth が返すセッショントークンをブラウザから読めるようにする。
-      exposeHeaders: ["set-auth-token"],
+      allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-Filename",
+        AUTH_STATE_HEADER,
+      ],
+      // ログイン時に Better Auth が返すセッショントークンと、2 段階認証・パスキーの
+      // 途中の値 (lib/auth-state.ts) をブラウザから読めるようにする。
+      exposeHeaders: ["set-auth-token", AUTH_STATE_HEADER],
     }),
   );
 
@@ -76,7 +95,13 @@ export function createApp({
   v1.get("/", (c) => c.json({ name: "mail-api", version: 1 }));
 
   // ログイン、ログアウト、セッション取得は Better Auth が処理する。
-  v1.on(["GET", "POST"], "/auth/*", (c) => auth.handler(c.req.raw));
+  // メールアドレスの変更は、パスワードを確かめる /v1/security/email からだけ受け付ける。
+  v1.all("/auth/change-email", (c) => c.json({ error: "not_found" }, 404));
+  // Better Auth が Cookie で持つ途中の値は、X-Auth-State ヘッダーで受け渡す。
+  v1.on(["GET", "POST"], "/auth/*", async (c) =>
+    withAuthStateHeader(await auth.handler(withAuthStateCookie(c.req.raw))),
+  );
+  v1.route("/", authFeatureRoutes({ mailEnabled: mailer !== null }));
 
   // Microsoft Graph から直接呼ばれる。ログインの代わりに、通知に付く合言葉で確かめる。
   v1.route(
@@ -110,6 +135,16 @@ export function createApp({
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/unified", unifiedRoutes(deps));
   authed.route("/settings", settingsRoutes(deps));
+  authed.route(
+    "/security",
+    securityRoutes({
+      db,
+      auth,
+      webOrigin,
+      mailEnabled: mailer !== null,
+      mailer,
+    }),
+  );
   authed.route("/signatures", signatureRoutes(deps));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));

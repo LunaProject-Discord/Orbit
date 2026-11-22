@@ -20,6 +20,7 @@ import { useEffect, useId, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
 import { FontPicker } from "@/components/mail/font-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
+import { SecuritySettings } from "@/components/mail/security-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -701,6 +702,8 @@ export function SettingsView({
               ))}
             </dl>
           </Section>
+
+          <SecuritySettings user={user} />
 
           <Section title="ログイン中の利用者">
             <div className="flex items-center gap-3 rounded-lg border p-3">

@@ -7,6 +7,7 @@ import {
   loadWebPushConfig,
 } from "@mail/core";
 import { lanOrigins } from "./lib/lan-origins.js";
+import { loadSystemMailConfig } from "./lib/system-mail.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -62,7 +63,30 @@ export function loadEnv() {
   const microsoftConfig = loadMicrosoftOAuthConfig(process.env);
   const googleConfig = loadGoogleOAuthConfig(process.env);
   const webOrigin = configuredOrigins[0] ?? "http://localhost:3000";
+  const production = process.env.NODE_ENV === "production";
+  const systemMail = loadSystemMailConfig(process.env);
   return {
+    /** Web の URL。メールに書くリンクの先になる。 */
+    webOrigin,
+    /**
+     * Orbit 自身が利用者へ送るメール (パスワードの再設定、メールアドレスの変更の確認)。
+     * - smtp: SYSTEM_MAIL_* の SMTP サーバーから送る。
+     * - console: 開発用。送らずに API サーバーのログへ出す (SMTP が未設定で、本番ではないとき)。
+     * - null: 送れない (本番で SMTP が未設定)。再設定とメールアドレスの変更は使えない。
+     */
+    systemMail: systemMail
+      ? ({ kind: "smtp", config: systemMail } as const)
+      : production
+        ? null
+        : ({ kind: "console" } as const),
+    /**
+     * パスキーの設定。パスキーは Web のドメイン (rpId) に結び付くので、ドメインを変えると
+     * 登録済みのパスキーは使えなくなる。既定は Web の URL のホスト名。
+     */
+    passkey: {
+      rpId: process.env.PASSKEY_RP_ID?.trim() || new URL(webOrigin).hostname,
+      origins: configuredOrigins,
+    },
     databaseUrl: required("DATABASE_URL"),
     port: Number(process.env.API_PORT ?? 8787),
     /** 外から見た API の URL。Better Auth がリンクや Cookie の設定に使う。 */
