@@ -50,6 +50,7 @@ export const SETTINGS_CATEGORIES = [
   "sidebar",
   "notifications",
   "signatures",
+  "security",
   "system",
 ] as const;
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];

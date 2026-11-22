@@ -10,6 +10,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
 import {
   ApiError,
@@ -18,10 +19,13 @@ import {
   fetchMe,
   getToken,
   onUnauthorized,
+  type SignInResult,
   type User,
+  verifyTwoFactorSignIn,
 } from "@/lib/api";
 import { releasePush } from "@/lib/notifications";
 import { clearOffline, openOffline } from "@/lib/offline";
+import { signInWithPasskey } from "@/lib/passkey";
 
 const USER_KEY = "mail.user";
 
@@ -76,7 +80,17 @@ type AuthState =
   | { status: "unreachable"; user: null };
 
 type AuthContextValue = AuthState & {
-  signIn: (email: string, password: string) => Promise<void>;
+  /** two-factor が返ったら、続けて verifyTwoFactor でコードを確かめる。 */
+  signIn: (email: string, password: string) => Promise<SignInResult>;
+  /** 2 段階認証のコード (認証アプリかバックアップコード) を確かめて、ログインを終える。 */
+  verifyTwoFactor: (
+    kind: "totp" | "backup",
+    code: string,
+    trustDevice: boolean,
+  ) => Promise<void>;
+  signInWithPasskey: () => Promise<void>;
+  /** 利用者の情報 (メールアドレスなど) をサーバーから取り直す。 */
+  refreshUser: () => Promise<void>;
   signOut: () => Promise<void>;
   retry: () => void;
   /** 接続先サーバーを替えたあと、未ログインの状態からやり直す。 */
@@ -142,15 +156,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [check]);
 
-  const value = useMemo<AuthContextValue>(
-    () => ({
+  /** セッショントークンを受け取ったあと、利用者を確かめて画面を開く。 */
+  const enter = useCallback(async () => {
+    const user = await fetchMe();
+    rememberUser(user);
+    setState({ status: "signed-in", user });
+  }, []);
+
+  const value = useMemo<AuthContextValue>(() => {
+    return {
       ...state,
       signIn: async (email, password) => {
-        await apiSignIn(email, password);
-        const user = await fetchMe();
-        rememberUser(user);
-        setState({ status: "signed-in", user });
+        const result = await apiSignIn(email, password);
+        if (result === "signed-in") await enter();
+        return result;
       },
+      verifyTwoFactor: async (kind, code, trustDevice) => {
+        await verifyTwoFactorSignIn(kind, code, trustDevice);
+        await enter();
+      },
+      signInWithPasskey: async () => {
+        await signInWithPasskey();
+        await enter();
+      },
+      refreshUser: enter,
       signOut: async () => {
         // ログアウトした端末に新着メールの通知が届かないよう、先に送り先を消す。
         await releasePush(true);
@@ -163,9 +192,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         void check();
       },
       reset: () => setState({ status: "signed-out", user: null }),
-    }),
-    [state, check],
-  );
+    };
+  }, [state, check, enter]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -182,6 +210,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const onLoginPage = pathname === "/login" || pathname === "/login/";
   /** 接続先サーバーの設定画面 (同梱アプリ用)。ログインの前後どちらでも開ける。 */
   const onServerPage = pathname === "/server" || pathname === "/server/";
+  /** パスワードの再設定の画面。ログインしていなくても、していても開ける。 */
+  const onPasswordPage =
+    pathname === "/forgot-password" ||
+    pathname === "/forgot-password/" ||
+    pathname === "/reset-password" ||
+    pathname === "/reset-password/";
 
   // スマホアプリから始めた Google / Microsoft のログインが、ブラウザーへ戻ってきたとき。
   // このブラウザーでログインしていなくても、アプリへ引き渡すページをそのまま出す。
@@ -198,7 +232,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   const redirectTo =
-    onServerPage || appReturn
+    onServerPage || onPasswordPage || appReturn
       ? null
       : auth.status === "signed-out" && !hasServerUrl()
         ? "server"
@@ -221,14 +255,23 @@ export function AuthGate({ children }: { children: ReactNode }) {
     } else if (redirectTo === "app") {
       const params = new URLSearchParams(window.location.search);
       const next = safeReturnPath(params.get("next"));
+      // メールアドレスの変更のリンクを、ログイン中のブラウザーで開いたとき。
+      if (params.get("notice") === "email-changed") {
+        void auth.refreshUser().catch(() => {});
+        showNotice("メールアドレスを変更しました。", "info");
+      } else if (params.get("error")) {
+        showNotice(
+          "リンクの有効期限が切れているか、すでに使われています。もう一度申し込んでください。",
+        );
+      }
       // Next.js のページは "/" だけなので、それ以外のパスへはブラウザーに移らせる
       // (配信する側が同じ画面を返す)。
       if (next) window.location.replace(next);
       else router.replace("/");
     }
-  }, [redirectTo, router]);
+  }, [redirectTo, router, auth.refreshUser]);
 
-  if (onServerPage || appReturn) return <>{children}</>;
+  if (onServerPage || onPasswordPage || appReturn) return <>{children}</>;
 
   if (auth.status === "unreachable") {
     return (

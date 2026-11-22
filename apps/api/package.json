@@ -9,22 +9,27 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "user:create": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/create-user.ts"
+    "user:create": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/create-user.ts",
+    "user:password": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/set-password.ts"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.7.27",
     "@hono/node-server": "^2.1.11",
     "@hono/zod-validator": "^0.9.1",
     "@mail/core": "workspace:*",
     "@mail/db": "workspace:*",
+    "@simplewebauthn/server": "^13.3.3",
     "better-auth": "^1.7.27",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.19",
     "imapflow": "^2.12.2",
+    "nodemailer": "^10.6.1",
     "pg": "^8.23.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

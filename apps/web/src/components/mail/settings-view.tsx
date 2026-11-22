@@ -21,6 +21,7 @@ import {
   PointerIcon,
   RefreshCwIcon,
   RotateCcwIcon,
+  ShieldCheckIcon,
   SignatureIcon,
   SunIcon,
   Trash2Icon,
@@ -31,6 +32,7 @@ import { useEffect, useId, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
 import { FontPicker } from "@/components/mail/font-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
+import { SecuritySettings } from "@/components/mail/security-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -203,6 +205,13 @@ const CATEGORIES: Record<
     summary: "アカウント、連絡先、会話ごとの署名",
     description: "すべての端末で共通です。",
     icon: SignatureIcon,
+  },
+  security: {
+    label: "ログインとセキュリティ",
+    summary: "メールアドレス、パスワード、2 段階認証、パスキー",
+    description:
+      "Orbit へのログインに使うメールアドレス、パスワード、2 段階認証、パスキーを設定します。メールアカウント (Gmail など) の設定とは別です。",
+    icon: ShieldCheckIcon,
   },
   system: {
     label: "同期とログイン",
@@ -394,6 +403,8 @@ function SettingsPage({
       return <NotificationsPage {...props} />;
     case "signatures":
       return <SignaturesPage {...props} />;
+    case "security":
+      return <SecuritySettings user={props.user} />;
     case "system":
       return <SystemPage {...props} />;
   }
