@@ -53,6 +53,7 @@ import {
   deleteAttachment,
   forwardAttachments,
   NetworkError,
+  type SignatureRule,
   type UploadedAttachment,
   uploadAttachment,
 } from "@/lib/api";
@@ -60,6 +61,7 @@ import { attachmentErrorMessage } from "@/lib/attachments";
 import {
   attachmentLimit,
   type ComposeDraft,
+  draftSignature,
   htmlToText,
   MAX_ATTACHMENT_COUNT,
   replaceSignature,
@@ -122,6 +124,8 @@ type Props = {
   draft: ComposeDraft | null;
   open: boolean;
   accounts: Account[];
+  /** 連絡先ごと、会話ごとの署名。宛先や差出人が変わったら、本文の署名を入れ替える。 */
+  signatureRules?: readonly SignatureRule[];
   /** 画面の上部に出す案内 (書きかけのメールを開き直したときなど)。 */
   notice: string | null;
   /** 下書きをサーバーに保存した時刻。 */
@@ -144,6 +148,8 @@ type Props = {
   onSent: () => void;
   onDiscard: () => void;
 };
+
+const NO_RULES: readonly SignatureRule[] = [];
 
 const MAXIMIZED_KEY = "mail.compose-maximized.v1";
 
@@ -172,6 +178,7 @@ export function ComposeWindow({
   draft,
   open,
   accounts,
+  signatureRules = NO_RULES,
   notice,
   savedAt,
   saveProblem,
@@ -387,17 +394,25 @@ export function ComposeWindow({
   const pendingFiles = draft.forwardAttachments?.files ?? [];
   const uploading = uploads.length > 0 || pendingFiles.length > 0;
 
-  /** 差出人を変える。本文の署名も、選んだアカウントのものに入れ替える。 */
+  /**
+   * 差出人や宛先を変える。変えたことで使う署名 (会話、連絡先、アカウントの順に探す) が
+   * 変わるときだけ、本文の署名を入れ替える。変わらなければ、手で直した署名もそのまま残る。
+   */
+  function changeWithSignature(update: (latest: ComposeDraft) => ComposeDraft) {
+    commit((current) => {
+      const next = update(current);
+      const before = draftSignature(current, accounts, signatureRules).html;
+      const after = draftSignature(next, accounts, signatureRules).html;
+      if ((before ?? "") === (after ?? "")) return next;
+      const editor = editorRef.current;
+      const html = replaceSignature(editor?.innerHTML ?? next.html, after);
+      if (editor) editor.innerHTML = html;
+      return { ...next, html };
+    });
+  }
+
   function changeAccount(accountId: string) {
-    if (!draft) return;
-    const next = accounts.find((item) => item.id === accountId);
-    const editor = editorRef.current;
-    const html = replaceSignature(
-      editor?.innerHTML ?? draft.html,
-      next?.signatureHtml,
-    );
-    if (editor) editor.innerHTML = html;
-    commit((current) => ({ ...current, accountId, html }));
+    changeWithSignature((current) => ({ ...current, accountId }));
   }
 
   function removeAttachment(file: UploadedAttachment) {
@@ -712,7 +727,9 @@ export function ComposeWindow({
             id={`${id}-to`}
             inputRef={toRef}
             value={draft.to}
-            onChange={(value) => set("to", value)}
+            onChange={(value) =>
+              changeWithSignature((current) => ({ ...current, to: value }))
+            }
             disabled={sending}
           />
           {!showExtra && (

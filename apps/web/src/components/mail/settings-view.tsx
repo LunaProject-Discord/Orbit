@@ -121,6 +121,8 @@ type Props = {
   onSignOut: () => void;
   /** 「サイドバーの項目と統合フォルダ」の節 (どの端末でも同じ内容になる設定)。 */
   sidebarItems: React.ReactNode;
+  /** 「連絡先・会話ごとの署名」の節。 */
+  signatureRules: React.ReactNode;
 };
 
 /** 設定画面。表示、通知、メールアカウント、同期の状況、ログアウトをまとめる。 */
@@ -140,6 +142,7 @@ export function SettingsView({
   onAccountUpdated,
   onSignOut,
   sidebarItems,
+  signatureRules,
 }: Props) {
   const { theme, setTheme } = useTheme();
   const preferences = usePreferences();
@@ -502,6 +505,8 @@ export function SettingsView({
               </Button>
             </div>
           </Section>
+
+          {signatureRules}
 
           <Section
             title="同期"

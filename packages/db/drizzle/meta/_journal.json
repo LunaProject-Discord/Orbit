@@ -152,8 +152,15 @@
     {
       "idx": 21,
       "version": "7",
-      "when": 1795347324917,
-      "tag": "0021_swipe_settings",
+      "when": 1795347172882,
+      "tag": "0021_signature_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1795347894435,
+      "tag": "0022_swipe_settings",
       "breakpoints": true
     }
   ]

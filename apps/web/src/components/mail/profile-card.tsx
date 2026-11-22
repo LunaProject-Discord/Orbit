@@ -2,7 +2,13 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { cn } from "cn";
-import { CheckIcon, CopyIcon, SearchIcon, SquarePenIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  SearchIcon,
+  SignatureIcon,
+  SquarePenIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +26,10 @@ export type ProfileActions = {
   onSearch?: (address: Address) => void;
   /** このアドレス宛ての新しいメールを書き始める。 */
   onCompose?: (address: Address) => void;
+  /** このアドレス宛てのメールに使う署名を決める。 */
+  onSignature?: (address: Address) => void;
+  /** このアドレスに署名を決めてあるか (ボタンの文言に使う)。 */
+  hasSignature?: (address: Address) => boolean;
 };
 
 /** スマホの幅 (Tailwind の sm 未満) かどうか。カードをシートで出すかを決める。 */
@@ -54,6 +64,8 @@ export function ProfileName({
   className,
   onSearch,
   onCompose,
+  onSignature,
+  hasSignature,
 }: {
   address: Address;
   /** 「名前 <アドレス>」の形で出す。false なら名前だけ (無ければアドレス)。 */
@@ -141,6 +153,19 @@ export function ProfileName({
           >
             <SquarePenIcon />
             メールを作成
+          </Button>
+        )}
+        {onSignature && (
+          <Button
+            variant="ghost"
+            size={narrow ? "lg" : "sm"}
+            className="justify-start"
+            onClick={() => run(onSignature)}
+          >
+            <SignatureIcon />
+            {hasSignature?.(address)
+              ? "この相手への署名を変更"
+              : "この相手への署名を設定"}
           </Button>
         )}
       </div>

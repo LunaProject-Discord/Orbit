@@ -693,3 +693,42 @@ export const userSettings = pgTable("user_settings", {
   swipe: jsonb().$type<SwipeSettings>(),
   updatedAt: updatedAt(),
 });
+
+/** 署名の決まりの種類。contact は宛先のアドレスごと、thread は会話ごと。 */
+export type SignatureRuleKind = "contact" | "thread";
+
+/**
+ * 連絡先 (宛先のアドレス) ごと、会話ごとの署名。アカウントの署名より優先して使う。
+ * 連絡先の決まりは利用者のすべてのアカウントに効き、会話の決まりはその会話のあるアカウントにだけ効く。
+ */
+export const signatureRules = pgTable(
+  "signature_rules",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text().$type<SignatureRuleKind>().notNull(),
+    /** 会話のあるアカウント。連絡先の決まりでは null。 */
+    accountId: uuid().references(() => mailAccounts.id, {
+      onDelete: "cascade",
+    }),
+    /** 連絡先は小文字にしたメールアドレス、会話は会話のキー (messages.thread_key)。 */
+    key: text().notNull(),
+    /** 一覧に出す名前 (連絡先の名前、会話の件名)。分からなければ null。 */
+    label: text(),
+    /** 使う署名 (書式付き)。null は「署名を付けない」。 */
+    signatureHtml: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("signature_rules_contact_idx")
+      .on(t.userId, t.key)
+      .where(sql`${t.kind} = 'contact'`),
+    uniqueIndex("signature_rules_thread_idx")
+      .on(t.accountId, t.key)
+      .where(sql`${t.kind} = 'thread'`),
+    index("signature_rules_user_idx").on(t.userId),
+  ],
+);
