@@ -46,7 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { accountColor } from "@/lib/account-colors";
+import { AccountDot } from "@/lib/account-icons";
 import {
   type Account,
   ApiError,
@@ -659,12 +659,10 @@ export function ComposeWindow({
 
         <Row label="差出人" htmlFor={`${id}-from`}>
           <div className="relative min-w-0 max-w-full">
-            <span
-              aria-hidden="true"
-              className={cn(
-                "pointer-events-none absolute top-1/2 left-3 z-10 size-2 -translate-y-1/2 rounded-full",
-                accountColor(accounts, draft.accountId),
-              )}
+            <AccountDot
+              accounts={accounts}
+              accountId={draft.accountId}
+              className="pointer-events-none absolute top-1/2 left-3 z-10 size-2 -translate-y-1/2"
             />
             <Select
               items={accounts.map((item) => ({
@@ -693,12 +691,10 @@ export function ComposeWindow({
                 {accounts.map((item) => (
                   <SelectItem key={item.id} value={item.id}>
                     <span className="flex items-center gap-2">
-                      <span
-                        aria-hidden="true"
-                        className={cn(
-                          "size-2 shrink-0 rounded-full",
-                          accountColor(accounts, item.id),
-                        )}
+                      <AccountDot
+                        accounts={accounts}
+                        accountId={item.id}
+                        className="size-2"
                       />
                       {item.displayName
                         ? `${item.displayName} <${item.email}>`
