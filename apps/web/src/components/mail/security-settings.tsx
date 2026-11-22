@@ -111,7 +111,7 @@ type Props = {
 };
 
 /**
- * 設定画面の「ログインとセキュリティ」の節。
+ * 設定画面の「ログインとセキュリティ」のページ。
  * Orbit へのログインに使うメールアドレス、パスワード、2 段階認証、パスキーを扱う。
  */
 export function SecuritySettings({ user }: Props) {
@@ -165,14 +165,6 @@ export function SecuritySettings({ user }: Props) {
 
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        <h2 className="font-semibold text-base">ログインとセキュリティ</h2>
-        <p className="text-muted-foreground text-sm">
-          Orbit へのログインに使うメールアドレス、パスワード、2
-          段階認証、パスキーを設定します。メールアカウント (Gmail など)
-          の設定とは別です。
-        </p>
-      </div>
       {loadError && (
         <p role="alert" className="text-destructive text-sm">
           いまの設定を読み込めませんでした。{" "}
