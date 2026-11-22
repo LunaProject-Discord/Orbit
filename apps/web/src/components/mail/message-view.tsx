@@ -1038,6 +1038,18 @@ function MessageContent({
     hasRemoteImages(message.bodyHtml);
 
   const collapsed = preferences.messageHeader === "collapsed";
+  // 返信先は、差出人と違うときだけ出す (同じアドレスを指定しているメールが多い)。
+  const senders = new Set(
+    message.from.map((item) => item.address.toLowerCase()),
+  );
+  const replyToShown = message.replyTo.some(
+    (item) => !senders.has(item.address.toLowerCase()),
+  );
+  // 送信日時は、届いた日時と 1 分以上ずれているときだけ出す。
+  const sentAtShown =
+    message.sentAt !== null &&
+    Math.abs(Date.parse(message.sentAt) - Date.parse(message.receivedAt)) >=
+      60_000;
   const toggle = (
     <Hint label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}>
       <Button
@@ -1140,12 +1152,38 @@ function MessageContent({
                     </dd>
                   </>
                 )}
+                {message.bcc.length > 0 && (
+                  <>
+                    <dt className="text-muted-foreground">Bcc</dt>
+                    <dd className="min-w-0 break-words">
+                      {message.bcc.map(addressFull).join(", ")}
+                    </dd>
+                  </>
+                )}
+                {replyToShown && (
+                  <>
+                    <dt className="text-muted-foreground">返信先</dt>
+                    <dd className="min-w-0 break-words">
+                      {message.replyTo.map(addressFull).join(", ")}
+                    </dd>
+                  </>
+                )}
                 <dt className="text-muted-foreground">日時</dt>
                 <dd>
                   <time dateTime={message.receivedAt}>
                     {formatFullDate(message.receivedAt, preferences)}
                   </time>
                 </dd>
+                {sentAtShown && message.sentAt && (
+                  <>
+                    <dt className="text-muted-foreground">送信日時</dt>
+                    <dd>
+                      <time dateTime={message.sentAt}>
+                        {formatFullDate(message.sentAt, preferences)}
+                      </time>
+                    </dd>
+                  </>
+                )}
               </dl>
             </div>
           )}
