@@ -193,7 +193,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
       );
     } else if (redirectTo === "app") {
       const params = new URLSearchParams(window.location.search);
-      router.replace(safeReturnPath(params.get("next")) ?? "/");
+      const next = safeReturnPath(params.get("next"));
+      // Next.js のページは "/" だけなので、それ以外のパスへはブラウザーに移らせる
+      // (配信する側が同じ画面を返す)。
+      if (next) window.location.replace(next);
+      else router.replace("/");
     }
   }, [redirectTo, router]);
 

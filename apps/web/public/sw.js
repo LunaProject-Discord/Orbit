@@ -104,7 +104,12 @@ async function fromShell(shell, pathname) {
 
 async function networkFirst(request, shell, timeoutMs) {
   const url = new URL(request.url);
-  const saved = () => fromShell(shell, url.pathname);
+  const navigate = request.mode === "navigate";
+  // 画面は 1 つのアプリで、パス (/accounts/… など) はアプリが読み取る。
+  // そのパスのファイルが無ければ、最初の画面を出す。
+  const saved = async () =>
+    (await fromShell(shell, url.pathname)) ??
+    (navigate ? await fromShell(shell, "/") : null);
   let timer = null;
   const network = fetch(request);
   try {
@@ -112,6 +117,10 @@ async function networkFirst(request, shell, timeoutMs) {
       timer = setTimeout(() => resolve(null), timeoutMs);
     });
     const response = await Promise.race([network, timeout]);
+    // 知らないパスに最初の画面を返さないサーバーでも、保存してある画面で開く。
+    if (response && navigate && response.status === 404) {
+      return (await saved()) ?? response;
+    }
     if (response) return response;
     // 応答が遅い。保存してあるものがあれば先に出し、無ければ待ち続ける。
     network.catch(() => {});
@@ -119,11 +128,6 @@ async function networkFirst(request, shell, timeoutMs) {
   } catch (error) {
     const response = await saved();
     if (response) return response;
-    // どの画面も同じアプリなので、知らない URL でも最初の画面を出す。
-    if (request.mode === "navigate") {
-      const index = await fromShell(shell, "/");
-      if (index) return index;
-    }
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -209,7 +213,7 @@ self.addEventListener("notificationclick", (event) => {
         return;
       }
       await self.clients.openWindow(
-        messageId ? `/?message=${encodeURIComponent(messageId)}` : "/",
+        messageId ? `/messages/${encodeURIComponent(messageId)}` : "/",
       );
     })(),
   );

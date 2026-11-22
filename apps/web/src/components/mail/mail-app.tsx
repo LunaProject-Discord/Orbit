@@ -8,7 +8,7 @@ import {
   PenSquareIcon,
   PlusIcon,
 } from "lucide-react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -264,8 +264,11 @@ export function MailApp({ user }: { user: User }) {
   // 開いたときの URL が指す表示から始める (再読み込み、ブックマーク、通知から開いた場合)。
   // ログイン画面から移ってきた直後は window.location がまだ前の画面を指していることがあるので、
   // 描画中のページの URL を Next.js から受け取る。
+  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [initialRoute] = useState(() => parseRoute(searchParams.toString()));
+  const [initialRoute] = useState(() =>
+    parseRoute(`${pathname}?${searchParams.toString()}`),
+  );
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     initialRoute.accountId,
@@ -612,7 +615,7 @@ export function MailApp({ user }: { user: User }) {
     void syncNotifications().then((status) => {
       if (active) setNotificationStatus(status);
     });
-    // 通知から新しく開かれた場合は URL (?message=) でメールが指定されていて、
+    // 通知から新しく開かれた場合は URL (/messages/<ID>) でメールが指定されていて、
     // 開いたときの URL としてすでに表示に反映している。
     const unsubscribe = onNotificationOpen(openFromNotification);
     return () => {
@@ -1273,8 +1276,8 @@ export function MailApp({ user }: { user: User }) {
         ? NEW_COMPOSE
         : draft.idempotencyKey
       : null;
-  /** いまの表示を表す URL (? 以降)。 */
-  const routeQuery = buildRoute({
+  /** いまの表示を表す URL (パスと ? 以降)。 */
+  const routeUrl = buildRoute({
     accountId: selectedAccountId,
     mailboxId: selectedMailboxId,
     drafts: draftsSelected,
@@ -1288,17 +1291,16 @@ export function MailApp({ user }: { user: User }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: routeSync は照らし合わせ直すきっかけとして使う
   useEffect(() => {
     if (backPendingRef.current) return;
-    const currentQuery = window.location.search;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
     const forceReplace = replaceNextRef.current;
     replaceNextRef.current = false;
-    if (routeQuery === currentQuery) return;
-    const url = `${window.location.pathname}${routeQuery}`;
+    if (routeUrl === currentUrl) return;
     const from: unknown = window.history.state?.mailFrom;
     let mode = forceReplace
       ? "replace"
-      : historyMode(parseRoute(currentQuery), parseRoute(routeQuery));
+      : historyMode(parseRoute(currentUrl), parseRoute(routeUrl));
     if (mode === "close") {
-      if (from === routeQuery) {
+      if (from === routeUrl) {
         // 開く前の表示が 1 つ前の履歴にあるので、そこへ戻る。
         backPendingRef.current = true;
         window.history.back();
@@ -1307,11 +1309,11 @@ export function MailApp({ user }: { user: User }) {
       mode = "replace";
     }
     if (mode === "push") {
-      window.history.pushState({ mailFrom: currentQuery }, "", url);
+      window.history.pushState({ mailFrom: currentUrl }, "", routeUrl);
     } else {
-      window.history.replaceState({ mailFrom: from }, "", url);
+      window.history.replaceState({ mailFrom: from }, "", routeUrl);
     }
-  }, [routeQuery, routeSync]);
+  }, [routeUrl, routeSync]);
 
   /** URL が指す表示に切り替える (ブラウザーの「戻る」「進む」)。 */
   const applyRouteRef = useRef<(route: MailRoute) => void>(() => {});
@@ -1351,7 +1353,9 @@ export function MailApp({ user }: { user: User }) {
         setRouteSync((count) => count + 1);
         return;
       }
-      applyRouteRef.current(parseRoute(window.location.search));
+      applyRouteRef.current(
+        parseRoute(`${window.location.pathname}${window.location.search}`),
+      );
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1865,7 +1869,7 @@ export function MailApp({ user }: { user: User }) {
             }
             onSignOut={() => {
               // ログアウトしたあとに別の利用者がログインしても、この表示には戻さない。
-              window.history.replaceState(null, "", window.location.pathname);
+              window.history.replaceState(null, "", "/");
               void signOut();
             }}
           />

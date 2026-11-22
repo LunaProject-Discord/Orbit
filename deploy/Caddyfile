@@ -15,6 +15,9 @@
 	}
 
 	# Web。Next.js の静的エクスポートなので、/login は login.html を返す。
+	# メールの画面はパス (/accounts/<ID>/folders/<ID> など) をブラウザー側で読み取るので、
+	# 対応するファイルの無いパスには最初の画面 (index.html) を返す。
+	# 拡張子の付いたパス (スクリプトや画像) は対象にせず、無ければ 404 にする。
 	handle {
 		root * /srv
 		encode zstd gzip
@@ -22,7 +25,13 @@
 		@immutable path /_next/static/*
 		header @immutable Cache-Control "public, max-age=31536000, immutable"
 
-		try_files {path} {path}.html {path}/index.html
+		@page {
+			not path_regexp \.[A-Za-z0-9]+$
+			file {
+				try_files {path} {path}.html {path}/index.html /index.html
+			}
+		}
+		rewrite @page {file_match.relative}
 		file_server
 	}
 

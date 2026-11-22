@@ -16,12 +16,13 @@ const MESSAGE = "019ab000-0000-7000-8000-000000000003";
 const DRAFT = "3f2b8c1e-6d1f-4c0a-9a57-1d2e3f4a5b6c";
 
 describe("buildRoute と parseRoute", () => {
-  it("何も選んでいなければ、URL には何も付けない", () => {
-    expect(buildRoute(emptyRoute)).toBe("");
+  it("何も選んでいなければ /", () => {
+    expect(buildRoute(emptyRoute)).toBe("/");
+    expect(parseRoute("/")).toEqual(emptyRoute);
     expect(parseRoute("")).toEqual(emptyRoute);
   });
 
-  it("アカウント、フォルダ、メール、作成画面を往復できる", () => {
+  it("アカウント、フォルダ、メール、作成画面をパスで往復できる", () => {
     const route: MailRoute = {
       ...emptyRoute,
       accountId: ACCOUNT,
@@ -29,17 +30,42 @@ describe("buildRoute と parseRoute", () => {
       messageId: MESSAGE,
       composeId: DRAFT,
     };
-    const query = buildRoute(route);
-    expect(query).toBe(
-      `?account=${ACCOUNT}&folder=${FOLDER}&message=${MESSAGE}&compose=${DRAFT}`,
+    const url = buildRoute(route);
+    expect(url).toBe(
+      `/accounts/${ACCOUNT}/folders/${FOLDER}/messages/${MESSAGE}/compose/${DRAFT}`,
     );
-    expect(parseRoute(query)).toEqual(route);
+    expect(parseRoute(url)).toEqual(route);
   });
 
-  it("検索の内容を往復できる", () => {
+  it("途中を省いた形も往復できる", () => {
+    const routes: MailRoute[] = [
+      { ...emptyRoute, accountId: ACCOUNT },
+      { ...emptyRoute, accountId: ACCOUNT, mailboxId: FOLDER },
+      { ...emptyRoute, accountId: ACCOUNT, messageId: MESSAGE },
+      { ...emptyRoute, messageId: MESSAGE },
+      { ...emptyRoute, composeId: "new" },
+      { ...emptyRoute, messageId: MESSAGE, composeId: DRAFT },
+    ];
+    for (const route of routes) {
+      expect(parseRoute(buildRoute(route))).toEqual(route);
+    }
+    expect(buildRoute(routes[0] as MailRoute)).toBe(`/accounts/${ACCOUNT}`);
+    expect(buildRoute(routes[3] as MailRoute)).toBe(`/messages/${MESSAGE}`);
+    expect(buildRoute(routes[4] as MailRoute)).toBe("/compose/new");
+  });
+
+  it("末尾の / や ID の大文字を気にしない", () => {
+    expect(parseRoute(`/accounts/${ACCOUNT.toUpperCase()}/`)).toEqual({
+      ...emptyRoute,
+      accountId: ACCOUNT,
+    });
+  });
+
+  it("検索の内容は ? 以降に置き、往復できる", () => {
     const route: MailRoute = {
       ...emptyRoute,
       accountId: ACCOUNT,
+      messageId: MESSAGE,
       search: {
         text: "見積もり 2026",
         filters: {
@@ -55,21 +81,26 @@ describe("buildRoute と parseRoute", () => {
         scope: "folder",
       },
     };
-    expect(parseRoute(buildRoute(route))).toEqual(route);
+    const url = buildRoute(route);
+    expect(url.startsWith(`/accounts/${ACCOUNT}/messages/${MESSAGE}?q=`)).toBe(
+      true,
+    );
+    expect(parseRoute(url)).toEqual(route);
+    expect(parseRoute("/?q=abc").search?.text).toBe("abc");
   });
 
   it("検索する内容が無ければ、検索中として扱わない", () => {
-    expect(parseRoute("?q=&in=folder").search).toBeNull();
+    expect(parseRoute("/?q=&in=folder").search).toBeNull();
     expect(
       buildRoute({
         ...emptyRoute,
         search: { text: "", filters: emptyFilters, scope: "folder" },
       }),
-    ).toBe("");
+    ).toBe("/");
   });
 
   it("下書きの一覧では、フォルダやメールを URL に残さない", () => {
-    const query = buildRoute({
+    const url = buildRoute({
       ...emptyRoute,
       accountId: ACCOUNT,
       mailboxId: FOLDER,
@@ -77,31 +108,58 @@ describe("buildRoute と parseRoute", () => {
       drafts: true,
       composeId: DRAFT,
     });
-    expect(query).toBe(`?view=drafts&compose=${DRAFT}`);
-    expect(parseRoute(query)).toEqual({
+    expect(url).toBe(`/drafts/compose/${DRAFT}`);
+    expect(parseRoute(url)).toEqual({
       ...emptyRoute,
       drafts: true,
       composeId: DRAFT,
     });
   });
 
-  it("新規のメールは compose=new で表す", () => {
-    expect(parseRoute("?compose=new").composeId).toBe("new");
+  it("形の合わない部分は無視する", () => {
+    expect(parseRoute("/accounts/1/folders/abc")).toEqual(emptyRoute);
+    expect(parseRoute("/unknown/page")).toEqual(emptyRoute);
+    expect(parseRoute("/messages/<script>/compose/x?since=11/21")).toEqual(
+      emptyRoute,
+    );
+    // アカウントの ID が壊れていても、読み取れる部分は使う。
+    expect(parseRoute(`/accounts/x/messages/${MESSAGE}`)).toEqual(emptyRoute);
+    expect(parseRoute(`/accounts/${ACCOUNT}/folders/x`)).toEqual({
+      ...emptyRoute,
+      accountId: ACCOUNT,
+    });
+  });
+});
+
+describe("以前の形の URL (すべて ? 以降)", () => {
+  it("読み取って、いまの形に直せる", () => {
+    const cases: [string, string][] = [
+      [
+        `/?account=${ACCOUNT}&folder=${FOLDER}&message=${MESSAGE}&compose=${DRAFT}`,
+        `/accounts/${ACCOUNT}/folders/${FOLDER}/messages/${MESSAGE}/compose/${DRAFT}`,
+      ],
+      [`/?message=${MESSAGE}`, `/messages/${MESSAGE}`],
+      [`?message=${MESSAGE}`, `/messages/${MESSAGE}`],
+      ["/?view=drafts", "/drafts"],
+      ["/?view=settings", "/settings"],
+      [`/?view=starred&message=${MESSAGE}`, `/starred/messages/${MESSAGE}`],
+      ["/?compose=new", "/compose/new"],
+      [
+        `/?account=${ACCOUNT}&q=abc&unread=1`,
+        `/accounts/${ACCOUNT}?q=abc&unread=1`,
+      ],
+    ];
+    for (const [legacy, current] of cases) {
+      expect(buildRoute(parseRoute(legacy))).toBe(current);
+    }
   });
 
   it("形の合わない値は無視する", () => {
     expect(
       parseRoute(
-        "?account=1&folder=abc&message=<script>&compose=x&since=11/21&view=other",
+        "/?account=1&folder=abc&message=<script>&compose=x&since=11/21&view=other",
       ),
     ).toEqual(emptyRoute);
-  });
-
-  it("通知から開いた URL (?message=) を読める", () => {
-    expect(parseRoute(`?message=${MESSAGE}`)).toEqual({
-      ...emptyRoute,
-      messageId: MESSAGE,
-    });
   });
 });
 
@@ -168,7 +226,9 @@ describe("historyMode", () => {
 
 describe("safeReturnPath", () => {
   it("アプリの中のパスだけを通す", () => {
-    expect(safeReturnPath(`/?account=${ACCOUNT}`)).toBe(`/?account=${ACCOUNT}`);
+    expect(safeReturnPath(`/accounts/${ACCOUNT}?q=a`)).toBe(
+      `/accounts/${ACCOUNT}?q=a`,
+    );
     expect(safeReturnPath("/")).toBeNull();
     expect(safeReturnPath(null)).toBeNull();
     expect(safeReturnPath("//example.com")).toBeNull();
@@ -181,21 +241,19 @@ describe("safeReturnPath", () => {
 describe("フォルダ以外の表示", () => {
   it("スター付き、送信待ち、設定を URL に残す", () => {
     for (const special of ["starred", "outgoing", "settings"] as const) {
-      const query = buildRoute({ ...emptyRoute, special });
-      expect(query).toBe(`?view=${special}`);
-      expect(parseRoute(query)).toEqual({ ...emptyRoute, special });
+      const url = buildRoute({ ...emptyRoute, special });
+      expect(url).toBe(`/${special}`);
+      expect(parseRoute(url)).toEqual({ ...emptyRoute, special });
     }
   });
 
   it("スター付きの一覧で開いたメールも残す", () => {
     const messageId = "0198f1c2-0000-7000-8000-000000000001";
     const route = { ...emptyRoute, special: "starred" as const, messageId };
-    expect(buildRoute(route)).toBe(`?view=starred&message=${messageId}`);
+    expect(buildRoute(route)).toBe(`/starred/messages/${messageId}`);
     expect(parseRoute(buildRoute(route))).toEqual(route);
     // 設定ではメールを開かない。
-    expect(parseRoute(`?view=settings&message=${messageId}`).messageId).toBe(
-      null,
-    );
+    expect(parseRoute(`/settings/messages/${messageId}`).messageId).toBe(null);
   });
 
   it("表示を切り替えたら履歴に積む", () => {

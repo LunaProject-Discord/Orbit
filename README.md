@@ -406,20 +406,29 @@ shadcn/ui の CLI がフォント設定を書き換えた場合は、`--font-san
 ### 画面の URL
 
 表示中のアカウント、フォルダ、メール、検索、下書きの一覧、作成画面は URL に反映します。再読み込みやブックマーク、ブラウザーの「戻る」「進む」で同じ表示に戻れます。
-Web は静的ファイルとして出力する (Tauri / Capacitor にも同梱する) ので、ID をパスには入れず、すべて `?` 以降に置きます。読み書きは `apps/web/src/lib/route.ts` にまとめています。
+表示はパスで表し、検索の内容だけを `?` 以降に置きます。読み書きは `apps/web/src/lib/route.ts` にまとめています。
 
 | URL | 表示 |
 | --- | --- |
 | `/` | すべての受信トレイ |
-| `/?account=<ID>` | そのアカウントの受信トレイ |
-| `/?account=<ID>&folder=<ID>` | フォルダ |
-| `…&message=<ID>` | メール (会話) を開いた状態 |
-| `…&q=<語>` | 検索。絞り込みは `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1`、表示中のフォルダだけを探すときは `in=folder` |
-| `/?view=drafts` | 下書きの一覧 |
-| `/?view=starred` | スター付きのメール (全アカウント・全フォルダ)。`&message=<ID>` でメールを開いた状態 |
-| `/?view=outgoing` | 送信待ちのメール |
-| `/?view=settings` | 設定 (表示、メール一覧、メールの表示、操作、通知、メールアカウント、同期の状況、ショートカットキー)。表示や操作の設定は端末ごとに localStorage へ保存する |
-| `…&compose=<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `compose=new`) |
+| `/accounts/<ID>` | そのアカウントの受信トレイ |
+| `/accounts/<ID>/folders/<ID>` | フォルダ |
+| `…/messages/<ID>` | メール (会話) を開いた状態 (`/messages/<ID>`、`/accounts/<ID>/messages/<ID>` なども同じ) |
+| `/drafts` | 下書きの一覧 |
+| `/starred` | スター付きのメール (全アカウント・全フォルダ)。`/starred/messages/<ID>` でメールを開いた状態 |
+| `/outgoing` | 送信待ちのメール |
+| `/settings` | 設定 (表示、メール一覧、メールの表示、操作、通知、メールアカウント、同期の状況、ショートカットキー)。表示や操作の設定は端末ごとに localStorage へ保存する |
+| `…/compose/<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `…/compose/new`) |
+| `…?q=<語>` | 検索。絞り込みは `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1`、表示中のフォルダだけを探すときは `in=folder` |
+
+Web は静的ファイルとして出力する (Tauri / Capacitor にも同梱する) ので、Next.js のページは `/` の 1 つだけで、パスはブラウザー側で読み取ります。対応するファイルの無いパスを開いたときに同じ画面を返すのは、配信する側の役目です。
+
+- 本番: `deploy/Caddyfile` が、拡張子の無いパスに `index.html` を返す。
+- オフライン: サービスワーカー (`apps/web/public/sw.js`) が、保存してある最初の画面を返す。
+- `next dev` や、`404.html` しか返さない置き場: 404 の画面 (`apps/web/src/app/not-found.tsx`) も同じアプリなので、そのまま開ける。
+- ほかの場所に置くときは、知らないパスに `index.html` を返す設定 (SPA のフォールバック) を入れる。
+
+以前の形の URL (`/?account=<ID>&folder=<ID>&message=<ID>`、`/?view=drafts` など) を開くと、いまの形に書き換えます。
 
 フォルダの切り替えと、メールや作成画面を開く操作は履歴に積みます。メールからメールへの移動と検索欄の入力は、いまの履歴を書き換えます。
 ログインしていない状態で開いた URL は、ログイン後にそのまま開きます (`/login?next=`)。
