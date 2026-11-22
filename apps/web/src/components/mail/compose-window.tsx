@@ -577,9 +577,9 @@ export function ComposeWindow({
       aria-label="メールの作成"
       data-maximized={maximized || undefined}
       className={cn(
-        "fixed inset-0 z-40 flex flex-col bg-popover text-popover-foreground sm:shadow-2xl",
+        "fixed inset-0 top-(--titlebar-height) z-40 flex flex-col bg-popover text-popover-foreground sm:shadow-2xl",
         maximized
-          ? "sm:inset-4 sm:rounded-xl sm:border"
+          ? "sm:inset-4 sm:top-[calc(var(--titlebar-height)+1rem)] sm:rounded-xl sm:border"
           : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
       )}
     >

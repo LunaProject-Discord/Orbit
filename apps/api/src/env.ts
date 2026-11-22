@@ -18,8 +18,17 @@ function required(name: string): string {
   return value;
 }
 
-/** スマホ版 (Capacitor) の画面のオリジン。Android は https://localhost、iOS は capacitor://localhost。 */
-const APP_ORIGINS = ["https://localhost", "capacitor://localhost"];
+/**
+ * 同梱アプリの画面のオリジン。
+ * - スマホ版 (Capacitor): Android は https://localhost、iOS は capacitor://localhost。
+ * - デスクトップ版 (Tauri): Windows は http://tauri.localhost、macOS / Linux は tauri://localhost。
+ */
+const APP_ORIGINS = [
+  "https://localhost",
+  "capacitor://localhost",
+  "http://tauri.localhost",
+  "tauri://localhost",
+];
 
 /** 環境変数を読み込む。不足があれば起動時に止める。 */
 export function loadEnv() {

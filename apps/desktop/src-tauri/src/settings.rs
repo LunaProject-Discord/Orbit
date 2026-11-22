@@ -15,7 +15,9 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { close_to_tray: true }
+        Self {
+            close_to_tray: true,
+        }
     }
 }
 

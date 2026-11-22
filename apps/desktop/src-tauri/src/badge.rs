@@ -42,9 +42,9 @@ fn overlay_dot() -> Image<'static> {
 
 pub fn tooltip(count: u32) -> String {
     if count == 0 {
-        "Mail".to_owned()
+        "Orbit Mail".to_owned()
     } else {
-        format!("Mail (未読 {count} 件)")
+        format!("Orbit Mail (未読 {count} 件)")
     }
 }
 
@@ -57,7 +57,11 @@ pub fn apply(app: &AppHandle, count: u32) {
     #[cfg(windows)]
     let _ = window.set_overlay_icon(if count > 0 { Some(overlay_dot()) } else { None });
     #[cfg(not(windows))]
-    let _ = window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None });
+    let _ = window.set_badge_count(if count > 0 {
+        Some(i64::from(count))
+    } else {
+        None
+    });
 }
 
 #[cfg(test)]
@@ -78,7 +82,7 @@ mod tests {
 
     #[test]
     fn tooltip_shows_the_unread_count() {
-        assert_eq!(tooltip(0), "Mail");
-        assert_eq!(tooltip(3), "Mail (未読 3 件)");
+        assert_eq!(tooltip(0), "Orbit Mail");
+        assert_eq!(tooltip(3), "Orbit Mail (未読 3 件)");
     }
 }

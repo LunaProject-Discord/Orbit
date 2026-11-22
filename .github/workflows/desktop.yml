@@ -1,0 +1,158 @@
+name: Desktop
+
+# デスクトップ版 (apps/desktop、Tauri) を Windows / macOS / Linux 向けにビルドする。
+# - プルリクエストと main: apps/desktop を変えたときに、インストーラーを作る。
+# - 手動 (Run workflow): 最新の画面 (apps/web) を入れたインストーラーを作り直す。
+# - タグ desktop-v*: その版のインストーラーを作り、GitHub Releases に載せる (例: desktop-v0.1.0)。
+# 署名の証明書と自動更新の鍵は、リポジトリのシークレットから渡す。無くてもビルドは通り、
+# その場合は署名の無いインストーラーができて、自動更新は無効になる。
+# 準備の手順は docs/desktop-app.md を参照。
+on:
+  pull_request:
+    paths:
+      - apps/desktop/**
+      - .github/workflows/desktop.yml
+  push:
+    branches: [main]
+    tags: ["desktop-v*"]
+    paths:
+      - apps/desktop/**
+      - .github/workflows/desktop.yml
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # タグのときだけ、GitHub Releases へ載せるために書き込みを許す。
+    permissions:
+      contents: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && 'write' || 'read' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact: orbit-mail-windows
+            args: ""
+            rust-targets: ""
+          # Apple シリコンと Intel の両方で動く 1 つのアプリにする。
+          - name: macOS
+            os: macos-latest
+            artifact: orbit-mail-macos
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          # 古めの Ubuntu でビルドしておくと、新しいディストリビューションでも動く。
+          - name: Linux
+            os: ubuntu-22.04
+            artifact: orbit-mail-linux
+            args: ""
+            rust-targets: ""
+    env:
+      # アプリが最初に接続するサーバー。アプリの「接続先サーバー」の画面で後から変えられる。
+      NEXT_PUBLIC_API_URL: ${{ vars.DESKTOP_SERVER_URL || vars.MOBILE_SERVER_URL || 'https://orbit.lunaproject.jp' }}
+      IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/desktop-v') }}
+      # 自動更新: 更新ファイルの署名に使う鍵 (秘密鍵はシークレット、公開鍵は変数)。
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+      # 更新の確認先。既定はこのリポジトリの GitHub Releases (リポジトリが公開のときだけ届く)。
+      TAURI_UPDATER_ENDPOINT: ${{ vars.TAURI_UPDATER_ENDPOINT || format('https://github.com/{0}/releases/latest/download/latest.json', github.repository) }}
+      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: ビルドに必要なライブラリを入れる (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Rust のテスト
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          mkdir -p ../../web/out
+          cargo test --locked
+
+      # タグの名前 (desktop-v0.1.0) をそのままアプリの版にする。それ以外は package.json の版のまま。
+      - name: 版を決める
+        if: env.IS_RELEASE == 'true'
+        shell: bash
+        working-directory: apps/desktop
+        run: npm pkg set version="${GITHUB_REF_NAME#desktop-v}"
+
+      - name: 署名の証明書を取り込む (Windows)
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERTIFICATE == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP "certificate.pfx"
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $path -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $path
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
+
+      # シークレットの有無に合わせた設定 (自動更新、署名) を作り、ビルドに重ねる。
+      - name: ビルドの設定を作る
+        run: node apps/desktop/scripts/ci-config.mjs "${{ runner.temp }}/tauri.ci.conf.json"
+
+      - name: ビルド
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS の署名と公証 (Apple Developer Program の証明書があるとき)。
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          args: ${{ matrix.args }} --config "${{ runner.temp }}/tauri.ci.conf.json"
+          # タグのときだけ GitHub Releases に載せる (tagName が空なら、ビルドだけ行う)。
+          tagName: ${{ env.IS_RELEASE == 'true' && github.ref_name || '' }}
+          releaseName: Orbit Mail デスクトップ版 __VERSION__
+          releaseBody: インストーラーは下の Assets からダウンロードできます。入れ方は docs/desktop-app.md を参照してください。
+          releaseDraft: false
+          prerelease: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            apps/desktop/src-tauri/target/**/release/bundle/nsis/*.exe
+            apps/desktop/src-tauri/target/**/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/**/release/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/**/release/bundle/rpm/*.rpm
+            apps/desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

@@ -19,14 +19,19 @@ fn base_icon(_app: &AppHandle) -> Option<Image<'static>> {
 
 #[cfg(not(target_os = "macos"))]
 fn base_icon(app: &AppHandle) -> Option<Image<'static>> {
-    app.default_window_icon().map(|icon| icon.clone().to_owned())
+    app.default_window_icon()
+        .map(|icon| icon.clone().to_owned())
 }
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let state = app.state::<AppState>();
-    let close_to_tray = state.settings.lock().map(|s| s.close_to_tray).unwrap_or(true);
+    let close_to_tray = state
+        .settings
+        .lock()
+        .map(|s| s.close_to_tray)
+        .unwrap_or(true);
 
-    let open = MenuItem::with_id(app, "open", "Mail を開く", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Orbit Mail を開く", true, None::<&str>)?;
     let keep = CheckMenuItem::with_id(
         app,
         "close_to_tray",
@@ -36,7 +41,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let update = MenuItem::with_id(app, "update", "更新を確認…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Mail を終了", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Orbit Mail を終了", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -78,7 +83,9 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
             }
         });
     if let Some(icon) = base_icon(app) {
-        builder = builder.icon(icon).icon_as_template(cfg!(target_os = "macos"));
+        builder = builder
+            .icon(icon)
+            .icon_as_template(cfg!(target_os = "macos"));
     }
     builder.build(app)?;
 

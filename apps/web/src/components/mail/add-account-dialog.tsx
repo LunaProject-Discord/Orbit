@@ -24,7 +24,7 @@ import {
   type OAuthProvider,
   startOAuthLogin,
 } from "@/lib/api";
-import { isNativeApp } from "@/lib/native/app";
+import { usesAppOAuth } from "@/lib/native/oauth";
 
 /** 画面の段階。choose はサービスの選択、icloud と manual は入力フォーム。 */
 type Step = "choose" | "icloud" | "manual";
@@ -123,9 +123,9 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     try {
       // ログイン画面へ移動する。ログイン後は /oauth/google などに戻ってくる。
       window.location.assign(await startOAuthLogin(provider));
-      // スマホアプリでは、ログイン画面はアプリの外のブラウザーで開き、この画面は残る。
+      // スマホアプリとデスクトップ版では、ログイン画面はアプリの外のブラウザーで開き、この画面は残る。
       // ログインをやめて戻ってきたときに、もう一度押せるようにしておく。
-      if (isNativeApp()) setRedirecting(null);
+      if (usesAppOAuth()) setRedirecting(null);
     } catch (cause) {
       setError(messageOf(cause, step));
       setRedirecting(null);

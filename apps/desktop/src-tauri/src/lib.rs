@@ -1,4 +1,4 @@
-//! Mail のデスクトップ版。
+//! Orbit Mail のデスクトップ版。
 //! 画面は apps/web の静的出力をそのまま載せ、ここでは OS との橋渡しだけを受け持つ
 //! (ウィンドウ枠、トレイ、未読数のバッジ、新着メールの通知、外部リンク、自動更新)。
 
@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Url, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -21,6 +22,11 @@ use settings::Settings;
 pub(crate) const MAIN_WINDOW: &str = "main";
 /// 通知が押されたときに画面へ送るイベント。
 const OPEN_MESSAGE_EVENT: &str = "desktop://open-message";
+/// アプリ専用の URL で開かれたときに画面へ送るイベント。
+const APP_URL_EVENT: &str = "desktop://app-url";
+/// アプリ専用の URL のスキーム。外のブラウザーでの Google / Microsoft のログインから戻るときに使う
+/// (tauri.conf.json の plugins.deep-link、Web 側の lib/native/oauth.ts と合わせる)。
+const APP_URL_SCHEME: &str = "jp.lunaproject.orbit.mail";
 
 pub(crate) struct AppState {
     pub settings: Mutex<Settings>,
@@ -47,7 +53,9 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 }
 
 pub(crate) fn quit(app: &AppHandle) {
-    app.state::<AppState>().quitting.store(true, Ordering::SeqCst);
+    app.state::<AppState>()
+        .quitting
+        .store(true, Ordering::SeqCst);
     app.exit(0);
 }
 
@@ -168,6 +176,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -185,6 +194,23 @@ pub fn run() {
             updater::setup(&handle)?;
             create_main_window(&handle)?;
             tray::setup(&handle)?;
+
+            // インストーラーを通さずに動かしているとき (開発中、Linux の AppImage) も、
+            // アプリ専用の URL でこのアプリが開くようにする。
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            let _ = app.deep_link().register_all();
+
+            // 外のブラウザーでのログインから戻ってきたら、ウィンドウを前に出して画面へ渡す。
+            let url_handle = handle.clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    if url.scheme() != APP_URL_SCHEME {
+                        continue;
+                    }
+                    show_main_window(&url_handle);
+                    let _ = url_handle.emit_to(MAIN_WINDOW, APP_URL_EVENT, url.to_string());
+                }
+            });
 
             // 通知が押されたら、ウィンドウを前に出してそのメールを開く。
             let action_handle = handle.clone();
@@ -213,7 +239,11 @@ pub fn run() {
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppState>();
-                let keep_running = state.settings.lock().map(|s| s.close_to_tray).unwrap_or(true);
+                let keep_running = state
+                    .settings
+                    .lock()
+                    .map(|s| s.close_to_tray)
+                    .unwrap_or(true);
                 // 閉じてもトレイに残し、新着メールの通知を受け続ける。
                 if keep_running && !state.quitting.load(Ordering::SeqCst) {
                     api.prevent_close();
@@ -222,14 +252,16 @@ pub fn run() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("Mail を起動できませんでした");
+        .expect("Orbit Mail を起動できませんでした");
 
     app.run(|app, event| match event {
         // macOS で Dock のアイコンが押されたら、閉じていたウィンドウを戻す。
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => show_main_window(app),
         RunEvent::ExitRequested { .. } => {
-            app.state::<AppState>().quitting.store(true, Ordering::SeqCst);
+            app.state::<AppState>()
+                .quitting
+                .store(true, Ordering::SeqCst);
         }
         _ => {}
     });
@@ -253,7 +285,9 @@ mod tests {
         assert!(is_app_url(&url("tauri://localhost/login")));
         assert!(is_app_url(&url("http://tauri.localhost/")));
         assert!(is_app_url(&url("about:srcdoc")));
-        assert!(!is_app_url(&url("https://accounts.google.com/o/oauth2/v2/auth")));
+        assert!(!is_app_url(&url(
+            "https://accounts.google.com/o/oauth2/v2/auth"
+        )));
         assert!(!is_app_url(&url("https://tauri.localhost.example.com/")));
         assert!(!is_app_url(&url("mailto:someone@example.com")));
         assert!(!is_app_url(&url("file:///etc/passwd")));

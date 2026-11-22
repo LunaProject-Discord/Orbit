@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { isDesktopApp } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
 
 /**
@@ -9,8 +10,11 @@ import { isNativeApp } from "@/lib/native/app";
  */
 export function OfflineBoot() {
   useEffect(() => {
-    // スマホアプリでは、アプリ本体は端末に入っているので保存し直す必要がない。
-    if (isNativeApp() || !("serviceWorker" in navigator)) return;
+    // スマホアプリとデスクトップ版では、アプリ本体は端末に入っているので保存し直す必要がない
+    // (保存すると、アプリを更新しても古い画面が出続けるおそれがある)。
+    if (isNativeApp() || isDesktopApp() || !("serviceWorker" in navigator)) {
+      return;
+    }
     navigator.serviceWorker
       .register("/sw.js")
       .then(() => navigator.serviceWorker.ready)

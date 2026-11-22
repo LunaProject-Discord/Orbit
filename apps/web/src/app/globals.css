@@ -49,8 +49,22 @@
 }
 
 @layer base {
+  /*
+   * デスクトップ版 (Tauri) では、上端に自前のタイトルバー (components/desktop/title-bar.tsx) を置く。
+   * アプリ側が画面を描く前に html へ data-desktop を付けるので、その分だけ画面全体を下げる。
+   * 画面いっぱいに固定する要素は、top にこの変数を使う。ブラウザーとスマホアプリでは 0。
+   */
+  :root {
+    --titlebar-height: 0px;
+  }
+
+  html[data-desktop] {
+    --titlebar-height: 2.25rem;
+  }
+
   body {
     @apply bg-background text-foreground;
+    padding-top: var(--titlebar-height);
   }
 
   /* 見出しは Display を使う */

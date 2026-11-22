@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Mail",
+  "productName": "Orbit Mail",
   "version": "../package.json",
-  "identifier": "com.lunaproject.mail",
+  "identifier": "jp.lunaproject.orbit.mail",
   "build": {
     "beforeDevCommand": "pnpm --filter @mail/web dev",
     "devUrl": "http://localhost:3000",
@@ -14,7 +14,7 @@
       {
         "label": "main",
         "create": false,
-        "title": "Mail",
+        "title": "Orbit Mail",
         "width": 1280,
         "height": 800,
         "minWidth": 380,
@@ -25,6 +25,13 @@
     ],
     "security": {
       "csp": null
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["jp.lunaproject.orbit.mail"]
+      }
     }
   },
   "bundle": {

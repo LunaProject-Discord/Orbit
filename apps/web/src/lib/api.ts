@@ -5,7 +5,7 @@
  */
 
 import type { AccountIconName } from "@/lib/account-icons";
-import { isNativeApp } from "@/lib/native/app";
+import { usesAppOAuth } from "@/lib/native/oauth";
 import { reportReachable } from "@/lib/offline/network";
 import { apiUrl } from "@/lib/server-url";
 
@@ -543,8 +543,8 @@ export async function startOAuthLogin(
       method: "POST",
       body: {
         ...(accountId ? { accountId } : {}),
-        // スマホアプリでは、ログイン後に Web 版のページからアプリへ戻してもらう。
-        ...(isNativeApp() ? { app: true } : {}),
+        // スマホアプリとデスクトップ版では、ログイン後に Web 版のページからアプリへ戻してもらう。
+        ...(usesAppOAuth() ? { app: true } : {}),
       },
     },
   );

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeBase64Url,
+  enabledFrom,
   inboxUnreadCount,
   parseMailEvent,
   unreadTitle,
@@ -54,5 +55,19 @@ describe("parseMailEvent", () => {
     expect(parseMailEvent("")).toEqual([]);
     expect(parseMailEvent("{}")).toEqual([]);
     expect(parseMailEvent('{"notifications":"x"}')).toEqual([]);
+  });
+});
+
+describe("enabledFrom", () => {
+  it("ブラウザーでは、オンにしたときだけ有効", () => {
+    expect(enabledFrom(null, false)).toBe(false);
+    expect(enabledFrom("on", false)).toBe(true);
+    expect(enabledFrom("off", false)).toBe(false);
+  });
+
+  it("デスクトップ版では、オフにしない限り有効", () => {
+    expect(enabledFrom(null, true)).toBe(true);
+    expect(enabledFrom("on", true)).toBe(true);
+    expect(enabledFrom("off", true)).toBe(false);
   });
 });

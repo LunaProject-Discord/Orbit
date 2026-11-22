@@ -47,6 +47,7 @@ import {
   updateAccount,
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
+import { isDesktopApp } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
 import {
   changeNotificationActions,
@@ -91,6 +92,12 @@ const nativeNotificationDescriptions: Record<NotificationStatus, string> = {
   blocked:
     "端末の設定で、このアプリの通知が許可されていません。通知を出すには、端末の設定で許可してください。",
   push: "新着メールを通知します。アプリを閉じていても届きます。",
+};
+
+/** デスクトップ版での説明 (ウィンドウを閉じても通知領域に残って受け取る)。 */
+const desktopNotificationDescriptions: Record<NotificationStatus, string> = {
+  ...notificationDescriptions,
+  page: "新着メールを通知します。ウィンドウを閉じていても、アプリを終了するまで届きます。",
 };
 
 const accountProblems: Partial<Record<Account["status"], string>> = {
@@ -509,7 +516,9 @@ export function SettingsView({
                   {
                     (isNativeApp()
                       ? nativeNotificationDescriptions
-                      : notificationDescriptions)[notificationStatus]
+                      : isDesktopApp()
+                        ? desktopNotificationDescriptions
+                        : notificationDescriptions)[notificationStatus]
                   }
                 </p>
               </div>
