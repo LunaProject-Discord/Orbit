@@ -52,7 +52,7 @@ export default function LoginPage() {
         <ThemeToggle />
       </div>
       <div className="w-full max-w-sm">
-        <h1 className="font-semibold text-3xl tracking-tight">Mail</h1>
+        <h1 className="font-semibold text-3xl tracking-tight">Orbit</h1>
         <p className="mt-2 text-muted-foreground text-sm">
           アカウントにログインしてください。
         </p>

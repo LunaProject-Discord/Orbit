@@ -326,7 +326,7 @@ export function AccountSidebar({
       <div className="flex h-14 shrink-0 items-center gap-2 px-4">
         {headerStart}
         <span className="flex-1 font-heading font-semibold text-xl tracking-tight">
-          Mail
+          Orbit
         </span>
       </div>
       {onCompose && (
