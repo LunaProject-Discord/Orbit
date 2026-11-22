@@ -132,6 +132,26 @@ export async function mailboxesWithPendingBodies(
 }
 
 /**
+ * フォルダを開いた時点で保存する UIDVALIDITY の更新内容。変わっていなければ null。
+ *
+ * 取り込みが終わってから保存すると、最初の取り込みの途中 (Gmail のようにメールが多いと
+ * 数分かかる) で開いたメールへの既読などの操作が、UIDVALIDITY を持たないまま受け付けられ、
+ * 反映時に「フォルダが作り直された」と誤って判定される。そのため取り込む前に保存する。
+ * 値が変わった場合は、前の番号体系の同期状態 (UIDNEXT や変更番号) も捨てて、
+ * 取り込みが途中で切れても次回に最初から突き合わせるようにする。
+ */
+export function uidValidityUpdate(stored: bigint | null, remote: bigint) {
+  if (stored === remote) return null;
+  if (stored === null) return { uidValidity: remote };
+  return {
+    uidValidity: remote,
+    uidNext: null,
+    highestModseq: null,
+    lastSyncedAt: null,
+  };
+}
+
+/**
  * 選択中のフォルダ (呼び出し側がロックを持っていること) を DB と突き合わせる。
  * UID の一覧を比べて追加と削除を求め、フラグは CONDSTORE があれば差分だけ取る。
  * shouldStop が true を返すと取り込みの途中で切り上げ、complete: false を返す
@@ -162,6 +182,17 @@ export async function syncMailbox(
     mailbox.uidValidity !== null && mailbox.uidValidity !== remote.uidValidity;
   if (uidValidityChanged) {
     await removeMessages(db, account, mailbox.id, null);
+  }
+  // UIDVALIDITY は、メッセージを取り込む前に保存する (理由は uidValidityUpdate を参照)。
+  const validityUpdate = uidValidityUpdate(
+    mailbox.uidValidity,
+    remote.uidValidity,
+  );
+  if (validityUpdate) {
+    await db
+      .update(mailboxes)
+      .set(validityUpdate)
+      .where(eq(mailboxes.id, mailbox.id));
   }
 
   const local = await db
