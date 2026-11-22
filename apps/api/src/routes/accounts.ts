@@ -2,6 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   CHANNEL_ACCOUNTS,
   CHANNEL_CHANGES,
+  CHANNEL_OUTBOX,
   type ChangeNotification,
   createGoogleAuthorizeUrl,
   createMicrosoftAuthorizeUrl,
@@ -23,6 +24,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { accountIcon } from "../lib/account-icon.js";
 import { isDistinct, recordChanges } from "../lib/changes.js";
 import { resolvesToPrivateAddress } from "../lib/host-check.js";
 import { verifyImap } from "../lib/imap-verify.js";
@@ -47,6 +49,11 @@ const createAccountBody = z.object({
   smtp: server.optional(),
   username: z.string().min(1).max(320).optional(),
   password: z.string().min(1).max(1024),
+  /**
+   * 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許す。
+   * 接続先を手で設定したときだけ効く (Gmail と iCloud では使わない)。
+   */
+  allowLegacyTls: z.boolean().optional(),
 });
 
 const microsoftAuthorizeBody = z.object({
@@ -63,10 +70,23 @@ const microsoftCompleteBody = z.object({
 
 const idParam = z.object({ id: z.uuid() });
 
-const updateAccountBody = z.object({
-  /** 署名 (書式付き)。null か空なら署名なしにする。 */
-  signatureHtml: z.string().max(50_000).nullable(),
-});
+/** アカウントに付けられる色。"#rrggbb" (小文字) の色そのもの。 */
+const ACCOUNT_COLOR = /^#[0-9a-f]{6}$/;
+
+const updateAccountBody = z
+  .object({
+    /** 署名 (書式付き)。null か空なら署名なしにする。 */
+    signatureHtml: z.string().max(50_000).nullable().optional(),
+    /** 画面に出す名前。null か空ならメールアドレスを出す。 */
+    displayName: z.string().max(200).nullable().optional(),
+    /** 画面でアカウントを見分ける色。null なら並び順から決める。 */
+    color: z.string().regex(ACCOUNT_COLOR).nullable().optional(),
+    /** 画面でアカウントに付けるアイコン。null なら色の点を出す。 */
+    icon: accountIcon.nullable().optional(),
+    /** 古い TLS のサーバーへの接続を許す。IMAP / SMTP のアカウントでだけ変えられる。 */
+    allowLegacyTls: z.boolean().optional(),
+  })
+  .refine((body) => Object.values(body).some((value) => value !== undefined));
 
 const orderBody = z.object({
   /** 上から順に並べたいアカウントの ID。 */
@@ -87,11 +107,14 @@ const publicColumns = {
   smtpHost: mailAccounts.smtpHost,
   smtpPort: mailAccounts.smtpPort,
   smtpSecure: mailAccounts.smtpSecure,
+  allowLegacyTls: mailAccounts.allowLegacyTls,
   username: mailAccounts.username,
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
   signatureHtml: mailAccounts.signatureHtml,
   sortOrder: mailAccounts.sortOrder,
+  color: mailAccounts.color,
+  icon: mailAccounts.icon,
   createdAt: mailAccounts.createdAt,
 };
 
@@ -168,6 +191,8 @@ export function accountRoutes({
       smtp,
       username: input.username ?? input.email,
       provider,
+      // 決まった接続先 (Gmail、iCloud) は新しい TLS に対応しているので、許可を受け付けない。
+      allowLegacyTls: provider === "generic" && input.allowLegacyTls === true,
     };
 
     if (!allowPrivateMailHosts) {
@@ -201,6 +226,7 @@ export function accountRoutes({
       ...body.imap,
       username: body.username,
       password: body.password,
+      allowLegacyTls: body.allowLegacyTls,
     });
     if (!verified.ok) {
       return c.json({ error: verified.reason, detail: verified.detail }, 422);
@@ -221,6 +247,7 @@ export function accountRoutes({
           smtpHost: body.smtp.host,
           smtpPort: body.smtp.port,
           smtpSecure: body.smtp.secure,
+          allowLegacyTls: body.allowLegacyTls,
           username: body.username,
           credentialsEncrypted: encryptCredentials(
             { type: "password", password: body.password },
@@ -322,7 +349,8 @@ export function accountRoutes({
         profile = await fetchMicrosoftProfile(tokens.accessToken);
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
-        console.error("Microsoft のログインを完了できませんでした。", detail);
+        // 接続に失敗した場合は、cause に DNS、タイムアウト、TLS などの理由が入っている。
+        console.error("Microsoft のログインを完了できませんでした。", error);
         return c.json(
           {
             error:
@@ -487,7 +515,7 @@ export function accountRoutes({
         }
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
-        console.error("Google のログインを完了できませんでした。", detail);
+        console.error("Google のログインを完了できませんでした。", error);
         return c.json(
           {
             error:
@@ -563,7 +591,7 @@ export function accountRoutes({
     },
   );
 
-  /** アカウントの設定 (いまは署名) を変える。同期には影響しない。 */
+  /** アカウントの設定 (署名、表示名、色) を変える。指定した項目だけを変え、同期には影響しない。 */
   app.patch(
     "/:id",
     zValidator("param", idParam),
@@ -575,11 +603,36 @@ export function accountRoutes({
       const account = await db.transaction(async (tx) => {
         const [row] = await tx
           .update(mailAccounts)
-          .set({ signatureHtml: body.signatureHtml?.trim() || null })
-          .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, user.id)))
+          .set({
+            ...(body.signatureHtml !== undefined
+              ? { signatureHtml: body.signatureHtml?.trim() || null }
+              : {}),
+            ...(body.displayName !== undefined
+              ? { displayName: body.displayName?.trim() || null }
+              : {}),
+            ...(body.color !== undefined ? { color: body.color } : {}),
+            ...(body.icon !== undefined ? { icon: body.icon } : {}),
+            ...(body.allowLegacyTls !== undefined
+              ? { allowLegacyTls: body.allowLegacyTls }
+              : {}),
+          })
+          .where(
+            and(
+              eq(mailAccounts.id, id),
+              eq(mailAccounts.userId, user.id),
+              // TLS の設定は、IMAP / SMTP でつなぐアカウントにしか無い。
+              body.allowLegacyTls !== undefined
+                ? eq(mailAccounts.protocol, "imap")
+                : undefined,
+            ),
+          )
           .returning(publicColumns);
         if (!row) return null;
-        // ほかの端末の作成画面にも、新しい署名が届くようにする。
+        if (body.allowLegacyTls !== undefined) {
+          // 同期ワーカーが、新しい設定でつなぎ直す。
+          await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);
+        }
+        // ほかの端末にも、新しい設定が届くようにする。
         const [change] = await tx
           .insert(changes)
           .values({
@@ -631,6 +684,23 @@ export function accountRoutes({
     return c.body(null, 204);
   });
 
+  /** 次の定期確認を待たずに、いますぐ全フォルダを確認させる。 */
+  app.post("/:id/sync", zValidator("param", idParam), async (c) => {
+    const { id } = c.req.valid("param");
+    const [account] = await db
+      .select({ id: mailAccounts.id })
+      .from(mailAccounts)
+      .where(
+        and(eq(mailAccounts.id, id), eq(mailAccounts.userId, c.var.user.id)),
+      );
+    if (!account) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    // 操作を積んだときと同じ知らせ。同期ワーカーはキューを処理したあと、全フォルダを確認する。
+    await db.execute(sql`select pg_notify(${CHANNEL_OUTBOX}, ${id})`);
+    return c.body(null, 204);
+  });
+
   app.get("/:id/mailboxes", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");
     const rows = await db
@@ -640,6 +710,12 @@ export function accountRoutes({
         path: mailboxes.path,
         name: mailboxes.name,
         specialUse: mailboxes.specialUse,
+        detectedSpecialUse: mailboxes.detectedSpecialUse,
+        roleOverride: mailboxes.roleOverride,
+        displayName: mailboxes.displayName,
+        icon: mailboxes.icon,
+        color: mailboxes.color,
+        sortOrder: mailboxes.sortOrder,
         lastSyncedAt: mailboxes.lastSyncedAt,
       })
       .from(mailboxes)

@@ -1,4 +1,4 @@
-import type { OutgoingMessage } from "@mail/core";
+import { legacyTlsOptions, type OutgoingMessage } from "@mail/core";
 import nodemailer from "nodemailer";
 import { buildMime, envelopeOf } from "./mime.js";
 import type { SendOutcome } from "./send.js";
@@ -11,6 +11,8 @@ export type SmtpSettings = {
   username: string;
   /** 暗号化されていない接続を許す (開発用のローカルサーバー向け)。 */
   allowInsecure: boolean;
+  /** 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許す。 */
+  allowLegacyTls?: boolean;
 } & (
   | { password: string }
   /** OAuth2 のアクセストークン。XOAUTH2 でログインする (Gmail)。 */
@@ -75,6 +77,7 @@ export async function sendViaSmtp(
     secure: settings.secure,
     // STARTTLS に対応していないサーバーへ、パスワードを平文で送らない。
     requireTLS: !settings.secure && !settings.allowInsecure,
+    tls: legacyTlsOptions(settings.allowLegacyTls === true),
     auth:
       "accessToken" in settings
         ? {

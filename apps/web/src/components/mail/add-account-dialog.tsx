@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   type Account,
   ApiError,
@@ -46,6 +47,8 @@ function messageOf(error: unknown, step: Step): string {
           : `IMAP サーバーに接続できませんでした。ホスト名、ポート、TLS の設定を確認してください。${
               body.detail ? ` (${body.detail})` : ""
             }`;
+      case "legacy_tls_required":
+        return "このメールサーバーは、古い方式の TLS にしか対応していません。接続するには、下の「古い TLS のサーバーへの接続を許可する」をオンにして、もう一度「追加」を押してください。";
       case "account_exists":
         return "このメールアドレスはすでに追加されています。";
       case "host_not_allowed":
@@ -75,6 +78,7 @@ const initialForm = {
   smtpHost: "",
   smtpPort: "587",
   smtpSecure: false,
+  allowLegacyTls: false,
 };
 
 const descriptions: Record<Step, string> = {
@@ -105,6 +109,8 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
   /** ユーザー名を手で変えるまでは、メールアドレスと同じ値にする。 */
   const [usernameEdited, setUsernameEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 古い TLS のサーバーだと分かったときだけ、許可のスイッチを出す。 */
+  const [legacyTlsOffered, setLegacyTlsOffered] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   /** ログイン画面へ移動中のサービス。 */
   const [redirecting, setRedirecting] = useState<OAuthProvider | null>(null);
@@ -131,6 +137,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     setStep("choose");
     setForm(initialForm);
     setUsernameEdited(false);
+    setLegacyTlsOffered(false);
     setError(null);
   }
 
@@ -182,6 +189,9 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
               },
               username: usernameEdited ? form.username : email,
               password: form.password,
+              ...(legacyTlsOffered && form.allowLegacyTls
+                ? { allowLegacyTls: true }
+                : {}),
             },
       );
       setSubmitting(false);
@@ -189,6 +199,9 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
       onCreated(account);
       onOpenChange(false);
     } catch (cause) {
+      if (cause instanceof ApiError && cause.code === "legacy_tls_required") {
+        setLegacyTlsOffered(true);
+      }
       setError(messageOf(cause, step));
       setSubmitting(false);
     }
@@ -401,6 +414,24 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
               onSecure={(value) => set("smtpSecure", value)}
             />
             {alert}
+            {legacyTlsOffered && (
+              <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                <div className="min-w-0 flex-1">
+                  <p id={`${id}-legacy-tls`} className="font-medium text-sm">
+                    古い TLS のサーバーへの接続を許可する
+                  </p>
+                  <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+                    安全な再ネゴシエーション (RFC 5746)
+                    に対応していないサーバーへ接続します。通信は暗号化され、証明書も確認しますが、通信経路に割り込める相手に内容を差し込まれるおそれが残ります。このアカウントの接続にだけ適用され、あとから設定で変えられます。
+                  </p>
+                </div>
+                <Switch
+                  aria-labelledby={`${id}-legacy-tls`}
+                  checked={form.allowLegacyTls}
+                  onCheckedChange={(checked) => set("allowLegacyTls", checked)}
+                />
+              </div>
+            )}
             {footer}
           </form>
         )}
@@ -476,13 +507,20 @@ function ServerFields(props: {
           <Label htmlFor={`${props.idPrefix}-port`}>ポート</Label>
           <Input
             id={`${props.idPrefix}-port`}
-            type="number"
+            type="text"
             inputMode="numeric"
             required
-            min={1}
-            max={65535}
+            // 1〜65535 の数字だけを受け付ける (ブラウザーの数値欄の上下ボタンは使わない)。
+            pattern="[1-9][0-9]{0,4}"
+            maxLength={5}
+            autoComplete="off"
             value={props.port}
-            onChange={(event) => props.onPort(event.target.value)}
+            onChange={(event) => {
+              const digits = event.target.value.replace(/\D/g, "").slice(0, 5);
+              props.onPort(
+                Number(digits) > 65535 ? "65535" : digits.replace(/^0+/, ""),
+              );
+            }}
           />
         </div>
       </div>

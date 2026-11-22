@@ -78,6 +78,90 @@
       "when": 1795282163400,
       "tag": "0010_sort_order",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795283438728,
+      "tag": "0011_account_color",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795287434921,
+      "tag": "0012_account_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795322247151,
+      "tag": "0013_mailbox_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795322968621,
+      "tag": "0014_account_icon_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1795328276441,
+      "tag": "0015_message_headers",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795328336441,
+      "tag": "0016_account_color_hex",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795330037307,
+      "tag": "0017_unified_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795332264110,
+      "tag": "0018_builtin_view_styles",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795338126517,
+      "tag": "0019_allow_legacy_tls",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795346548010,
+      "tag": "0020_mailbox_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795347172882,
+      "tag": "0021_signature_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1795347894435,
+      "tag": "0022_swipe_settings",
+      "breakpoints": true
     }
   ]
 }

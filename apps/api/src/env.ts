@@ -1,9 +1,11 @@
+import { hostname, networkInterfaces } from "node:os";
 import {
   loadEncryptionKey,
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
 } from "@mail/core";
+import { lanOrigins } from "./lib/lan-origins.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -30,10 +32,23 @@ export function loadEnv() {
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+  // 開発中は、同じ LAN のスマホなどから http://<この PC の IP アドレス>:3000 で開いても使えるようにする。
+  // 本番 (NODE_ENV=production) では足さない。ALLOW_LAN_ORIGINS=false でも止められる。
+  const allowLan =
+    process.env.NODE_ENV !== "production" &&
+    process.env.ALLOW_LAN_ORIGINS !== "false";
   // 同梱アプリの画面のオリジンは固定なので、設定しなくても通す。
   // 認証は Authorization ヘッダーのトークンで行い Cookie を使わないため、オリジンを足しても
   // 他のサイトから利用者の権限で呼ばれることはない。
-  const allowedOrigins = [...new Set([...configuredOrigins, ...APP_ORIGINS])];
+  const allowedOrigins = [
+    ...new Set([
+      ...configuredOrigins,
+      ...(allowLan
+        ? lanOrigins(configuredOrigins, hostname(), networkInterfaces())
+        : []),
+      ...APP_ORIGINS,
+    ]),
+  ];
   const microsoftConfig = loadMicrosoftOAuthConfig(process.env);
   const googleConfig = loadGoogleOAuthConfig(process.env);
   const webOrigin = configuredOrigins[0] ?? "http://localhost:3000";

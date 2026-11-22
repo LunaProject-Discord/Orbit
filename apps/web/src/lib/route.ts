@@ -5,29 +5,46 @@ import { emptyFilters, isSearchActive } from "@/lib/search";
  * 画面の状態のうち、URL に残すもの。再読み込みやブックマーク、ブラウザーの「戻る」で
  * 同じ表示に戻れるようにする。
  *
- * Web は静的ファイルとして出力し、Tauri / Capacitor にも同梱するので、
- * ID を含むパス (/mail/[accountId] など) は使えない。状態はすべて ? 以降に置く。
+ * 表示はパスで表す (/accounts/<ID>/folders/<ID>/messages/<ID> など)。検索の内容だけは
+ * ? 以降に置く。
+ *
+ * Web は静的ファイルとして出力し、Tauri / Capacitor にも同梱するので、Next.js のページは
+ * "/" の 1 つだけで、パスはこのファイルが読み取る。知らないパスを開いたときに同じ画面を
+ * 返すのは、配信する側の役目 (Caddy の設定、サービスワーカー、not-found.tsx)。
  */
 export type MailRoute = {
   /** 表示するアカウント。null なら全アカウント。 */
   accountId: string | null;
   /** 表示するフォルダ。null なら受信トレイ。 */
   mailboxId: string | null;
+  /** 表示する統合フォルダ。null なら通常のフォルダ。 */
+  unifiedId: string | null;
   /** 下書きの一覧を表示している。 */
   drafts: boolean;
+  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。null ならフォルダの一覧。 */
+  special: SpecialView | null;
   /** 開いているメール。 */
   messageId: string | null;
+  /** 会話の全体ではなく、会話の中のその 1 通だけを開いている (一覧で会話を広げて選んだとき)。 */
+  single: boolean;
   /** 作成画面で開いている下書きの ID。まだ何も書いていない新規のメールは "new"。 */
   composeId: string | null;
   /** 実行中の検索。null なら通常の一覧。 */
   search: SearchParams | null;
 };
 
+/** フォルダに結び付かない表示。 */
+export type SpecialView = "starred" | "outgoing" | "settings";
+const SPECIAL_VIEWS: readonly string[] = ["starred", "outgoing", "settings"];
+
 export const emptyRoute: MailRoute = {
   accountId: null,
   mailboxId: null,
+  unifiedId: null,
   drafts: false,
+  special: null,
   messageId: null,
+  single: false,
   composeId: null,
   search: null,
 };
@@ -48,14 +65,8 @@ function dateOf(params: URLSearchParams, name: string): string {
   return DATE.test(value) ? value : "";
 }
 
-/** URL の ? 以降から、画面の状態を読み取る。形の合わない値は無いものとして扱う。 */
-export function parseRoute(query: string): MailRoute {
-  const params = new URLSearchParams(query);
-  const compose = params.get("compose");
-  const composeId = compose === NEW_COMPOSE ? compose : idOf(params, "compose");
-  if (params.get("view") === "drafts") {
-    return { ...emptyRoute, drafts: true, composeId };
-  }
+/** 一覧を表す URL に付ける、検索の内容を読み取る。 */
+function searchOf(params: URLSearchParams): SearchParams | null {
   const search: SearchParams = {
     text: params.get("q") ?? "",
     filters: {
@@ -70,27 +81,139 @@ export function parseRoute(query: string): MailRoute {
     },
     scope: params.get("in") === "folder" ? "folder" : "all",
   };
+  return isSearchActive(search) ? search : null;
+}
+
+/** 以前の URL (すべて ? 以降に置いていた形) にだけ現れる名前。 */
+const LEGACY_KEYS = ["account", "folder", "message", "view", "compose"];
+
+/**
+ * 以前の形の URL (/?account=…&folder=…&message=… など) を読み取る。
+ * ブックマークや、古い版が出した通知から開けるように残している。
+ * 読み取ったあと、画面がいまの形の URL に書き換える。
+ */
+function parseLegacyRoute(params: URLSearchParams): MailRoute {
+  const compose = params.get("compose");
+  const composeId = compose === NEW_COMPOSE ? compose : idOf(params, "compose");
+  const view = params.get("view");
+  if (view === "drafts") {
+    return { ...emptyRoute, drafts: true, composeId };
+  }
+  if (view && SPECIAL_VIEWS.includes(view)) {
+    return {
+      ...emptyRoute,
+      special: view as SpecialView,
+      messageId: view === "starred" ? idOf(params, "message") : null,
+      single: false,
+      composeId,
+    };
+  }
   return {
     accountId: idOf(params, "account"),
     mailboxId: idOf(params, "folder"),
+    unifiedId: null,
     drafts: false,
+    special: null,
     messageId: idOf(params, "message"),
+    single: false,
     composeId,
-    search: isSearchActive(search) ? search : null,
+    search: searchOf(params),
   };
 }
 
 /**
- * 画面の状態を URL の ? 以降にする (何も無ければ空文字)。
+ * URL (パスと ? 以降) から、画面の状態を読み取る。形の合わない部分は無いものとして扱う。
+ *
+ *   /                                             すべての受信トレイ
+ *   /accounts/<ID>                                アカウントの受信トレイ
+ *   /accounts/<ID>/folders/<ID>                   フォルダ
+ *   /unified/<ID>                                 統合フォルダ
+ *   …/messages/<ID>                               メール (会話) を開いた状態
+ *   …/messages/<ID>/single                        会話の中の 1 通だけを開いた状態
+ *   /drafts  /starred  /outgoing  /settings       フォルダ以外の表示
+ *   …/compose/<下書きの ID>  …/compose/new        作成画面を開いた状態
+ *   …?q=<語>&from=…                               検索 (一覧の URL に付ける)
+ */
+export function parseRoute(url: string): MailRoute {
+  const mark = url.indexOf("?");
+  const path = mark === -1 ? url : url.slice(0, mark);
+  const params = new URLSearchParams(mark === -1 ? "" : url.slice(mark + 1));
+  const segments = path.split("/").filter((segment) => segment !== "");
+  if (segments.length === 0) {
+    return LEGACY_KEYS.some((key) => params.has(key))
+      ? parseLegacyRoute(params)
+      : { ...emptyRoute, search: searchOf(params) };
+  }
+
+  let index = 0;
+  /** 次が「名前/ID」の並びなら、その ID を取り出して先へ進む。 */
+  const take = (name: string): string | null => {
+    const value = segments[index + 1];
+    if (segments[index] !== name || !value || !ID.test(value)) return null;
+    index += 2;
+    return value.toLowerCase();
+  };
+
+  const route: MailRoute = { ...emptyRoute };
+  const head = segments[0] as string;
+  if (head === "drafts") {
+    route.drafts = true;
+    index = 1;
+  } else if (SPECIAL_VIEWS.includes(head)) {
+    route.special = head as SpecialView;
+    index = 1;
+    // スター付きの一覧では、メールを開ける。
+    if (head === "starred") route.messageId = take("messages");
+  } else {
+    route.unifiedId = take("unified");
+    if (!route.unifiedId) {
+      route.accountId = take("accounts");
+      route.mailboxId = take("folders");
+    }
+    route.messageId = take("messages");
+    route.search = searchOf(params);
+  }
+  if (route.messageId && segments[index] === "single") {
+    route.single = true;
+    index += 1;
+  }
+  if (segments[index] === "compose") {
+    const value = segments[index + 1] ?? "";
+    route.composeId =
+      value === NEW_COMPOSE
+        ? value
+        : ID.test(value)
+          ? value.toLowerCase()
+          : null;
+  }
+  return route;
+}
+
+/**
+ * 画面の状態を URL (パスと ? 以降) にする。何も選んでいなければ "/"。
  * 同じ状態は必ず同じ文字列になるので、文字列どうしを比べて変化を判定できる。
  */
 export function buildRoute(route: MailRoute): string {
+  const segments: string[] = [];
   const params = new URLSearchParams();
   if (route.drafts) {
-    params.set("view", "drafts");
+    segments.push("drafts");
+  } else if (route.special) {
+    segments.push(route.special);
+    if (route.special === "starred" && route.messageId) {
+      segments.push("messages", route.messageId);
+      if (route.single) segments.push("single");
+    }
   } else {
-    if (route.accountId) params.set("account", route.accountId);
-    if (route.mailboxId) params.set("folder", route.mailboxId);
+    if (route.unifiedId) segments.push("unified", route.unifiedId);
+    else {
+      if (route.accountId) segments.push("accounts", route.accountId);
+      if (route.mailboxId) segments.push("folders", route.mailboxId);
+    }
+    if (route.messageId) {
+      segments.push("messages", route.messageId);
+      if (route.single) segments.push("single");
+    }
     const search = route.search;
     if (search && isSearchActive(search)) {
       const { filters } = search;
@@ -105,11 +228,10 @@ export function buildRoute(route: MailRoute): string {
       if (filters.flagged) params.set("starred", "1");
       if (search.scope === "folder") params.set("in", "folder");
     }
-    if (route.messageId) params.set("message", route.messageId);
   }
-  if (route.composeId) params.set("compose", route.composeId);
+  if (route.composeId) segments.push("compose", route.composeId);
   const query = params.toString();
-  return query === "" ? "" : `?${query}`;
+  return `/${segments.join("/")}${query === "" ? "" : `?${query}`}`;
 }
 
 /** 検索の内容が同じか。同じなら、一覧を読み込み直さずに済む。 */
@@ -140,7 +262,9 @@ export function historyMode(current: MailRoute, next: MailRoute): HistoryMode {
   if (
     current.accountId !== next.accountId ||
     current.mailboxId !== next.mailboxId ||
-    current.drafts !== next.drafts
+    current.unifiedId !== next.unifiedId ||
+    current.drafts !== next.drafts ||
+    current.special !== next.special
   ) {
     return "push";
   }

@@ -1,0 +1,88 @@
+import { clean } from "./message-parse.js";
+
+/** 取り込み時に IMAP へ要求するヘッダー (References はスレッドのまとめに使う)。 */
+export const FETCH_HEADERS = ["references", "list-id", "list-unsubscribe"];
+
+/** 後から補うときに IMAP へ要求するヘッダー。 */
+export const LIST_HEADERS = ["list-id", "list-unsubscribe"];
+
+/** メーリングリストやメールマガジンの情報。 */
+export type ListInfo = {
+  /** List-Id ヘッダーの ID。無ければ null。 */
+  listId: string | null;
+  /** List-Unsubscribe ヘッダーにあった配信停止の宛先 (https / mailto の URL)。 */
+  listUnsubscribe: string[];
+};
+
+const MAX_LIST_ID = 255;
+const MAX_UNSUBSCRIBE_URLS = 4;
+const MAX_URL_LENGTH = 2000;
+
+/** 画面にリンクとして出してよい配信停止の URL か (https と mailto だけ)。 */
+function isUnsubscribeUrl(value: string): boolean {
+  if (value.length > MAX_URL_LENGTH || /\s/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "mailto:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * List-Id の値から ID を取り出す。「説明 <id>」の形なら山かっこの中、
+ * 山かっこが無ければ値そのもの。
+ */
+function parseListId(value: string | undefined): string | null {
+  if (!value) return null;
+  const bracketed = /<([^<>]*)>\s*$/.exec(value);
+  const id = clean(bracketed ? bracketed[1] : value).trim();
+  // 山かっこが無いのに空白を含む値は、ID ではなく説明だけなので使わない。
+  if (!id || (!bracketed && /\s/.test(id))) return null;
+  return id.slice(0, MAX_LIST_ID);
+}
+
+/** List-Unsubscribe の値 (「<url>, <url>」) から、使える URL を取り出す。 */
+function parseListUnsubscribe(value: string | undefined): string[] {
+  const urls: string[] = [];
+  for (const match of value?.matchAll(/<([^<>]*)>/g) ?? []) {
+    // 長い URL は折り返されて、途中に空白が入っていることがある。
+    const url = clean(match[1]).replace(/\s+/g, "");
+    if (isUnsubscribeUrl(url) && !urls.includes(url)) urls.push(url);
+    if (urls.length >= MAX_UNSUBSCRIBE_URLS) break;
+  }
+  return urls;
+}
+
+/** ヘッダーの名前 (小文字) と値の組から、メーリングリストの情報を取り出す。 */
+export function listInfoOf(
+  header: (name: string) => string | undefined,
+): ListInfo {
+  return {
+    listId: parseListId(header("list-id")),
+    listUnsubscribe: parseListUnsubscribe(header("list-unsubscribe")),
+  };
+}
+
+/** IMAP で取得したヘッダー部分 (折り返しあり) から、メーリングリストの情報を取り出す。 */
+export function parseListHeaders(headers: Buffer | undefined): ListInfo {
+  const unfolded = (headers?.toString("latin1") ?? "").replace(
+    /\r?\n[ \t]+/g,
+    " ",
+  );
+  return listInfoOf((name) => {
+    const line = new RegExp(`^${name}:(.*)$`, "im").exec(unfolded);
+    return line?.[1]?.trim();
+  });
+}
+
+/** Microsoft Graph の internetMessageHeaders から、メーリングリストの情報を取り出す。 */
+export function listInfoFromGraph(
+  headers: { name?: string | null; value?: string | null }[] | null | undefined,
+): ListInfo {
+  return listInfoOf(
+    (name) =>
+      headers?.find((item) => item.name?.toLowerCase() === name)?.value ??
+      undefined,
+  );
+}

@@ -2,10 +2,12 @@
 
 import { cn } from "cn";
 import { PaperclipIcon, Trash2Icon } from "lucide-react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Account, ServerDraft } from "@/lib/api";
 import { addressLabel, formatListDate } from "@/lib/format";
+import { usePreferences } from "@/lib/preferences";
 
 type Props = {
   /** サーバーに保存してある下書き。読み込み前は null。 */
@@ -35,6 +37,7 @@ export function DraftList({
   onOpen,
   onDiscard,
 }: Props) {
+  const preferences = usePreferences();
   if (drafts === null) {
     return (
       <div className="flex flex-col" aria-busy="true">
@@ -88,7 +91,7 @@ export function DraftList({
                   dateTime={draft.updatedAt}
                   className="shrink-0 text-muted-foreground text-xs tabular-nums"
                 >
-                  {formatListDate(draft.updatedAt)}
+                  {formatListDate(draft.updatedAt, new Date(), preferences)}
                 </time>
               </span>
               <span className="truncate font-medium text-sm">{subject}</span>
@@ -103,16 +106,17 @@ export function DraftList({
                 </span>
               )}
             </button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`下書き「${subject}」を破棄`}
-              title="下書きを破棄"
-              onClick={() => onDiscard(draft)}
-              className="absolute right-2 bottom-2 opacity-0 focus-visible:opacity-100 group-hover/draft:opacity-100 pointer-coarse:opacity-100"
-            >
-              <Trash2Icon />
-            </Button>
+            <Hint label="下書きを破棄">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`下書き「${subject}」を破棄`}
+                onClick={() => onDiscard(draft)}
+                className="absolute right-2 bottom-2 opacity-0 focus-visible:opacity-100 group-hover/draft:opacity-100 pointer-coarse:opacity-100"
+              >
+                <Trash2Icon />
+              </Button>
+            </Hint>
           </li>
         );
       })}

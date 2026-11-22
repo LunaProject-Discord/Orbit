@@ -5,6 +5,7 @@ import { SearchIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { SearchFilters, SearchParams } from "@/lib/api";
@@ -20,6 +21,7 @@ type Props = {
   placeholder: string;
   /** 表示中の一覧の名前。探す範囲の切り替えに使う。 */
   folderLabel: string;
+  className?: string;
 };
 
 /** 一覧の上の検索欄。語の入力と、差出人・件名・期間などの絞り込み条件を受け付ける。 */
@@ -28,6 +30,7 @@ export function SearchBar({
   onChange,
   placeholder,
   folderLabel,
+  className,
 }: Props) {
   const id = useId();
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -38,7 +41,12 @@ export function SearchBar({
     onChange({ ...value, filters: { ...filters, ...patch } });
 
   return (
-    <search className="flex shrink-0 flex-col gap-3 border-b px-4 py-3">
+    <search
+      className={cn(
+        "flex shrink-0 flex-col gap-3 border-b px-4 py-3",
+        className,
+      )}
+    >
       <div className="relative">
         <SearchIcon
           className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
@@ -140,23 +148,21 @@ export function SearchBar({
               期間
             </Label>
             <div className="flex min-w-0 items-center gap-1.5">
-              <Input
+              <DatePicker
                 id={`${id}-since`}
-                type="date"
                 aria-label="期間の始まり"
                 value={filters.since}
                 max={filters.until || undefined}
-                onChange={(event) => setFilters({ since: event.target.value })}
-                className="h-8 min-w-0 px-1.5"
+                onChange={(since) => setFilters({ since })}
+                className="h-8 min-w-0 flex-1"
               />
               <span className="text-muted-foreground text-xs">〜</span>
-              <Input
-                type="date"
+              <DatePicker
                 aria-label="期間の終わり"
                 value={filters.until}
                 min={filters.since || undefined}
-                onChange={(event) => setFilters({ until: event.target.value })}
-                className="h-8 min-w-0 px-1.5"
+                onChange={(until) => setFilters({ until })}
+                className="h-8 min-w-0 flex-1"
               />
             </div>
           </div>

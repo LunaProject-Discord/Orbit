@@ -5,6 +5,9 @@ import { zValidator } from "@hono/zod-validator";
 import {
   attachmentPath,
   attachmentsDir,
+  type BodyFetchNotification,
+  CHANNEL_BODY_FETCH,
+  MAX_BODY_FETCH_IDS,
   sanitizeContentType,
   sanitizeFilename,
 } from "@mail/core";
@@ -15,7 +18,7 @@ import {
   messageMailboxes,
   messages,
 } from "@mail/db";
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -44,6 +47,13 @@ const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   /** 前のページの nextCursor。 */
   cursor: z.string().max(100).optional(),
+});
+
+const prefetchBody = z.object({
+  /** 本文を先に取得してほしいメッセージ。先頭ほど先に取得する。 */
+  ids: z.array(z.uuid()).min(1).max(MAX_BODY_FETCH_IDS),
+  /** hover: カーソルを載せた行。visible: 画面に見えている行。 */
+  reason: z.enum(["hover", "visible"]),
 });
 
 /** 1 つの会話として返すメッセージの上限。 */
@@ -93,6 +103,8 @@ export function messageRoutes({
         to: messages.to,
         receivedAt: messages.receivedAt,
         snippet: messages.snippet,
+        // 本文をまだ取り込んでいない (端末が、見えている行の本文を先に取得するよう頼むのに使う)。
+        bodyPending: sql<boolean>`${messages.bodyFetchedAt} is null`,
         hasAttachments: messages.hasAttachments,
         seen: messages.seen,
         flagged: messages.flagged,
@@ -149,6 +161,47 @@ export function messageRoutes({
   });
 
   /**
+   * 利用者が見ているメール (カーソルを載せた行、画面に見えている行) の本文を、
+   * 取り込みの順番を待たずに取得するよう同期ワーカーへ頼む。取得済みのものは頼まない。
+   * 取得が終わると変更通知で端末が読み直すので、ここでは待たずに応答する。
+   */
+  app.post("/prefetch", zValidator("json", prefetchBody), async (c) => {
+    const { ids, reason } = c.req.valid("json");
+    const rows = await db
+      .select({ id: messages.id, accountId: messages.accountId })
+      .from(messages)
+      .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+      .where(
+        and(
+          inArray(messages.id, ids),
+          eq(mailAccounts.userId, c.var.user.id),
+          isNull(messages.bodyFetchedAt),
+        ),
+      );
+    const pending = new Map(rows.map((row) => [row.id, row.accountId]));
+    // 端末が並べた順 (画面の上から) を保って、アカウントごとに分ける。
+    const byAccount = new Map<string, string[]>();
+    for (const id of ids) {
+      const accountId = pending.get(id);
+      if (!accountId) continue;
+      const list = byAccount.get(accountId) ?? [];
+      if (!list.includes(id)) list.push(id);
+      byAccount.set(accountId, list);
+    }
+    for (const [accountId, messageIds] of byAccount) {
+      const payload: BodyFetchNotification = {
+        accountId,
+        messageIds,
+        priority: reason,
+      };
+      await db.execute(
+        sql`select pg_notify(${CHANNEL_BODY_FETCH}, ${JSON.stringify(payload)})`,
+      );
+    }
+    return c.body(null, 204);
+  });
+
+  /**
    * メッセージが属する会話 (スレッド) の一覧を、古い順に返す。本文は含めない。
    * mailboxId は表示中のフォルダで、そこにあるメッセージは、ごみ箱などであっても会話に含める。
    */
@@ -177,6 +230,7 @@ export function messageRoutes({
         .select({
           id: t.id,
           accountId: t.accountId,
+          threadKey: t.threadKey,
           subject: t.subject,
           from: t.from,
           to: t.to,
@@ -225,6 +279,9 @@ export function messageRoutes({
           cc: messages.cc,
           bcc: messages.bcc,
           replyTo: messages.replyTo,
+          sender: messages.sender,
+          listId: messages.listId,
+          listUnsubscribe: messages.listUnsubscribe,
           sentAt: messages.sentAt,
           receivedAt: messages.receivedAt,
           snippet: messages.snippet,
@@ -245,6 +302,20 @@ export function messageRoutes({
         );
       if (!message) {
         return c.json({ error: "not_found" }, 404);
+      }
+      if (message.bodyFetchedAt === null) {
+        // 本文は一覧より後に順に取り込まれる。開かれたメールは順番を待たせず、
+        // 同期ワーカーに先に取得してもらう (取得が終わると変更通知で端末が読み直す)。
+        const payload: BodyFetchNotification = {
+          accountId: message.accountId,
+          messageIds: [message.id],
+          priority: "open",
+        };
+        await db
+          .execute(
+            sql`select pg_notify(${CHANNEL_BODY_FETCH}, ${JSON.stringify(payload)})`,
+          )
+          .catch(() => {});
       }
       const files = await db
         .select({

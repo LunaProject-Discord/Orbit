@@ -28,6 +28,9 @@ describe("resolveShortcut", () => {
     expect(key("Delete")).toBe("delete");
     expect(key("v")).toBe("move");
     expect(key("x")).toBe("select");
+    expect(key("F9")).toBe("toggleSidebar");
+    expect(key("ArrowRight")).toBe("expandThread");
+    expect(key("ArrowLeft")).toBe("collapseThread");
     expect(key("z")).toBeNull();
   });
 
@@ -35,6 +38,7 @@ describe("resolveShortcut", () => {
     expect(key("I", { shiftKey: true })).toBe("markRead");
     expect(key("U", { shiftKey: true })).toBe("markUnread");
     expect(key("#", { shiftKey: true })).toBe("delete");
+    expect(key("!", { shiftKey: true })).toBe("junk");
     expect(key("S", { shiftKey: true })).toBeNull();
   });
 

@@ -15,6 +15,7 @@ import {
   PresentationIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ApiError, type Attachment, fetchAttachment } from "@/lib/api";
+import { ApiError, type Attachment } from "@/lib/api";
 import {
   type AttachmentKind,
   attachmentErrorMessage,
@@ -32,6 +33,7 @@ import {
   previewOf,
 } from "@/lib/attachments";
 import { formatSize } from "@/lib/format";
+import { fetchAttachment } from "@/lib/offline";
 import { cn } from "@/lib/utils";
 
 const KIND_STYLE: Record<AttachmentKind, { icon: ReactNode; tone: string }> = {
@@ -205,7 +207,10 @@ export function MessageAttachments({
       aria-label="添付ファイル"
       className={cn(
         "flex shrink-0 flex-col gap-2 sm:px-6",
-        inThread ? "px-4 pb-4" : "max-h-[40%] overflow-y-auto border-t p-4",
+        inThread
+          ? "px-4 pb-4"
+          : // 本文と一緒には流さず、メール表示の下端に留める。
+            "sticky bottom-0 max-h-[40%] overflow-y-auto border-t bg-background p-4",
       )}
     >
       <div className="flex min-h-6 items-center gap-2 text-muted-foreground text-xs">
@@ -245,41 +250,43 @@ export function MessageAttachments({
               </span>
               <span className="min-w-0 flex-1">
                 {/* カード全体を押せるように、ボタンの当たり判定をカードいっぱいに広げる。 */}
-                <button
-                  type="button"
-                  disabled={loading}
-                  title={nameOf(file)}
-                  onClick={() => void open(file)}
-                  className="block w-full truncate text-left font-medium text-sm outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring"
-                >
-                  {nameOf(file)}
-                  <span className="sr-only">
-                    {previewable ? " をプレビュー" : " を保存"}
-                  </span>
-                </button>
+                <Hint label={nameOf(file)} whenClipped>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void open(file)}
+                    className="block w-full truncate text-left font-medium text-sm outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring"
+                  >
+                    {nameOf(file)}
+                    <span className="sr-only">
+                      {previewable ? " をプレビュー" : " を保存"}
+                    </span>
+                  </button>
+                </Hint>
                 <span className="block text-muted-foreground text-xs">
                   {formatSize(file.size)}
                   {previewable && " · プレビュー可"}
                 </span>
               </span>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`${nameOf(file)} を保存`}
-                title="保存"
-                // プレビューできないファイルはカード自体が保存のボタンなので、重複させない。
-                aria-hidden={previewable ? undefined : true}
-                tabIndex={previewable ? undefined : -1}
-                disabled={loading}
-                onClick={() => void save(file)}
-                className="relative"
-              >
-                {loading ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <DownloadIcon />
-                )}
-              </Button>
+              <Hint label="保存">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`${nameOf(file)} を保存`}
+                  // プレビューできないファイルはカード自体が保存のボタンなので、重複させない。
+                  aria-hidden={previewable ? undefined : true}
+                  tabIndex={previewable ? undefined : -1}
+                  disabled={loading}
+                  onClick={() => void save(file)}
+                  className="relative"
+                >
+                  {loading ? (
+                    <Loader2Icon className="animate-spin" />
+                  ) : (
+                    <DownloadIcon />
+                  )}
+                </Button>
+              </Hint>
             </li>
           );
         })}

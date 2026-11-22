@@ -6,6 +6,8 @@
  *   ビルド時に NEXT_PUBLIC_API_URL を渡しておけば、それが初期値になり入力を省ける。
  */
 
+import { resolveApiUrl } from "@/lib/api-url";
+
 const STORAGE_KEY = "mail.server-url";
 const BUILD_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 const DEV_URL = "http://localhost:8787";
@@ -70,7 +72,13 @@ export function hasServerUrl(): boolean {
 
 /** API の URL (末尾の / 無し)。 */
 export function apiUrl(): string {
-  return chosenServerUrl() ?? (BUILD_URL || DEV_URL);
+  return (
+    chosenServerUrl() ??
+    resolveApiUrl(
+      BUILD_URL || DEV_URL,
+      typeof window === "undefined" ? null : window.location,
+    )
+  );
 }
 
 /** 接続先を保存する。null で消す (ビルド時の初期値に戻る)。 */

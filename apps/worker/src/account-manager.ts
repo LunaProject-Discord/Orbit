@@ -1,7 +1,10 @@
 import {
   type AttachmentFetchNotification,
+  BODY_FETCH_PRIORITIES,
+  type BodyFetchNotification,
   CHANNEL_ACCOUNTS,
   CHANNEL_ATTACHMENT_FETCH,
+  CHANNEL_BODY_FETCH,
   CHANNEL_FOCUS,
   CHANNEL_GRAPH_PUSH,
   CHANNEL_NEW_MAIL,
@@ -9,6 +12,7 @@ import {
   type FocusNotification,
   type GoogleOAuthConfig,
   type GraphPushNotification,
+  MAX_BODY_FETCH_IDS,
   type MicrosoftOAuthConfig,
 } from "@mail/core";
 import { type Database, mailAccounts } from "@mail/db";
@@ -43,6 +47,7 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
     row.smtpHost,
     row.smtpPort,
     row.smtpSecure,
+    row.allowLegacyTls,
     row.username,
     row.credentialsEncrypted,
   ].join("\n");
@@ -53,7 +58,8 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * API サーバーからの NOTIFY (アカウントの追加・削除) ですぐに反映し、
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
  * 送信待ちキューに操作が積まれた通知、利用者が開いているフォルダの通知、
- * Microsoft Graph の変更通知、添付ファイルの取得の依頼も受け取り、該当のアカウントへ伝える。
+ * Microsoft Graph の変更通知、添付ファイルや開いたメールの本文の取得の依頼も受け取り、
+ * 該当のアカウントへ伝える。
  * 新着メールの知らせは、Web Push で端末へ送る。
  */
 export class AccountManager {
@@ -143,6 +149,25 @@ export class AccountManager {
         }
         return;
       }
+      if (message.channel === CHANNEL_BODY_FETCH) {
+        const payload = parsePayload<BodyFetchNotification>(message.payload);
+        // 同期していないアカウントでは何もしない (同期を再開すれば順に取得される)。
+        if (
+          payload &&
+          Array.isArray(payload.messageIds) &&
+          BODY_FETCH_PRIORITIES.includes(payload.priority)
+        ) {
+          this.running
+            .get(payload.accountId)
+            ?.sync.notifyBody(
+              payload.messageIds
+                .filter((id) => typeof id === "string")
+                .slice(0, MAX_BODY_FETCH_IDS),
+              payload.priority,
+            );
+        }
+        return;
+      }
       if (message.channel === CHANNEL_GRAPH_PUSH) {
         const payload = parsePayload<GraphPushNotification>(message.payload);
         const sync = payload && this.running.get(payload.accountId)?.sync;
@@ -162,6 +187,7 @@ export class AccountManager {
       .then(() => client.query(`LISTEN ${CHANNEL_FOCUS}`))
       .then(() => client.query(`LISTEN ${CHANNEL_GRAPH_PUSH}`))
       .then(() => client.query(`LISTEN ${CHANNEL_ATTACHMENT_FETCH}`))
+      .then(() => client.query(`LISTEN ${CHANNEL_BODY_FETCH}`))
       .then(() =>
         this.pushSender ? client.query(`LISTEN ${CHANNEL_NEW_MAIL}`) : null,
       )

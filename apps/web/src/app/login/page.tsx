@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
+import { OrbitLogo } from "@/components/brand/orbit-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,8 +61,10 @@ export default function LoginPage() {
         <ThemeToggle />
       </div>
       <div className="w-full max-w-sm">
-        <h1 className="font-semibold text-3xl tracking-tight">Mail</h1>
-        <p className="mt-2 text-muted-foreground text-sm">
+        <h1>
+          <OrbitLogo className="h-11" />
+        </h1>
+        <p className="mt-4 text-muted-foreground text-sm">
           アカウントにログインしてください。
         </p>
         <form

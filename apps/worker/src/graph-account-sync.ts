@@ -1,5 +1,7 @@
 import {
+  type BodyFetchPriority,
   decryptCredentials,
+  describeFetchFailure,
   encryptCredentials,
   type GraphLifecycleEvent,
   graphClientState,
@@ -14,6 +16,7 @@ import {
   AttachmentRequests,
   graphAttachmentDownloader,
 } from "./attachment-fetch.js";
+import { BodyRequests, graphBodyFetcher } from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { graphDraftRemote } from "./draft-graph.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -27,10 +30,12 @@ import {
 } from "./graph-push.js";
 import {
   fetchGraphBodies,
+  fetchGraphHeaders,
   syncGraphFolder,
   syncGraphFolders,
 } from "./graph-sync.js";
 import { syncPriority } from "./mailbox-list.js";
+import { isMailboxOperation } from "./mailbox-operations.js";
 import { processOutbox } from "./outbox.js";
 import { applyGraphOperation } from "./outbox-graph.js";
 import { processSends } from "./send.js";
@@ -62,6 +67,8 @@ const FOLDER_SYNC_MS = 10 * 60_000;
 const OTHER_POLL_MS = 2 * 60_000;
 /** アクセストークンは、期限のこれだけ前に取り直す。 */
 const TOKEN_MARGIN_MS = 5 * 60_000;
+/** 利用者が見ているメールの本文を、同期とは別に先に取得するときの同時数。 */
+const ON_DEMAND_BODY_CONCURRENCY = 2;
 
 type AccountRow = typeof mailAccounts.$inferSelect;
 type Status = AccountRow["status"];
@@ -73,6 +80,10 @@ function describeError(error: Error & { query?: unknown }): string {
   }
   if (error.query !== undefined || error.message.startsWith("Failed query")) {
     return "サーバー内部でエラーが発生しました。";
+  }
+  // Node の fetch は接続に失敗すると "fetch failed" とだけ言う。本当の理由は cause にある。
+  if (error.message === "fetch failed") {
+    return `Microsoft Graph に接続できませんでした: ${describeFetchFailure(error)}`;
   }
   return error.message;
 }
@@ -114,6 +125,7 @@ export class GraphAccountSync {
   private pushRenewedAt = 0;
   private sending: Promise<void> = Promise.resolve();
   private readonly attachmentRequests: AttachmentRequests;
+  private readonly bodyRequests: BodyRequests;
 
   constructor(
     private readonly db: Database,
@@ -129,18 +141,29 @@ export class GraphAccountSync {
       subscriptionId: account.pushSubscriptionId,
       expiresAt: account.pushExpiresAt,
     };
+    // 利用者が開いたものをすぐ取得するための窓口。同期の周期とは別に使う。
+    const onDemand = new GraphClient({
+      getToken: (force) => this.getToken(force),
+      fetchFn: this.fetchFn,
+    });
     this.attachmentRequests = new AttachmentRequests(
       db,
       account.id,
-      graphAttachmentDownloader(
-        new GraphClient({
-          getToken: (force) => this.getToken(force),
-          fetchFn: this.fetchFn,
-        }),
-        this.abort.signal,
-      ),
+      graphAttachmentDownloader(onDemand, this.abort.signal),
       (message) => this.log(message),
     );
+    this.bodyRequests = new BodyRequests(
+      db,
+      account,
+      graphBodyFetcher(db, onDemand, this.abort.signal),
+      (message) => this.log(message),
+      ON_DEMAND_BODY_CONCURRENCY,
+    );
+  }
+
+  /** 利用者が見ているメールの本文を、取り込みの順番を待たずに取得してほしい。 */
+  notifyBody(messageIds: string[], priority: BodyFetchPriority) {
+    if (!this.stopped) this.bodyRequests.request(messageIds, priority);
   }
 
   /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期の周期とは別に、すぐ取得する。 */
@@ -476,7 +499,12 @@ export class GraphAccountSync {
       const outbox = await processOutbox(
         this.db,
         this.account.id,
-        (operation) => applyGraphOperation(client, operation, signal),
+        async (operation) => {
+          const result = await applyGraphOperation(client, operation, signal);
+          // フォルダを変えたあとは、次の確認でフォルダ一覧から取り直す。
+          if (isMailboxOperation(operation)) foldersSyncedAt = 0;
+          return result;
+        },
         (message) => this.log(message),
       );
       // まだ Microsoft 側へ置いていない下書きを、下書きフォルダへ置く。
@@ -568,6 +596,15 @@ export class GraphAccountSync {
           signal,
           focused?.id ?? inbox.id,
         ))
+      ) {
+        // 続きを取得する
+      }
+      // 代理送信やメーリングリストの情報を足す前に取り込んだメールへ、その情報を補う。
+      while (
+        !this.stopped &&
+        !this.wakeRequested &&
+        Date.now() < nextPollAt &&
+        (await fetchGraphHeaders(this.db, client, this.account, signal))
       ) {
         // 続きを取得する
       }
