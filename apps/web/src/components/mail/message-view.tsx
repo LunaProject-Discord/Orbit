@@ -1168,7 +1168,9 @@ function MessageContent({
                     </dd>
                   </>
                 )}
-                <dt className="text-muted-foreground">日時</dt>
+                <dt className="text-muted-foreground">
+                  {sentAtShown ? "受信日時" : "日時"}
+                </dt>
                 <dd>
                   <time dateTime={message.receivedAt}>
                     {formatFullDate(message.receivedAt, preferences)}
