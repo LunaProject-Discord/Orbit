@@ -27,8 +27,10 @@ import {
 import { renameMailboxPaths } from "./mailbox-operations.js";
 import {
   fetchBodies,
+  fetchHeaders,
   loadMailboxStates,
   mailboxesWithPendingBodies,
+  mailboxesWithPendingHeaders,
   STATUS_QUERY,
   syncMailbox,
   syncMailboxList,
@@ -644,6 +646,43 @@ export class AccountSync {
     }
   }
 
+  /**
+   * 代理送信やメーリングリストの情報を、これらの項目を足す前に取り込んだメールへ補う。
+   * 急がない作業なので、本文の取得がすべて終わってから、他の作業の合間に進める。
+   */
+  private async fetchPendingHeaders(client: ImapFlow) {
+    const deadline = Date.now() + BACKGROUND_SLICE_MS;
+    const interrupted = () =>
+      this.stopped ||
+      this.syncRequested ||
+      this.foldersDue ||
+      this.focusDue !== null;
+    const pending = await mailboxesWithPendingHeaders(this.db, this.account.id);
+    for (const mailbox of pending) {
+      if (interrupted()) return;
+      const lock = await this.openMailbox(client, mailbox.path);
+      if (!lock) continue;
+      let remaining = true;
+      try {
+        while (remaining && !interrupted() && Date.now() <= deadline) {
+          remaining = await fetchHeaders(
+            this.db,
+            client,
+            this.account,
+            mailbox.id,
+          );
+        }
+      } finally {
+        lock.release();
+      }
+      if (remaining && Date.now() > deadline) {
+        // 受信トレイを確認してから続きを取得する。
+        this.syncRequested = true;
+        return;
+      }
+    }
+  }
+
   /** 接続 1 回分。切断されると戻る (エラーなら投げる)。 */
   private async session() {
     const client = await this.createClient();
@@ -738,6 +777,7 @@ export class AccountSync {
           // その間も、開いているフォルダと受信トレイの本文は交互に少しずつ進める。
           await this.fetchPendingBodies(client, true);
         }
+        if (!this.stopped && !pending()) await this.fetchPendingHeaders(client);
         if (this.stopped || pending()) continue;
 
         // IDLE で通知を受けるフォルダを受信トレイに戻す。

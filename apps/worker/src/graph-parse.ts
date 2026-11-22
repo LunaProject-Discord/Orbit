@@ -18,6 +18,12 @@ export type GraphMessage = {
   internetMessageId?: string | null;
   subject?: string | null;
   from?: GraphRecipient | null;
+  /** 実際に送った人 (代理送信では from と違う)。 */
+  sender?: GraphRecipient | null;
+  /** メールのヘッダー。1 通ずつの取得で $select に指定したときだけ届く。 */
+  internetMessageHeaders?:
+    | { name?: string | null; value?: string | null }[]
+    | null;
   toRecipients?: GraphRecipient[] | null;
   ccRecipients?: GraphRecipient[] | null;
   bccRecipients?: GraphRecipient[] | null;
@@ -38,6 +44,7 @@ export const MESSAGE_SELECT = [
   "internetMessageId",
   "subject",
   "from",
+  "sender",
   "toRecipients",
   "ccRecipients",
   "bccRecipients",
@@ -94,6 +101,7 @@ export type MessageValues = Partial<
     | "cc"
     | "bcc"
     | "replyTo"
+    | "sender"
     | "sentAt"
     | "receivedAt"
     | "snippet"
@@ -119,6 +127,7 @@ export function toMessageValues(item: GraphMessage): MessageValues {
   }
   if (item.subject !== undefined) values.subject = clean(item.subject);
   if (item.from !== undefined) values.from = toAddresses([item.from]);
+  if (item.sender !== undefined) values.sender = toAddresses([item.sender]);
   if (item.toRecipients !== undefined) {
     values.to = toAddresses(item.toRecipients);
   }

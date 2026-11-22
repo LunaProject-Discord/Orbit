@@ -295,6 +295,17 @@ export const messages = pgTable(
     cc: jsonb().$type<Address[]>().notNull().default([]),
     bcc: jsonb().$type<Address[]>().notNull().default([]),
     replyTo: jsonb().$type<Address[]>().notNull().default([]),
+    /** Sender ヘッダー (代理で送った人)。差出人と同じ場合も、サーバーが返した値をそのまま入れる。 */
+    sender: jsonb().$type<Address[]>().notNull().default([]),
+    /** List-Id ヘッダーの ID (メーリングリストやメールマガジンの識別子)。無ければ null。 */
+    listId: text(),
+    /** List-Unsubscribe ヘッダーにあった配信停止の宛先 (https / mailto の URL)。 */
+    listUnsubscribe: jsonb().$type<string[]>().notNull().default([]),
+    /**
+     * sender / listId / listUnsubscribe を取り込んだ時刻。
+     * これらの項目を足す前に取り込んだメールは null で、同期ワーカーが後から補う。
+     */
+    headersFetchedAt: timestamp({ withTimezone: true }),
     sentAt: timestamp({ withTimezone: true }),
     receivedAt: timestamp({ withTimezone: true }).notNull(),
     snippet: text().notNull().default(""),
@@ -352,6 +363,10 @@ export const messages = pgTable(
     index("messages_account_thread_idx").on(t.accountId, t.threadKey),
     index("messages_account_received_idx").on(t.accountId, t.receivedAt),
     index("messages_message_id_header_idx").on(t.messageIdHeader),
+    // ヘッダーの補完がまだのメールを探すための索引。補完が終われば空になる。
+    index("messages_headers_pending_idx")
+      .on(t.accountId)
+      .where(sql`${t.headersFetchedAt} is null`),
   ],
 );
 
