@@ -24,12 +24,7 @@ import { AddAccountDialog } from "@/components/mail/add-account-dialog";
 import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { DraftList } from "@/components/mail/draft-list";
-import {
-  FailureToast,
-  NoticeToast,
-  ToastRegion,
-  UndoToast,
-} from "@/components/mail/failure-toast";
+import { FailureToast } from "@/components/mail/failure-toast";
 import {
   FolderDialogs,
   type FolderDialogTarget,
@@ -56,6 +51,12 @@ import {
 } from "@/components/mail/signature-dialog";
 import { SignatureRulesSettings } from "@/components/mail/signature-rules-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
+import {
+  hideNotice,
+  hideUndo,
+  showNotice,
+  showUndo,
+} from "@/components/mail/toasts";
 import {
   UnifiedDialog,
   type UnifiedDialogTarget,
@@ -254,7 +255,6 @@ const RETRY_ERROR =
 const NOTIFICATION_BLOCKED =
   "ブラウザーの設定で通知が拒否されています。ブラウザーの設定で、このサイトの通知を許可してください。";
 /** 短い知らせを出しておく時間。 */
-const NOTICE_MS = 8_000;
 const QUICK_REPLY_SENT = "返信を送信しました。";
 const QUICK_REPLY_QUEUED = "オフラインです。返信は、接続後に自動で送られます。";
 const QUICK_REPLY_ERROR =
@@ -339,6 +339,12 @@ function mergeFirstPage(
     (message) => !ids.has(message.id) && compareMessages(last, message) < 0,
   );
   return [...firstPage, ...older];
+}
+
+/** 画面の下に短く出す知らせ (操作の失敗など)。null を渡すと消す。 */
+function setNotice(notice: { message: string; tone: "error" | "info" } | null) {
+  if (notice) showNotice(notice.message, notice.tone);
+  else hideNotice();
 }
 
 export function MailApp({ user }: { user: User }) {
@@ -456,11 +462,6 @@ export function MailApp({ user }: { user: User }) {
   onlineRef.current = online;
   /** 端末で預かっている、接続後に送るメール。 */
   const queuedSends = useQueuedSends();
-  /** 画面の下に短く出す知らせ (操作の失敗など)。 */
-  const [notice, setNotice] = useState<{
-    message: string;
-    tone: "error" | "info";
-  } | null>(null);
   /** メールサーバーへ反映できなかった操作。やり直すか破棄するまで知らせ続ける。 */
   const [failures, setFailures] = useState<FailedOperation[]>([]);
   const [failureBusy, setFailureBusy] = useState(false);
@@ -782,13 +783,6 @@ export function MailApp({ user }: { user: User }) {
     loadSignatureRules,
   ]);
 
-  // 短い知らせは、しばらくしたら消す。
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(null), NOTICE_MS);
-    return () => clearTimeout(timer);
-  }, [notice]);
-
   // タブの題名に、受信トレイの未読数を出す。
   useEffect(() => {
     showUnreadCount(inboxUnreadCount(mailboxes ?? []));
@@ -964,9 +958,6 @@ export function MailApp({ user }: { user: User }) {
 
   // 削除や移動の「元に戻す」。操作は画面にすぐ反映するが、知らせを出している間は
   // サーバーへ送らずに待ち、「元に戻す」を押されたら送らずに取り消す。
-  const [undo, setUndo] = useState<{ id: number; message: string } | null>(
-    null,
-  );
   const undoRef = useRef<{
     id: number;
     actions: MessageAction[];
@@ -987,10 +978,13 @@ export function MailApp({ user }: { user: User }) {
   const selectedMessageIdRef = useRef(selectedMessageId);
   selectedMessageIdRef.current = selectedMessageId;
 
-  /** 「元に戻す」の受け付けを終えて、待たせていた操作をサーバーへ送る。 */
-  const commitUndo = useCallback(() => {
+  /**
+   * 「元に戻す」の受け付けを終えて、待たせていた操作をサーバーへ送る。
+   * only を渡すと、その知らせの操作をまだ受け付けているときだけ行う。
+   */
+  const commitUndo = useCallback((only?: number) => {
     const group = undoRef.current;
-    if (!group) return;
+    if (!group || (only !== undefined && group.id !== only)) return;
     undoRef.current = null;
     clearTimeout(group.timer);
     for (const action of group.actions) {
@@ -998,10 +992,13 @@ export function MailApp({ user }: { user: User }) {
       // オフラインで開き直しても操作後の状態で出るよう、端末に保存した内容にも反映する。
       applyActionLocally(action);
     }
-    setUndo((current) => (current?.id === group.id ? null : current));
+    hideUndo(group.id);
   }, []);
   // 画面を離れるときは、待たせていた操作をそのまま送る。
-  useEffect(() => commitUndo, [commitUndo]);
+  useEffect(() => () => commitUndo(), [commitUndo]);
+
+  /** 知らせの「元に戻す」から呼ぶ処理 (下で定義する handleUndo)。 */
+  const handleUndoRef = useRef<() => void>(() => {});
 
   /** 操作を画面にすぐ反映し、サーバーへは待ち行列から送る。 */
   const performAction = useCallback(
@@ -1025,7 +1022,7 @@ export function MailApp({ user }: { user: User }) {
             selection: selectionRef.current,
             openId: selectedMessageIdRef.current,
             open: true,
-            timer: setTimeout(commitUndo, UNDO_MS),
+            timer: setTimeout(() => commitUndo(), UNDO_MS),
           };
           group = created;
           undoRef.current = created;
@@ -1039,14 +1036,18 @@ export function MailApp({ user }: { user: User }) {
             (row) => !group.rows.some((saved) => saved.id === row.id),
           ),
         );
-        setUndo({
-          id: group.id,
-          message: undoMessage(
+        const id = group.id;
+        showUndo(
+          id,
+          undoMessage(
             input,
             mailboxesRef.current ?? [],
             Math.max(group.rows.length, group.actions.length),
           ),
-        });
+          () => handleUndoRef.current(),
+          // 利用者が知らせを閉じたら、その時点で確定する。
+          () => commitUndo(id),
+        );
       }
       setMessages((current) => current && applyActions(current, [action]));
       setThreadRows((current) => applyActionToThreads(current, action));
@@ -1069,7 +1070,7 @@ export function MailApp({ user }: { user: User }) {
     if (!group) return;
     undoRef.current = null;
     clearTimeout(group.timer);
-    setUndo(null);
+    hideUndo(group.id);
     const cancelled = group.actions.filter((action) =>
       queueRef.current?.cancel(action.idempotencyKey),
     );
@@ -1095,6 +1096,7 @@ export function MailApp({ user }: { user: User }) {
     void loadFirstPage(selectionRef.current, false);
     setRefreshKey((key) => key + 1);
   }, [loadFirstPage]);
+  handleUndoRef.current = handleUndo;
 
   // 一覧の行のスワイプ。何をするかは設定で選び、移動先はそのメールのアカウントの
   // フォルダの役割 (アプリ内で上書きした役割を含む) から決める。
@@ -2077,7 +2079,7 @@ export function MailApp({ user }: { user: User }) {
       return;
     }
     if (command === "undo") {
-      if (!undo) return;
+      if (!undoRef.current) return;
       event.preventDefault();
       handleUndo();
       return;
@@ -2875,31 +2877,14 @@ export function MailApp({ user }: { user: User }) {
           if (draft) handleDiscardDraft(draft.idempotencyKey);
         }}
       />
-      <ToastRegion>
-        {undo && (
-          <UndoToast
-            key={undo.id}
-            message={undo.message}
-            onUndo={handleUndo}
-            onClose={commitUndo}
-          />
-        )}
-        {notice && (
-          <NoticeToast
-            message={notice.message}
-            tone={notice.tone}
-            onClose={() => setNotice(null)}
-          />
-        )}
-        <FailureToast
-          failures={failures}
-          accounts={accounts ?? []}
-          mailboxes={mailboxes ?? []}
-          busy={failureBusy}
-          onRetry={handleRetryFailures}
-          onDismiss={handleDismissFailures}
-        />
-      </ToastRegion>
+      <FailureToast
+        failures={failures}
+        accounts={accounts ?? []}
+        mailboxes={mailboxes ?? []}
+        busy={failureBusy}
+        onRetry={handleRetryFailures}
+        onDismiss={handleDismissFailures}
+      />
       <SignatureDialog
         target={signatureTarget}
         onClose={() => setSignatureTarget(null)}
