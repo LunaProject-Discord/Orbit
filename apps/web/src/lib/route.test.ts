@@ -45,6 +45,15 @@ describe("buildRoute と parseRoute", () => {
       { ...emptyRoute, messageId: MESSAGE },
       { ...emptyRoute, composeId: "new" },
       { ...emptyRoute, messageId: MESSAGE, composeId: DRAFT },
+      { ...emptyRoute, messageId: MESSAGE, single: true },
+      { ...emptyRoute, special: "starred", messageId: MESSAGE, single: true },
+      {
+        ...emptyRoute,
+        accountId: ACCOUNT,
+        messageId: MESSAGE,
+        single: true,
+        composeId: DRAFT,
+      },
     ];
     for (const route of routes) {
       expect(parseRoute(buildRoute(route))).toEqual(route);
@@ -52,6 +61,9 @@ describe("buildRoute と parseRoute", () => {
     expect(buildRoute(routes[0] as MailRoute)).toBe(`/accounts/${ACCOUNT}`);
     expect(buildRoute(routes[3] as MailRoute)).toBe(`/messages/${MESSAGE}`);
     expect(buildRoute(routes[4] as MailRoute)).toBe("/compose/new");
+    expect(buildRoute(routes[6] as MailRoute)).toBe(
+      `/messages/${MESSAGE}/single`,
+    );
   });
 
   it("末尾の / や ID の大文字を気にしない", () => {

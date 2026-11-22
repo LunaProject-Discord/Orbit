@@ -17,7 +17,9 @@ export type ShortcutCommand =
   | "reply"
   | "replyAll"
   | "forward"
-  | "toggleSidebar";
+  | "toggleSidebar"
+  | "expandThread"
+  | "collapseThread";
 
 type KeyLike = {
   key: string;
@@ -60,6 +62,11 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
     case "k":
     case "ArrowUp":
       return "previous";
+    // 一覧で会話を広げて、中のメールを 1 通ずつ並べる。
+    case "ArrowRight":
+      return "expandThread";
+    case "ArrowLeft":
+      return "collapseThread";
     case "u":
     case "Escape":
       return "close";

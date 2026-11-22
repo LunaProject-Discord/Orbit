@@ -124,6 +124,7 @@ import {
 import {
   applyActionLocally,
   cachedMessages,
+  getThread,
   listAccounts,
   listAllMailboxes,
   listDrafts,
@@ -151,6 +152,14 @@ import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
+import {
+  applyActionToThreads,
+  flattenRows,
+  indexOfOpen,
+  type ListItem,
+  stepItem,
+  type ThreadRows,
+} from "@/lib/thread-rows";
 import { randomUuid } from "@/lib/uuid";
 
 const PAGE_SIZE = 50;
@@ -299,6 +308,24 @@ export function MailApp({ user }: { user: User }) {
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
     initialRoute.messageId,
   );
+  /**
+   * 会話の全体ではなく、会話の中の 1 通だけを開いているときの、そのメールと一覧の行。
+   * messageId が開いているメールと同じ間だけ有効 (別のメールを開いたら無視する)。
+   * URL から開いたときは、どの行の中かが分からないので rowId は null。
+   */
+  const [single, setSingle] = useState<{
+    messageId: string;
+    rowId: string | null;
+  } | null>(
+    initialRoute.single && initialRoute.messageId
+      ? { messageId: initialRoute.messageId, rowId: null }
+      : null,
+  );
+  /** 一覧で広げている会話の行と、その中身。 */
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const [threadRows, setThreadRows] = useState<ThreadRows>(new Map());
   const [refreshKey, setRefreshKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
@@ -619,6 +646,7 @@ export function MailApp({ user }: { user: User }) {
     setSelectedMailboxId(null);
     // 既読にするのは、開いた本文側が行う。
     setSelectedMessageId(messageId);
+    setSingle(null);
   }, []);
 
   // 新着メールの通知。前回この端末で有効にしていれば、送り先を登録し直す。
@@ -782,6 +810,7 @@ export function MailApp({ user }: { user: User }) {
         ...input,
       };
       setMessages((current) => current && applyActions(current, [action]));
+      setThreadRows((current) => applyActionToThreads(current, action));
       if (input.action !== "set_flags") {
         setSelectedMessageId((current) =>
           current && messageIds.includes(current) ? null : current,
@@ -804,8 +833,50 @@ export function MailApp({ user }: { user: User }) {
       return;
     }
     setSelectedMessageId(id);
+    setSingle(null);
     anchorRef.current = id;
   }
+
+  /** 一覧で広げた会話の中の 1 通だけを開く。 */
+  function handleSelectChild(rowId: string, childId: string) {
+    setSelectedMessageId(childId);
+    setSingle({ messageId: childId, rowId });
+  }
+
+  /** 一覧の会話の行を広げる / 閉じる。 */
+  function handleToggleExpand(id: string) {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+    // 閉じたら、次に広げたときに中身を取得し直す (取得に失敗していた場合のやり直しにもなる)。
+    threadFetches.current.delete(id);
+  }
+
+  // 広げた会話の中身を取得する。同期で一覧が変わったら (refreshKey)、取得し直す。
+  const threadFetches = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!messages || expandedIds.size === 0) return;
+    for (const id of expandedIds) {
+      if (threadFetches.current.get(id) === refreshKey) continue;
+      const row = messages.find((item) => item.id === id);
+      if (!row || row.threadCount <= 1) continue;
+      threadFetches.current.set(id, refreshKey);
+      getThread(id, row.mailboxId)
+        .then((thread) =>
+          setThreadRows((current) => new Map(current).set(id, thread)),
+        )
+        .catch(() =>
+          // 取得し直しの失敗では、表示中の中身を消さない。
+          setThreadRows((current) =>
+            Array.isArray(current.get(id))
+              ? current
+              : new Map(current).set(id, "error"),
+          ),
+        );
+    }
+  }, [messages, expandedIds, refreshKey]);
 
   function clearSelection() {
     setCheckedIds(new Set());
@@ -1318,6 +1389,7 @@ export function MailApp({ user }: { user: User }) {
     drafts: draftsSelected,
     special,
     messageId: selectedMessageId,
+    single: single !== null && single.messageId === selectedMessageId,
     composeId: openComposeId ?? composeTarget,
     search,
   });
@@ -1368,6 +1440,13 @@ export function MailApp({ user }: { user: User }) {
     setDraftsSelected(route.drafts);
     setSpecial(route.special);
     setSelectedMessageId(route.messageId);
+    setSingle((current) =>
+      route.single && route.messageId
+        ? current?.messageId === route.messageId
+          ? current
+          : { messageId: route.messageId, rowId: null }
+        : null,
+    );
     // 検索の内容が同じなら、一覧を読み込み直さない (スクロールの位置も保つ)。
     if (!sameSearch(route.search, search)) {
       setSearchInput(route.search ?? emptySearch);
@@ -1544,18 +1623,32 @@ export function MailApp({ user }: { user: User }) {
   };
 
   // 開いているメールを含む行。会話に新しいメールが届いて行の代表が替わっても、同じ行を指す。
+  // 会話の中の 1 通だけを開いているときは、その会話の行。
+  const isSingle = single !== null && single.messageId === selectedMessageId;
   const selectedMessage =
     (selectedMessageId &&
-      messages?.find(
-        (message) =>
-          message.id === selectedMessageId ||
-          message.threadMessageIds.includes(selectedMessageId),
-      )) ||
+      ((isSingle &&
+        single.rowId &&
+        messages?.find((message) => message.id === single.rowId)) ||
+        messages?.find(
+          (message) =>
+            message.id === selectedMessageId ||
+            message.threadMessageIds.includes(selectedMessageId),
+        ))) ||
     null;
   const checkedRows = (messages ?? []).filter((message) =>
     checkedIds.has(message.id),
   );
   const selecting = selectMode || checkedRows.length > 0;
+
+  /** 広げた会話の中の 1 通の、既読とスター。中身をまだ取得していなければ空。 */
+  const childFlags = (rowId: string, childId: string) => {
+    const thread = threadRows.get(rowId);
+    const child = Array.isArray(thread)
+      ? thread.find((item) => item.id === childId)
+      : undefined;
+    return child ? { seen: child.seen, flagged: child.flagged } : {};
+  };
 
   // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
@@ -1665,21 +1758,70 @@ export function MailApp({ user }: { user: User }) {
       handleSelectMessage(message.id);
       messageListRef.current?.scrollToMessage(message.id);
     };
+    /** 一覧に並んでいる行 (会話、または広げた会話の中の 1 通) を開く。 */
+    const openItem = (item: ListItem | null) => {
+      if (!item || item.kind === "status") return;
+      if (item.kind === "row") open(item.message);
+      else {
+        handleSelectChild(item.parent.id, item.child.id);
+        messageListRef.current?.scrollToMessage(item.parent.id, item.child.id);
+      }
+    };
+    // 画面に並んでいる順 (広げた会話の中のメールを含む)。
+    const items = flattenRows(list, expandedIds, threadRows);
+    const rowAt = selectedMessage
+      ? indexOfOpen(items, { rowId: selectedMessage.id, childId: null })
+      : -1;
+    const childAt =
+      selectedMessage && isSingle
+        ? indexOfOpen(items, {
+            rowId: selectedMessage.id,
+            childId: selectedMessageId,
+          })
+        : -1;
+    const at = childAt !== -1 ? childAt : rowAt;
 
     if (command === "next" || command === "previous") {
       if (list.length === 0) return;
       event.preventDefault();
-      if (index === -1) open(list[0]);
-      else open(list[command === "next" ? index + 1 : index - 1]);
+      openItem(stepItem(items, at, command === "next" ? 1 : -1));
       return;
     }
     const message = list[index];
+    if (command === "expandThread" || command === "collapseThread") {
+      if (!message || message.threadCount <= 1) return;
+      event.preventDefault();
+      const expanded = expandedIds.has(message.id);
+      if (command === "expandThread") {
+        if (!expanded) handleToggleExpand(message.id);
+      } else {
+        // 中の 1 通を開いていたら、会話の行へ戻ってから閉じる。
+        if (isSingle) open(message);
+        if (expanded) handleToggleExpand(message.id);
+      }
+      return;
+    }
     if (!message) return;
     event.preventDefault();
     // 一覧の 1 行は会話 1 つ。会話のうち、このフォルダにある分をまとめて操作する。
-    const id = message.threadMessageIds;
+    // 会話の中の 1 通だけを開いているときは、その 1 通が対象。
+    const openChild =
+      isSingle && selectedMessageId
+        ? {
+            id: selectedMessageId,
+            ...childFlags(message.id, selectedMessageId),
+          }
+        : null;
+    const id = openChild ? [openChild.id] : message.threadMessageIds;
+    const seen = openChild?.seen ?? message.seen;
+    const flagged = openChild?.flagged ?? message.flagged;
     // 移動や削除のあとは、続けて操作できるよう隣のメールを開く。
     const neighbor = list[index + 1] ?? list[index - 1];
+    const openNeighbor = () => {
+      if (openChild) {
+        openItem(stepItem(items, at, 1) ?? stepItem(items, at, -1));
+      } else open(neighbor);
+    };
     switch (command) {
       case "close":
         setSelectedMessageId(null);
@@ -1691,22 +1833,22 @@ export function MailApp({ user }: { user: User }) {
         performAction(id, { action: "set_flags", seen: false });
         break;
       case "toggleRead":
-        performAction(id, { action: "set_flags", seen: !message.seen });
+        performAction(id, { action: "set_flags", seen: !seen });
         break;
       case "toggleStar":
         // 付けるときは最新の 1 通に、外すときは会話のすべてから外す。
-        performAction(message.flagged ? id : [message.id], {
+        performAction(flagged ? id : [openChild?.id ?? message.id], {
           action: "set_flags",
-          flagged: !message.flagged,
+          flagged: !flagged,
         });
         break;
       case "archive":
         performAction(id, { action: "move", destination: "archive" });
-        open(neighbor);
+        openNeighbor();
         break;
       case "delete":
         performAction(id, { action: "move", destination: "trash" });
-        open(neighbor);
+        openNeighbor();
         break;
       case "move":
         setMoveRequest((count) => count + 1);
@@ -1714,10 +1856,10 @@ export function MailApp({ user }: { user: User }) {
       case "junk":
         if (selectedMailbox?.specialUse === "junk") {
           performAction(id, { action: "move", destination: "inbox" });
-          open(neighbor);
+          openNeighbor();
         } else if (junkAvailable([message])) {
           performAction(id, { action: "move", destination: "junk" });
-          open(neighbor);
+          openNeighbor();
         }
         break;
       case "reply":
@@ -2061,7 +2203,18 @@ export function MailApp({ user }: { user: User }) {
                 onPrefetch={handlePrefetch}
                 messages={messages}
                 error={listError}
-                selectedId={selectedMessage?.id ?? selectedMessageId}
+                selectedId={
+                  isSingle ? null : (selectedMessage?.id ?? selectedMessageId)
+                }
+                selectedChild={
+                  isSingle && selectedMessage && selectedMessageId
+                    ? { rowId: selectedMessage.id, id: selectedMessageId }
+                    : null
+                }
+                expandedIds={expandedIds}
+                threadRows={threadRows}
+                onToggleExpand={handleToggleExpand}
+                onSelectChild={handleSelectChild}
                 checkedIds={checkedIds}
                 selecting={selecting}
                 onToggleCheck={handleToggleCheck}
@@ -2114,6 +2267,10 @@ export function MailApp({ user }: { user: User }) {
             <MessageView
               messageId={selectedMessageId}
               refreshKey={refreshKey}
+              single={isSingle}
+              onShowThread={() =>
+                handleSelectMessage(selectedMessage?.id ?? selectedMessageId)
+              }
               summary={selectedMessage}
               accounts={accounts ?? []}
               mailboxes={mailboxes ?? []}

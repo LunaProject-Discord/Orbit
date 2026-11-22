@@ -23,6 +23,8 @@ export type MailRoute = {
   special: SpecialView | null;
   /** 開いているメール。 */
   messageId: string | null;
+  /** 会話の全体ではなく、会話の中のその 1 通だけを開いている (一覧で会話を広げて選んだとき)。 */
+  single: boolean;
   /** 作成画面で開いている下書きの ID。まだ何も書いていない新規のメールは "new"。 */
   composeId: string | null;
   /** 実行中の検索。null なら通常の一覧。 */
@@ -39,6 +41,7 @@ export const emptyRoute: MailRoute = {
   drafts: false,
   special: null,
   messageId: null,
+  single: false,
   composeId: null,
   search: null,
 };
@@ -98,6 +101,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
       ...emptyRoute,
       special: view as SpecialView,
       messageId: view === "starred" ? idOf(params, "message") : null,
+      single: false,
       composeId,
     };
   }
@@ -107,6 +111,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
     drafts: false,
     special: null,
     messageId: idOf(params, "message"),
+    single: false,
     composeId,
     search: searchOf(params),
   };
@@ -119,6 +124,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
  *   /accounts/<ID>                                アカウントの受信トレイ
  *   /accounts/<ID>/folders/<ID>                   フォルダ
  *   …/messages/<ID>                               メール (会話) を開いた状態
+ *   …/messages/<ID>/single                        会話の中の 1 通だけを開いた状態
  *   /drafts  /starred  /outgoing  /settings       フォルダ以外の表示
  *   …/compose/<下書きの ID>  …/compose/new        作成画面を開いた状態
  *   …?q=<語>&from=…                               検索 (一覧の URL に付ける)
@@ -159,6 +165,10 @@ export function parseRoute(url: string): MailRoute {
     route.messageId = take("messages");
     route.search = searchOf(params);
   }
+  if (route.messageId && segments[index] === "single") {
+    route.single = true;
+    index += 1;
+  }
   if (segments[index] === "compose") {
     const value = segments[index + 1] ?? "";
     route.composeId =
@@ -184,11 +194,15 @@ export function buildRoute(route: MailRoute): string {
     segments.push(route.special);
     if (route.special === "starred" && route.messageId) {
       segments.push("messages", route.messageId);
+      if (route.single) segments.push("single");
     }
   } else {
     if (route.accountId) segments.push("accounts", route.accountId);
     if (route.mailboxId) segments.push("folders", route.mailboxId);
-    if (route.messageId) segments.push("messages", route.messageId);
+    if (route.messageId) {
+      segments.push("messages", route.messageId);
+      if (route.single) segments.push("single");
+    }
     const search = route.search;
     if (search && isSearchActive(search)) {
       const { filters } = search;
