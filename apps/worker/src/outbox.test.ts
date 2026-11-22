@@ -54,7 +54,18 @@ describe("buildPendingGuard", () => {
 type ImapCall = [string, ...unknown[]];
 
 function fakeImap(
-  options: { uidValidity?: bigint; result?: boolean; openError?: Error } = {},
+  options: {
+    uidValidity?: bigint;
+    result?: boolean;
+    openError?: Error;
+    /** MOVE を拒否する (ほかの命令は result に従う)。 */
+    rejectMove?: boolean;
+    /** MOVE に対応していると名乗る。 */
+    moveCapability?: boolean;
+    rejectCopy?: boolean;
+    /** この UID の保存 (APPEND) を拒否する。 */
+    rejectAppendOf?: string[];
+  } = {},
 ) {
   const calls: ImapCall[] = [];
   const result = options.result ?? true;
@@ -76,7 +87,27 @@ function fakeImap(
     },
     async messageMove(range: string, destination: string, opts: unknown) {
       calls.push(["move", range, destination, opts]);
-      return result ? { path: "INBOX", destination } : false;
+      return result && !options.rejectMove
+        ? { path: "INBOX", destination }
+        : false;
+    },
+    capabilities: new Map(options.moveCapability ? [["MOVE", true]] : []),
+    async messageCopy(range: string, destination: string, opts: unknown) {
+      calls.push(["copy", range, destination, opts]);
+      return options.rejectCopy ? false : { path: "INBOX", destination };
+    },
+    async fetchOne(uid: string) {
+      calls.push(["fetch", uid]);
+      return {
+        source: Buffer.from(`mail ${uid}`),
+        flags: new Set(["\\Seen", "\\Recent"]),
+        internalDate: new Date("2026-11-22T00:00:00Z"),
+      };
+    },
+    async append(path: string, content: Buffer, flags: string[]) {
+      const uid = content.toString().slice(5);
+      calls.push(["append", path, uid, flags]);
+      return options.rejectAppendOf?.includes(uid) ? false : { path };
     },
     async messageDelete(range: string, opts: unknown) {
       calls.push(["delete", range, opts]);
@@ -127,6 +158,75 @@ describe("applyImapOperation", () => {
       ["move", "3", "Trash", { uid: true }],
       ["release", "Lists"],
     ]);
+  });
+
+  const junkMove: OutboxOperation = {
+    kind: "move",
+    payload: {
+      targets: [target({ uid: "7" }), target({ messageId: "m2", uid: "9" })],
+      destination: { mailboxId: "box3", path: "迷惑メール" },
+    },
+  };
+
+  it("MOVE を拒否されたら、コピーしてから元を削除する", async () => {
+    const { client, calls } = fakeImap({
+      rejectMove: true,
+      moveCapability: true,
+    });
+    expect(await applyImapOperation(client, junkMove)).toEqual({ ok: true });
+    expect(calls).toEqual([
+      ["lock", "INBOX"],
+      ["move", "7,9", "迷惑メール", { uid: true }],
+      ["copy", "7,9", "迷惑メール", { uid: true }],
+      ["delete", "7,9", { uid: true }],
+      ["release", "INBOX"],
+    ]);
+  });
+
+  it("コピーも拒否されたら、移動先へ保存し直してから元を削除する", async () => {
+    const { client, calls } = fakeImap({
+      rejectMove: true,
+      moveCapability: true,
+      rejectCopy: true,
+    });
+    expect(await applyImapOperation(client, junkMove)).toEqual({ ok: true });
+    expect(calls).toEqual([
+      ["lock", "INBOX"],
+      ["move", "7,9", "迷惑メール", { uid: true }],
+      ["copy", "7,9", "迷惑メール", { uid: true }],
+      ["fetch", "7"],
+      ["append", "迷惑メール", "7", ["\\Seen"]],
+      ["fetch", "9"],
+      ["append", "迷惑メール", "9", ["\\Seen"]],
+      ["delete", "7,9", { uid: true }],
+      ["release", "INBOX"],
+    ]);
+  });
+
+  it("MOVE に対応していないサーバーでは、コピーを試し直さない", async () => {
+    const { client, calls } = fakeImap({ rejectMove: true });
+    expect(await applyImapOperation(client, junkMove)).toEqual({ ok: true });
+    expect(calls.map(([name]) => name)).not.toContain("copy");
+  });
+
+  it("どの方法も拒否されたら、元のメールを消さずに失敗にする", async () => {
+    const { client, calls } = fakeImap({
+      rejectMove: true,
+      rejectAppendOf: ["7"],
+    });
+    const result = await applyImapOperation(client, junkMove);
+    expect(result.ok).toBe(false);
+    expect(calls.map(([name]) => name)).not.toContain("delete");
+  });
+
+  it("途中で拒否されたら、移動先に入った分だけ元を消して失敗にする", async () => {
+    const { client, calls } = fakeImap({
+      rejectMove: true,
+      rejectAppendOf: ["9"],
+    });
+    const result = await applyImapOperation(client, junkMove);
+    expect(result.ok).toBe(false);
+    expect(calls).toContainEqual(["delete", "7", { uid: true }]);
   });
 
   it("UIDVALIDITY が変わっていたら、何もせずに失敗にする", async () => {
