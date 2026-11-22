@@ -5,8 +5,11 @@ use tauri::{AppHandle, Manager};
 
 use crate::{tray, MAIN_WINDOW};
 
+// macOS は件数を文字で出すので、赤い丸はテストでしか使わない。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const DOT: [u8; 4] = [0xef, 0x44, 0x44, 0xff];
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 /// (cx, cy) を中心とする半径 r の円を、RGBA の画像に塗る。
 fn paint_dot(rgba: &mut [u8], width: u32, height: u32, cx: f32, cy: f32, r: f32) {
     for y in 0..height {
@@ -21,6 +24,7 @@ fn paint_dot(rgba: &mut [u8], width: u32, height: u32, cx: f32, cy: f32, r: f32)
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 /// アイコンの右上に、未読があることを示す赤い丸を重ねる。
 pub fn with_dot(icon: &Image<'_>) -> Image<'static> {
     let (width, height) = (icon.width(), icon.height());

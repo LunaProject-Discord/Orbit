@@ -61,9 +61,8 @@ jobs:
       # アプリが最初に接続するサーバー。アプリの「接続先サーバー」の画面で後から変えられる。
       NEXT_PUBLIC_API_URL: ${{ vars.DESKTOP_SERVER_URL || vars.MOBILE_SERVER_URL || 'https://orbit.lunaproject.jp' }}
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/desktop-v') }}
-      # 自動更新: 更新ファイルの署名に使う鍵 (秘密鍵はシークレット、公開鍵は変数)。
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # 自動更新: 更新ファイルの署名に使う鍵の公開鍵 (秘密鍵はシークレットで、下のステップで渡す)。
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
       TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
       # 更新の確認先。既定はこのリポジトリの GitHub Releases (リポジトリが公開のときだけ届く)。
       TAURI_UPDATER_ENDPOINT: ${{ vars.TAURI_UPDATER_ENDPOINT || format('https://github.com/{0}/releases/latest/download/latest.json', github.repository) }}
@@ -121,6 +120,42 @@ jobs:
           Remove-Item $path
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
 
+      # 署名に使う値は、登録されているときだけビルドへ渡す
+      # (空の値を渡すと、Tauri が空の証明書を取り込もうとして失敗する)。
+      - name: 自動更新の署名の鍵を渡す
+        if: env.HAS_UPDATER_KEY == 'true'
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          {
+            echo "TAURI_SIGNING_PRIVATE_KEY<<__END_OF_KEY__"
+            echo "$KEY"
+            echo "__END_OF_KEY__"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      # macOS の署名と公証 (Apple Developer Program の証明書があるとき)。
+      - name: Apple の証明書を渡す (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          ID: ${{ secrets.APPLE_ID }}
+          PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          {
+            echo "APPLE_CERTIFICATE=$CERTIFICATE"
+            echo "APPLE_CERTIFICATE_PASSWORD=$CERTIFICATE_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY"
+            echo "APPLE_ID=$ID"
+            echo "APPLE_PASSWORD=$PASSWORD"
+            echo "APPLE_TEAM_ID=$TEAM_ID"
+          } >> "$GITHUB_ENV"
+
       # シークレットの有無に合わせた設定 (自動更新、署名) を作り、ビルドに重ねる。
       - name: ビルドの設定を作る
         run: node apps/desktop/scripts/ci-config.mjs "${{ runner.temp }}/tauri.ci.conf.json"
@@ -130,13 +165,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS の署名と公証 (Apple Developer Program の証明書があるとき)。
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }} --config "${{ runner.temp }}/tauri.ci.conf.json"

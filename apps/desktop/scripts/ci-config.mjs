@@ -1,7 +1,7 @@
 // GitHub Actions でのビルドに重ねる Tauri の設定を作る (.github/workflows/desktop.yml から呼ぶ)。
 //   node apps/desktop/scripts/ci-config.mjs <書き出し先>
 // 環境変数 (シークレットや変数) の有無に合わせて、次を切り替える。
-// - 自動更新: 署名の鍵 (TAURI_SIGNING_PRIVATE_KEY) と公開鍵 (TAURI_UPDATER_PUBKEY) があれば有効にする。
+// - 自動更新: 署名の鍵 (HAS_UPDATER_KEY) と公開鍵 (TAURI_UPDATER_PUBKEY) があれば有効にする。
 //   無ければ更新の仕組みを入れない (アプリ側は plugins.updater が無いと更新を確認しない)。
 // - Windows の署名: 証明書を取り込んであれば (WINDOWS_CERTIFICATE_THUMBPRINT)、それで署名する。
 // - macOS の署名: Apple の証明書が無ければ、その場限りの署名 (ad-hoc) を付ける
@@ -15,7 +15,7 @@ export function buildConfig(env) {
 
   const pubkey = (env.TAURI_UPDATER_PUBKEY ?? "").trim();
   const endpoint = (env.TAURI_UPDATER_ENDPOINT ?? "").trim();
-  if (env.TAURI_SIGNING_PRIVATE_KEY && pubkey && endpoint) {
+  if (env.HAS_UPDATER_KEY === "true" && pubkey && endpoint) {
     config.bundle.createUpdaterArtifacts = true;
     config.plugins.updater = { pubkey, endpoints: [endpoint] };
   }
