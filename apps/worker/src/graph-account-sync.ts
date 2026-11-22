@@ -1,6 +1,7 @@
 import {
   type BodyFetchPriority,
   decryptCredentials,
+  describeFetchFailure,
   encryptCredentials,
   type GraphLifecycleEvent,
   graphClientState,
@@ -78,6 +79,10 @@ function describeError(error: Error & { query?: unknown }): string {
   }
   if (error.query !== undefined || error.message.startsWith("Failed query")) {
     return "サーバー内部でエラーが発生しました。";
+  }
+  // Node の fetch は接続に失敗すると "fetch failed" とだけ言う。本当の理由は cause にある。
+  if (error.message === "fetch failed") {
+    return `Microsoft Graph に接続できませんでした: ${describeFetchFailure(error)}`;
   }
   return error.message;
 }

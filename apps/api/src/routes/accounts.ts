@@ -346,7 +346,8 @@ export function accountRoutes({
         profile = await fetchMicrosoftProfile(tokens.accessToken);
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
-        console.error("Microsoft のログインを完了できませんでした。", detail);
+        // 接続に失敗した場合は、cause に DNS、タイムアウト、TLS などの理由が入っている。
+        console.error("Microsoft のログインを完了できませんでした。", error);
         return c.json(
           {
             error:
@@ -511,7 +512,7 @@ export function accountRoutes({
         }
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
-        console.error("Google のログインを完了できませんでした。", detail);
+        console.error("Google のログインを完了できませんでした。", error);
         return c.json(
           {
             error:

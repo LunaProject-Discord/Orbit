@@ -5,5 +5,6 @@ export * from "./google-oauth.js";
 export * from "./graph-webhook.js";
 export * from "./mail-providers.js";
 export * from "./microsoft-oauth.js";
+export * from "./network-error.js";
 export * from "./notifications.js";
 export * from "./outbox.js";

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { decryptText, encryptText } from "./credentials.js";
+import { fetchOrExplain } from "./network-error.js";
 
 /**
  * Microsoft ID プラットフォーム (Entra ID) の OAuth2。
@@ -147,16 +148,21 @@ async function requestToken(
   params: Record<string, string>,
   fetchFn: Fetch,
 ): Promise<MicrosoftTokens> {
-  const response = await fetchFn(endpoint(config, "token"), {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      ...params,
-    }).toString(),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const response = await fetchOrExplain(
+    fetchFn,
+    endpoint(config, "token"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        ...params,
+      }).toString(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
+    "Microsoft のログインサーバー",
+  );
   const body = (await response.json().catch(() => ({}))) as {
     access_token?: string;
     refresh_token?: string;
@@ -223,12 +229,14 @@ export async function fetchMicrosoftProfile(
   accessToken: string,
   fetchFn: Fetch = fetch,
 ): Promise<MicrosoftProfile> {
-  const response = await fetchFn(
+  const response = await fetchOrExplain(
+    fetchFn,
     "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,displayName",
     {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
+    "Microsoft Graph",
   );
   const body = (await response.json().catch(() => ({}))) as {
     mail?: string | null;
