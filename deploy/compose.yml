@@ -2,7 +2,8 @@
 #   cd deploy && docker compose up -d --build
 # 設定は deploy/.env から読む (deploy/setup.sh で作る)。
 # 外への公開のしかたは、deploy/.env の COMPOSE_FILE でこのファイルに重ねるファイルで決まる。
-#   compose.proxy.yml: 別の Web サーバー (中継用のサーバーや、同じサーバーの Apache) から逆プロキシする
+#   compose.relay.yml: 別のサーバー (中継用のサーバー) から逆プロキシする (サーバーの間は HTTPS)
+#   compose.proxy.yml: 同じサーバーの Web サーバー (Apache など) から逆プロキシする
 #   compose.caddy.yml: Caddy が 80 / 443 番で直接公開し、証明書も自動で取得する
 name: mail
 
@@ -102,18 +103,18 @@ services:
         NEXT_PUBLIC_API_URL: https://${DOMAIN}
     restart: unless-stopped
     logging: *logging
-    # 待ち受けるアドレスとポートは、重ねるファイル (compose.proxy.yml / compose.caddy.yml) が決める。
+    # 待ち受けるアドレスとポートは、重ねるファイル (compose.relay.yml / compose.proxy.yml / compose.caddy.yml) が決める。
     environment:
       SITE_ADDRESS: ":80"
     depends_on:
       - api
 
-  # 毎日 1 回、DB を deploy/backups/ に書き出す。
+  # 毎日 1 回、DB を deploy/backups/ に書き出す。BACKUP_PUBLIC_KEY があれば、その公開鍵で暗号化する。
   backup:
     image: postgres:19
     restart: unless-stopped
     logging: *logging
-    entrypoint: ["sh", "/backup.sh"]
+    entrypoint: ["bash", "/backup.sh"]
     environment:
       PGHOST: postgres
       PGUSER: mail
@@ -121,6 +122,7 @@ services:
       PGDATABASE: mail
       BACKUP_HOUR: ${BACKUP_HOUR:-4}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_PUBLIC_KEY: ${BACKUP_PUBLIC_KEY:-}
       TZ: ${TZ:-Asia/Tokyo}
     volumes:
       # 末尾の z は SELinux が有効なホスト (AlmaLinux など) でコンテナから読めるようにする指定。

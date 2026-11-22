@@ -14,3 +14,6 @@ next-env.d.ts
 
 # 本番のバックアップの書き出し先
 /deploy/backups
+
+# 中継用のサーバーとの間の HTTPS に使う証明書と秘密鍵 (deploy/setup.sh が作る)
+/deploy/certs

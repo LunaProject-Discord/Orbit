@@ -1,10 +1,8 @@
-# 別の Web サーバーから逆プロキシする場合に、compose.yml に重ねる。
-# web は HTTP のまま 1 つのポートで待ち受け、HTTPS と証明書は手前の Web サーバーが受け持つ。
-#   LOCAL_BIND=127.0.0.1 (既定): 同じサーバーの Web サーバー (Apache など) から繋ぐ。外からは直接届かない
-#                                (設定の見本は deploy/apache/mail.conf)
-#   LOCAL_BIND=0.0.0.0:          別のサーバー (中継用のサーバー) から直接繋ぐ (見本は deploy/apache/mail-relay.conf)。
-#                                Docker が公開したポートはサーバーのファイアウォール (firewalld など) を通らずに届くので、
-#                                クラウド側のファイアウォール (セキュリティ・リスト) で、中継用のサーバーからだけに絞ること
+# 同じサーバーの Web サーバー (Apache など) から逆プロキシする場合に、compose.yml に重ねる
+# (設定の見本は deploy/apache/mail.conf)。
+# web は HTTP のまま 127.0.0.1 の 1 つのポートで待ち受け、HTTPS と証明書は手前の Web サーバーが受け持つ。
+# サーバーの中だけの通信なので、外からは直接届かない。
+# 別のサーバー (中継用のサーバー) から繋ぐ場合は、HTTP のまま外へ出さず、HTTPS で待ち受ける compose.relay.yml を使うこと。
 services:
   web:
     ports:

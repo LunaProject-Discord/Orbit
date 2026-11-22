@@ -1,8 +1,13 @@
 # Web (静的ファイル) と API へ振り分ける。待ち受け方は SITE_ADDRESS で決まる。
-#   既存の Web サーバー (Apache など) の後ろに置く場合: ":80"。HTTP のまま受け、HTTPS は手前の Web サーバーに任せる
+#   同じサーバーの Web サーバー (Apache など) の後ろに置く場合: ":80"。HTTP のまま受け、HTTPS は手前の Web サーバーに任せる
+#   別のサーバー (中継用のサーバー) の後ろに置く場合: ":443" と、SITE_TLS に中継用の証明書 (compose.relay.yml)。
+#     サーバーの間はインターネットを通るので、HTTPS で受ける
 #   Caddy が直接公開する場合: ドメイン名。証明書を Let's Encrypt から自動で取得・更新する
 #     (80 番と 443 番が外から届く必要がある)
 {$SITE_ADDRESS} {
+	# 中継用の証明書を使う場合だけ "tls <証明書> <鍵>" が入る。ほかの構成では空。
+	{$SITE_TLS}
+
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"

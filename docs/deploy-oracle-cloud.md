@@ -11,7 +11,7 @@ Oracle Cloud 側の Apache には手を入れません。Web も API も同じ�
 Cloudflare
         ▼
 Linode の Apache      HTTPS と証明書。ドメインごとの設定で Oracle Cloud へ中継
-        │  http://<Oracle Cloud のアドレス>:18080
+        │  https://<Oracle Cloud のアドレス>:18080   (専用の証明書で相手を確かめる)
         ▼
 ┌─ Oracle Cloud のサーバー (Docker Compose) ───────────────┐
 │  web (Caddy)   Web の静的ファイル。/v1/*、/healthz は api へ │
@@ -31,19 +31,22 @@ Linode の Apache      HTTPS と証明書。ドメインごとの設定で Oracl
 | --- | --- |
 | `Dockerfile` | 本番用のイメージ (`server`: API・ワーカー・マイグレーション、`web`: Caddy + Web) |
 | `deploy/compose.yml` | 本番用の構成 (共通部分) |
-| `deploy/compose.proxy.yml` | 別の Web サーバーから逆プロキシする場合に重ねる (web は HTTP のまま 1 つのポートで待ち受け) |
+| `deploy/compose.relay.yml` | 別のサーバー (Linode) から逆プロキシする場合に重ねる (web は 1 つのポートで、HTTPS で待ち受け) |
+| `deploy/compose.proxy.yml` | 同じサーバーの Apache から逆プロキシする場合に重ねる (web は 127.0.0.1 の 1 つのポートで、HTTP で待ち受け) |
 | `deploy/compose.caddy.yml` | Caddy が 80 / 443 番で直接公開する場合に重ねる |
 | `deploy/apache/mail-relay.conf` | 中継用のサーバー (Linode) の Apache の設定の見本 |
 | `deploy/apache/mail.conf` | 同じサーバーの Apache から繋ぐ場合の設定の見本 |
 | `deploy/Caddyfile` | コンテナ内での Web / API への振り分け |
 | `deploy/.env.example` | 設定の見本。`deploy/setup.sh` がここから `deploy/.env` を作る |
-| `deploy/setup.sh` | `deploy/.env` を作り、秘密の値を生成する |
+| `deploy/setup.sh` | `deploy/.env` を作り、秘密の値と、Linode との間の HTTPS に使う証明書 (`deploy/certs/`) を生成する |
 | `deploy/deploy.sh` | 最新のコードに更新して起動し直す |
 | `deploy/backup.sh` / `deploy/restore.sh` | DB のバックアップと復元 |
+| `deploy/backup-key.sh` | バックアップを暗号化する鍵の組を作る |
 | `.github/workflows/deploy.yml` | main の CI が通ったらサーバーを更新する |
 
 > 確認の状況: Docker Compose 一式の起動、Apache (2.4) からの逆プロキシ経由でのログイン、変更の通知 (SSE)、
 > 20 MB の添付ファイルの受け取り、バックアップと復元は、手元の環境 (x86_64、Ubuntu の Apache) で確認しています。
+> Apache から HTTPS での中継 (証明書が違う相手には繋がらないこと)、バックアップの暗号化と復元も、同じ環境で確認しています。
 > arm64 でのビルドと起動は GitHub Actions の arm64 の実行環境で確認しています。
 > AlmaLinux 上での各コマンド (dnf、firewalld)、Cloudflare と Linode を通した経路、
 > GitHub Actions からの更新は、実際のサーバーでは未確認です。うまくいかない箇所があれば、表示された内容を教えてください。
@@ -94,6 +97,7 @@ git clone -c core.sshCommand="ssh -i ~/.ssh/github_mail" git@github.com:LunaProj
 ```
 
 `deploy/setup.sh` は `deploy/.env` を作り、DB のパスワード、ログイン用の秘密の値、認証情報を暗号化する鍵、通知用の鍵を自動で生成します。
+あわせて、Linode との間を HTTPS にするための証明書 (`deploy/certs/relay.crt`) と秘密鍵 (`relay.key`) も作ります (手順 5 で使います)。
 
 **`CREDENTIALS_ENCRYPTION_KEY` は必ずサーバーの外にも控えてください** (`grep CREDENTIALS deploy/.env` で表示できます)。
 この鍵を失うと、DB をバックアップから戻しても、メールアカウントのパスワードやトークンを復号できません。
@@ -106,11 +110,14 @@ Microsoft アカウントや Gmail を使う場合は、ここで `deploy/.env` 
 cd /opt/mail/deploy
 docker compose up -d --build
 docker compose ps
-curl -s http://127.0.0.1:18080/healthz
+curl -s --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 https://mail.example.com:18080/healthz
 ```
 
 `api` が `healthy`、`migrate` が `Exited (0)`、ほかが `Up` で、最後のコマンドが `{"status":"ok"}` を返せば起動できています。
 この時点では、まだ外からは見えません (手順 4 でポートを許可し、手順 5 で Linode から繋ぎます)。
+
+18080 番は HTTPS で待ち受けます。Linode との間はインターネットを通るので、メールの内容やログインの情報が平文で流れないようにするためです。
+上の `curl` は、作った証明書だけを信頼して繋いでいます (`http://` で繋ぐと 400 が返ります)。
 
 続けて、ログイン用の利用者を作ります (パスワードは 12 文字以上で、入力を求められます)。
 
@@ -135,15 +142,29 @@ Oracle Cloud のコンソールでインスタンスの詳細 → サブネッ�
 Linode から届くかは、Linode のサーバーで次を実行して確かめます。
 
 ```sh
-curl -s http://<Oracle Cloud のアドレス>:18080/healthz    # {"status":"ok"} が返る
+curl -sk https://<Oracle Cloud のアドレス>:18080/healthz    # {"status":"ok"} が返る
 ```
+
+ここでは届くかどうかだけを見るので、証明書の確認を省いています (`-k`)。証明書で相手を確かめる設定は、手順 5 で行います。
 
 届かない場合は、firewalld で既存のポートを個別に許可している可能性があります。既存のポートと同じやり方で 18080 番も許可してください
 (`sudo firewall-cmd --list-all` で今の設定を確認できます)。
 
 ## 5. Linode の Apache に設定を足す
 
-Linode のサーバーの `/etc/httpd/conf.d/` に、ドメインごとの設定を 1 つ足します。
+まず、Oracle Cloud のサーバーで作った証明書を Linode のサーバーに置きます。写すのは証明書 (`relay.crt`) だけで、
+秘密鍵 (`relay.key`) は Oracle Cloud のサーバーから出しません。証明書は見られても困らないものなので、画面に出して貼り付けるのが簡単です。
+
+```sh
+# Oracle Cloud のサーバーで実行し、表示された内容 (BEGIN の行から END の行まで) を写す
+cat /opt/mail/deploy/certs/relay.crt
+
+# Linode のサーバーで実行し、写した内容を貼り付けて保存する
+sudo vim /etc/httpd/conf/orbit-relay.crt
+sudo openssl x509 -in /etc/httpd/conf/orbit-relay.crt -noout -subject -enddate    # 読めることを確認
+```
+
+次に、Linode のサーバーの `/etc/httpd/conf.d/` に、ドメインごとの設定を 1 つ足します。
 既存のサイトの設定を写して作るのが確実です (証明書や Oracle Cloud の向き先が、すでに正しく書かれているため)。
 
 ```sh
@@ -161,7 +182,8 @@ sudo vim "$DOMAIN.conf"
 | 指定 | 直し方 | 理由 |
 | --- | --- | --- |
 | `ServerName` (80 番と 443 番の 2 か所) | 新しいドメインにする | 上の `sed` で置き換わっているはず |
-| `ProxyPass` / `ProxyPassReverse` の向き先 | `http://<Oracle Cloud のアドレス>:18080/` にする | メールアプリが待ち受けるポート |
+| `ProxyPass` / `ProxyPassReverse` の向き先 | `https://<Oracle Cloud のアドレス>:18080/` にする (`http` ではなく `https`) | メールアプリが待ち受けるポート。HTTPS で待ち受けている |
+| `SSLProxyEngine on` から `SSLProxyProtocol` までの 7 行 | 見本から写して、443 番の VirtualHost に足す | Oracle Cloud との間を HTTPS にし、置いた証明書の相手にだけ繋ぐ。経路の途中で盗み見たり、なりすましたりできなくなる |
 | `ProxyPass` の `timeout` | `timeout=120` にする (既存のサイトは 10 や 30) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントが流れる。短いと通知が途中で切れる |
 | `ProxyPass` の行末 | `flushpackets=on` を付ける | 変更の通知をため込まずにすぐ流す。無いと、新着や既読の反映が遅れる |
 | `LimitRequestBody 52428800` | 443 番の VirtualHost に足す | 添付ファイル (1 通あたり合計 25 MB まで) を受け取るため |
@@ -182,6 +204,9 @@ sudo apachectl configtest      # Syntax OK 以外なら、読み込み直さず�
 sudo systemctl reload httpd
 curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"    # {"status":"ok"} が返れば、Oracle Cloud まで届いている
 ```
+
+`SSLProxyEngine` が使えないと言われた場合は、HTTPS 用のモジュール (`mod_ssl`) が読み込まれていません。
+既存のサイトが HTTPS を受けているサーバーなら入っているはずです。
 
 ## 6. Cloudflare にドメインを足して確認する
 
@@ -267,32 +292,61 @@ bash /opt/mail/deploy/deploy.sh
 
 ## 9. バックアップと復元
 
-`backup` サービスが、毎日 4 時 (日本時間) に DB を `/opt/mail/deploy/backups/mail-<日時>.dump` へ書き出し、14 日より古いものを消します。
+`backup` サービスが、毎日 4 時 (日本時間) に DB を `/opt/mail/deploy/backups/` へ書き出し、14 日より古いものを消します。
 時刻と日数は `deploy/.env` の `BACKUP_HOUR` と `BACKUP_KEEP_DAYS` で変えられます。
+
+### バックアップを暗号化する
+
+バックアップにはメールの内容がそのまま入ります。最初に 1 度、暗号化のための鍵の組を作ってください。
+
+```sh
+cd /opt/mail/deploy
+bash backup-key.sh
+```
+
+- 公開鍵が `deploy/.env` の `BACKUP_PUBLIC_KEY` に書き込まれ、以後のバックアップは暗号化されて `mail-<日時>.dump.gpg` になります
+  (OpenPGP 形式。作っていない間は、暗号化なしの `mail-<日時>.dump` です)。
+- 秘密鍵 (`-----BEGIN PGP PRIVATE KEY BLOCK-----` から `-----END PGP PRIVATE KEY BLOCK-----` まで) が、画面に 1 度だけ表示されます。
+  **必ずサーバーの外 (パスワード管理ソフトなど) に控えてください。** サーバーには保存しません。サーバーやバックアップのファイルを
+  読まれても、中身を開けないようにするためです。この秘密鍵を失うと、暗号化したバックアップは戻せません。
+- 鍵を作る前に取った暗号化なしのバックアップは、そのまま残ります。暗号化したバックアップが取れたことを確かめたら、
+  `sudo rm backups/mail-*.dump` で消せます (消さなくても 14 日で消えます)。
+- 鍵を作り直すときは `bash backup-key.sh --renew` です。それまでのバックアップを戻すには、前の秘密鍵が引き続き必要です。
+
+### 取る、戻す
 
 ```sh
 cd /opt/mail/deploy
 docker compose run --rm backup once     # 今すぐ 1 回取る
 sudo ls -lh backups                     # 取れているか確認
-sudo bash restore.sh backups/mail-20261122-040000.dump   # 戻す (今の DB の中身は置き換わります)
+sudo bash restore.sh backups/mail-20261122-040000.dump.gpg   # 戻す (今の DB の中身は置き換わります)
 ```
+
+暗号化したバックアップを戻すときは、秘密鍵を貼り付けるよう求められます。秘密鍵をファイルにしてある場合は、
+`sudo bash restore.sh <バックアップ> <秘密鍵のファイル>` のように 2 つ目に指定できます (使い終わったファイルは消してください)。
+秘密鍵が合わない場合や、ファイルが壊れている場合は、DB には手を付けずに止まります。
 
 バックアップに入るのは DB (メールの内容、アカウントの設定、利用者) です。次のものは入りません。
 
 - `deploy/.env` (特に `CREDENTIALS_ENCRYPTION_KEY`)。別に控えてください。
+- `deploy/certs/` (Linode との間の証明書と秘密鍵)。失っても `setup.sh` で作り直せます (末尾の「証明書を作り直す」)。
 - 添付ファイルの一時的な置き場。7 日で消える一時的なもので、メールそのものには影響しません。
 
 バックアップはサーバーの中にあるので、サーバーごと失うと一緒に消えます。ときどき手元へ写しておくことをおすすめします。
 
 ```sh
 # サーバーで: 最新のバックアップを、自分が読める場所へ写す (バックアップは root だけが読めるようにしてあります)
-sudo install -o "$USER" -m 600 "$(ls -t /opt/mail/deploy/backups/*.dump | head -1)" ~/mail-latest.dump
+sudo install -o "$USER" -m 600 "$(sudo sh -c 'ls -t /opt/mail/deploy/backups/mail-*.dump.gpg | head -1')" ~/mail-latest.dump.gpg
 
 # 手元の PC で: 受け取る
-scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump .
+scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump.gpg .
 ```
 
-サーバーを作り直すときは、手順 2 から 4 を行ったあと、控えておいた `deploy/.env` を置き、`restore.sh` で DB を戻します。
+暗号化したバックアップは、秘密鍵が無ければ開けないので、手元やほかの保管先に置いても中身は読まれません。
+手元の PC で中身を取り出したい場合は、GnuPG (`gpg`) に秘密鍵を取り込めば `gpg --decrypt mail-latest.dump.gpg > mail-latest.dump` で開けます。
+
+サーバーを作り直すときは、手順 2 から 4 を行ったあと、控えておいた `deploy/.env` を置き、`restore.sh` で DB を戻します
+(証明書は新しく作られるので、手順 5 の証明書の置き換えも行います)。
 
 ## 10. 設定 (環境変数) の一覧
 
@@ -301,7 +355,7 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump .
 | 名前 | 必須 | 内容 |
 | --- | --- | --- |
 | `DOMAIN` | ○ | 公開するドメイン (`https://` は付けない)。Web にも埋め込まれる |
-| `COMPOSE_FILE` | ○ | 公開のしかた。`compose.yml:compose.proxy.yml` (別の Web サーバーから逆プロキシ) か `compose.yml:compose.caddy.yml` (Caddy が直接公開) |
+| `COMPOSE_FILE` | ○ | 公開のしかた。`compose.yml:compose.relay.yml` (別のサーバーから HTTPS で逆プロキシ)、`compose.yml:compose.proxy.yml` (同じサーバーの Apache から逆プロキシ)、`compose.yml:compose.caddy.yml` (Caddy が直接公開) のどれか。`setup.sh` の 2 つ目の引数で決まる |
 | `LOCAL_BIND` | | 逆プロキシの場合に web が待ち受けるアドレス。`0.0.0.0` (別のサーバーから繋ぐ) か `127.0.0.1` (同じサーバーの Apache から繋ぐ。既定) |
 | `LOCAL_PORT` | | 逆プロキシの場合に web が待ち受けるポート。既定は 18080 |
 | `POSTGRES_PASSWORD` | ○ | DB のパスワード (自動生成)。最初の起動後に変えても DB 側には反映されない |
@@ -318,6 +372,7 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump .
 | `EXTRA_ALLOWED_ORIGINS` | | Web 以外から API を使うときに許可するオリジン (カンマ区切り)。スマホアプリとデスクトップ版のオリジンは最初から許可しているので、足す必要はない |
 | `BACKUP_HOUR` | | バックアップを取る時刻 (0〜23)。既定は 4 |
 | `BACKUP_KEEP_DAYS` | | バックアップを残す日数。既定は 14 |
+| `BACKUP_PUBLIC_KEY` | | バックアップを暗号化する公開鍵 (`backup-key.sh` が書き込む)。空なら暗号化せずに書き出す |
 | `TZ` | | ログやバックアップの時刻の基準。既定は `Asia/Tokyo` |
 
 次の値は `DOMAIN` などから `deploy/compose.yml` が決めるので、`deploy/.env` に書く必要はありません (書いても上書きされます)。
@@ -349,7 +404,9 @@ Linode 側のエラーは、Linode のサーバーの `/var/log/httpd/` (設定�
 
 | 症状 | 確認すること |
 | --- | --- |
-| 503 Service Unavailable | Oracle Cloud でコンテナが動いているか (`docker compose ps`、`curl http://127.0.0.1:18080/healthz`)。動いているなら、Linode から 18080 番に届くか (手順 4 の `curl`) |
+| 503 Service Unavailable | Oracle Cloud でコンテナが動いているか (`docker compose ps`、手順 3 の `curl`)。動いているなら、Linode から 18080 番に届くか (手順 4 の `curl`) |
+| 500 Internal Server Error (Linode のログに `Error during SSL Handshake with remote server`) | Linode に置いた `/etc/httpd/conf/orbit-relay.crt` が、Oracle Cloud の `deploy/certs/relay.crt` と同じ内容か。証明書を作り直したあとは置き換えが要る |
+| 400 `Client sent an HTTP request to an HTTPS server` | Linode の設定の `ProxyPass` の向き先が `http://` のままになっている。`https://` に直す |
 | Cloudflare のエラー画面 (52x) が出る | Cloudflare の DNS の向き先が Linode になっているか。Linode の Apache が動いているか |
 | 既存のサイトの画面が出る | Linode の設定の `ServerName` と向き先のポート (18080) が合っているか |
 | 添付ファイルを上げると 413 になる | Linode の設定に `LimitRequestBody 52428800` があるか |
@@ -372,12 +429,47 @@ sudo apachectl configtest && sudo systemctl reload httpd
 
 あわせて、セキュリティ・リストの 18080 番のルールと、Cloudflare の DNS のレコードを消します。
 
+### Linode との間を HTTP で動かしていた場合に、HTTPS へ切り替える
+
+以前の手順 (`http://<Oracle Cloud のアドレス>:18080/` へ中継) で動かしている場合は、次の順に切り替えます。
+途中の数分間は画面や API に繋がらなくなります。
+
+```sh
+# 1. Oracle Cloud のサーバーで: 証明書を作り、HTTPS で待ち受けるように切り替える
+bash /opt/mail/deploy/deploy.sh    # 最新に更新する (GitHub Actions で自動更新している場合は不要)
+cd /opt/mail && bash deploy/setup.sh mail.example.com relay
+cd deploy && docker compose up -d
+curl -s --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 https://mail.example.com:18080/healthz
+cat certs/relay.crt
+
+# 2. Linode のサーバーで: 手順 5 のとおり証明書を /etc/httpd/conf/orbit-relay.crt に置き、
+#    設定の ProxyPass / ProxyPassReverse を https:// にして、SSLProxy で始まる 7 行を足す
+sudo apachectl configtest && sudo systemctl reload httpd
+```
+
+セキュリティ・リストのルール (18080 番) は、そのままで構いません。
+
+### 証明書を作り直す
+
+Linode との間の証明書の期限は 10 年です。期限が近づいたときや、秘密鍵 (`deploy/certs/relay.key`) が漏れたおそれがあるときは、作り直します。
+
+```sh
+# Oracle Cloud のサーバーで
+cd /opt/mail/deploy
+rm -r certs && bash setup.sh
+docker compose restart web
+cat certs/relay.crt    # Linode の /etc/httpd/conf/orbit-relay.crt をこの内容で置き換え、sudo systemctl reload httpd
+```
+
+Linode の側を置き換えるまでの間は、繋がらなくなります (500 が返ります)。
+
 ## ほかの構成
 
 ### 同じサーバーの Apache から繋ぐ
 
 Oracle Cloud のサーバーの Apache (80 番) でドメインを受け、そこからメールアプリへ渡す形です。
-`setup.sh` を `apache` で実行すると、web は 127.0.0.1:18080 だけで待ち受け、外からは直接届きません。
+`setup.sh` を `apache` で実行すると、web は 127.0.0.1:18080 だけで待ち受け、外からは直接届きません
+(サーバーの中だけの通信なので、ここは HTTP のままです)。
 
 ```sh
 bash deploy/setup.sh mail.example.com apache

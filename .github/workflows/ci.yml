@@ -61,22 +61,34 @@ jobs:
         run: |
           bash setup.sh mail.example.com relay
           grep -x 'LOCAL_BIND=0.0.0.0' .env
-          grep -x 'COMPOSE_FILE=compose.yml:compose.proxy.yml' .env
-      - name: Caddy が直接公開する構成も検証
-        run: COMPOSE_FILE=compose.yml:compose.caddy.yml docker compose config --quiet
+          grep -x 'COMPOSE_FILE=compose.yml:compose.relay.yml' .env
+          # サーバーの間の HTTPS に使う証明書ができていて、作り直されないこと。
+          openssl x509 -in certs/relay.crt -noout -ext subjectAltName | grep -q 'DNS:mail.example.com'
+          before="$(sha256sum certs/relay.crt)"
+          bash setup.sh
+          test "$before" = "$(sha256sum certs/relay.crt)"
+      - name: ほかの構成も検証
+        run: |
+          COMPOSE_FILE=compose.yml:compose.caddy.yml docker compose config --quiet
+          COMPOSE_FILE=compose.yml:compose.proxy.yml docker compose config --quiet
       - name: イメージをビルド
         run: docker compose build
       - name: 起動
         run: docker compose up -d
-      - name: Web と API が応答することを確認
+      - name: Web と API が HTTPS で応答することを確認
         run: |
+          # 中継用のサーバーと同じく、作った証明書だけを信頼して繋ぐ。
+          fetch() { curl --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 "$@"; }
+          base=https://mail.example.com:18080
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/healthz; then
+            if fetch -fsS "$base/healthz"; then
               echo
-              curl -fsS -o /dev/null -w 'login: %{http_code}\n' http://127.0.0.1:18080/login
-              curl -fsS -o /dev/null -w 'v1: %{http_code}\n' http://127.0.0.1:18080/v1
+              fetch -fsS -o /dev/null -w 'login: %{http_code}\n' "$base/login"
+              fetch -fsS -o /dev/null -w 'v1: %{http_code}\n' "$base/v1"
               # 変更の通知 (SSE) には、手前の逆プロキシにため込ませないための指定が付く。
-              curl -sS -D - -o /dev/null http://127.0.0.1:18080/v1/events | grep -i '^x-accel-buffering: no'
+              fetch -sS -D - -o /dev/null "$base/v1/events" | grep -i '^x-accel-buffering: no'
+              # 平文の HTTP では中身を返さない。
+              test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz)" = 400
               exit 0
             fi
             sleep 2
@@ -84,5 +96,27 @@ jobs:
           docker compose ps -a
           docker compose logs --tail=50
           exit 1
-      - name: バックアップを 1 回取る
-        run: docker compose run --rm backup once
+      - name: バックアップを 1 回取る (暗号化なし)
+        run: |
+          docker compose run --rm backup once
+          sudo sh -c 'ls backups/mail-*.dump'
+      - name: バックアップを暗号化して取り、戻す
+        run: |
+          docker compose exec -T postgres psql -U mail -d mail -q \
+            -c "create table backup_check (v text); insert into backup_check values ('before');"
+          bash backup-key.sh >"$RUNNER_TEMP/secret-key.asc"
+          grep -q '^BACKUP_PUBLIC_KEY=.' .env
+          docker compose run --rm backup once
+          file="$(sudo sh -c 'ls backups/mail-*.dump.gpg')"
+          # 中身がそのまま読める形で入っていないこと。
+          if sudo grep -q PGDMP "$file"; then exit 1; fi
+          docker compose exec -T postgres psql -U mail -d mail -q -c "update backup_check set v = 'after';"
+          # 別の鍵では戻せず、DB もそのまま。
+          cp .env "$RUNNER_TEMP/env"
+          bash backup-key.sh --renew >"$RUNNER_TEMP/other-key.asc"
+          cp "$RUNNER_TEMP/env" .env
+          if echo yes | sudo bash restore.sh "$file" "$RUNNER_TEMP/other-key.asc"; then exit 1; fi
+          test "$(docker compose exec -T postgres psql -U mail -d mail -Atc 'select v from backup_check')" = after
+          # 正しい鍵なら戻る。
+          echo yes | sudo bash restore.sh "$file" "$RUNNER_TEMP/secret-key.asc"
+          test "$(docker compose exec -T postgres psql -U mail -d mail -Atc 'select v from backup_check')" = before
