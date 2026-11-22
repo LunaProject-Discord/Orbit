@@ -56,6 +56,8 @@ export function IconPicker({
   colorClass,
   dotClass,
   colorStyle,
+  emptyIcon,
+  emptyLabel = "なし (色の点)",
 }: {
   /** 選んでいるアイコンの名前か絵文字。null なら、アイコンなし (色の点)。 */
   value: string | null;
@@ -68,6 +70,9 @@ export function IconPicker({
   dotClass?: string;
   /** 上の 2 つのクラスが CSS 変数を使うときの、変数の値。 */
   colorStyle?: CSSProperties;
+  /** アイコンなしのときに、点の代わりに出すもの (既定のアイコン) と、その呼び名。 */
+  emptyIcon?: ReactNode;
+  emptyLabel?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -137,11 +142,13 @@ export function IconPicker({
           ) : node ? (
             <LucideSvg node={node} className="size-4" />
           ) : (
-            <span className={cn("size-2 rounded-full", dotClass)} />
+            (emptyIcon ?? (
+              <span className={cn("size-2 rounded-full", dotClass)} />
+            ))
           )}
         </span>
         <span className="truncate">
-          {emoji ? "絵文字" : (value ?? "なし (色の点)")}
+          {emoji ? "絵文字" : (value ?? emptyLabel)}
         </span>
         <ChevronDownIcon className="text-muted-foreground" aria-hidden="true" />
       </PopoverTrigger>

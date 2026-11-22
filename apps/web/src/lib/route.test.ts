@@ -66,6 +66,21 @@ describe("buildRoute と parseRoute", () => {
     );
   });
 
+  it("統合フォルダと、その中で開いたメールを往復できる", () => {
+    const route: MailRoute = {
+      ...emptyRoute,
+      unifiedId: FOLDER,
+      messageId: MESSAGE,
+    };
+    const url = buildRoute(route);
+    expect(url).toBe(`/unified/${FOLDER}/messages/${MESSAGE}`);
+    expect(parseRoute(url)).toEqual(route);
+    expect(parseRoute(`/unified/${FOLDER}?q=abc`).search?.text).toBe("abc");
+    expect(historyMode(emptyRoute, { ...emptyRoute, unifiedId: FOLDER })).toBe(
+      "push",
+    );
+  });
+
   it("末尾の / や ID の大文字を気にしない", () => {
     expect(parseRoute(`/accounts/${ACCOUNT.toUpperCase()}/`)).toEqual({
       ...emptyRoute,

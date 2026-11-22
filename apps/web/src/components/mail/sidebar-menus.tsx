@@ -44,7 +44,7 @@ export type SidebarMenuActions = {
 };
 
 /** 上へ / 下へ動かす 2 項目。ids は同じ並びの項目 (いまの表示順)。 */
-function MoveItems({
+export function MoveItems({
   id,
   ids,
   onReorder,

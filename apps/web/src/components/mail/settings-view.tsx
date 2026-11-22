@@ -113,6 +113,8 @@ type Props = {
   /** 表示名や色を変えたアカウントを、画面に反映する。 */
   onAccountUpdated: (account: Account) => void;
   onSignOut: () => void;
+  /** 「サイドバーの項目と統合フォルダ」の節 (どの端末でも同じ内容になる設定)。 */
+  sidebarItems: React.ReactNode;
 };
 
 /** 設定画面。表示、通知、メールアカウント、同期の状況、ログアウトをまとめる。 */
@@ -131,6 +133,7 @@ export function SettingsView({
   onReauth,
   onAccountUpdated,
   onSignOut,
+  sidebarItems,
 }: Props) {
   const { theme, setTheme } = useTheme();
   const preferences = usePreferences();
@@ -391,6 +394,8 @@ export function SettingsView({
               </Button>
             </div>
           </Section>
+
+          {sidebarItems}
 
           <Section
             title="通知"

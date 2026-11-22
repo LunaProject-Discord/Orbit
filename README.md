@@ -429,6 +429,7 @@ shadcn/ui の CLI がフォント設定を書き換えた場合は、`--font-san
 | `/` | すべての受信トレイ |
 | `/accounts/<ID>` | そのアカウントの受信トレイ |
 | `/accounts/<ID>/folders/<ID>` | フォルダ |
+| `/unified/<ID>` | 統合フォルダ (自分で作った、複数のフォルダをまとめた一覧) |
 | `…/messages/<ID>` | メール (会話) を開いた状態 (`/messages/<ID>`、`/accounts/<ID>/messages/<ID>` なども同じ) |
 | `/drafts` | 下書きの一覧 |
 | `/starred` | スター付きのメール (全アカウント・全フォルダ)。`/starred/messages/<ID>` でメールを開いた状態 |

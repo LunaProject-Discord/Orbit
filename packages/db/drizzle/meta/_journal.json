@@ -120,6 +120,13 @@
       "when": 1795328336441,
       "tag": "0016_account_color_hex",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795330037307,
+      "tag": "0017_unified_folders",
+      "breakpoints": true
     }
   ]
 }

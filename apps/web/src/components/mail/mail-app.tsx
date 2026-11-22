@@ -48,6 +48,14 @@ import {
 } from "@/components/mail/sidebar-rail";
 import { SignatureDialog } from "@/components/mail/signature-dialog";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
+import {
+  UnifiedDialog,
+  type UnifiedDialogTarget,
+} from "@/components/mail/unified-dialog";
+import {
+  UNIFIED_SETTINGS_ID,
+  UnifiedSettings,
+} from "@/components/mail/unified-settings";
 import { Button } from "@/components/ui/button";
 import { AccountListMark } from "@/lib/account-icons";
 import {
@@ -66,6 +74,8 @@ import {
   type FailedOperation,
   listFailures,
   listOutgoing,
+  listUnified,
+  listUnifiedMessages,
   type MailboxSummary,
   type MessageAction,
   type MessageDetail,
@@ -78,12 +88,15 @@ import {
   retryFailure,
   type SearchParams,
   type ServerDraft,
+  type SidebarLayout,
   saveAccountOrder,
   saveDraft,
   saveMailboxOrder,
+  saveSidebarLayout,
   sendFocus,
   startOAuthLogin,
   syncAccountNow,
+  type UnifiedState,
   type User,
 } from "@/lib/api";
 import {
@@ -160,6 +173,15 @@ import {
   stepItem,
   type ThreadRows,
 } from "@/lib/thread-rows";
+import {
+  describeUnified,
+  emptyUnifiedState,
+  loadCachedUnified,
+  reorderLayout,
+  scopeMailboxes,
+  setEntryHidden,
+  storeCachedUnified,
+} from "@/lib/unified";
 import { randomUuid } from "@/lib/uuid";
 
 const PAGE_SIZE = 50;
@@ -243,7 +265,12 @@ async function saveDraftOnce(
 }
 
 /** 表示する一覧。mailboxId が null なら受信トレイ (accountId も null なら全アカウント分)。 */
-type Selection = { accountId: string | null; mailboxId: string | null };
+type Selection = {
+  accountId: string | null;
+  mailboxId: string | null;
+  /** 表示している統合フォルダ。null なら通常のフォルダ。 */
+  unifiedId: string | null;
+};
 
 /** 一覧の並び順 (新しい順)。a が b より後ろなら正。 */
 function compareMessages(a: MessageSummary, b: MessageSummary): number {
@@ -365,10 +392,19 @@ export function MailApp({ user }: { user: User }) {
 
   /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
   const listRequest = useRef(0);
-  const selectionRef = useRef<Selection>({ accountId: null, mailboxId: null });
+  /** 表示している統合フォルダ。null なら通常のフォルダ (または下書きなど)。 */
+  const [unifiedId, setUnifiedId] = useState<string | null>(
+    initialRoute.unifiedId,
+  );
+  const selectionRef = useRef<Selection>({
+    accountId: null,
+    mailboxId: null,
+    unifiedId: null,
+  });
   selectionRef.current = {
     accountId: selectedAccountId,
     mailboxId: selectedMailboxId,
+    unifiedId,
   };
   /** サーバーへ送る操作の待ち行列。通信できない間の操作もここに残る。 */
   const queueRef = useRef<ActionQueue | null>(null);
@@ -412,6 +448,12 @@ export function MailApp({ user }: { user: User }) {
   const starred = special === "starred";
   const starredRef = useRef(starred);
   starredRef.current = starred;
+  /** 統合フォルダと、サイドバー上部の項目の並び順。 */
+  const [unified, setUnified] = useState<UnifiedState>(emptyUnifiedState);
+  /** サーバーから統合フォルダを取得し終えたか (無くなったフォルダの URL を見分けるのに使う)。 */
+  const [unifiedLoaded, setUnifiedLoaded] = useState(false);
+  const [unifiedDialog, setUnifiedDialog] =
+    useState<UnifiedDialogTarget | null>(null);
   /** サーバーからの変更通知の接続。null は、まだ一度も繋がっていない。 */
   const [connected, setConnected] = useState<boolean | null>(null);
   /** いまサーバーに接続している端末の数 (この端末を含む)。 */
@@ -474,6 +516,25 @@ export function MailApp({ user }: { user: User }) {
     }
   }, []);
 
+  const loadUnified = useCallback(async () => {
+    try {
+      const state = await listUnified();
+      setUnified(state);
+      setUnifiedLoaded(true);
+      storeCachedUnified(state);
+    } catch {
+      // 次の通知や操作でまた取得する。
+    }
+  }, []);
+  // サーバーの応答を待つ間 (オフラインならその後も) は、前回取得した内容を出す。
+  useEffect(() => {
+    const cached = loadCachedUnified();
+    if (cached)
+      setUnified((current) =>
+        current === emptyUnifiedState ? cached : current,
+      );
+  }, []);
+
   /** 並び順の保存は、操作した順に 1 つずつ送る。失敗したらサーバーの順に戻す。 */
   const orderQueueRef = useRef<Promise<void>>(Promise.resolve());
   const saveOrder = (save: () => Promise<void>) => {
@@ -481,7 +542,17 @@ export function MailApp({ user }: { user: User }) {
       setNotice({ message: ORDER_ERROR, tone: "error" });
       void loadAccounts();
       void loadMailboxes();
+      void loadUnified();
     });
+  };
+  /** サイドバー上部の項目の並び順や表示 / 非表示を変える。画面にはすぐ反映する。 */
+  const changeLayout = (layout: SidebarLayout) => {
+    setUnified((current) => {
+      const next = { ...current, layout };
+      storeCachedUnified(next);
+      return next;
+    });
+    saveOrder(() => saveSidebarLayout(layout));
   };
 
   const loadOutgoing = useCallback(async () => {
@@ -540,7 +611,10 @@ export function MailApp({ user }: { user: User }) {
   }, []);
   /** 一覧を 1 ページ取得する。検索中は検索結果、そうでなければ表示中のフォルダ。 */
   const fetchPage = useCallback(
-    async ({ accountId, mailboxId }: Selection, cursor: string | null) => {
+    async (
+      { accountId, mailboxId, unifiedId: unified }: Selection,
+      cursor: string | null,
+    ) => {
       const params = { accountId, mailboxId, cursor, limit: PAGE_SIZE };
       if (starredRef.current) {
         const page = await searchMessages({
@@ -551,6 +625,23 @@ export function MailApp({ user }: { user: User }) {
         return { page, terms: null };
       }
       const active = searchRef.current;
+      if (unified) {
+        // 統合フォルダは、サーバーが場所と条件から一覧を作る (端末には保存しない)。
+        if (!active) {
+          const page = await listUnifiedMessages(unified, {
+            cursor,
+            limit: PAGE_SIZE,
+          });
+          return { page, terms: null };
+        }
+        const page = await searchMessages({
+          ...active,
+          unifiedId: unified,
+          cursor,
+          limit: PAGE_SIZE,
+        });
+        return { page, terms: page.terms };
+      }
       if (!active) return { page: await listMessages(params), terms: null };
       const page = await searchMessages({ ...active, ...params });
       return { page, terms: page.terms };
@@ -567,7 +658,7 @@ export function MailApp({ user }: { user: User }) {
         setNextCursor(null);
         setListError(null);
         // サーバーの応答を待たずに、端末に保存してある一覧を先に出す。
-        if (!searchRef.current && !starredRef.current) {
+        if (!searchRef.current && !starredRef.current && !selection.unifiedId) {
           void cachedMessages(selection, PAGE_SIZE).then((saved) => {
             if (!saved || request !== listRequest.current) return;
             const rows = applyActions(
@@ -620,7 +711,15 @@ export function MailApp({ user }: { user: User }) {
     void loadOutgoing();
     void loadFailures();
     void loadDrafts();
-  }, [loadAccounts, loadMailboxes, loadOutgoing, loadFailures, loadDrafts]);
+    void loadUnified();
+  }, [
+    loadAccounts,
+    loadMailboxes,
+    loadOutgoing,
+    loadFailures,
+    loadDrafts,
+    loadUnified,
+  ]);
 
   // 短い知らせは、しばらくしたら消す。
   useEffect(() => {
@@ -640,6 +739,7 @@ export function MailApp({ user }: { user: User }) {
     setSidebarOpen(false);
     setDraftsSelected(false);
     setSpecial(null);
+    setUnifiedId(null);
     setSearchInput(emptySearch);
     setSearch(null);
     setSelectedAccountId(null);
@@ -915,10 +1015,21 @@ export function MailApp({ user }: { user: User }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: search と starred は読み込み直すきっかけとして使う (中身は ref から読む)
   useEffect(() => {
     void loadFirstPage(
-      { accountId: selectedAccountId, mailboxId: selectedMailboxId },
+      {
+        accountId: selectedAccountId,
+        mailboxId: selectedMailboxId,
+        unifiedId,
+      },
       true,
     );
-  }, [selectedAccountId, selectedMailboxId, search, starred, loadFirstPage]);
+  }, [
+    selectedAccountId,
+    selectedMailboxId,
+    unifiedId,
+    search,
+    starred,
+    loadFirstPage,
+  ]);
 
   // 画面を開いている間、表示中のフォルダをサーバーへ知らせ続ける。サーバーはその間、
   // 表示中のフォルダを短い間隔で同期する。画面が隠れている間は知らせない (通常の間隔に戻る)。
@@ -950,6 +1061,19 @@ export function MailApp({ user }: { user: User }) {
       setSelectedMessageId(null);
     }
   }, [mailboxes, selectedMailboxId]);
+
+  // 表示中の統合フォルダが無くなったら (ほかの端末で削除した場合など)、すべての受信トレイに戻す。
+  useEffect(() => {
+    if (
+      unifiedId &&
+      unifiedLoaded &&
+      !unified.folders.some((folder) => folder.id === unifiedId)
+    ) {
+      replaceNextRef.current = true;
+      setUnifiedId(null);
+      setSelectedMessageId(null);
+    }
+  }, [unified, unifiedLoaded, unifiedId]);
 
   // 表示中のアカウントが無くなったら (古い URL を開いた場合など)、全アカウントの表示に戻す。
   useEffect(() => {
@@ -1004,6 +1128,7 @@ export function MailApp({ user }: { user: User }) {
         void loadOutgoing();
         void loadFailures();
         void loadDrafts();
+        void loadUnified();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
@@ -1023,6 +1148,7 @@ export function MailApp({ user }: { user: User }) {
     loadOutgoing,
     loadFailures,
     loadDrafts,
+    loadUnified,
     openFromNotification,
   ]);
 
@@ -1035,6 +1161,7 @@ export function MailApp({ user }: { user: User }) {
       void loadOutgoing();
       void loadFailures();
       void loadDrafts();
+      void loadUnified();
       void loadFirstPage(selectionRef.current, false);
       void saverRef.current?.flush();
       setRefreshKey((key) => key + 1);
@@ -1057,6 +1184,7 @@ export function MailApp({ user }: { user: User }) {
     loadOutgoing,
     loadFailures,
     loadDrafts,
+    loadUnified,
     loadFirstPage,
   ]);
 
@@ -1332,6 +1460,7 @@ export function MailApp({ user }: { user: User }) {
     setSelectedMessageId(null);
     setDraftsSelected(false);
     setSpecial(null);
+    setUnifiedId(null);
     // フォルダを選んだら検索を終えて、そのフォルダの一覧を表示する。
     setSearchInput(emptySearch);
     setSearch(null);
@@ -1339,6 +1468,21 @@ export function MailApp({ user }: { user: User }) {
     anchorRef.current = null;
     setSelectedAccountId(accountId);
     setSelectedMailboxId(mailboxId);
+  }
+
+  /** 統合フォルダを表示する。アカウントやフォルダには結び付かない。 */
+  function handleSelectUnified(id: string) {
+    setSidebarOpen(false);
+    setSelectedMessageId(null);
+    setDraftsSelected(false);
+    setSpecial(null);
+    setSearchInput(emptySearch);
+    setSearch(null);
+    clearSelection();
+    anchorRef.current = null;
+    setSelectedAccountId(null);
+    setSelectedMailboxId(null);
+    setUnifiedId(id);
   }
 
   function handleSelectDrafts() {
@@ -1350,6 +1494,7 @@ export function MailApp({ user }: { user: User }) {
     clearSelection();
     anchorRef.current = null;
     setSpecial(null);
+    setUnifiedId(null);
     setDraftsSelected(true);
   }
 
@@ -1362,6 +1507,7 @@ export function MailApp({ user }: { user: User }) {
     clearSelection();
     anchorRef.current = null;
     setDraftsSelected(false);
+    setUnifiedId(null);
     setSelectedAccountId(null);
     setSelectedMailboxId(null);
     setSpecial(view);
@@ -1386,6 +1532,7 @@ export function MailApp({ user }: { user: User }) {
   const routeUrl = buildRoute({
     accountId: selectedAccountId,
     mailboxId: selectedMailboxId,
+    unifiedId,
     drafts: draftsSelected,
     special,
     messageId: selectedMessageId,
@@ -1429,6 +1576,7 @@ export function MailApp({ user }: { user: User }) {
     if (
       route.accountId !== selectedAccountId ||
       route.mailboxId !== selectedMailboxId ||
+      route.unifiedId !== unifiedId ||
       route.drafts !== draftsSelected ||
       route.special !== special
     ) {
@@ -1437,6 +1585,7 @@ export function MailApp({ user }: { user: User }) {
     }
     setSelectedAccountId(route.accountId);
     setSelectedMailboxId(route.mailboxId);
+    setUnifiedId(route.unifiedId);
     setDraftsSelected(route.drafts);
     setSpecial(route.special);
     setSelectedMessageId(route.messageId);
@@ -1506,6 +1655,28 @@ export function MailApp({ user }: { user: User }) {
     accounts?.find((account) => account.id === selectedAccountId) ?? null;
   const selectedMailbox =
     mailboxes?.find((mailbox) => mailbox.id === selectedMailboxId) ?? null;
+  const selectedUnified =
+    (unifiedId && unified.folders.find((folder) => folder.id === unifiedId)) ||
+    null;
+  /** 統合フォルダが集めるのが、自分が差出人のフォルダ (送信済み、下書き) だけか。 */
+  const unifiedShowsRecipients = (() => {
+    if (!selectedUnified || selectedUnified.scope.all) return false;
+    const sources = scopeMailboxes(selectedUnified.scope, mailboxes ?? []);
+    return sources.length > 0 && sources.every(showsRecipients);
+  })();
+  const openUnifiedSettings = () => {
+    handleSelectSpecial("settings");
+    // 設定画面が出てから、統合フォルダの節までスクロールする。
+    setTimeout(() => {
+      document
+        .getElementById(UNIFIED_SETTINGS_ID)
+        ?.scrollIntoView({ block: "start" });
+    }, 50);
+  };
+  const openUnifiedDialog = (target: UnifiedDialogTarget) => {
+    setSidebarOpen(false);
+    setUnifiedDialog(target);
+  };
   /** フォルダの未読をすべて既読にする。画面にはすぐ反映し、失敗したらサーバーの状態に戻す。 */
   const handleMarkAllRead = (target: MailboxSummary) => {
     setMailboxes(
@@ -1550,11 +1721,17 @@ export function MailApp({ user }: { user: User }) {
       ? "スター付き"
       : special === "outgoing"
         ? "送信待ち"
-        : selectedMailbox
-          ? mailboxLabel(selectedMailbox)
-          : (accountName ?? "すべての受信トレイ");
-  /** フォルダを表示している間は、どのアカウントのフォルダかを添える。 */
-  const subtitle = !draftsSelected && selectedMailbox ? accountName : null;
+        : selectedUnified
+          ? selectedUnified.name
+          : selectedMailbox
+            ? mailboxLabel(selectedMailbox)
+            : (accountName ?? "すべての受信トレイ");
+  /** フォルダを表示している間は、どのアカウントのフォルダかを添える (統合フォルダでは、その内容)。 */
+  const subtitle = selectedUnified
+    ? describeUnified(selectedUnified, mailboxes ?? [])
+    : !draftsSelected && selectedMailbox
+      ? accountName
+      : null;
   const noAccounts = accounts !== null && accounts.length === 0;
   const searching = search !== null;
   /** 新しいメールを書き始められる (アカウントがある)。 */
@@ -1911,10 +2088,16 @@ export function MailApp({ user }: { user: User }) {
             accounts={accounts}
             mailboxes={mailboxes}
             selectedAccountId={selectedAccountId}
-            folderView={!draftsSelected && special === null}
+            folderView={
+              !draftsSelected && special === null && unifiedId === null
+            }
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
             special={special}
+            unified={unified}
+            selectedUnifiedId={unifiedId}
+            onSelectUnified={handleSelectUnified}
+            onCreateUnified={() => openUnifiedDialog({ kind: "create" })}
             outgoingCount={outgoing.length + queuedSends.length}
             outgoingFailed={
               outgoing.some((mail) => mail.status === "failed") ||
@@ -2004,6 +2187,20 @@ export function MailApp({ user }: { user: User }) {
             onSelectDrafts={handleSelectDrafts}
             special={special}
             onSelectSpecial={handleSelectSpecial}
+            unified={unified}
+            selectedUnifiedId={unifiedId}
+            onSelectUnified={handleSelectUnified}
+            onReorderViews={(keys) =>
+              changeLayout(reorderLayout(unified, keys))
+            }
+            viewActions={{
+              onCreate: () => openUnifiedDialog({ kind: "create" }),
+              onEdit: (folder) => openUnifiedDialog({ kind: "edit", folder }),
+              onDelete: (folder) =>
+                openUnifiedDialog({ kind: "delete", folder }),
+              onHide: (key) => changeLayout(setEntryHidden(unified, key, true)),
+              onManage: openUnifiedSettings,
+            }}
             outgoingCount={outgoing.length + queuedSends.length}
             outgoingFailed={
               outgoing.some((mail) => mail.status === "failed") ||
@@ -2055,6 +2252,18 @@ export function MailApp({ user }: { user: User }) {
               window.history.replaceState(null, "", "/");
               void signOut();
             }}
+            sidebarItems={
+              <UnifiedSettings
+                unified={unified}
+                mailboxes={mailboxes ?? []}
+                onLayoutChange={changeLayout}
+                onCreate={() => openUnifiedDialog({ kind: "create" })}
+                onEdit={(folder) => openUnifiedDialog({ kind: "edit", folder })}
+                onDelete={(folder) =>
+                  openUnifiedDialog({ kind: "delete", folder })
+                }
+              />
+            }
           />
         )}
         <section
@@ -2134,7 +2343,9 @@ export function MailApp({ user }: { user: User }) {
                       ? `${accountName} から検索`
                       : "すべてのアカウントから検索"
                   }
-                  folderLabel={selectedMailbox ? title : "受信トレイ"}
+                  folderLabel={
+                    selectedMailbox || selectedUnified ? title : "受信トレイ"
+                  }
                   className="min-w-0 flex-1 max-md:border-b-0 max-md:pb-1 max-md:pl-2 max-md:[&_input]:rounded-full"
                 />
               </div>
@@ -2220,7 +2431,12 @@ export function MailApp({ user }: { user: User }) {
                 onToggleCheck={handleToggleCheck}
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
-                showRecipients={!searching && showsRecipients(selectedMailbox)}
+                showRecipients={
+                  !searching &&
+                  (selectedUnified
+                    ? unifiedShowsRecipients
+                    : showsRecipients(selectedMailbox))
+                }
                 {...(accountMark ? { accountMark } : {})}
                 {...(starred
                   ? {
@@ -2234,9 +2450,15 @@ export function MailApp({ user }: { user: User }) {
                         highlightTerms: searchTerms,
                         locationLabel,
                       }
-                    : selectedMailbox?.lastSyncedAt
-                      ? { emptyText: "このフォルダにメールはありません。" }
-                      : {})}
+                    : selectedUnified
+                      ? {
+                          emptyText:
+                            "この統合フォルダに当てはまるメールはありません。",
+                          locationLabel,
+                        }
+                      : selectedMailbox?.lastSyncedAt
+                        ? { emptyText: "このフォルダにメールはありません。" }
+                        : {})}
                 onSelect={handleSelectMessage}
                 onAction={performAction}
                 onLoadMore={() => void handleLoadMore()}
@@ -2383,6 +2605,38 @@ export function MailApp({ user }: { user: User }) {
           ) {
             handleSelectFolder(target.mailbox.accountId, null);
           }
+        }}
+      />
+      <UnifiedDialog
+        target={unifiedDialog}
+        accounts={accounts ?? []}
+        mailboxes={mailboxes ?? []}
+        onClose={() => setUnifiedDialog(null)}
+        onRequestDelete={(folder) =>
+          setUnifiedDialog({ kind: "delete", folder })
+        }
+        onSaved={(created) => {
+          void loadUnified();
+          if (created) {
+            // 作ったフォルダは、すぐ開いて中身を確かめられるようにする。
+            setUnified((current) => ({
+              ...current,
+              folders: [...current.folders, created],
+            }));
+            handleSelectUnified(created.id);
+          } else if (selectionRef.current.unifiedId) {
+            void loadFirstPage(selectionRef.current, true);
+          }
+        }}
+        onDeleted={(folder) => {
+          setUnified((current) => ({
+            ...current,
+            folders: current.folders.filter((item) => item.id !== folder.id),
+          }));
+          if (selectionRef.current.unifiedId === folder.id) {
+            handleSelectFolder(null, null);
+          }
+          void loadUnified();
         }}
       />
       <DeleteAccountDialog
