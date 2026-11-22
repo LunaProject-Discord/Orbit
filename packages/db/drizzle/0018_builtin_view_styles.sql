@@ -1,0 +1,1 @@
+ALTER TABLE "sidebar_layouts" ADD COLUMN "builtins" jsonb DEFAULT '{}'::jsonb NOT NULL;

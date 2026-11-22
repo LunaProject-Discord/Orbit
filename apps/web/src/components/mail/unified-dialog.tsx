@@ -6,6 +6,7 @@ import { type FormEvent, useId, useMemo, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { MailboxIcon } from "@/components/mail/mailbox-icon";
+import { BUILTIN_ICONS } from "@/components/mail/unified-mark";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,9 +41,11 @@ import { AccountMark } from "@/lib/account-icons";
 import {
   type Account,
   ApiError,
+  type BuiltinStyle,
   createUnifiedFolder,
   deleteUnifiedFolder,
   type MailboxSummary,
+  saveBuiltinStyle,
   type UnifiedFilters,
   type UnifiedFolder,
   type UnifiedFolderInput,
@@ -56,6 +59,8 @@ import {
   mailboxLabel,
 } from "@/lib/mailboxes";
 import {
+  BUILTIN_LABELS,
+  type BuiltinView,
   emptyUnifiedFilters,
   emptyUnifiedScope,
   isScopeEmpty,
@@ -68,7 +73,9 @@ import {
 export type UnifiedDialogTarget =
   | { kind: "create" }
   | { kind: "edit"; folder: UnifiedFolder }
-  | { kind: "delete"; folder: UnifiedFolder };
+  | { kind: "delete"; folder: UnifiedFolder }
+  /** 初めからある項目 (すべての受信トレイなど) の名前・アイコン・色を変える。 */
+  | { kind: "builtin"; view: BuiltinView; style: BuiltinStyle };
 
 type Props = {
   target: UnifiedDialogTarget | null;
@@ -77,6 +84,8 @@ type Props = {
   onClose: () => void;
   /** 作成または変更を保存した。created は、新しく作ったフォルダ。 */
   onSaved: (created: UnifiedFolder | null) => void;
+  /** 初めからある項目の見た目を保存した。 */
+  onBuiltinsSaved: (builtins: Record<string, BuiltinStyle>) => void;
   onDeleted: (folder: UnifiedFolder) => void;
   /** 編集中のフォルダを削除したい (確認のダイアログへ切り替える)。 */
   onRequestDelete: (folder: UnifiedFolder) => void;
@@ -118,6 +127,7 @@ export function UnifiedDialog({
   mailboxes,
   onClose,
   onSaved,
+  onBuiltinsSaved,
   onDeleted,
   onRequestDelete,
 }: Props) {
@@ -134,8 +144,15 @@ export function UnifiedDialog({
     else if (target.kind === "edit") {
       const { name, icon, color, scope, filters } = target.folder;
       setForm({ name, icon, color, scope, filters });
+    } else if (target.kind === "builtin") {
+      setForm({ ...newForm(), ...target.style, name: target.style.name ?? "" });
     }
   }
+  const builtin = shown?.kind === "builtin" ? shown.view : null;
+  const BuiltinIcon = builtin ? BUILTIN_ICONS[builtin] : null;
+  /** 初めからある項目を、初期の名前・アイコン・色から変えているか。 */
+  const customized =
+    form.name.trim() !== "" || form.icon !== null || form.color !== null;
 
   const editing = shown?.kind === "edit" ? shown.folder : null;
   const set = (patch: Partial<Form>) =>
@@ -156,7 +173,8 @@ export function UnifiedDialog({
     () => scopeMailboxes(scope, mailboxes),
     [scope, mailboxes],
   );
-  const valid = form.name.trim() !== "" && !isScopeEmpty(scope);
+  const valid =
+    builtin !== null || (form.name.trim() !== "" && !isScopeEmpty(scope));
 
   const close = (open: boolean) => {
     if (!open && !busy) onClose();
@@ -182,7 +200,15 @@ export function UnifiedDialog({
     setError(null);
     void (async () => {
       try {
-        if (target.kind === "create") {
+        if (target.kind === "builtin") {
+          onBuiltinsSaved(
+            await saveBuiltinStyle(target.view, {
+              name: input.name === "" ? null : input.name,
+              icon: input.icon,
+              color: input.color,
+            }),
+          );
+        } else if (target.kind === "create") {
           onSaved(await createUnifiedFolder(input));
         } else {
           await updateUnifiedFolder(target.folder.id, input);
@@ -230,11 +256,16 @@ export function UnifiedDialog({
           >
             <DialogHeader className="shrink-0 px-6 pt-6 pb-4 max-sm:px-4 max-sm:pt-5">
               <DialogTitle>
-                {editing ? "統合フォルダを編集" : "新しい統合フォルダ"}
+                {builtin
+                  ? `「${BUILTIN_LABELS[builtin]}」の見た目`
+                  : editing
+                    ? "統合フォルダを編集"
+                    : "新しい統合フォルダ"}
               </DialogTitle>
               <DialogDescription>
-                複数のアカウントやフォルダのメールを、1
-                つの一覧にまとめます。メールそのものは、元のフォルダから動きません。
+                {builtin
+                  ? "サイドバーに出す名前・アイコン・色を変えられます。中に並ぶメールは変わりません。どの端末でも同じ見た目になります。"
+                  : "複数のアカウントやフォルダのメールを、1 つの一覧にまとめます。メールそのものは、元のフォルダから動きません。"}
               </DialogDescription>
             </DialogHeader>
 
@@ -246,8 +277,10 @@ export function UnifiedDialog({
                   value={form.name}
                   maxLength={100}
                   autoComplete="off"
-                  placeholder="例: すべての送信済み"
-                  autoFocus={!editing}
+                  placeholder={
+                    builtin ? BUILTIN_LABELS[builtin] : "例: すべての送信済み"
+                  }
+                  autoFocus={!editing && !builtin}
                   onChange={(event) => set({ name: event.target.value })}
                 />
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -259,7 +292,13 @@ export function UnifiedDialog({
                       value={form.icon}
                       onChange={(icon) => set({ icon })}
                       labelledBy={`${id}-icon`}
-                      emptyIcon={<LayersIcon className="size-4" />}
+                      emptyIcon={
+                        BuiltinIcon ? (
+                          <BuiltinIcon className="size-4" />
+                        ) : (
+                          <LayersIcon className="size-4" />
+                        )
+                      }
                       emptyLabel="標準"
                       {...(form.color
                         ? {
@@ -285,202 +324,214 @@ export function UnifiedDialog({
                 </div>
               </div>
 
-              <fieldset className="flex flex-col gap-2">
-                <legend className="mb-2 font-medium text-sm">
-                  集めるフォルダ
-                </legend>
-                <div className="flex items-center gap-1.5">
-                  {(
-                    [
-                      [false, "フォルダを選ぶ"],
-                      [true, "すべてのフォルダ"],
-                    ] as const
-                  ).map(([all, label]) => (
-                    <Button
-                      key={label}
-                      type="button"
-                      variant={scope.all === all ? "secondary" : "ghost"}
-                      size="sm"
-                      aria-pressed={scope.all === all}
-                      onClick={() => setScope({ all })}
-                      className="rounded-full"
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-                {scope.all ? (
-                  <p className="text-muted-foreground text-xs">
-                    全アカウントのすべてのフォルダから集めます
-                    (ごみ箱と迷惑メールを除く)。下の条件と組み合わせて使います。
-                  </p>
-                ) : (
-                  <>
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-muted-foreground text-xs">
-                        全アカウントから (後から追加したアカウントも含みます)
-                      </span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {UNIFIED_ROLES.map(({ role, label }) => {
-                          const pressed = scope.roles.includes(role);
-                          return (
-                            <Button
-                              key={role}
-                              type="button"
-                              variant={pressed ? "default" : "outline"}
-                              size="sm"
-                              aria-pressed={pressed}
-                              onClick={() => toggleRole(role)}
-                              className="gap-1.5 rounded-full"
-                            >
-                              <MailboxIcon specialUse={role} />
-                              {label}
-                            </Button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-muted-foreground text-xs">
-                        フォルダを個別に選ぶ
-                      </span>
-                      <div className="flex flex-col rounded-lg border">
-                        {accounts.length === 0 && (
-                          <p className="p-3 text-muted-foreground text-xs">
-                            メールアカウントがまだありません。
-                          </p>
-                        )}
-                        {accounts.map((account) => (
-                          <AccountFolders
-                            key={account.id}
-                            account={account}
-                            accounts={accounts}
-                            mailboxes={mailboxes}
-                            scope={scope}
-                            onToggle={toggleMailbox}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-                <p
-                  className={cn(
-                    "text-xs",
-                    isScopeEmpty(scope)
-                      ? "text-destructive"
-                      : "text-muted-foreground",
-                  )}
-                  aria-live="polite"
-                >
-                  {isScopeEmpty(scope)
-                    ? "集めるフォルダを 1 つ以上選んでください。"
-                    : `いまあるフォルダのうち ${sources.length} 個が対象です。`}
-                </p>
-              </fieldset>
-
-              <fieldset className="flex flex-col gap-3">
-                <legend className="mb-2 font-medium text-sm">
-                  条件
-                  <span className="ml-2 font-normal text-muted-foreground text-xs">
-                    指定したものすべてに当てはまるメールだけを並べます (任意)
-                  </span>
-                </legend>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                  {(
-                    [
-                      ["unread", "未読のみ"],
-                      ["flagged", "スター付き"],
-                      ["hasAttachment", "添付あり"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <div key={key} className="flex items-center gap-2">
-                      <Checkbox
-                        id={`${id}-${key}`}
-                        checked={filters[key]}
-                        onCheckedChange={(checked) =>
-                          setFilters({ [key]: checked === true })
-                        }
-                      />
-                      <Label htmlFor={`${id}-${key}`} className="font-normal">
-                        {label}
-                      </Label>
-                    </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
-                  {(
-                    [
-                      ["from", "差出人", "名前またはアドレス"],
-                      ["to", "宛先", "名前またはアドレス"],
-                      ["subject", "件名", ""],
-                      [
-                        "text",
-                        "含む文字",
-                        "件名・差出人・宛先・本文から探します",
-                      ],
-                    ] as const
-                  ).map(([key, label, placeholder]) => (
-                    <div key={key} className="contents">
-                      <Label htmlFor={`${id}-${key}`} className="font-normal">
-                        {label}
-                      </Label>
-                      <Input
-                        id={`${id}-${key}`}
-                        value={filters[key]}
-                        maxLength={200}
-                        placeholder={placeholder}
-                        autoComplete="off"
-                        onChange={(event) =>
-                          setFilters({ [key]: event.target.value })
-                        }
-                        className="h-8"
-                      />
-                    </div>
-                  ))}
-                  <Label htmlFor={`${id}-period`} className="font-normal">
-                    期間
-                  </Label>
-                  <Select
-                    items={[
-                      { value: NO_PERIOD, label: "指定しない" },
-                      ...WITHIN_DAYS.map(({ days, label }) => ({
-                        value: String(days),
-                        label,
-                      })),
-                    ]}
-                    value={
-                      filters.withinDays === null
-                        ? NO_PERIOD
-                        : String(filters.withinDays)
-                    }
-                    onValueChange={(next) =>
-                      setFilters({
-                        withinDays:
-                          next === NO_PERIOD || next === null
-                            ? null
-                            : Number(next),
-                      })
-                    }
-                  >
-                    <SelectTrigger
-                      id={`${id}-period`}
-                      size="sm"
-                      className="w-fit"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="start" className="w-auto">
-                      <SelectItem value={NO_PERIOD}>指定しない</SelectItem>
-                      {WITHIN_DAYS.map(({ days, label }) => (
-                        <SelectItem key={days} value={String(days)}>
+              {!builtin && (
+                <>
+                  <fieldset className="flex flex-col gap-2">
+                    <legend className="mb-2 font-medium text-sm">
+                      集めるフォルダ
+                    </legend>
+                    <div className="flex items-center gap-1.5">
+                      {(
+                        [
+                          [false, "フォルダを選ぶ"],
+                          [true, "すべてのフォルダ"],
+                        ] as const
+                      ).map(([all, label]) => (
+                        <Button
+                          key={label}
+                          type="button"
+                          variant={scope.all === all ? "secondary" : "ghost"}
+                          size="sm"
+                          aria-pressed={scope.all === all}
+                          onClick={() => setScope({ all })}
+                          className="rounded-full"
+                        >
                           {label}
-                        </SelectItem>
+                        </Button>
                       ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </fieldset>
+                    </div>
+                    {scope.all ? (
+                      <p className="text-muted-foreground text-xs">
+                        全アカウントのすべてのフォルダから集めます
+                        (ごみ箱と迷惑メールを除く)。下の条件と組み合わせて使います。
+                      </p>
+                    ) : (
+                      <>
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-muted-foreground text-xs">
+                            全アカウントから
+                            (後から追加したアカウントも含みます)
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {UNIFIED_ROLES.map(({ role, label }) => {
+                              const pressed = scope.roles.includes(role);
+                              return (
+                                <Button
+                                  key={role}
+                                  type="button"
+                                  variant={pressed ? "default" : "outline"}
+                                  size="sm"
+                                  aria-pressed={pressed}
+                                  onClick={() => toggleRole(role)}
+                                  className="gap-1.5 rounded-full"
+                                >
+                                  <MailboxIcon specialUse={role} />
+                                  {label}
+                                </Button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-muted-foreground text-xs">
+                            フォルダを個別に選ぶ
+                          </span>
+                          <div className="flex flex-col rounded-lg border">
+                            {accounts.length === 0 && (
+                              <p className="p-3 text-muted-foreground text-xs">
+                                メールアカウントがまだありません。
+                              </p>
+                            )}
+                            {accounts.map((account) => (
+                              <AccountFolders
+                                key={account.id}
+                                account={account}
+                                accounts={accounts}
+                                mailboxes={mailboxes}
+                                scope={scope}
+                                onToggle={toggleMailbox}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    <p
+                      className={cn(
+                        "text-xs",
+                        isScopeEmpty(scope)
+                          ? "text-destructive"
+                          : "text-muted-foreground",
+                      )}
+                      aria-live="polite"
+                    >
+                      {isScopeEmpty(scope)
+                        ? "集めるフォルダを 1 つ以上選んでください。"
+                        : `いまあるフォルダのうち ${sources.length} 個が対象です。`}
+                    </p>
+                  </fieldset>
+
+                  <fieldset className="flex flex-col gap-3">
+                    <legend className="mb-2 font-medium text-sm">
+                      条件
+                      <span className="ml-2 font-normal text-muted-foreground text-xs">
+                        指定したものすべてに当てはまるメールだけを並べます
+                        (任意)
+                      </span>
+                    </legend>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      {(
+                        [
+                          ["unread", "未読のみ"],
+                          ["flagged", "スター付き"],
+                          ["hasAttachment", "添付あり"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <div key={key} className="flex items-center gap-2">
+                          <Checkbox
+                            id={`${id}-${key}`}
+                            checked={filters[key]}
+                            onCheckedChange={(checked) =>
+                              setFilters({ [key]: checked === true })
+                            }
+                          />
+                          <Label
+                            htmlFor={`${id}-${key}`}
+                            className="font-normal"
+                          >
+                            {label}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
+                      {(
+                        [
+                          ["from", "差出人", "名前またはアドレス"],
+                          ["to", "宛先", "名前またはアドレス"],
+                          ["subject", "件名", ""],
+                          [
+                            "text",
+                            "含む文字",
+                            "件名・差出人・宛先・本文から探します",
+                          ],
+                        ] as const
+                      ).map(([key, label, placeholder]) => (
+                        <div key={key} className="contents">
+                          <Label
+                            htmlFor={`${id}-${key}`}
+                            className="font-normal"
+                          >
+                            {label}
+                          </Label>
+                          <Input
+                            id={`${id}-${key}`}
+                            value={filters[key]}
+                            maxLength={200}
+                            placeholder={placeholder}
+                            autoComplete="off"
+                            onChange={(event) =>
+                              setFilters({ [key]: event.target.value })
+                            }
+                            className="h-8"
+                          />
+                        </div>
+                      ))}
+                      <Label htmlFor={`${id}-period`} className="font-normal">
+                        期間
+                      </Label>
+                      <Select
+                        items={[
+                          { value: NO_PERIOD, label: "指定しない" },
+                          ...WITHIN_DAYS.map(({ days, label }) => ({
+                            value: String(days),
+                            label,
+                          })),
+                        ]}
+                        value={
+                          filters.withinDays === null
+                            ? NO_PERIOD
+                            : String(filters.withinDays)
+                        }
+                        onValueChange={(next) =>
+                          setFilters({
+                            withinDays:
+                              next === NO_PERIOD || next === null
+                                ? null
+                                : Number(next),
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          id={`${id}-period`}
+                          size="sm"
+                          className="w-fit"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent align="start" className="w-auto">
+                          <SelectItem value={NO_PERIOD}>指定しない</SelectItem>
+                          {WITHIN_DAYS.map(({ days, label }) => (
+                            <SelectItem key={days} value={String(days)}>
+                              {label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </fieldset>
+                </>
+              )}
             </div>
 
             {error && (
@@ -489,6 +540,17 @@ export function UnifiedDialog({
               </p>
             )}
             <DialogFooter className="shrink-0 px-6 pt-4 pb-6 max-sm:px-4 max-sm:pb-[max(1rem,env(safe-area-inset-bottom))]">
+              {builtin && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={busy || !customized}
+                  onClick={() => set({ name: "", icon: null, color: null })}
+                  className="sm:mr-auto"
+                >
+                  初期の設定に戻す
+                </Button>
+              )}
               {editing && (
                 <Button
                   type="button"
@@ -509,7 +571,7 @@ export function UnifiedDialog({
                 キャンセル
               </Button>
               <Button type="submit" disabled={busy || !valid}>
-                {editing ? "保存" : "作成"}
+                {editing || builtin ? "保存" : "作成"}
               </Button>
             </DialogFooter>
           </form>

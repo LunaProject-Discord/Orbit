@@ -127,6 +127,13 @@
       "when": 1795330037307,
       "tag": "0017_unified_folders",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795332264110,
+      "tag": "0018_builtin_view_styles",
+      "breakpoints": true
     }
   ]
 }

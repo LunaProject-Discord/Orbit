@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { MailboxSummary, UnifiedFolder, UnifiedState } from "@/lib/api";
 import {
+  builtinLabel,
+  builtinStyle,
   describeUnified,
   emptyUnifiedFilters,
   isScopeEmpty,
@@ -31,7 +33,7 @@ const mailbox = (
 ): MailboxSummary =>
   ({ id, accountId: "a", name: id, specialUse }) as MailboxSummary;
 
-const keys = (state: UnifiedState) =>
+const keys = (state: Pick<UnifiedState, "folders" | "layout">) =>
   sidebarEntries(state).visible.map((entry) => entry.key);
 
 describe("sidebarEntries", () => {
@@ -99,6 +101,29 @@ describe("setEntryHidden", () => {
   it("無くなった統合フォルダは、隠した項目から外す", () => {
     const state = { folders: [], layout: { order: [], hidden: ["gone"] } };
     expect(setEntryHidden(state, "starred", true).hidden).toEqual(["starred"]);
+  });
+});
+
+describe("初めからある項目の見た目", () => {
+  it("名前を付けていなければ初期の名前、付けていればその名前を出す", () => {
+    const state = {
+      builtins: { starred: { name: "大事", icon: "heart", color: "#f43f5e" } },
+    };
+    expect(builtinLabel(state, "inbox")).toBe("すべての受信トレイ");
+    expect(builtinLabel(state, "starred")).toBe("大事");
+    expect(builtinStyle(state, "starred").icon).toBe("heart");
+    expect(builtinStyle(state, "drafts")).toEqual({
+      name: null,
+      icon: null,
+      color: null,
+    });
+  });
+
+  it("アイコンだけ変えた項目は、名前は初期のまま", () => {
+    const state = {
+      builtins: { inbox: { name: null, icon: "📥", color: null } },
+    };
+    expect(builtinLabel(state, "inbox")).toBe("すべての受信トレイ");
   });
 });
 

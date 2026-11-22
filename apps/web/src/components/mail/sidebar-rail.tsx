@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
-import { BUILTIN_ICONS, UnifiedMark } from "@/components/mail/unified-mark";
+import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
 import { ACCOUNT_ON_CLASS } from "@/lib/account-colors";
 import { AccountDot, AccountMark } from "@/lib/account-icons";
@@ -26,7 +26,7 @@ import {
   PEEK_OPEN_DELAY,
   SIDEBAR_FOLD_KEY_LABEL,
 } from "@/lib/sidebar-fold";
-import { BUILTIN_LABELS, sidebarEntries } from "@/lib/unified";
+import { builtinLabel, builtinStyle, sidebarEntries } from "@/lib/unified";
 
 /** サイドバーを折りたたむ / 広げたままにするボタン。帯とサイドバーの同じ位置に置く。 */
 export function SidebarFoldButton({
@@ -167,7 +167,6 @@ export function SidebarRail({
             );
           }
           const view = entry.builtin;
-          const Icon = BUILTIN_ICONS[view];
           const count =
             view === "inbox"
               ? inboxUnread
@@ -180,7 +179,7 @@ export function SidebarRail({
           return (
             <RailItem
               key={entry.key}
-              label={BUILTIN_LABELS[view]}
+              label={builtinLabel(unified, view)}
               badge={
                 count > 0
                   ? view === "inbox"
@@ -209,7 +208,7 @@ export function SidebarRail({
               {problem ? (
                 <CircleAlertIcon className="text-destructive" />
               ) : (
-                <Icon />
+                <BuiltinMark view={view} style={builtinStyle(unified, view)} />
               )}
             </RailItem>
           );

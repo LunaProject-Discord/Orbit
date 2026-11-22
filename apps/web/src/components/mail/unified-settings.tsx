@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useId } from "react";
 import { Hint } from "@/components/hint";
-import { BUILTIN_ICONS, UnifiedMark } from "@/components/mail/unified-mark";
+import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import type {
@@ -21,6 +21,9 @@ import type {
 import { moveBy } from "@/lib/mailboxes";
 import {
   BUILTIN_LABELS,
+  type BuiltinView,
+  builtinLabel,
+  builtinStyle,
   describeUnified,
   setEntryHidden,
   sidebarEntries,
@@ -46,6 +49,7 @@ export function UnifiedSettings({
   onLayoutChange,
   onCreate,
   onEdit,
+  onEditBuiltin,
   onDelete,
 }: {
   unified: UnifiedState;
@@ -53,6 +57,7 @@ export function UnifiedSettings({
   onLayoutChange: (layout: SidebarLayout) => void;
   onCreate: () => void;
   onEdit: (folder: UnifiedFolder) => void;
+  onEditBuiltin: (view: BuiltinView) => void;
   onDelete: (folder: UnifiedFolder) => void;
 }) {
   const id = useId();
@@ -74,14 +79,16 @@ export function UnifiedSettings({
         </h2>
         <p className="text-muted-foreground text-sm">
           サイドバーの上部に並ぶ項目の順番と、表示するかどうかを選べます。統合フォルダは、複数のアカウントやフォルダのメールを
-          1 つの一覧にまとめたものです。どの端末でも同じ内容になります。
+          1
+          つの一覧にまとめたものです。初めからある項目も、名前・アイコン・色を変えられます。どの端末でも同じ内容になります。
         </p>
       </div>
       <ul className="flex flex-col divide-y rounded-lg border">
         {all.map((entry, index) => {
           const { folder } = entry;
-          const label = folder ? folder.name : BUILTIN_LABELS[entry.builtin];
-          const Icon = folder ? null : BUILTIN_ICONS[entry.builtin];
+          const label = folder
+            ? folder.name
+            : builtinLabel(unified, entry.builtin);
           const labelId = `${id}-${entry.key}`;
           return (
             <li
@@ -89,7 +96,14 @@ export function UnifiedSettings({
               className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5"
             >
               <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
-                {folder ? <UnifiedMark folder={folder} /> : Icon && <Icon />}
+                {folder ? (
+                  <UnifiedMark folder={folder} />
+                ) : (
+                  <BuiltinMark
+                    view={entry.builtin}
+                    style={builtinStyle(unified, entry.builtin)}
+                  />
+                )}
               </span>
               <div className="min-w-0 flex-1 basis-40">
                 <p id={labelId} className="truncate font-medium text-sm">
@@ -98,33 +112,35 @@ export function UnifiedSettings({
                 <p className="truncate text-muted-foreground text-xs">
                   {folder
                     ? describeUnified(folder, mailboxes)
-                    : BUILTIN_DESCRIPTIONS[entry.builtin]}
+                    : label === BUILTIN_LABELS[entry.builtin]
+                      ? BUILTIN_DESCRIPTIONS[entry.builtin]
+                      : `${BUILTIN_LABELS[entry.builtin]} (${BUILTIN_DESCRIPTIONS[entry.builtin]})`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
+                <Hint label={folder ? "編集" : "名前・アイコン・色を変更"}>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`${label} を編集`}
+                    onClick={() =>
+                      folder ? onEdit(folder) : onEditBuiltin(entry.builtin)
+                    }
+                  >
+                    <PencilIcon />
+                  </Button>
+                </Hint>
                 {folder && (
-                  <>
-                    <Hint label="編集">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`${label} を編集`}
-                        onClick={() => onEdit(folder)}
-                      >
-                        <PencilIcon />
-                      </Button>
-                    </Hint>
-                    <Hint label="削除">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`${label} を削除`}
-                        onClick={() => onDelete(folder)}
-                      >
-                        <Trash2Icon />
-                      </Button>
-                    </Hint>
-                  </>
+                  <Hint label="削除">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`${label} を削除`}
+                      onClick={() => onDelete(folder)}
+                    >
+                      <Trash2Icon />
+                    </Button>
+                  </Hint>
                 )}
                 <Hint label="上へ移動">
                   <Button

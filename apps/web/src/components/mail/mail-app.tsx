@@ -174,6 +174,9 @@ import {
   type ThreadRows,
 } from "@/lib/thread-rows";
 import {
+  type BuiltinView,
+  builtinLabel,
+  builtinStyle,
   describeUnified,
   emptyUnifiedState,
   loadCachedUnified,
@@ -1677,6 +1680,12 @@ export function MailApp({ user }: { user: User }) {
     setSidebarOpen(false);
     setUnifiedDialog(target);
   };
+  const openBuiltinDialog = (view: BuiltinView) =>
+    openUnifiedDialog({
+      kind: "builtin",
+      view,
+      style: builtinStyle(unified, view),
+    });
   /** フォルダの未読をすべて既読にする。画面にはすぐ反映し、失敗したらサーバーの状態に戻す。 */
   const handleMarkAllRead = (target: MailboxSummary) => {
     setMailboxes(
@@ -1716,16 +1725,16 @@ export function MailApp({ user }: { user: User }) {
     ? selectedAccount.displayName || selectedAccount.email
     : null;
   const title = draftsSelected
-    ? "下書き"
+    ? builtinLabel(unified, "drafts")
     : starred
-      ? "スター付き"
+      ? builtinLabel(unified, "starred")
       : special === "outgoing"
-        ? "送信待ち"
+        ? builtinLabel(unified, "outgoing")
         : selectedUnified
           ? selectedUnified.name
           : selectedMailbox
             ? mailboxLabel(selectedMailbox)
-            : (accountName ?? "すべての受信トレイ");
+            : (accountName ?? builtinLabel(unified, "inbox"));
   /** フォルダを表示している間は、どのアカウントのフォルダかを添える (統合フォルダでは、その内容)。 */
   const subtitle = selectedUnified
     ? describeUnified(selectedUnified, mailboxes ?? [])
@@ -2196,6 +2205,7 @@ export function MailApp({ user }: { user: User }) {
             viewActions={{
               onCreate: () => openUnifiedDialog({ kind: "create" }),
               onEdit: (folder) => openUnifiedDialog({ kind: "edit", folder }),
+              onEditBuiltin: openBuiltinDialog,
               onDelete: (folder) =>
                 openUnifiedDialog({ kind: "delete", folder }),
               onHide: (key) => changeLayout(setEntryHidden(unified, key, true)),
@@ -2259,6 +2269,7 @@ export function MailApp({ user }: { user: User }) {
                 onLayoutChange={changeLayout}
                 onCreate={() => openUnifiedDialog({ kind: "create" })}
                 onEdit={(folder) => openUnifiedDialog({ kind: "edit", folder })}
+                onEditBuiltin={openBuiltinDialog}
                 onDelete={(folder) =>
                   openUnifiedDialog({ kind: "delete", folder })
                 }
@@ -2615,6 +2626,13 @@ export function MailApp({ user }: { user: User }) {
         onRequestDelete={(folder) =>
           setUnifiedDialog({ kind: "delete", folder })
         }
+        onBuiltinsSaved={(builtins) => {
+          setUnified((current) => {
+            const next = { ...current, builtins };
+            storeCachedUnified(next);
+            return next;
+          });
+        }}
         onSaved={(created) => {
           void loadUnified();
           if (created) {
