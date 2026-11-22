@@ -69,6 +69,26 @@ export function formatFullDate(
   return Number.isNaN(date.getTime()) ? "" : formatsOf(style).full.format(date);
 }
 
+/**
+ * 幅の狭い見出し用の日時。時刻は必ず付け、日付は分かる分だけ省く
+ * (今日なら時刻だけ、今年なら月日と時刻、それ以外は年月日と時刻)。
+ */
+export function formatCompactDate(
+  value: string,
+  now = new Date(),
+  style: DateStyle = defaultStyle,
+): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = formatsOf(style).time.format(date);
+  if (date.toDateString() === now.toDateString()) return time;
+  const day =
+    date.getFullYear() === now.getFullYear()
+      ? dayFormat.format(date)
+      : yearFormat.format(date);
+  return `${day} ${time}`;
+}
+
 export function addressLabel(address: Address | undefined): string {
   if (!address) return "(差出人なし)";
   return address.name?.trim() || address.address;

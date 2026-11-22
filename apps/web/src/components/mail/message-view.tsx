@@ -78,7 +78,12 @@ import {
   splitAttachments,
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
-import { addressLabel, formatFullDate, formatListDate } from "@/lib/format";
+import {
+  addressLabel,
+  formatCompactDate,
+  formatFullDate,
+  formatListDate,
+} from "@/lib/format";
 import { useFontFaceCss } from "@/lib/local-fonts";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
@@ -1408,6 +1413,7 @@ function MessageContent({
     hasRemoteImages(message.bodyHtml);
 
   const collapsed = preferences.messageHeader === "collapsed";
+  const fullDate = formatFullDate(message.receivedAt, preferences);
   // 返信先は、差出人と違うときだけ出す (同じアドレスを指定しているメールが多い)。
   const senders = new Set(
     message.from.map((item) => item.address.toLowerCase()),
@@ -1553,13 +1559,14 @@ function MessageContent({
     >
       {/* 会話の中では、件名と差出人は会話側の見出しに出ている。 */}
       {!inThread && (
-        <header className="shrink-0 border-b px-4 py-3 sm:px-6">
+        <header className="@container shrink-0 border-b px-4 py-3 sm:px-6">
           {collapsed ? (
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
                 <UserRoundIcon className="size-4 shrink-0" aria-hidden="true" />
                 <span className="sr-only">差出人</span>
-                <span className="flex max-w-[55%] shrink-0 font-medium text-foreground">
+                {/* 長い差出人名は省略する (日時と広げるボタンは必ず収める)。 */}
+                <span className="flex min-w-0 font-medium text-foreground">
                   {message.from[0] ? (
                     <ProfileName
                       address={message.from[0]}
@@ -1567,14 +1574,16 @@ function MessageContent({
                       {...profile}
                     />
                   ) : (
-                    addressLabel(undefined)
+                    <span className="truncate">{addressLabel(undefined)}</span>
                   )}
                 </span>
                 {message.to.length > 0 && (
                   <>
-                    <span aria-hidden="true">・</span>
+                    <span aria-hidden="true" className="shrink-0">
+                      ・
+                    </span>
                     <Hint label={mailbox ? mailboxLabel(mailbox) : null}>
-                      <span>
+                      <span className="shrink-0">
                         <MailboxMark
                           mailbox={mailbox}
                           className="size-4 shrink-0"
@@ -1582,7 +1591,8 @@ function MessageContent({
                       </span>
                     </Hint>
                     <span className="sr-only">宛先</span>
-                    <span className="min-w-0 shrink-[2] truncate">
+                    {/* 宛先は余った幅だけを使う (差出人を先に縮めない)。 */}
+                    <span className="min-w-0 flex-1 truncate">
                       <ProfileNames
                         addresses={message.to}
                         separator="、"
@@ -1591,12 +1601,21 @@ function MessageContent({
                     </span>
                   </>
                 )}
-                <span className="flex-1" />
+                {message.to.length === 0 && <span className="flex-1" />}
+                {/* 狭い幅では日時を短くする (今日なら時刻だけ)。全体は広げた見出しで読める。 */}
                 <time
                   dateTime={message.receivedAt}
-                  className="shrink-0 text-xs tabular-nums"
+                  title={fullDate}
+                  className="shrink-0 whitespace-nowrap text-xs tabular-nums"
                 >
-                  {formatFullDate(message.receivedAt, preferences)}
+                  <span className="@lg:hidden">
+                    {formatCompactDate(
+                      message.receivedAt,
+                      new Date(),
+                      preferences,
+                    )}
+                  </span>
+                  <span className="@lg:inline hidden">{fullDate}</span>
                 </time>
                 {toggle}
               </div>
