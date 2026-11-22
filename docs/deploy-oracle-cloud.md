@@ -1,22 +1,19 @@
 # Oracle Cloud へ配置する
 
 Oracle Cloud の既存のサーバー (AlmaLinux 9、arm64) に、Docker Compose で一式を動かす手順です。
-80 番はすでに Apache (httpd) が使っているので、アプリはサーバー内のポートだけで動かし、
-外への公開は既存の Apache から逆プロキシします。Web も API も同じドメインで公開します。
+既存のサイトと同じく、中継用のサーバー (Linode) の Apache が HTTPS を受け、Oracle Cloud のアプリのポートへ直接中継します。
+Oracle Cloud 側の Apache には手を入れません。Web も API も同じドメインで公開します。
 
 ```
 ブラウザー / Microsoft Graph
         │  https://mail.example.com
         ▼
-Cloudflare            HTTPS と証明書
+Cloudflare
         ▼
-Linode の Apache      DDoS 対策。ドメインごとの設定で Oracle Cloud へ中継
-        │  80 番
+Linode の Apache      HTTPS と証明書。ドメインごとの設定で Oracle Cloud へ中継
+        │  http://<Oracle Cloud のアドレス>:18080
         ▼
-既存の Apache (httpd)   ほかのサイトと同居。ドメイン名でメールアプリへ振り分け
-        │  http://127.0.0.1:18080
-        ▼
-┌─ Docker Compose ─────────────────────────────────────────┐
+┌─ Oracle Cloud のサーバー (Docker Compose) ───────────────┐
 │  web (Caddy)   Web の静的ファイル。/v1/*、/healthz は api へ │
 │  api (Hono)    REST API、SSE、認証                         │
 │  worker        IMAP / SMTP / Microsoft Graph との同期と送信 │
@@ -26,13 +23,7 @@ Linode の Apache      DDoS 対策。ドメインごとの設定で Oracle Cloud
 └──────────────────────────────────────────────────────────┘
 ```
 
-HTTPS を受ける場所によって、手順 2、5、6 が 2 通りに分かれます。
-
-- **A. 手前の Cloudflare が HTTPS を受ける** (上の図。既存のサイトと同じ経路に載せる)。このサーバーでは証明書を取りません。
-- **B. このサーバーの Apache が直接 HTTPS を受ける** (Cloudflare などを通さない場合)。certbot で証明書を取ります。
-
-80 番と 443 番をほかに使っていないサーバーなら、Apache を使わずに Caddy が直接公開する構成も選べます
-(末尾の「Apache を使わない場合」を参照)。
+ほかの公開のしかた (同じサーバーの Apache から繋ぐ、Caddy が直接公開する) は、末尾の「ほかの構成」にまとめています。
 
 関係するファイルは次のとおりです。
 
@@ -40,10 +31,10 @@ HTTPS を受ける場所によって、手順 2、5、6 が 2 通りに分かれ
 | --- | --- |
 | `Dockerfile` | 本番用のイメージ (`server`: API・ワーカー・マイグレーション、`web`: Caddy + Web) |
 | `deploy/compose.yml` | 本番用の構成 (共通部分) |
-| `deploy/compose.apache.yml` | 既存の Web サーバーから逆プロキシする場合に重ねる (web は 127.0.0.1 だけで待ち受け) |
+| `deploy/compose.proxy.yml` | 別の Web サーバーから逆プロキシする場合に重ねる (web は HTTP のまま 1 つのポートで待ち受け) |
 | `deploy/compose.caddy.yml` | Caddy が 80 / 443 番で直接公開する場合に重ねる |
-| `deploy/apache/mail.conf` | Oracle Cloud 側の Apache の設定の見本 |
-| `deploy/apache/mail-relay.conf` | 中継用のサーバー (Linode) 側の Apache の設定の見本 |
+| `deploy/apache/mail-relay.conf` | 中継用のサーバー (Linode) の Apache の設定の見本 |
+| `deploy/apache/mail.conf` | 同じサーバーの Apache から繋ぐ場合の設定の見本 |
 | `deploy/Caddyfile` | コンテナ内での Web / API への振り分け |
 | `deploy/.env.example` | 設定の見本。`deploy/setup.sh` がここから `deploy/.env` を作る |
 | `deploy/setup.sh` | `deploy/.env` を作り、秘密の値を生成する |
@@ -54,111 +45,26 @@ HTTPS を受ける場所によって、手順 2、5、6 が 2 通りに分かれ
 > 確認の状況: Docker Compose 一式の起動、Apache (2.4) からの逆プロキシ経由でのログイン、変更の通知 (SSE)、
 > 20 MB の添付ファイルの受け取り、バックアップと復元は、手元の環境 (x86_64、Ubuntu の Apache) で確認しています。
 > arm64 でのビルドと起動は GitHub Actions の arm64 の実行環境で確認しています。
-> AlmaLinux 上での各コマンド (dnf、firewalld、SELinux、certbot)、Cloudflare と Linode を通した経路、
-> Let's Encrypt の証明書の取得、GitHub Actions からの更新は、実際のサーバーでは未確認です。うまくいかない箇所があれば、表示された内容を教えてください。
+> AlmaLinux 上での各コマンド (dnf、firewalld)、Cloudflare と Linode を通した経路、
+> GitHub Actions からの更新は、実際のサーバーでは未確認です。うまくいかない箇所があれば、表示された内容を教えてください。
 
 以下では、ドメインを `mail.example.com` として説明します。自分のドメインに読み替えてください。
-コマンドは、特に断りがなければサーバーに SSH で入って実行します。
+コマンドは、特に断りがなければ Oracle Cloud のサーバーに SSH で入って実行します。
 
 ## 1. 事前に確認する
 
-既存のサービスに影響を出さないため、先に今の状態を確認します。
-
 ```sh
-sudo httpd -S                      # Apache が今どのサイトを公開しているか
-sudo ss -ltnp | grep -E ':(443|18080) '   # 443 番と 18080 番を使っているものが無いか (何も出なければ空いている)
-free -h                            # メモリの空き
-df -h /                            # ディスクの空き
-getenforce                         # SELinux の状態
-sudo firewall-cmd --state          # firewalld が動いているか
+sudo ss -ltnp | grep -E ':18080 '   # 18080 番を使っているものが無いか (何も出なければ空いている)
+free -h                             # メモリの空き
+df -h /                             # ディスクの空き
 ```
 
-- **`httpd -S` の結果に `*:80` の VirtualHost が 1 つも無い場合** (`Main DocumentRoot` などしか出ない場合) は注意が必要です。
-  Apache は VirtualHost が 1 つでもあると、80 番に来たすべての要求を VirtualHost に渡すようになるため、
-  このままメールアプリの設定を足すと、既存のサイトまでメールアプリに繋がってしまいます。
-  その場合は、手順 6 の前に、既存のサイトを受ける空の VirtualHost を先頭に置いてください
-  (中身が空の VirtualHost は、これまでの全体の設定をそのまま引き継ぎます)。
+- 18080 番をほかのサービスが使っている場合は、手順 3 で `deploy/.env` の `LOCAL_PORT` を別の番号に変え、
+  手順 4 と 5 でも同じ番号を使います。
+- イメージのビルド中は、一時的にメモリを約 2 GB 使います (x86_64 の 4 コアで測った値で、ほとんどが Web のビルドです)。
+  ディスクは、イメージとビルドの残りで数 GB を見込んでください。
 
-  ```sh
-  printf '<VirtualHost *:80>\n</VirtualHost>\n' | sudo tee /etc/httpd/conf.d/000-default.conf
-  ```
-
-- 18080 番をほかのサービスが使っている場合は、手順 4 で `deploy/.env` の `LOCAL_PORT` を別の番号に変え、
-  手順 6 の Apache の設定も同じ番号にします。
-- イメージのビルドには、空きメモリが 2 GB ほど、ディスクが 5 GB ほどあると安心です (目安で、実測した値ではありません)。
-
-## 2. ドメインをサーバーへ向ける
-
-### A. Cloudflare → Linode → このサーバー の経路に載せる
-
-既存のサイト (`natsuki-api.lunaproject.jp` など) と同じやり方で、新しいドメインをこの経路に載せます。
-Linode 側の作業は、Oracle Cloud 側 (手順 3 から 6) が済んでから行うと、すぐに繋がることを確かめられます。
-
-**1. Cloudflare**: DNS に新しいドメインのレコードを、既存のサイトと同じ向き先 (Linode) で追加し、プロキシを有効 (オレンジ色の雲) にします。
-
-**2. Linode (中継用のサーバーの Apache)**: `/etc/httpd/conf.d/` に、ドメインごとの設定を 1 つ足します。
-既存のサイトの設定を写して作るのが確実です (証明書や Oracle Cloud の向き先が、すでに正しく書かれているため)。
-
-```sh
-# Linode のサーバーで実行
-cd /etc/httpd/conf.d
-DOMAIN=mail.example.com    # 自分のドメインに置き換える
-sudo cp natsuki-api.lunaproject.jp.conf "$DOMAIN.conf"
-sudo sed -i "s/natsuki-api\.lunaproject\.jp/$DOMAIN/g" "$DOMAIN.conf"
-sudo vim "$DOMAIN.conf"
-```
-
-開いた設定を、次の表のとおりに直します。メールアプリに必要な指定だけを並べた見本が
-[`deploy/apache/mail-relay.conf`](../deploy/apache/mail-relay.conf) にあります。
-
-| 指定 | 直し方 | 理由 |
-| --- | --- | --- |
-| `ServerName` (80 番と 443 番の 2 か所) | 新しいドメインにする | 上の `sed` で置き換わっているはず |
-| `ProxyPass` の `timeout` | `timeout=120` にする (既存のサイトは `timeout=30`) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントが流れる。30 秒だと余裕が無い |
-| `ProxyPass` の行末 | `flushpackets=on` を付ける | 変更の通知をため込まずにすぐ流す。無いと、新着や既読の反映が遅れる |
-| `LimitRequestBody 52428800` | 443 番の VirtualHost に足す | 添付ファイル (1 通あたり合計 25 MB まで) を受け取るため |
-| `ProxyPass` / `ProxyPassReverse` の向き先 | Oracle Cloud のサーバーの 80 番 (`http://<Oracle Cloud のアドレス>/`) のまま | メールアプリは Oracle Cloud 側の Apache (80 番) で受ける |
-| `ProxyPreserveHost on` | あることを確かめる | Oracle Cloud 側の Apache がドメイン名でメールアプリへ振り分けるため。無いと既存のサイトの画面が出る |
-| `SSLCertificateFile` など | 既存のサイトと同じまま | 証明書が新しいドメインを含んでいること (下のコマンドで確認) |
-
-証明書が新しいドメインを含んでいるかは、次で分かります (`*.lunaproject.jp` のようなワイルドカードか、新しいドメインそのものが出れば使えます)。
-
-```sh
-sudo openssl x509 -in /etc/letsencrypt/live/lunaproject.jp/cert.pem -noout -ext subjectAltName
-```
-
-文法を確かめてから読み込み直します。
-
-```sh
-sudo apachectl configtest      # Syntax OK 以外なら、読み込み直さずに sudo rm "$DOMAIN.conf" で元に戻せる
-sudo systemctl reload httpd
-curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"    # {"status":"ok"} が返れば、Oracle Cloud まで届いている
-```
-
-**3. Oracle Cloud**: 80 番は、既存のサイトと同じくすでに Linode から届いているので、新しく開けるポートはありません。
-
-Cloudflare については次の点に注意してください。
-
-- Microsoft Graph の変更通知は、Microsoft のサーバーから `https://mail.example.com/v1/webhooks/microsoft` に届きます。
-  Cloudflare の Bot 対策や WAF がこれを止めると、即時の通知が届かず、定期的な確認だけの同期になります (同期自体は続きます)。
-  ワーカーのログに購読の失敗が出る場合は、このパスを対象外にするルールを Cloudflare に追加してください。
-- アップロードの大きさの上限 (無料プランは 100 MB のはずです) は、添付の上限 25 MB より大きいので問題ありません。
-
-### B. このサーバーで直接 HTTPS を受ける
-
-**DNS**: ドメインの DNS に、サーバーのパブリック IP アドレスを指す A レコードを追加します。
-
-**Oracle Cloud 側 (セキュリティ・リスト)**: コンソールでインスタンスの詳細 → サブネット → セキュリティ・リスト →
-「イングレス・ルールの追加」を開き、ソース `0.0.0.0/0`、TCP、宛先ポート 443 を追加します。
-
-**サーバー側 (firewalld)**: 手順 1 で `running` と出た場合だけ実行します。
-
-```sh
-sudo firewall-cmd --permanent --add-service=http --add-service=https
-sudo firewall-cmd --reload
-```
-
-## 3. Docker を入れる
+## 2. Docker を入れる
 
 ```sh
 sudo dnf -y install dnf-plugins-core git
@@ -171,13 +77,13 @@ sudo usermod -aG docker "$USER"
 グループの変更を反映するため、いったん `exit` で抜けて SSH で入り直します。
 `docker compose version` と `docker run --rm hello-world` が動けば準備完了です。
 
-## 4. コードを置いて起動する
+## 3. コードを置いて起動する
 
 ```sh
 sudo mkdir -p /opt/mail && sudo chown "$USER": /opt/mail
 git clone https://github.com/LunaProject-Discord/Mail.git /opt/mail
 cd /opt/mail
-bash deploy/setup.sh mail.example.com
+bash deploy/setup.sh mail.example.com relay
 ```
 
 リポジトリが非公開の場合は、そのままでは clone できません。サーバーで `ssh-keygen -t ed25519 -f ~/.ssh/github_mail -N ""` を実行し、
@@ -204,7 +110,7 @@ curl -s http://127.0.0.1:18080/healthz
 ```
 
 `api` が `healthy`、`migrate` が `Exited (0)`、ほかが `Up` で、最後のコマンドが `{"status":"ok"}` を返せば起動できています。
-この時点では、まだ外からは見えません。
+この時点では、まだ外からは見えません (手順 4 でポートを許可し、手順 5 で Linode から繋ぎます)。
 
 続けて、ログイン用の利用者を作ります (パスワードは 12 文字以上で、入力を求められます)。
 
@@ -212,53 +118,83 @@ curl -s http://127.0.0.1:18080/healthz
 docker compose run --rm api node apps/api/dist/cli/create-user.js you@example.com "あなたの名前"
 ```
 
-## 5. Apache から繋ぐ準備をする
+## 4. 18080 番を Linode からだけ届くようにする
 
-Apache からコンテナへ繋ぐことを SELinux に許可します (手順 1 の `getenforce` が `Enforcing` の場合)。
+Oracle Cloud のコンソールでインスタンスの詳細 → サブネット → セキュリティ・リスト → 「イングレス・ルールの追加」を開き、
+既存のサイトのポート (8080 番など) のルールと同じ形で、次を追加します。
+
+| 項目 | 値 |
+| --- | --- |
+| ソース CIDR | Linode のサーバーの IP アドレス (`<IP アドレス>/32`) |
+| プロトコル | TCP |
+| 宛先ポート | 18080 |
+
+**ソースを `0.0.0.0/0` にしないでください。** Docker が公開したポートは、サーバーのファイアウォール (firewalld) の設定に関係なく届くので、
+接続元を絞れるのはこのセキュリティ・リストだけです。全体に開けると、Cloudflare と Linode を通らずに直接アクセスできてしまいます。
+
+Linode から届くかは、Linode のサーバーで次を実行して確かめます。
 
 ```sh
-sudo setsebool -P httpd_can_network_connect 1
+curl -s http://<Oracle Cloud のアドレス>:18080/healthz    # {"status":"ok"} が返る
 ```
 
-B (このサーバーで直接 HTTPS を受ける) の場合だけ、HTTPS 用のモジュールと certbot も入れます。
+届かない場合は、firewalld で既存のポートを個別に許可している可能性があります。既存のポートと同じやり方で 18080 番も許可してください
+(`sudo firewall-cmd --list-all` で今の設定を確認できます)。
+
+## 5. Linode の Apache に設定を足す
+
+Linode のサーバーの `/etc/httpd/conf.d/` に、ドメインごとの設定を 1 つ足します。
+既存のサイトの設定を写して作るのが確実です (証明書や Oracle Cloud の向き先が、すでに正しく書かれているため)。
 
 ```sh
-sudo dnf -y install epel-release
-sudo dnf -y install mod_ssl certbot python3-certbot-apache
-```
-
-## 6. Apache にサイトを追加する
-
-設定の見本をドメインに合わせて置き、文法を確かめてから読み込み直します。
-
-```sh
+# Linode のサーバーで実行
+cd /etc/httpd/conf.d
 DOMAIN=mail.example.com    # 自分のドメインに置き換える
-sed "s/mail\.example\.com/$DOMAIN/g" /opt/mail/deploy/apache/mail.conf | sudo tee /etc/httpd/conf.d/mail.conf
-sudo apachectl configtest
-sudo systemctl reload httpd
-sudo httpd -S
+sudo cp natsuki-api.lunaproject.jp.conf "$DOMAIN.conf"
+sudo sed -i "s/natsuki-api\\.lunaproject\\.jp/$DOMAIN/g" "$DOMAIN.conf"
+sudo vim "$DOMAIN.conf"
 ```
 
-- `configtest` が `Syntax OK` 以外を返したら、読み込み直さずに `sudo rm /etc/httpd/conf.d/mail.conf` で元に戻せます。
-- `httpd -S` で、既存のサイトがこれまでどおり並び、そこに `mail.example.com` が加わっていることを確認します。
-- サーバーの中から、ドメイン名で振り分けられることを確認できます。
+開いた設定を、次の表のとおりに直します。完成形の見本が
+[`deploy/apache/mail-relay.conf`](../deploy/apache/mail-relay.conf) にあります。
 
-  ```sh
-  curl -s -H "Host: $DOMAIN" http://127.0.0.1/healthz    # {"status":"ok"} が返る
-  ```
+| 指定 | 直し方 | 理由 |
+| --- | --- | --- |
+| `ServerName` (80 番と 443 番の 2 か所) | 新しいドメインにする | 上の `sed` で置き換わっているはず |
+| `ProxyPass` / `ProxyPassReverse` の向き先 | `http://<Oracle Cloud のアドレス>:18080/` にする | メールアプリが待ち受けるポート |
+| `ProxyPass` の `timeout` | `timeout=120` にする (既存のサイトは 10 や 30) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントが流れる。短いと通知が途中で切れる |
+| `ProxyPass` の行末 | `flushpackets=on` を付ける | 変更の通知をため込まずにすぐ流す。無いと、新着や既読の反映が遅れる |
+| `LimitRequestBody 52428800` | 443 番の VirtualHost に足す | 添付ファイル (1 通あたり合計 25 MB まで) を受け取るため |
+| `ProxyPreserveHost on` | あることを確かめる | 既存のサイトと同じ |
+| そのサイト専用の行 (`/media` を `ws://` へ渡す行など) | 消す | メールアプリは WebSocket を使わない |
+| `SSLCertificateFile` など | 既存のサイトと同じまま | 証明書が新しいドメインを含んでいること (下のコマンドで確認) |
 
-**A の場合**は、これで完了です。ブラウザーで `https://mail.example.com` を開き、手順 4 で作った利用者でログインできることを確認します。
-Cloudflare が HTTPS を受けるので、このサーバーでは証明書を取りません。
-
-**B の場合**は、続けて証明書を取ります。certbot が HTTPS 用の設定 (`/etc/httpd/conf.d/mail-le-ssl.conf`) を作り、HTTP から HTTPS への転送も設定します。
+証明書が新しいドメインを含んでいるかは、次で分かります (`*.lunaproject.jp` のようなワイルドカードか、新しいドメインそのものが出れば使えます)。
 
 ```sh
-sudo certbot --apache -d mail.example.com
-sudo systemctl enable --now certbot-renew.timer    # 証明書の自動更新
+sudo openssl x509 -in /etc/letsencrypt/live/lunaproject.jp/cert.pem -noout -ext subjectAltName
 ```
 
-途中で連絡先のメールアドレスと利用規約への同意を聞かれます。
-ブラウザーで `https://mail.example.com` を開き、ログインできれば完了です。
+文法を確かめてから読み込み直します。
+
+```sh
+sudo apachectl configtest      # Syntax OK 以外なら、読み込み直さずに sudo rm "$DOMAIN.conf" で元に戻せる
+sudo systemctl reload httpd
+curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"    # {"status":"ok"} が返れば、Oracle Cloud まで届いている
+```
+
+## 6. Cloudflare にドメインを足して確認する
+
+Cloudflare の DNS に新しいドメインのレコードを、既存のサイトと同じ向き先 (Linode) で追加し、プロキシを有効 (オレンジ色の雲) にします。
+
+ブラウザーで `https://mail.example.com` を開き、手順 3 で作った利用者でログインできれば完了です。
+
+Cloudflare については次の点に注意してください。
+
+- Microsoft Graph の変更通知は、Microsoft のサーバーから `https://mail.example.com/v1/webhooks/microsoft` に届きます。
+  Cloudflare の Bot 対策や WAF がこれを止めると、即時の通知が届かず、定期的な確認だけの同期になります (同期自体は続きます)。
+  ワーカーのログに購読の失敗が出る場合は、このパスを対象外にするルールを Cloudflare に追加してください。
+- アップロードの大きさの上限 (無料プランは 100 MB のはずです) は、添付の上限 25 MB より大きいので問題ありません。
 
 ## 7. Microsoft と Google の設定を本番用にする
 
@@ -289,7 +225,7 @@ https://mail.example.com/oauth/google
 bash /opt/mail/deploy/deploy.sh
 ```
 
-更新中は数秒から数十秒、画面や API に繋がらなくなります (その間、Apache は 503 を返します)。
+更新中は数秒から数十秒、画面や API に繋がらなくなります (その間、Linode の Apache は 503 を返します)。
 
 ### GitHub Actions で自動更新する
 
@@ -312,14 +248,14 @@ bash /opt/mail/deploy/deploy.sh
 3. 手元の PC で、サーバーの身元を確かめるための情報を取得します。
 
    ```sh
-   ssh-keyscan -t ed25519 mail.example.com
+   ssh-keyscan -t ed25519 <サーバーの IP アドレス>
    ```
 
 4. GitHub のリポジトリの「Settings」→「Secrets and variables」→「Actions」で、次を登録します。
 
    | 種類 | 名前 | 値 |
    | --- | --- | --- |
-   | Secret | `DEPLOY_HOST` | `mail.example.com` (またはサーバーの IP アドレス) |
+   | Secret | `DEPLOY_HOST` | Oracle Cloud のサーバーの IP アドレス (ドメインは Cloudflare を指すので、SSH には使えない) |
    | Secret | `DEPLOY_USER` | サーバーに SSH で入るときの利用者名 |
    | Secret | `DEPLOY_SSH_KEY` | `mail-deploy` (秘密鍵) の中身すべて |
    | Secret | `DEPLOY_KNOWN_HOSTS` | 手順 3 の出力 (`#` で始まる行は不要) |
@@ -353,10 +289,10 @@ sudo bash restore.sh backups/mail-20261122-040000.dump   # 戻す (今の DB の
 sudo install -o "$USER" -m 600 "$(ls -t /opt/mail/deploy/backups/*.dump | head -1)" ~/mail-latest.dump
 
 # 手元の PC で: 受け取る
-scp <利用者名>@mail.example.com:mail-latest.dump .
+scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump .
 ```
 
-サーバーを作り直すときは、手順 3 から 6 を行ったあと、控えておいた `deploy/.env` を置き、`restore.sh` で DB を戻します。
+サーバーを作り直すときは、手順 2 から 4 を行ったあと、控えておいた `deploy/.env` を置き、`restore.sh` で DB を戻します。
 
 ## 10. 設定 (環境変数) の一覧
 
@@ -365,8 +301,9 @@ scp <利用者名>@mail.example.com:mail-latest.dump .
 | 名前 | 必須 | 内容 |
 | --- | --- | --- |
 | `DOMAIN` | ○ | 公開するドメイン (`https://` は付けない)。Web にも埋め込まれる |
-| `COMPOSE_FILE` | ○ | 公開のしかた。`compose.yml:compose.apache.yml` (逆プロキシ) か `compose.yml:compose.caddy.yml` (Caddy が直接公開) |
-| `LOCAL_PORT` | | 逆プロキシの場合に web が 127.0.0.1 で待ち受けるポート。既定は 18080 |
+| `COMPOSE_FILE` | ○ | 公開のしかた。`compose.yml:compose.proxy.yml` (別の Web サーバーから逆プロキシ) か `compose.yml:compose.caddy.yml` (Caddy が直接公開) |
+| `LOCAL_BIND` | | 逆プロキシの場合に web が待ち受けるアドレス。`0.0.0.0` (別のサーバーから繋ぐ) か `127.0.0.1` (同じサーバーの Apache から繋ぐ。既定) |
+| `LOCAL_PORT` | | 逆プロキシの場合に web が待ち受けるポート。既定は 18080 |
 | `POSTGRES_PASSWORD` | ○ | DB のパスワード (自動生成)。最初の起動後に変えても DB 側には反映されない |
 | `BETTER_AUTH_SECRET` | ○ | ログインセッションの署名に使う秘密の値 (自動生成)。変えると全員がログアウトになる |
 | `CREDENTIALS_ENCRYPTION_KEY` | ○ | メールアカウントの認証情報を暗号化する鍵 (自動生成)。変えたり失ったりすると復号できなくなる |
@@ -405,35 +342,126 @@ cd /opt/mail/deploy
 docker compose ps                    # 各サービスの状態
 docker compose logs --tail=100 api   # web / api / worker / migrate / postgres / backup
 docker compose restart worker        # 1 つだけ再起動
-sudo tail -n 50 /var/log/httpd/mail_error.log   # Apache 側のエラー
 ```
+
+Linode 側のエラーは、Linode のサーバーの `/var/log/httpd/` (設定で指定したログ) に出ます。
 
 | 症状 | 確認すること |
 | --- | --- |
-| ブラウザーで繋がらない、Cloudflare のエラー画面 (52x) が出る | 手順 2 の経路 (Cloudflare の DNS、Linode の中継) に新しいドメインが載っているか。サーバーの中では `curl -H "Host: <DOMAIN>" http://127.0.0.1/healthz` が返るか |
-| 既存のサイトの画面が出る | Linode が Host ヘッダーを `<DOMAIN>` のまま渡しているか。`sudo httpd -S` に `<DOMAIN>` が出ているか |
-| 添付ファイルを上げると 413 になる | Linode と Oracle Cloud の両方の Apache の設定に `LimitRequestBody 52428800` があるか |
-| 503 Service Unavailable | コンテナが動いているか (`docker compose ps`、`curl http://127.0.0.1:18080/healthz`)。動いているのに 503 なら、Apache のエラーログに `Permission denied` が出ていないか (出ていれば手順 5 の `setsebool`) |
-| 既存のサイトがメールアプリに繋がってしまう | 手順 1 の空の VirtualHost (`000-default.conf`) を置いて `sudo systemctl reload httpd` |
-| certbot が失敗する (B の場合) | DNS が反映済みか。80 番と 443 番が外から届くか |
+| 503 Service Unavailable | Oracle Cloud でコンテナが動いているか (`docker compose ps`、`curl http://127.0.0.1:18080/healthz`)。動いているなら、Linode から 18080 番に届くか (手順 4 の `curl`) |
+| Cloudflare のエラー画面 (52x) が出る | Cloudflare の DNS の向き先が Linode になっているか。Linode の Apache が動いているか |
+| 既存のサイトの画面が出る | Linode の設定の `ServerName` と向き先のポート (18080) が合っているか |
+| 添付ファイルを上げると 413 になる | Linode の設定に `LimitRequestBody 52428800` があるか |
 | `api` が起動しない | `docker compose logs migrate api`。`deploy/.env` の値が空でないか |
-| ログインできない | 利用者を作ったか (手順 4)。パスワードは 12 文字以上 |
+| ログインできない | 利用者を作ったか (手順 3)。パスワードは 12 文字以上 |
 | Microsoft / Google のログインで戻ってこられない | リダイレクト URI が `https://<DOMAIN>/oauth/microsoft` (`/oauth/google`) と完全に一致しているか |
-| 新着の反映が遅い | Apache の設定の `ProxyPass` に `flushpackets=on` が付いているか。Linode 側の設定にも付いているか。Microsoft のアカウントなら、ワーカーのログに変更通知の購読の失敗が出ていないか |
+| 新着の反映が遅い、しばらくすると止まる | Linode の設定の `ProxyPass` に `flushpackets=on` と `timeout=120` が付いているか。Microsoft のアカウントなら、ワーカーのログに変更通知の購読の失敗が出ていないか |
 | ディスクが足りない | `docker system df` で内訳を確認し、`docker builder prune` で古いビルドの残りを消す |
 
-元に戻す (メールアプリを取り除く) ときは、次の順に行います。既存のサイトの設定には触れません。
+元に戻す (メールアプリを取り除く) ときは、次の順に行います。
 
 ```sh
+# Oracle Cloud のサーバーで
 cd /opt/mail/deploy && docker compose down          # コンテナを止める (データは残る。消すなら down -v)
-sudo rm -f /etc/httpd/conf.d/mail.conf /etc/httpd/conf.d/mail-le-ssl.conf
+
+# Linode のサーバーで
+sudo rm /etc/httpd/conf.d/mail.example.com.conf
 sudo apachectl configtest && sudo systemctl reload httpd
 ```
 
-## Apache を使わない場合 (Caddy が直接公開する)
+あわせて、セキュリティ・リストの 18080 番のルールと、Cloudflare の DNS のレコードを消します。
+
+## ほかの構成
+
+### 同じサーバーの Apache から繋ぐ
+
+Oracle Cloud のサーバーの Apache (80 番) でドメインを受け、そこからメールアプリへ渡す形です。
+`setup.sh` を `apache` で実行すると、web は 127.0.0.1:18080 だけで待ち受け、外からは直接届きません。
+
+```sh
+bash deploy/setup.sh mail.example.com apache
+```
+
+**先に `sudo httpd -S` を確認してください。** `*:80` の VirtualHost が 1 つも無い場合 (`Main DocumentRoot` などしか出ない場合)、
+Apache は VirtualHost が 1 つでもあると 80 番に来たすべての要求を VirtualHost に渡すようになるため、
+そのままメールアプリの設定を足すと、既存のサイトまでメールアプリに繋がってしまいます。
+その場合は、既存のサイトを受ける空の VirtualHost を先頭に置きます。ただし、全体の設定にある `RewriteRule` は
+VirtualHost には引き継がれず、全体の設定にある `ProxyPass` はメールアプリ側にも効くので、全体の設定の内容を確かめてから行ってください。
+
+```sh
+printf '<VirtualHost *:80>\n</VirtualHost>\n' | sudo tee /etc/httpd/conf.d/000-default.conf
+```
+
+手前に HTTPS を受けるサーバーがある場合が A、この Apache が直接 HTTPS を受ける場合が B です。
+
+#### 準備
+
+Apache からコンテナへ繋ぐことを SELinux に許可します (`getenforce` が `Enforcing` の場合)。
+
+```sh
+sudo setsebool -P httpd_can_network_connect 1
+```
+
+B (このサーバーで直接 HTTPS を受ける) の場合だけ、HTTPS 用のモジュールと certbot も入れます。
+
+```sh
+sudo dnf -y install epel-release
+sudo dnf -y install mod_ssl certbot python3-certbot-apache
+```
+
+#### サイトを追加する
+
+設定の見本をドメインに合わせて置き、文法を確かめてから読み込み直します。
+
+```sh
+DOMAIN=mail.example.com    # 自分のドメインに置き換える
+sed "s/mail\.example\.com/$DOMAIN/g" /opt/mail/deploy/apache/mail.conf | sudo tee /etc/httpd/conf.d/mail.conf
+sudo apachectl configtest
+sudo systemctl reload httpd
+sudo httpd -S
+```
+
+- `configtest` が `Syntax OK` 以外を返したら、読み込み直さずに `sudo rm /etc/httpd/conf.d/mail.conf` で元に戻せます。
+- `httpd -S` で、既存のサイトがこれまでどおり並び、そこに `mail.example.com` が加わっていることを確認します。
+- サーバーの中から、ドメイン名で振り分けられることを確認できます。
+
+  ```sh
+  curl -s -H "Host: $DOMAIN" http://127.0.0.1/healthz    # {"status":"ok"} が返る
+  ```
+
+**A の場合**は、これで完了です。ブラウザーで `https://mail.example.com` を開き、作った利用者でログインできることを確認します。
+Cloudflare が HTTPS を受けるので、このサーバーでは証明書を取りません。
+
+**B の場合**は、続けて証明書を取ります。certbot が HTTPS 用の設定 (`/etc/httpd/conf.d/mail-le-ssl.conf`) を作り、HTTP から HTTPS への転送も設定します。
+
+```sh
+sudo certbot --apache -d mail.example.com
+sudo systemctl enable --now certbot-renew.timer    # 証明書の自動更新
+```
+
+途中で連絡先のメールアドレスと利用規約への同意を聞かれます。
+ブラウザーで `https://mail.example.com` を開き、ログインできれば完了です。
+
+
+#### B の場合の DNS とポート
+
+**DNS**: ドメインの DNS に、サーバーのパブリック IP アドレスを指す A レコードを追加します。
+
+**Oracle Cloud 側 (セキュリティ・リスト)**: コンソールでインスタンスの詳細 → サブネット → セキュリティ・リスト →
+「イングレス・ルールの追加」を開き、ソース `0.0.0.0/0`、TCP、宛先ポート 443 を追加します。
+
+**サーバー側 (firewalld)**: `sudo firewall-cmd --state` が `running` の場合だけ実行します。
+
+```sh
+sudo firewall-cmd --permanent --add-service=http --add-service=https
+sudo firewall-cmd --reload
+```
+
+
+### Caddy が直接公開する
 
 80 番と 443 番をほかに使っていないサーバー (新しく作ったインスタンスなど) では、Caddy に公開と証明書の取得を任せられます。
-手順 5 と 6 は不要になり、手順 4 の `setup.sh` を次のように実行します。
+手順 4 から 6 は不要になり、手順 3 の `setup.sh` を次のように実行します。
 
 ```sh
 bash deploy/setup.sh mail.example.com caddy

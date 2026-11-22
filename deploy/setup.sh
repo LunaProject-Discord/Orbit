@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 本番用の設定ファイル deploy/.env を用意する。
-#   bash deploy/setup.sh mail.example.com          既存の Web サーバー (Apache など) から逆プロキシする場合
+#   bash deploy/setup.sh mail.example.com relay    別のサーバー (中継用のサーバー) から直接繋ぐ場合
+#   bash deploy/setup.sh mail.example.com apache   同じサーバーの Web サーバー (Apache など) から繋ぐ場合 (省略時)
 #   bash deploy/setup.sh mail.example.com caddy    Caddy が 80 / 443 番で直接公開する場合
 # 無ければ .env.example から作り、空の秘密の値を乱数で埋める。
 # 既に値が入っている項目は変更しない (鍵を作り直すと保存済みの認証情報を復号できなくなるため)。
@@ -10,16 +11,16 @@ cd "$(dirname "$0")"
 domain="${1:-}"
 mode="${2:-}"
 case "$mode" in
-"" | apache | caddy) ;;
+"" | relay | apache | caddy) ;;
 *)
-  echo "2 つ目の引数は apache か caddy にしてください。" >&2
+  echo "2 つ目の引数は relay、apache、caddy のどれかにしてください。" >&2
   exit 1
   ;;
 esac
 
 if [ ! -f .env ]; then
   if [ -z "$domain" ]; then
-    echo "使い方: bash deploy/setup.sh <公開するドメイン> [apache|caddy]" >&2
+    echo "使い方: bash deploy/setup.sh <公開するドメイン> [relay|apache|caddy]" >&2
     exit 1
   fi
   cp .env.example .env
@@ -52,12 +53,33 @@ if [ -n "$domain" ]; then
   echo "ドメイン: $domain"
 fi
 
+# 既にある行は書き換え、無ければ末尾に足す (古い .env.example から作った .env にも対応する)。
+set_value() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" .env; then
+    awk -v key="$key" -v value="$value" \
+      '$0 ~ "^" key "=" { print key "=" value; next } { print }' .env >.env.tmp
+    cat .env.tmp >.env
+    rm .env.tmp
+  else
+    printf '%s=%s\n' "$key" "$value" >>.env
+  fi
+}
+
+case "$mode" in
+relay)
+  set_value COMPOSE_FILE compose.yml:compose.proxy.yml
+  set_value LOCAL_BIND 0.0.0.0
+  ;;
+apache)
+  set_value COMPOSE_FILE compose.yml:compose.proxy.yml
+  set_value LOCAL_BIND 127.0.0.1
+  ;;
+caddy)
+  set_value COMPOSE_FILE compose.yml:compose.caddy.yml
+  ;;
+esac
 if [ -n "$mode" ]; then
-  awk -v value="compose.yml:compose.$mode.yml" \
-    '/^COMPOSE_FILE=/ { print "COMPOSE_FILE=" value; next } { print }' \
-    .env >.env.tmp
-  cat .env.tmp >.env
-  rm .env.tmp
   echo "公開のしかた: $mode"
 fi
 
