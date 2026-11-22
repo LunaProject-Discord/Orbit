@@ -18,9 +18,10 @@ import {
   ReplyIcon,
   StarIcon,
   Trash2Icon,
+  UserRoundIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MoveTarget } from "@/components/mail/mailbox-icon";
+import { MailboxIcon, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import { QuickReply } from "@/components/mail/quick-reply";
 import {
@@ -65,7 +66,11 @@ import {
 } from "@/lib/format";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
-import { bodyStyle, usePreferences } from "@/lib/preferences";
+import {
+  bodyStyle,
+  updatePreferences,
+  usePreferences,
+} from "@/lib/preferences";
 import { shortcutLabels } from "@/lib/shortcuts";
 
 /**
@@ -410,9 +415,12 @@ export function MessageView({
       ) : state.thread.length === 1 ? (
         <>
           <LoadedMessage
+            // 別のメールを開いたら、スクロール位置を先頭に戻す。
+            key={first.id}
             id={first.id}
             refreshKey={refreshKey}
             meta={meta}
+            mailbox={mailbox}
             onDetail={handleDetail}
           />
           {quickReplyBox}
@@ -467,12 +475,15 @@ function LoadedMessage({
   refreshKey,
   inThread = false,
   meta,
+  mailbox,
   onDetail,
 }: {
   id: string;
   refreshKey: number;
   /** 件名の下に出す、メールのある場所。 */
   meta?: React.ReactNode;
+  /** メールのあるフォルダ。折りたたんだ見出しのアイコンに使う。 */
+  mailbox?: MailboxSummary;
   /** 会話の中の 1 通として表示する (件名と宛先の見出しは会話側で出す)。 */
   inThread?: boolean;
   onDetail: (message: MessageDetail) => void;
@@ -499,7 +510,14 @@ function LoadedMessage({
   }, [id, refreshKey]);
 
   if (message) {
-    return <MessageContent message={message} inThread={inThread} meta={meta} />;
+    return (
+      <MessageContent
+        message={message}
+        inThread={inThread}
+        meta={meta}
+        mailbox={mailbox}
+      />
+    );
   }
   if (failed) {
     return (
@@ -894,11 +912,12 @@ function useEmbeddedImages(
 const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
 
 /**
- * 会話の中に並べる本文用の iframe。中身の高さに合わせて伸ばし、スクロールは会話全体で行う。
+ * 本文用の iframe。中身の高さに合わせて伸ばし、スクロールは外側 (メール表示や会話全体) で行う。
+ * fill を付けると、本文が短くても残りの高さいっぱいまで広げる (1 通だけの表示用)。
  * 高さを測るために allow-same-origin を付けるが、allow-scripts は付けないので、
  * 本文の中のスクリプトは動かず、このアプリのデータにも触れない。
  */
-function ThreadBodyFrame({ srcDoc }: { srcDoc: string }) {
+function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const observer = useRef<ResizeObserver | null>(null);
   const [height, setHeight] = useState(120);
@@ -932,8 +951,11 @@ function ThreadBodyFrame({ srcDoc }: { srcDoc: string }) {
       referrerPolicy="no-referrer"
       onLoad={measure}
       style={{ height }}
-      // 本文の余白 (16px) と合わせて、見出しや文字だけの本文と左端を揃える。
-      className="w-full shrink-0 border-0 bg-white sm:px-2"
+      className={cn(
+        "w-full shrink-0 border-0 bg-white",
+        // 会話の中では、本文の余白 (16px) と合わせて、見出しや文字だけの本文と左端を揃える。
+        fill ? "grow" : "sm:px-2",
+      )}
     />
   );
 }
@@ -942,9 +964,11 @@ function MessageContent({
   message,
   inThread = false,
   meta,
+  mailbox,
 }: {
   message: MessageDetail;
   meta?: React.ReactNode;
+  mailbox?: MailboxSummary;
   /** 会話の中の 1 通として表示する (件名と差出人は会話側の見出しに出ている)。 */
   inThread?: boolean;
 }) {
@@ -975,57 +999,117 @@ function MessageContent({
     message.bodyHtml !== null &&
     hasRemoteImages(message.bodyHtml);
 
+  const collapsed = preferences.messageHeader === "collapsed";
+  const toggle = (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-expanded={!collapsed}
+      aria-label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}
+      title={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}
+      onClick={() =>
+        updatePreferences({
+          messageHeader: collapsed ? "expanded" : "collapsed",
+        })
+      }
+      className="shrink-0 text-muted-foreground"
+    >
+      <ChevronDownIcon
+        className={cn("transition-transform", !collapsed && "rotate-180")}
+      />
+    </Button>
+  );
+
   return (
     <article
       className={cn(
         "flex flex-col",
-        // 画面が低くて本文の最小の高さも取れないときは、ここをスクロールさせる。
-        // はみ出したままにすると、本文が下の簡易返信欄に重なって見える。
+        // 見出しと本文をまとめてスクロールさせる (見出しは固定しない)。
         !inThread && "min-h-0 flex-1 overflow-y-auto",
       )}
     >
       {/* 会話の中では、件名と差出人は会話側の見出しに出ている。 */}
-      <header
-        className={cn(
-          "flex shrink-0 flex-col gap-3 border-b p-4 sm:p-6",
-          inThread && "hidden",
-        )}
-      >
-        <h2 className="font-semibold text-xl leading-snug">
-          {message.subject || "(件名なし)"}
-        </h2>
-        {meta}
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-          <dt className="text-muted-foreground">差出人</dt>
-          <dd className="min-w-0 break-words">
-            {message.from.length > 0
-              ? message.from.map(addressFull).join(", ")
-              : addressLabel(undefined)}
-          </dd>
-          {message.to.length > 0 && (
-            <>
-              <dt className="text-muted-foreground">宛先</dt>
-              <dd className="min-w-0 break-words">
-                {message.to.map(addressFull).join(", ")}
-              </dd>
-            </>
+      {!inThread && (
+        <header className="shrink-0 border-b px-4 py-3 sm:px-6">
+          {collapsed ? (
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
+                <UserRoundIcon className="size-4 shrink-0" aria-hidden="true" />
+                <span className="sr-only">差出人</span>
+                <span className="min-w-0 shrink truncate font-medium text-foreground">
+                  {addressLabel(message.from[0])}
+                </span>
+                {message.to.length > 0 && (
+                  <>
+                    <span aria-hidden="true">・</span>
+                    <span title={mailbox ? mailboxLabel(mailbox) : undefined}>
+                      <MailboxIcon
+                        specialUse={mailbox?.specialUse ?? null}
+                        className="size-4 shrink-0"
+                      />
+                    </span>
+                    <span className="sr-only">宛先</span>
+                    <span className="min-w-0 shrink-[2] truncate">
+                      {message.to.map(addressLabel).join("、")}
+                    </span>
+                  </>
+                )}
+                <span className="flex-1" />
+                <time
+                  dateTime={message.receivedAt}
+                  className="shrink-0 text-xs tabular-nums"
+                >
+                  {formatFullDate(message.receivedAt, preferences)}
+                </time>
+                {toggle}
+              </div>
+              <h2 className="line-clamp-2 font-semibold text-base leading-snug">
+                {message.subject || "(件名なし)"}
+              </h2>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 py-1 sm:py-3">
+              <div className="flex items-start gap-2">
+                <h2 className="min-w-0 flex-1 font-semibold text-xl leading-snug">
+                  {message.subject || "(件名なし)"}
+                </h2>
+                {toggle}
+              </div>
+              {meta}
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+                <dt className="text-muted-foreground">差出人</dt>
+                <dd className="min-w-0 break-words">
+                  {message.from.length > 0
+                    ? message.from.map(addressFull).join(", ")
+                    : addressLabel(undefined)}
+                </dd>
+                {message.to.length > 0 && (
+                  <>
+                    <dt className="text-muted-foreground">宛先</dt>
+                    <dd className="min-w-0 break-words">
+                      {message.to.map(addressFull).join(", ")}
+                    </dd>
+                  </>
+                )}
+                {message.cc.length > 0 && (
+                  <>
+                    <dt className="text-muted-foreground">Cc</dt>
+                    <dd className="min-w-0 break-words">
+                      {message.cc.map(addressFull).join(", ")}
+                    </dd>
+                  </>
+                )}
+                <dt className="text-muted-foreground">日時</dt>
+                <dd>
+                  <time dateTime={message.receivedAt}>
+                    {formatFullDate(message.receivedAt, preferences)}
+                  </time>
+                </dd>
+              </dl>
+            </div>
           )}
-          {message.cc.length > 0 && (
-            <>
-              <dt className="text-muted-foreground">Cc</dt>
-              <dd className="min-w-0 break-words">
-                {message.cc.map(addressFull).join(", ")}
-              </dd>
-            </>
-          )}
-          <dt className="text-muted-foreground">日時</dt>
-          <dd>
-            <time dateTime={message.receivedAt}>
-              {formatFullDate(message.receivedAt, preferences)}
-            </time>
-          </dd>
-        </dl>
-      </header>
+        </header>
+      )}
 
       {message.bodyFetchedAt === null ? (
         <output className="block p-4 text-muted-foreground text-sm sm:p-6">
@@ -1053,26 +1137,10 @@ function MessageContent({
           )}
           {/* スクリプトの実行もこのアプリのデータへのアクセスも禁止する。
               許可するのは、本文内のリンクを新しいタブで開くことだけ。 */}
-          {inThread ? (
-            <ThreadBodyFrame srcDoc={srcDoc} />
-          ) : (
-            <iframe
-              title="メール本文"
-              sandbox="allow-popups allow-popups-to-escape-sandbox"
-              srcDoc={srcDoc}
-              referrerPolicy="no-referrer"
-              className="min-h-48 w-full flex-1 border-0 bg-white"
-            />
-          )}
+          <BodyFrame srcDoc={srcDoc} fill={!inThread} />
         </>
       ) : message.bodyText ? (
-        <div
-          className={
-            inThread
-              ? "px-4 pb-4 sm:px-6"
-              : "min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
-          }
-        >
+        <div className={inThread ? "px-4 pb-4 sm:px-6" : "flex-1 p-4 sm:p-6"}>
           <p
             className="whitespace-pre-wrap break-words"
             style={{
