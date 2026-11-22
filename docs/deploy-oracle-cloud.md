@@ -113,29 +113,29 @@ sudo vim "$DOMAIN.conf"
 
 | 指定 | 直し方 | 理由 |
 | --- | --- | --- |
-| `ServerName` (と `ServerAlias`) | 新しいドメインにする | 上の `sed` で置き換わっているはず |
-| `ProxyPass` / `ProxyPassReverse` の向き先 | Oracle Cloud のサーバーの **80 番** (`http://<Oracle Cloud のアドレス>/`) にする | 写した元のサイトが別のポート (アプリのポートに直接) へ向いている場合があるため。メールアプリは Oracle Cloud 側の Apache (80 番) で受ける |
-| `ProxyPass` の行末 | `flushpackets=on` を付ける | 変更の通知 (SSE) をため込まずにすぐ流す。無いと、新着や既読の反映が遅れる |
-| `ProxyPreserveHost On` | 無ければ足す | Oracle Cloud 側の Apache がドメイン名でメールアプリへ振り分けるため。無いと既存のサイトの画面が出る |
-| `LimitRequestBody 52428800` | 無ければ足す (もっと小さい値があれば上げる) | 添付ファイル (1 通あたり合計 25 MB まで) を受け取るため |
-| `ProxyTimeout 120` | 無ければ足す (60 より小さい値があれば上げる) | 変更の通知は繋ぎっぱなしで、25 秒ごとに空のイベントが流れる |
-| ログのファイル名 | 新しいドメイン用にする | 既存のサイトのログと混ざらないようにする |
-| そのサイト専用の指定 (`Header`、`RewriteRule`、アクセス制限など) | メールアプリに不要なら消す | 写した元のサイトの都合で入っているもの |
+| `ServerName` (80 番と 443 番の 2 か所) | 新しいドメインにする | 上の `sed` で置き換わっているはず |
+| `ProxyPass` の `timeout` | `timeout=120` にする (既存のサイトは `timeout=30`) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントが流れる。30 秒だと余裕が無い |
+| `ProxyPass` の行末 | `flushpackets=on` を付ける | 変更の通知をため込まずにすぐ流す。無いと、新着や既読の反映が遅れる |
+| `LimitRequestBody 52428800` | 443 番の VirtualHost に足す | 添付ファイル (1 通あたり合計 25 MB まで) を受け取るため |
+| `ProxyPass` / `ProxyPassReverse` の向き先 | Oracle Cloud のサーバーの 80 番 (`http://<Oracle Cloud のアドレス>/`) のまま | メールアプリは Oracle Cloud 側の Apache (80 番) で受ける |
+| `ProxyPreserveHost on` | あることを確かめる | Oracle Cloud 側の Apache がドメイン名でメールアプリへ振り分けるため。無いと既存のサイトの画面が出る |
+| `SSLCertificateFile` など | 既存のサイトと同じまま | 証明書が新しいドメインを含んでいること (下のコマンドで確認) |
+
+証明書が新しいドメインを含んでいるかは、次で分かります (`*.lunaproject.jp` のようなワイルドカードか、新しいドメインそのものが出れば使えます)。
+
+```sh
+sudo openssl x509 -in /etc/letsencrypt/live/lunaproject.jp/cert.pem -noout -ext subjectAltName
+```
 
 文法を確かめてから読み込み直します。
 
 ```sh
 sudo apachectl configtest      # Syntax OK 以外なら、読み込み直さずに sudo rm "$DOMAIN.conf" で元に戻せる
 sudo systemctl reload httpd
-curl -s -H "Host: $DOMAIN" http://127.0.0.1/healthz    # {"status":"ok"} が返れば、Oracle Cloud まで届いている
+curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"    # {"status":"ok"} が返れば、Oracle Cloud まで届いている
 ```
 
-最後の確認は、既存のサイトが 443 番だけで受けている場合は
-`curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"` にします。
-
-**3. Oracle Cloud**: 80 番は、すでに Linode から届いているはずなので、新しく開けるポートはありません。
-Linode から Oracle Cloud へ、既存のサイトがアプリのポートへ直接繋いでいて 80 番が届かない場合は、
-Oracle Cloud のセキュリティ・リストと firewalld で、Linode のアドレスからの 80 番を開けてください。
+**3. Oracle Cloud**: 80 番は、既存のサイトと同じくすでに Linode から届いているので、新しく開けるポートはありません。
 
 Cloudflare については次の点に注意してください。
 
