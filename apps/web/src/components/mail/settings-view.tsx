@@ -577,7 +577,10 @@ function AccountCard({
     saveNow({ icon: next });
   };
   const saveNow = (
-    patch: { color: string | null } | { icon: AccountIconName | null },
+    patch:
+      | { color: string | null }
+      | { icon: AccountIconName | null }
+      | { allowLegacyTls: boolean },
   ) => {
     // 押してすぐ画面に反映し、保存できなければ元に戻す。
     onUpdated({ ...account, ...patch });
@@ -664,6 +667,29 @@ function AccountCard({
           colorStyle={accountColorStyle(color)}
         />
       </div>
+
+      {/* 接続先を手で設定したアカウントだけ。Gmail や iCloud は新しい TLS に対応している。 */}
+      {account.protocol === "imap" &&
+        (account.provider === "generic" || account.allowLegacyTls) && (
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p id={`${id}-legacy-tls`} className="text-xs">
+                古い TLS のサーバーへの接続を許可する
+              </p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                安全な再ネゴシエーション (RFC 5746)
+                に対応していないサーバー向けです。安全性が下がるので、接続できないときだけオンにしてください。
+              </p>
+            </div>
+            <Switch
+              aria-labelledby={`${id}-legacy-tls`}
+              checked={account.allowLegacyTls}
+              onCheckedChange={(checked) =>
+                saveNow({ allowLegacyTls: checked })
+              }
+            />
+          </div>
+        )}
 
       {error && (
         <p role="alert" className="text-destructive text-xs">

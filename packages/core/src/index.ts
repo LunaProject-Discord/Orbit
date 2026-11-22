@@ -3,6 +3,7 @@ export * from "./credentials.js";
 export * from "./events.js";
 export * from "./google-oauth.js";
 export * from "./graph-webhook.js";
+export * from "./legacy-tls.js";
 export * from "./mail-providers.js";
 export * from "./microsoft-oauth.js";
 export * from "./network-error.js";

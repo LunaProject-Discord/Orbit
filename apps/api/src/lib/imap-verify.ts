@@ -1,3 +1,4 @@
+import { isLegacyTlsError, legacyTlsOptions } from "@mail/core";
 import { ImapFlow } from "imapflow";
 
 export type ImapSettings = {
@@ -5,11 +6,18 @@ export type ImapSettings = {
   port: number;
   secure: boolean;
   username: string;
+  /** 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許す。 */
+  allowLegacyTls?: boolean;
 } & ({ password: string } | { accessToken: string });
 
 export type ImapVerifyResult =
   | { ok: true }
-  | { ok: false; reason: "auth_failed" | "connection_failed"; detail: string };
+  | {
+      ok: false;
+      /** legacy_tls_required は、古い TLS のサーバーなので許可が要る場合。 */
+      reason: "auth_failed" | "connection_failed" | "legacy_tls_required";
+      detail: string;
+    };
 
 /** 保存する前に、IMAP サーバーへ実際にログインできるかを確かめる。 */
 export async function verifyImap(
@@ -23,6 +31,7 @@ export async function verifyImap(
       "accessToken" in settings
         ? { user: settings.username, accessToken: settings.accessToken }
         : { user: settings.username, pass: settings.password },
+    tls: legacyTlsOptions(settings.allowLegacyTls === true),
     logger: false,
     verifyOnly: true,
     connectionTimeout: 15_000,
@@ -38,10 +47,15 @@ export async function verifyImap(
       authenticationFailed?: boolean;
       responseText?: string;
     };
+    const detail = err.responseText || err.message;
     return {
       ok: false,
-      reason: err.authenticationFailed ? "auth_failed" : "connection_failed",
-      detail: err.responseText || err.message,
+      reason: err.authenticationFailed
+        ? "auth_failed"
+        : !settings.allowLegacyTls && isLegacyTlsError(detail)
+          ? "legacy_tls_required"
+          : "connection_failed",
+      detail,
     };
   }
 }

@@ -49,6 +49,11 @@ const createAccountBody = z.object({
   smtp: server.optional(),
   username: z.string().min(1).max(320).optional(),
   password: z.string().min(1).max(1024),
+  /**
+   * 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許す。
+   * 接続先を手で設定したときだけ効く (Gmail と iCloud では使わない)。
+   */
+  allowLegacyTls: z.boolean().optional(),
 });
 
 const microsoftAuthorizeBody = z.object({
@@ -78,6 +83,8 @@ const updateAccountBody = z
     color: z.string().regex(ACCOUNT_COLOR).nullable().optional(),
     /** 画面でアカウントに付けるアイコン。null なら色の点を出す。 */
     icon: accountIcon.nullable().optional(),
+    /** 古い TLS のサーバーへの接続を許す。IMAP / SMTP のアカウントでだけ変えられる。 */
+    allowLegacyTls: z.boolean().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -100,6 +107,7 @@ const publicColumns = {
   smtpHost: mailAccounts.smtpHost,
   smtpPort: mailAccounts.smtpPort,
   smtpSecure: mailAccounts.smtpSecure,
+  allowLegacyTls: mailAccounts.allowLegacyTls,
   username: mailAccounts.username,
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
@@ -183,6 +191,8 @@ export function accountRoutes({
       smtp,
       username: input.username ?? input.email,
       provider,
+      // 決まった接続先 (Gmail、iCloud) は新しい TLS に対応しているので、許可を受け付けない。
+      allowLegacyTls: provider === "generic" && input.allowLegacyTls === true,
     };
 
     if (!allowPrivateMailHosts) {
@@ -216,6 +226,7 @@ export function accountRoutes({
       ...body.imap,
       username: body.username,
       password: body.password,
+      allowLegacyTls: body.allowLegacyTls,
     });
     if (!verified.ok) {
       return c.json({ error: verified.reason, detail: verified.detail }, 422);
@@ -236,6 +247,7 @@ export function accountRoutes({
           smtpHost: body.smtp.host,
           smtpPort: body.smtp.port,
           smtpSecure: body.smtp.secure,
+          allowLegacyTls: body.allowLegacyTls,
           username: body.username,
           credentialsEncrypted: encryptCredentials(
             { type: "password", password: body.password },
@@ -600,10 +612,26 @@ export function accountRoutes({
               : {}),
             ...(body.color !== undefined ? { color: body.color } : {}),
             ...(body.icon !== undefined ? { icon: body.icon } : {}),
+            ...(body.allowLegacyTls !== undefined
+              ? { allowLegacyTls: body.allowLegacyTls }
+              : {}),
           })
-          .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, user.id)))
+          .where(
+            and(
+              eq(mailAccounts.id, id),
+              eq(mailAccounts.userId, user.id),
+              // TLS の設定は、IMAP / SMTP でつなぐアカウントにしか無い。
+              body.allowLegacyTls !== undefined
+                ? eq(mailAccounts.protocol, "imap")
+                : undefined,
+            ),
+          )
           .returning(publicColumns);
         if (!row) return null;
+        if (body.allowLegacyTls !== undefined) {
+          // 同期ワーカーが、新しい設定でつなぎ直す。
+          await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);
+        }
         // ほかの端末にも、新しい設定が届くようにする。
         const [change] = await tx
           .insert(changes)

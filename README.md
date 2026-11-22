@@ -141,6 +141,20 @@ Google のパスワードやアプリ パスワードをこのアプリに保存
   「その他のメール」から、ユーザー名に iCloud メールのアドレスを指定して追加してください。
 - 送信したメールの控えは、こちらから「送信済み」フォルダへ保存します。
 
+## 古い TLS のメールサーバー
+
+「その他のメール」で追加するときに `unsafe legacy renegotiation disabled` というエラーで
+接続できない場合、そのサーバーは TLS の安全な再ネゴシエーション (RFC 5746) に対応していません。
+追加の画面にその旨が出て、「古い TLS のサーバーへの接続を許可する」スイッチが現れます。
+オンにして追加すると、そのアカウントの IMAP と SMTP の接続にだけ OpenSSL の
+`SSL_OP_LEGACY_SERVER_CONNECT` を付けます (`mail_accounts.allow_legacy_tls`)。
+あとから設定画面のアカウントの欄でも切り替えられます。
+
+- 通信の暗号化、証明書の検証、TLS のバージョンの下限 (1.2) は変わりません。
+- 通信経路に割り込める相手が、接続の先頭にデータを差し込める弱点 (CVE-2009-3555) が残ります。
+  サーバー側を更新できるなら、そちらが本来の対処です。
+- ほかのアカウントや、Gmail・iCloud・Microsoft の接続には影響しません。
+
 ## Microsoft アカウント (Exchange Online / Outlook.com)
 
 Microsoft Graph を使うには、[Microsoft Entra 管理センター](https://entra.microsoft.com/) でアプリを登録します。

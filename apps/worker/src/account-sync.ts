@@ -4,6 +4,7 @@ import {
   GoogleAccessTokenSource,
   type GoogleOAuthConfig,
   GoogleOAuthError,
+  legacyTlsOptions,
 } from "@mail/core";
 import { type Database, mailAccounts, mailboxes } from "@mail/db";
 import { and, eq } from "drizzle-orm";
@@ -328,6 +329,7 @@ export class AccountSync {
         username: this.account.username,
         ...auth,
         allowInsecure: this.allowInsecureSmtp,
+        allowLegacyTls: this.account.allowLegacyTls,
       },
       message,
     );
@@ -446,6 +448,7 @@ export class AccountSync {
       host: this.account.imapHost,
       port: this.account.imapPort,
       secure: this.account.imapSecure,
+      tls: legacyTlsOptions(this.account.allowLegacyTls),
       auth:
         "accessToken" in auth
           ? { user: this.account.username, accessToken: auth.accessToken }

@@ -198,6 +198,11 @@ export const mailAccounts = pgTable(
     smtpHost: text(),
     smtpPort: integer(),
     smtpSecure: boolean().notNull().default(false),
+    /**
+     * 安全な再ネゴシエーション (RFC 5746) に対応していない古いサーバーへの接続を許す。
+     * 安全性が下がるので、利用者が明示的に許可したアカウントだけ true にする。
+     */
+    allowLegacyTls: boolean().notNull().default(false),
     username: text().notNull(),
     /** リフレッシュトークンまたはパスワードを AES-GCM で暗号化したもの。平文は保存しない。 */
     credentialsEncrypted: text().notNull(),
