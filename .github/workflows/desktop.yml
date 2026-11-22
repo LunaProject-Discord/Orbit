@@ -32,9 +32,10 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # タグのときだけ、GitHub Releases へ載せるために書き込みを許す。
+    # タグのときに GitHub Releases へ載せるため、書き込みを許す (権限は式で切り替えられない)。
+    # トークンを渡すのは「ビルド」のステップだけで、checkout にも残さない。
     permissions:
-      contents: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && 'write' || 'read' }}
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +71,8 @@ jobs:
       HAS_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
