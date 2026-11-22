@@ -37,6 +37,7 @@ import {
 import { MessageView } from "@/components/mail/message-view";
 import { MoveDialog } from "@/components/mail/move-dialog";
 import { OutgoingList } from "@/components/mail/outgoing-list";
+import { PullToRefresh } from "@/components/mail/pull-to-refresh";
 import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
 import { SettingsView } from "@/components/mail/settings-view";
@@ -239,6 +240,7 @@ const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
 const MARK_READ_ERROR =
   "既読にできませんでした。時間をおいて、もう一度お試しください。";
+const PULL_OFFLINE = "オフラインのため、更新できません。";
 const SYNC_NOW_ERROR =
   "同期を始められませんでした。時間をおいて、もう一度お試しください。";
 /** フォルダへの操作を受け付けたときの知らせ。画面に出るのは、メールサーバーへの反映と同期のあと。 */
@@ -1097,6 +1099,36 @@ export function MailApp({ user }: { user: User }) {
     setRefreshKey((key) => key + 1);
   }, [loadFirstPage]);
   handleUndoRef.current = handleUndo;
+
+  /**
+   * 一覧を引っ張って更新する。開いているアカウント (すべての受信トレイなどでは全アカウント) を
+   * メールサーバーへ確認させ、いまの一覧を取得し直す。新しく届いたメールは、同期が済みしだい一覧に出る。
+   */
+  const accountsRef = useRef(accounts);
+  accountsRef.current = accounts;
+  const handlePullRefresh = useCallback(async () => {
+    const selection = selectionRef.current;
+    const ids = selection.accountId
+      ? [selection.accountId]
+      : (accountsRef.current ?? []).map((account) => account.id);
+    if (!onlineRef.current) {
+      setNotice({ message: PULL_OFFLINE, tone: "error" });
+      return;
+    }
+    const synced = await Promise.allSettled(
+      ids.map((id) => syncAccountNow(id)),
+    );
+    if (synced.length > 0 && synced.every((r) => r.status === "rejected")) {
+      setNotice({ message: SYNC_NOW_ERROR, tone: "error" });
+    }
+    await Promise.allSettled([
+      loadFirstPage(selection, false),
+      loadMailboxes(),
+      loadDrafts(),
+      loadOutgoing(),
+    ]);
+    setRefreshKey((key) => key + 1);
+  }, [loadFirstPage, loadMailboxes, loadDrafts, loadOutgoing]);
 
   // 一覧の行のスワイプ。何をするかは設定で選び、移動先はそのメールのアカウントの
   // フォルダの役割 (アプリ内で上書きした役割を含む) から決める。
@@ -2684,108 +2716,116 @@ export function MailApp({ user }: { user: User }) {
           )}
           {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
               枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
-          <div
-            ref={listScrollRef}
-            className="relative flex min-h-0 flex-1 flex-col overflow-y-auto"
-          >
-            {noAccounts ? (
-              <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-                <InboxIcon
-                  className="size-10 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <div className="flex flex-col gap-1">
-                  <h2 className="font-semibold text-lg">
-                    メールアカウントを追加しましょう
-                  </h2>
-                  <p className="text-muted-foreground text-sm">
-                    アカウントを追加すると、ここに受信トレイが表示されます。
-                  </p>
+          {/* 外側の枠は、引っ張って更新する印 (PullToRefresh) をスクロールさせずに置くためのもの。 */}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+            <PullToRefresh
+              scrollRef={listScrollRef}
+              onRefresh={handlePullRefresh}
+              disabled={noAccounts || selecting}
+            />
+            <div
+              ref={listScrollRef}
+              className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain"
+            >
+              {noAccounts ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+                  <InboxIcon
+                    className="size-10 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <div className="flex flex-col gap-1">
+                    <h2 className="font-semibold text-lg">
+                      メールアカウントを追加しましょう
+                    </h2>
+                    <p className="text-muted-foreground text-sm">
+                      アカウントを追加すると、ここに受信トレイが表示されます。
+                    </p>
+                  </div>
+                  <Button onClick={() => setAddOpen(true)}>
+                    <PlusIcon />
+                    アカウントを追加
+                  </Button>
                 </div>
-                <Button onClick={() => setAddOpen(true)}>
-                  <PlusIcon />
-                  アカウントを追加
-                </Button>
-              </div>
-            ) : special === "outgoing" ? (
-              <OutgoingList
-                full
-                outgoing={outgoing}
-                queued={queuedSends}
-                online={online}
-                onEdit={handleEditOutgoing}
-                onRemove={handleRemoveOutgoing}
-                onEditQueued={handleEditQueued}
-                onRemoveQueued={handleRemoveQueued}
-              />
-            ) : draftsSelected ? (
-              <DraftList
-                drafts={visibleDrafts}
-                accounts={accounts ?? []}
-                openId={draft?.idempotencyKey ?? null}
-                onOpen={handleOpenDraft}
-                onDiscard={(item) => handleDiscardDraft(item.id)}
-              />
-            ) : (
-              <MessageList
-                ref={messageListRef}
-                scrollRef={listScrollRef}
-                onPrefetch={handlePrefetch}
-                messages={messages}
-                error={listError}
-                selectedId={
-                  isSingle ? null : (selectedMessage?.id ?? selectedMessageId)
-                }
-                selectedChild={
-                  isSingle && selectedMessage && selectedMessageId
-                    ? { rowId: selectedMessage.id, id: selectedMessageId }
-                    : null
-                }
-                expandedIds={expandedIds}
-                threadRows={threadRows}
-                onToggleExpand={handleToggleExpand}
-                onSelectChild={handleSelectChild}
-                checkedIds={checkedIds}
-                selecting={selecting}
-                onToggleCheck={handleToggleCheck}
-                swipeFor={swipeFor}
-                onSwipeMove={setMoveTarget}
-                hasMore={nextCursor !== null}
-                loadingMore={loadingMore}
-                showRecipients={
-                  !searching &&
-                  (selectedUnified
-                    ? unifiedShowsRecipients
-                    : showsRecipients(selectedMailbox))
-                }
-                {...(accountMark ? { accountMark } : {})}
-                {...(starred
-                  ? {
-                      emptyText:
-                        "スターを付けたメールはありません。スターを付けると、どのフォルダにあってもここに並びます。",
-                      locationLabel,
-                    }
-                  : searching
+              ) : special === "outgoing" ? (
+                <OutgoingList
+                  full
+                  outgoing={outgoing}
+                  queued={queuedSends}
+                  online={online}
+                  onEdit={handleEditOutgoing}
+                  onRemove={handleRemoveOutgoing}
+                  onEditQueued={handleEditQueued}
+                  onRemoveQueued={handleRemoveQueued}
+                />
+              ) : draftsSelected ? (
+                <DraftList
+                  drafts={visibleDrafts}
+                  accounts={accounts ?? []}
+                  openId={draft?.idempotencyKey ?? null}
+                  onOpen={handleOpenDraft}
+                  onDiscard={(item) => handleDiscardDraft(item.id)}
+                />
+              ) : (
+                <MessageList
+                  ref={messageListRef}
+                  scrollRef={listScrollRef}
+                  onPrefetch={handlePrefetch}
+                  messages={messages}
+                  error={listError}
+                  selectedId={
+                    isSingle ? null : (selectedMessage?.id ?? selectedMessageId)
+                  }
+                  selectedChild={
+                    isSingle && selectedMessage && selectedMessageId
+                      ? { rowId: selectedMessage.id, id: selectedMessageId }
+                      : null
+                  }
+                  expandedIds={expandedIds}
+                  threadRows={threadRows}
+                  onToggleExpand={handleToggleExpand}
+                  onSelectChild={handleSelectChild}
+                  checkedIds={checkedIds}
+                  selecting={selecting}
+                  onToggleCheck={handleToggleCheck}
+                  swipeFor={swipeFor}
+                  onSwipeMove={setMoveTarget}
+                  hasMore={nextCursor !== null}
+                  loadingMore={loadingMore}
+                  showRecipients={
+                    !searching &&
+                    (selectedUnified
+                      ? unifiedShowsRecipients
+                      : showsRecipients(selectedMailbox))
+                  }
+                  {...(accountMark ? { accountMark } : {})}
+                  {...(starred
                     ? {
-                        emptyText: "条件に合うメールは見つかりませんでした。",
-                        highlightTerms: searchTerms,
+                        emptyText:
+                          "スターを付けたメールはありません。スターを付けると、どのフォルダにあってもここに並びます。",
                         locationLabel,
                       }
-                    : selectedUnified
+                    : searching
                       ? {
-                          emptyText:
-                            "この統合フォルダに当てはまるメールはありません。",
+                          emptyText: "条件に合うメールは見つかりませんでした。",
+                          highlightTerms: searchTerms,
                           locationLabel,
                         }
-                      : selectedMailbox?.lastSyncedAt
-                        ? { emptyText: "このフォルダにメールはありません。" }
-                        : {})}
-                onSelect={handleSelectMessage}
-                onAction={performAction}
-                onLoadMore={() => void handleLoadMore()}
-                onRetry={() => void loadFirstPage(selectionRef.current, true)}
-              />
-            )}
+                      : selectedUnified
+                        ? {
+                            emptyText:
+                              "この統合フォルダに当てはまるメールはありません。",
+                            locationLabel,
+                          }
+                        : selectedMailbox?.lastSyncedAt
+                          ? { emptyText: "このフォルダにメールはありません。" }
+                          : {})}
+                  onSelect={handleSelectMessage}
+                  onAction={performAction}
+                  onLoadMore={() => void handleLoadMore()}
+                  onRetry={() => void loadFirstPage(selectionRef.current, true)}
+                />
+              )}
+            </div>
           </div>
           {canCompose && !composeOpen && !selecting && (
             <Button
