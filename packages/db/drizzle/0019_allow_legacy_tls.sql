@@ -1,0 +1,1 @@
+ALTER TABLE "mail_accounts" ADD COLUMN "allow_legacy_tls" boolean DEFAULT false NOT NULL;

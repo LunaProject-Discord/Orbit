@@ -150,6 +150,8 @@ export type Account = {
   smtpHost: string | null;
   smtpPort: number | null;
   smtpSecure: boolean;
+  /** 安全な再ネゴシエーションに対応していない古いサーバーへの接続を許している。 */
+  allowLegacyTls: boolean;
   username: string;
   status: AccountStatus;
   lastError: string | null;
@@ -176,6 +178,8 @@ export type CreateAccountInput = {
   /** 省略するとメールアドレスを使う。 */
   username?: string;
   password: string;
+  /** 古い TLS のサーバーへの接続を許す (接続先を手で設定したときだけ効く)。 */
+  allowLegacyTls?: boolean;
 };
 
 /** ログイン画面へ移動して追加するサービス (OAuth2)。 */
@@ -556,13 +560,14 @@ export async function updateAccountSignature(
   return account;
 }
 
-/** アカウントの表示名、色、アイコンを変える。指定した項目だけが変わる。 */
+/** アカウントの表示名、色、アイコン、TLS の設定を変える。指定した項目だけが変わる。 */
 export async function updateAccount(
   id: string,
   patch: {
     displayName?: string | null;
     color?: string | null;
     icon?: AccountIconName | null;
+    allowLegacyTls?: boolean;
   },
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(

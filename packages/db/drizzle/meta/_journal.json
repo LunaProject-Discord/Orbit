@@ -134,6 +134,13 @@
       "when": 1795332264110,
       "tag": "0018_builtin_view_styles",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795338126517,
+      "tag": "0019_allow_legacy_tls",
+      "breakpoints": true
     }
   ]
 }

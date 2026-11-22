@@ -47,6 +47,7 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
     row.smtpHost,
     row.smtpPort,
     row.smtpSecure,
+    row.allowLegacyTls,
     row.username,
     row.credentialsEncrypted,
   ].join("\n");
