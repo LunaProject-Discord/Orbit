@@ -344,6 +344,14 @@ export function SettingsView({
                 ]}
               />
               <SwitchRow
+                label="見出しを折りたたむ"
+                description="差出人、宛先、日時、件名を 2 行にまとめて、本文を広く表示します。メールの見出しのボタンでも切り替えられます。"
+                checked={preferences.messageHeader === "collapsed"}
+                onChange={(collapsed) =>
+                  set({ messageHeader: collapsed ? "collapsed" : "expanded" })
+                }
+              />
+              <SwitchRow
                 label="簡易返信欄"
                 description="メールの下に、すぐ返信を書ける欄を出します。"
                 checked={preferences.quickReply}

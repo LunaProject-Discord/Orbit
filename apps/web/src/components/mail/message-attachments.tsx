@@ -206,7 +206,10 @@ export function MessageAttachments({
       aria-label="添付ファイル"
       className={cn(
         "flex shrink-0 flex-col gap-2 sm:px-6",
-        inThread ? "px-4 pb-4" : "max-h-[40%] overflow-y-auto border-t p-4",
+        inThread
+          ? "px-4 pb-4"
+          : // 本文と一緒には流さず、メール表示の下端に留める。
+            "sticky bottom-0 max-h-[40%] overflow-y-auto border-t bg-background p-4",
       )}
     >
       <div className="flex min-h-6 items-center gap-2 text-muted-foreground text-xs">

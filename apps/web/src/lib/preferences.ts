@@ -35,6 +35,11 @@ export type Preferences = {
   bodyLineHeight: number;
   /** 外部の画像。ask はメールごとに確認し、always は常に表示する。 */
   remoteImages: "ask" | "always";
+  /**
+   * メールの見出し (件名、差出人、宛先、日時)。collapsed は 2 行にまとめ、
+   * expanded は差出人や宛先のアドレスまで出す。見出しのボタンで切り替えた状態を覚える。
+   */
+  messageHeader: "collapsed" | "expanded";
   /** メールの下に簡易返信欄を出す。 */
   quickReply: boolean;
   /** 画面の切り替えなどの動き。system は端末の設定に従う。 */
@@ -59,6 +64,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   bodyFontSize: 14,
   bodyLineHeight: 1.6,
   remoteImages: "ask",
+  messageHeader: "collapsed",
   quickReply: true,
   motion: "system",
   shortcuts: true,
@@ -85,6 +91,7 @@ const choices: {
   bodyFontSize: BODY_FONT_SIZES,
   bodyLineHeight: BODY_LINE_HEIGHTS,
   remoteImages: ["ask", "always"],
+  messageHeader: ["collapsed", "expanded"],
   motion: ["system", "off"],
 };
 
