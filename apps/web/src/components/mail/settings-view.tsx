@@ -2,18 +2,29 @@
 
 import { cn } from "cn";
 import {
+  ArrowLeftIcon,
+  AtSignIcon,
   BellIcon,
   BellOffIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
+  ListIcon,
   LogOutIcon,
+  type LucideIcon,
+  MailOpenIcon,
   MenuIcon,
   MonitorIcon,
   MoonIcon,
+  PaletteIcon,
+  PanelLeftIcon,
   PlusIcon,
+  PointerIcon,
+  RefreshCwIcon,
   RotateCcwIcon,
   SignatureIcon,
   SunIcon,
   Trash2Icon,
+  TypeIcon,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
@@ -70,6 +81,7 @@ import {
   updatePreferences,
   usePreferences,
 } from "@/lib/preferences";
+import { SETTINGS_CATEGORIES, type SettingsCategory } from "@/lib/route";
 import {
   changeSwipeSettings,
   SWIPE_ACTIONS,
@@ -130,10 +142,87 @@ const shortcuts: [keys: string, action: string][] = [
   ["Z", "直前の削除・移動を元に戻す"],
 ];
 
+/** 設定画面のページ (カテゴリ) の名前と説明。並びは SETTINGS_CATEGORIES の順。 */
+const CATEGORIES: Record<
+  SettingsCategory,
+  { label: string; summary: string; description: string; icon: LucideIcon }
+> = {
+  accounts: {
+    label: "アカウント",
+    summary: "メールアカウントの追加、表示名、色、アイコン",
+    description:
+      "表示名、色、アイコンはすべての端末で共通です。並び順は、サイドバーでドラッグして変えられます。",
+    icon: AtSignIcon,
+  },
+  appearance: {
+    label: "外観",
+    summary: "テーマ、文字の大きさ、動き",
+    description: "この端末 (ブラウザー) だけに保存します。",
+    icon: PaletteIcon,
+  },
+  fonts: {
+    label: "フォント",
+    summary: "画面とメール本文のフォント",
+    description: "この端末 (ブラウザー) だけに保存します。",
+    icon: TypeIcon,
+  },
+  list: {
+    label: "メール一覧",
+    summary: "行の間隔、プレビュー、印、日付",
+    description: "この端末 (ブラウザー) だけに保存します。",
+    icon: ListIcon,
+  },
+  reading: {
+    label: "メールの表示",
+    summary: "既読のタイミング、外部の画像、見出し、簡易返信欄",
+    description: "この端末 (ブラウザー) だけに保存します。",
+    icon: MailOpenIcon,
+  },
+  actions: {
+    label: "操作",
+    summary: "スワイプ、ショートカットキー",
+    description:
+      "スワイプしたときの操作はすべての端末で共通で、それ以外はこの端末 (ブラウザー) だけに保存します。",
+    icon: PointerIcon,
+  },
+  sidebar: {
+    label: "サイドバー",
+    summary: "項目の並び替え、統合フォルダ",
+    description: "すべての端末で共通です。",
+    icon: PanelLeftIcon,
+  },
+  notifications: {
+    label: "通知",
+    summary: "新着メールの通知、通知に付けるボタン",
+    description:
+      "通知のオンとオフは端末 (ブラウザー) ごとに切り替えます。通知に付けるボタンはすべての端末で共通です。",
+    icon: BellIcon,
+  },
+  signatures: {
+    label: "署名",
+    summary: "アカウント、連絡先、会話ごとの署名",
+    description: "すべての端末で共通です。",
+    icon: SignatureIcon,
+  },
+  system: {
+    label: "同期とログイン",
+    summary: "同期の状況、ログアウト、設定を標準に戻す",
+    description:
+      "メールはサーバーが常に同期し、既読や移動などの操作はすべての端末に反映されます。",
+    icon: RefreshCwIcon,
+  },
+};
+
+/** 広い画面で、ページを選んでいないときに出すページ。 */
+const DEFAULT_CATEGORY: SettingsCategory = "accounts";
+
 type Props = {
   user: User;
   /** 読み込み前は null。 */
   accounts: Account[] | null;
+  /** 開いているページ。null なら設定の最初の画面 (狭い画面ではカテゴリの一覧)。 */
+  category: SettingsCategory | null;
+  onCategoryChange: (category: SettingsCategory | null) => void;
   /** 狭い画面で、サイドバーを開く。 */
   onMenu: () => void;
   notificationStatus: NotificationStatus;
@@ -155,26 +244,260 @@ type Props = {
   signatureRules: React.ReactNode;
 };
 
-/** 設定画面。表示、通知、メールアカウント、同期の状況、ログアウトをまとめる。 */
-export function SettingsView({
-  user,
+/**
+ * 設定画面。カテゴリごとのページに分かれている。
+ *
+ * 広い画面では、左にカテゴリの一覧、右に選んだページを並べる。狭い画面では、
+ * カテゴリの一覧からページへ入り、見出しの「戻る」で一覧へ戻る。どちらの並びにするかは
+ * この画面の幅で決める (コンテナクエリ) ので、表示の切り替えは CSS だけで行う。
+ */
+export function SettingsView(props: Props) {
+  const { category, onCategoryChange, accounts } = props;
+  const shown = category ?? DEFAULT_CATEGORY;
+  const current = CATEGORIES[shown];
+  const accountProblem =
+    accounts?.some((account) => accountProblems[account.status]) ?? false;
+
+  return (
+    <section
+      aria-label="設定"
+      className="@container flex min-h-0 min-w-0 flex-1 flex-col"
+    >
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+        {/* 狭い画面のページでは、メニューの代わりに「戻る」を出す。 */}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="メニューを開く"
+          aria-controls="mail-sidebar"
+          onClick={props.onMenu}
+          className={cn("-ml-2 md:hidden", category && "hidden")}
+        >
+          <MenuIcon />
+        </Button>
+        {category && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="設定の一覧へ戻る"
+            onClick={() => onCategoryChange(null)}
+            className="-ml-2 @3xl:hidden"
+          >
+            <ArrowLeftIcon />
+          </Button>
+        )}
+        <h1 className="truncate font-semibold text-lg">
+          <span className={cn(category && "@max-3xl:hidden")}>設定</span>
+          {category && <span className="@3xl:hidden">{current.label}</span>}
+        </h1>
+      </header>
+      <div className="flex min-h-0 flex-1">
+        <nav
+          aria-label="設定のカテゴリ"
+          className={cn(
+            "min-h-0 w-full overflow-y-auto p-2 @3xl:w-56 @3xl:shrink-0 @3xl:border-r",
+            category && "@max-3xl:hidden",
+          )}
+        >
+          <ul className="flex flex-col gap-0.5">
+            {SETTINGS_CATEGORIES.map((id) => {
+              const item = CATEGORIES[id];
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    aria-current={shown === id ? "page" : undefined}
+                    data-settings-category={id}
+                    onClick={() => onCategoryChange(id)}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 @3xl:py-1.5",
+                      category === id && "bg-muted font-medium",
+                      // ページを選んでいなくても、広い画面では最初のページが出ている。
+                      category === null &&
+                        id === DEFAULT_CATEGORY &&
+                        "@3xl:bg-muted @3xl:font-medium",
+                    )}
+                  >
+                    <item.icon
+                      aria-hidden="true"
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{item.label}</span>
+                      <span className="block truncate font-normal text-muted-foreground text-xs @3xl:hidden">
+                        {item.summary}
+                      </span>
+                    </span>
+                    {id === "accounts" && accountProblem && (
+                      <CircleAlertIcon
+                        role="img"
+                        aria-label="確認が必要なアカウントがあります"
+                        className="size-4 shrink-0 text-destructive"
+                      />
+                    )}
+                    <ChevronRightIcon
+                      aria-hidden="true"
+                      className="size-4 shrink-0 text-muted-foreground @3xl:hidden"
+                    />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+        <div
+          // ページを切り替えたら、先頭から表示する。
+          key={shown}
+          data-settings-page={shown}
+          className={cn(
+            "min-h-0 min-w-0 flex-1 overflow-y-auto",
+            !category && "@max-3xl:hidden",
+          )}
+        >
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-4 sm:p-6">
+            <div className="flex flex-col gap-1">
+              <h2 className="font-semibold text-lg @max-3xl:hidden">
+                {current.label}
+              </h2>
+              <p className="text-muted-foreground text-sm">
+                {current.description}
+              </p>
+            </div>
+            <SettingsPage {...props} shown={shown} />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SettingsPage({
+  shown,
+  ...props
+}: Props & { shown: SettingsCategory }) {
+  switch (shown) {
+    case "accounts":
+      return <AccountsPage {...props} />;
+    case "appearance":
+      return <AppearancePage />;
+    case "fonts":
+      return <FontsPage />;
+    case "list":
+      return <ListPage />;
+    case "reading":
+      return <ReadingPage />;
+    case "actions":
+      return <ActionsPage />;
+    case "sidebar":
+      return props.sidebarItems;
+    case "notifications":
+      return <NotificationsPage {...props} />;
+    case "signatures":
+      return <SignaturesPage {...props} />;
+    case "system":
+      return <SystemPage {...props} />;
+  }
+}
+
+function AccountsPage({
   accounts,
-  onMenu,
-  notificationStatus,
-  notificationBusy,
-  onNotificationChange,
-  syncStatus,
-  devices,
   onAdd,
   onDelete,
   onEditSignature,
   onReauth,
   onAccountUpdated,
-  onSignOut,
-  sidebarItems,
-  signatureRules,
 }: Props) {
+  return (
+    <>
+      {accounts === null ? (
+        <p className="text-muted-foreground text-sm">読み込み中…</p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {accounts.map((account) => (
+            <AccountCard
+              key={account.id}
+              account={account}
+              accounts={accounts}
+              onDelete={onDelete}
+              onEditSignature={onEditSignature}
+              onReauth={onReauth}
+              onUpdated={onAccountUpdated}
+            />
+          ))}
+        </ul>
+      )}
+      <div>
+        <Button variant="outline" onClick={onAdd}>
+          <PlusIcon />
+          アカウントを追加
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function AppearancePage() {
   const { theme, setTheme } = useTheme();
+  const preferences = usePreferences();
+  const set = updatePreferences;
+  // テーマはこの端末に保存した値なので、サーバーで作った HTML と食い違わないよう、表示してから読む。
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return (
+    <>
+      <Section title="テーマ">
+        <div
+          role="radiogroup"
+          aria-label="テーマ"
+          className="grid grid-cols-3 gap-2"
+        >
+          {themes.map((item) => {
+            const selected = mounted && theme === item.value;
+            return (
+              // biome-ignore lint/a11y/useSemanticElements: 見た目をボタンにそろえるため、radio の役割を持つボタンにしている
+              <button
+                key={item.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => setTheme(item.value)}
+                className={cn(
+                  "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
+                  selected && "border-primary bg-muted font-medium",
+                )}
+              >
+                <item.icon aria-hidden="true" />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      </Section>
+      <Section title="画面">
+        <SettingGroup>
+          <SelectRow
+            label="文字の大きさ"
+            description="画面全体が同じ比率で変わります。"
+            value={preferences.fontSize}
+            onChange={(fontSize) => set({ fontSize })}
+            options={FONT_SIZES.map((size) => [
+              size,
+              size === 100 ? "100% (標準)" : `${size}%`,
+            ])}
+          />
+          <SwitchRow
+            label="動きを減らす"
+            description="画面の切り替えなどの動きを止めます。オフのときは、端末の設定に従います。"
+            checked={preferences.motion === "off"}
+            onChange={(off) => set({ motion: off ? "off" : "system" })}
+          />
+        </SettingGroup>
+      </Section>
+    </>
+  );
+}
+
+function FontsPage() {
   const preferences = usePreferences();
   const set = updatePreferences;
   // フォントの一覧を取れる環境か。尋ねずに取れるときは、選んでいるフォントの名前を出すために先に取る。
@@ -182,12 +505,375 @@ export function SettingsView({
   useEffect(() => {
     void preloadLocalFonts();
   }, []);
+  return (
+    <>
+      <Section title="画面のフォント">
+        <SettingGroup>
+          <SelectRow
+            label="既定のフォント"
+            description="画面全体に使うフォントです。デフォルトは Gen Interface JP です。"
+            value={preferences.font}
+            onChange={(font) => set({ font })}
+            options={[
+              ["default", "デフォルト (Gen Interface JP)"],
+              ["system", "システム標準"],
+              ["sans", "ゴシック体"],
+              ["serif", "明朝体"],
+              ["mono", "等幅"],
+              [
+                "custom",
+                fontList === "none" ? "名前を指定" : "フォント一覧から選ぶ",
+              ],
+            ]}
+          />
+          {preferences.font === "custom" &&
+            (fontList === "none" ? (
+              <CustomFontRow
+                value={preferences.customFont}
+                onChange={(customFont) => set({ customFont })}
+              />
+            ) : (
+              <FontPickerRow
+                label="使うフォント"
+                description="この端末に入っているフォントから選びます。選ばなければデフォルトのフォントになります。"
+                emptyLabel="選んでいません"
+                value={preferences.customFont}
+                onChange={(customFont) => set({ customFont })}
+              />
+            ))}
+        </SettingGroup>
+      </Section>
+
+      {fontList !== "none" && (
+        <Section
+          title="種類ごとのフォント"
+          description="画面とメール本文の両方で、「ゴシック体」「明朝体」「等幅」を選んだときに使うフォントです。"
+        >
+          <SettingGroup>
+            <FontPickerRow
+              label="ゴシック体のフォント"
+              description="既定のフォントやメール本文の標準フォントで「ゴシック体」を選んだときに使います。"
+              emptyLabel="自動"
+              value={preferences.sansFont}
+              onChange={(sansFont) => set({ sansFont })}
+            />
+            <FontPickerRow
+              label="明朝体のフォント"
+              description="「明朝体」を選んだときに使います。"
+              emptyLabel="自動"
+              value={preferences.serifFont}
+              onChange={(serifFont) => set({ serifFont })}
+            />
+            <FontPickerRow
+              label="等幅のフォント"
+              description="「等幅」を選んだときと、メール本文のコードなどの等幅の部分に使います。"
+              emptyLabel="自動"
+              monospaceFirst
+              value={preferences.monoFont}
+              onChange={(monoFont) => set({ monoFont })}
+            />
+          </SettingGroup>
+        </Section>
+      )}
+
+      <Section
+        title="メール本文"
+        description="メール側でフォントや大きさを指定している場合は、そちらが使われます。"
+      >
+        <SettingGroup>
+          <SelectRow
+            label="本文の標準フォント"
+            description="フォントの指定が無いメールに使います。"
+            value={preferences.bodyFont}
+            onChange={(bodyFont) => set({ bodyFont })}
+            options={[
+              ["sans", "ゴシック体 (標準)"],
+              ["serif", "明朝体"],
+              ["mono", "等幅"],
+              // 一覧を取れない環境でも、ほかの端末と同じ形の設定を読めるよう、選んであれば出す。
+              ...(fontList !== "none" || preferences.bodyFont === "custom"
+                ? ([["custom", "フォント一覧から選ぶ"]] as const)
+                : []),
+            ]}
+          />
+          {preferences.bodyFont === "custom" && fontList !== "none" && (
+            <FontPickerRow
+              label="本文に使うフォント"
+              description="この端末に入っているフォントから選びます。選ばなければゴシック体になります。"
+              emptyLabel="選んでいません"
+              value={preferences.bodyCustomFont}
+              onChange={(bodyCustomFont) => set({ bodyCustomFont })}
+            />
+          )}
+          <SelectRow
+            label="本文の文字の大きさ"
+            value={preferences.bodyFontSize}
+            onChange={(bodyFontSize) => set({ bodyFontSize })}
+            options={BODY_FONT_SIZES.map((size) => [
+              size,
+              size === 14 ? "14 px (標準)" : `${size} px`,
+            ])}
+          />
+          <SelectRow
+            label="本文の行間"
+            value={preferences.bodyLineHeight}
+            onChange={(bodyLineHeight) => set({ bodyLineHeight })}
+            options={BODY_LINE_HEIGHTS.map((height) => [
+              height,
+              height === 1.6 ? "1.6 (標準)" : String(height),
+            ])}
+          />
+        </SettingGroup>
+      </Section>
+    </>
+  );
+}
+
+function ListPage() {
+  const preferences = usePreferences();
+  const set = updatePreferences;
+  return (
+    <>
+      <Section title="行の表示">
+        <SettingGroup>
+          <SelectRow
+            label="行の間隔"
+            value={preferences.density}
+            onChange={(density) => set({ density })}
+            options={[
+              ["compact", "せまい"],
+              ["standard", "標準"],
+              ["comfortable", "ひろい"],
+            ]}
+          />
+          <SelectRow
+            label="本文のプレビュー"
+            description="件名の下に出す本文の行数です。"
+            value={preferences.previewLines}
+            onChange={(previewLines) => set({ previewLines })}
+            options={[
+              [0, "表示しない"],
+              [1, "1 行"],
+              [2, "2 行 (標準)"],
+              [3, "3 行"],
+            ]}
+          />
+          <SwitchRow
+            label="添付・スター・返信済みの印"
+            checked={preferences.showListIcons}
+            onChange={(showListIcons) => set({ showListIcons })}
+          />
+        </SettingGroup>
+      </Section>
+      <Section title="アカウントの印">
+        <SettingGroup>
+          <SwitchRow
+            label="アカウントの印"
+            description="複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示します。"
+            checked={preferences.showAccountMark}
+            onChange={(showAccountMark) => set({ showAccountMark })}
+          />
+          <SelectRow
+            label="アカウントの印の見た目"
+            description="アイコンや絵文字を設定していないアカウントは、どちらでも色の点になります。"
+            value={preferences.accountMarkStyle}
+            onChange={(accountMarkStyle) => set({ accountMarkStyle })}
+            options={[
+              ["icon", "設定したアイコン (標準)"],
+              ["dot", "色の点だけ"],
+            ]}
+          />
+        </SettingGroup>
+      </Section>
+      <Section title="日付と時刻">
+        <SettingGroup>
+          <SelectRow
+            label="日付"
+            value={preferences.listDate}
+            onChange={(listDate) => set({ listDate })}
+            options={[
+              ["auto", "今日は時刻、それ以外は日付"],
+              ["datetime", "常に日付と時刻"],
+            ]}
+          />
+          <SelectRow
+            label="時刻"
+            value={preferences.hour12 ? "12" : "24"}
+            onChange={(value) => set({ hour12: value === "12" })}
+            options={[
+              ["24", "24 時間 (14:30)"],
+              ["12", "12 時間 (午後2:30)"],
+            ]}
+          />
+        </SettingGroup>
+      </Section>
+    </>
+  );
+}
+
+function ReadingPage() {
+  const preferences = usePreferences();
+  const set = updatePreferences;
+  return (
+    <>
+      <Section title="既読">
+        <SettingGroup>
+          <SelectRow
+            label="既読にするタイミング"
+            description="メールを開いたときの動作です。"
+            value={preferences.markRead}
+            onChange={(markRead) => set({ markRead })}
+            options={[
+              ["immediately", "開いたらすぐ"],
+              ["delay", "少し待ってから"],
+              ["never", "自動では既読にしない"],
+            ]}
+          />
+          {preferences.markRead === "delay" && (
+            <SelectRow
+              label="既読にするまでの時間"
+              value={preferences.markReadDelay}
+              onChange={(markReadDelay) => set({ markReadDelay })}
+              options={MARK_READ_DELAYS.map((seconds) => [
+                seconds,
+                `${seconds} 秒`,
+              ])}
+            />
+          )}
+        </SettingGroup>
+      </Section>
+      <Section
+        title="本文"
+        description="本文のフォント、文字の大きさ、行間は「フォント」で選べます。"
+      >
+        <SettingGroup>
+          <SelectRow
+            label="外部の画像"
+            description="常に表示すると、メールを開いたことが差出人に伝わる場合があります。"
+            value={preferences.remoteImages}
+            onChange={(remoteImages) => set({ remoteImages })}
+            options={[
+              ["ask", "メールごとに確認 (標準)"],
+              ["always", "常に表示"],
+            ]}
+          />
+        </SettingGroup>
+      </Section>
+      <Section title="見出しと返信">
+        <SettingGroup>
+          <SwitchRow
+            label="見出しを折りたたむ"
+            description="差出人、宛先、日時、件名を 2 行にまとめて、本文を広く表示します。メールの見出しのボタンでも切り替えられます。"
+            checked={preferences.messageHeader === "collapsed"}
+            onChange={(collapsed) =>
+              set({ messageHeader: collapsed ? "collapsed" : "expanded" })
+            }
+          />
+          <SwitchRow
+            label="簡易返信欄"
+            description="メールの下に、すぐ返信を書ける欄を出します。"
+            checked={preferences.quickReply}
+            onChange={(quickReply) => set({ quickReply })}
+          />
+        </SettingGroup>
+      </Section>
+    </>
+  );
+}
+
+function ActionsPage() {
+  const preferences = usePreferences();
+  const set = updatePreferences;
   const swipe = useSwipeSettings();
   const [swipeError, setSwipeError] = useState(false);
+  const changeSwipe = (patch: Partial<SwipeSettings>) => {
+    setSwipeError(false);
+    void changeSwipeSettings(patch).then((saved) => setSwipeError(!saved));
+  };
+  return (
+    <>
+      <Section
+        title="スワイプしたときの操作"
+        description="メール一覧の行を、左右にスワイプしたときの操作です。すべての端末で共通です。その行でできない操作 (アーカイブ先が無いなど) は、スワイプしても動きません。"
+      >
+        <SettingGroup>
+          <SelectRow
+            label="左へスワイプ"
+            value={swipe.left}
+            onChange={(left) => changeSwipe({ left })}
+            options={SWIPE_ACTIONS}
+          />
+          <SelectRow
+            label="右へスワイプ"
+            value={swipe.right}
+            onChange={(right) => changeSwipe({ right })}
+            options={SWIPE_ACTIONS}
+          />
+        </SettingGroup>
+        {swipeError && (
+          <p role="alert" className="text-destructive text-xs">
+            スワイプ操作を保存できませんでした。通信の状態を確かめて、もう一度選んでください。
+          </p>
+        )}
+      </Section>
+
+      <Section title="スワイプの使い方">
+        <SettingGroup>
+          <SelectRow
+            label="開いているメールのスワイプ"
+            description="メールを開いた画面を、左右にスワイプしたときの動きです。「一覧と同じ操作」では、上の「スワイプしたときの操作」で選んだ操作を行います。"
+            value={preferences.messageSwipe}
+            onChange={(messageSwipe) => set({ messageSwipe })}
+            options={[
+              ["navigate", "前後のメールへ移動 (標準)"],
+              ["actions", "一覧と同じ操作"],
+              ["off", "なし"],
+            ]}
+          />
+          <SwitchRow
+            label="トラックパッドでスワイプ"
+            description="2 本指で横へスクロールして、一覧の行や開いているメールをスワイプします。"
+            checked={preferences.trackpadSwipe}
+            onChange={(trackpadSwipe) => set({ trackpadSwipe })}
+          />
+        </SettingGroup>
+      </Section>
+
+      <Section title="ショートカットキー">
+        <SettingGroup>
+          <SwitchRow
+            label="ショートカットキー"
+            description="J / K や C などの 1 文字のキーで操作します。"
+            checked={preferences.shortcuts}
+            onChange={(shortcuts) => set({ shortcuts })}
+          />
+        </SettingGroup>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 rounded-lg border p-3 text-sm">
+          {shortcuts.map(([keys, action]) => (
+            <div key={keys} className="contents">
+              <dt>
+                <kbd className="rounded border bg-muted px-1.5 py-0.5 font-sans text-xs">
+                  {keys}
+                </kbd>
+              </dt>
+              <dd className="text-muted-foreground">{action}</dd>
+            </div>
+          ))}
+        </dl>
+      </Section>
+    </>
+  );
+}
+
+function NotificationsPage({
+  notificationStatus,
+  notificationBusy,
+  onNotificationChange,
+}: Props) {
   const notificationActions = useNotificationActions();
   const [notificationActionsError, setNotificationActionsError] =
     useState(false);
-  // ほかの端末で変えた内容を、設定画面を開いたときに取り込む。
+  // ほかの端末で変えた内容を、ページを開いたときに取り込む。
   useEffect(() => {
     void refreshNotificationActions();
   }, []);
@@ -197,528 +883,187 @@ export function SettingsView({
       toggleNotificationAction(notificationActions, id, on),
     ).then((saved) => setNotificationActionsError(!saved));
   };
-  const changeSwipe = (patch: Partial<SwipeSettings>) => {
-    setSwipeError(false);
-    void changeSwipeSettings(patch).then((saved) => setSwipeError(!saved));
-  };
-  // テーマはこの端末に保存した値なので、サーバーで作った HTML と食い違わないよう、表示してから読む。
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
   const notifying =
     notificationStatus === "page" || notificationStatus === "push";
   const canToggleNotification =
     notificationStatus !== "unsupported" && notificationStatus !== "blocked";
-
   return (
-    <section aria-label="設定" className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="メニューを開く"
-          aria-controls="mail-sidebar"
-          onClick={onMenu}
-          className="-ml-2 md:hidden"
-        >
-          <MenuIcon />
-        </Button>
-        <h1 className="font-semibold text-lg">設定</h1>
-      </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 p-4 sm:p-6">
-          <Section
-            title="表示"
-            description="配色、フォント、文字の大きさを選びます。ここから下の「操作」までの設定は、この端末 (ブラウザー) だけに保存します。"
-          >
-            <div
-              role="radiogroup"
-              aria-label="テーマ"
-              className="grid grid-cols-3 gap-2"
+    <>
+      <Section title="新着メールの通知">
+        <div className="flex items-center gap-3 rounded-lg border p-3">
+          {notifying ? (
+            <BellIcon className="size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <BellOffIcon
+              className="size-4 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-sm">
+              この端末の通知: {notifying ? "オン" : "オフ"}
+            </p>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              {
+                (isNativeApp()
+                  ? nativeNotificationDescriptions
+                  : isDesktopApp()
+                    ? desktopNotificationDescriptions
+                    : notificationDescriptions)[notificationStatus]
+              }
+            </p>
+          </div>
+          {canToggleNotification && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={notificationBusy}
+              onClick={() => onNotificationChange(!notifying)}
             >
-              {themes.map((item) => {
-                const selected = mounted && theme === item.value;
-                return (
-                  // biome-ignore lint/a11y/useSemanticElements: 見た目をボタンにそろえるため、radio の役割を持つボタンにしている
-                  <button
-                    key={item.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => setTheme(item.value)}
-                    className={cn(
-                      "flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
-                      selected && "border-primary bg-muted font-medium",
-                    )}
-                  >
-                    <item.icon aria-hidden="true" />
-                    {item.label}
-                  </button>
-                );
-              })}
-            </div>
-            <SettingGroup>
-              <SelectRow
-                label="既定のフォント"
-                description="画面全体に使うフォントです。デフォルトは Gen Interface JP です。"
-                value={preferences.font}
-                onChange={(font) => set({ font })}
-                options={[
-                  ["default", "デフォルト (Gen Interface JP)"],
-                  ["system", "システム標準"],
-                  ["sans", "ゴシック体"],
-                  ["serif", "明朝体"],
-                  ["mono", "等幅"],
-                  [
-                    "custom",
-                    fontList === "none" ? "名前を指定" : "フォント一覧から選ぶ",
-                  ],
-                ]}
-              />
-              {preferences.font === "custom" &&
-                (fontList === "none" ? (
-                  <CustomFontRow
-                    value={preferences.customFont}
-                    onChange={(customFont) => set({ customFont })}
-                  />
-                ) : (
-                  <FontPickerRow
-                    label="使うフォント"
-                    description="この端末に入っているフォントから選びます。選ばなければデフォルトのフォントになります。"
-                    emptyLabel="選んでいません"
-                    value={preferences.customFont}
-                    onChange={(customFont) => set({ customFont })}
-                  />
-                ))}
-              {fontList !== "none" && (
-                <>
-                  <FontPickerRow
-                    label="ゴシック体のフォント"
-                    description="既定のフォントやメール本文の標準フォントで「ゴシック体」を選んだときに使います。"
-                    emptyLabel="自動"
-                    value={preferences.sansFont}
-                    onChange={(sansFont) => set({ sansFont })}
-                  />
-                  <FontPickerRow
-                    label="明朝体のフォント"
-                    description="「明朝体」を選んだときに使います。"
-                    emptyLabel="自動"
-                    value={preferences.serifFont}
-                    onChange={(serifFont) => set({ serifFont })}
-                  />
-                  <FontPickerRow
-                    label="等幅のフォント"
-                    description="「等幅」を選んだときと、メール本文のコードなどの等幅の部分に使います。"
-                    emptyLabel="自動"
-                    monospaceFirst
-                    value={preferences.monoFont}
-                    onChange={(monoFont) => set({ monoFont })}
-                  />
-                </>
-              )}
-              <SelectRow
-                label="文字の大きさ"
-                description="画面全体が同じ比率で変わります。"
-                value={preferences.fontSize}
-                onChange={(fontSize) => set({ fontSize })}
-                options={FONT_SIZES.map((size) => [
-                  size,
-                  size === 100 ? "100% (標準)" : `${size}%`,
-                ])}
-              />
-              <SwitchRow
-                label="動きを減らす"
-                description="画面の切り替えなどの動きを止めます。オフのときは、端末の設定に従います。"
-                checked={preferences.motion === "off"}
-                onChange={(off) => set({ motion: off ? "off" : "system" })}
-              />
-            </SettingGroup>
-          </Section>
-
-          <Section title="メール一覧">
-            <SettingGroup>
-              <SelectRow
-                label="行の間隔"
-                value={preferences.density}
-                onChange={(density) => set({ density })}
-                options={[
-                  ["compact", "せまい"],
-                  ["standard", "標準"],
-                  ["comfortable", "ひろい"],
-                ]}
-              />
-              <SelectRow
-                label="本文のプレビュー"
-                description="件名の下に出す本文の行数です。"
-                value={preferences.previewLines}
-                onChange={(previewLines) => set({ previewLines })}
-                options={[
-                  [0, "表示しない"],
-                  [1, "1 行"],
-                  [2, "2 行 (標準)"],
-                  [3, "3 行"],
-                ]}
-              />
-              <SwitchRow
-                label="添付・スター・返信済みの印"
-                checked={preferences.showListIcons}
-                onChange={(showListIcons) => set({ showListIcons })}
-              />
-              <SwitchRow
-                label="アカウントの印"
-                description="複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示します。"
-                checked={preferences.showAccountMark}
-                onChange={(showAccountMark) => set({ showAccountMark })}
-              />
-              <SelectRow
-                label="アカウントの印の見た目"
-                description="アイコンや絵文字を設定していないアカウントは、どちらでも色の点になります。"
-                value={preferences.accountMarkStyle}
-                onChange={(accountMarkStyle) => set({ accountMarkStyle })}
-                options={[
-                  ["icon", "設定したアイコン (標準)"],
-                  ["dot", "色の点だけ"],
-                ]}
-              />
-              <SelectRow
-                label="日付"
-                value={preferences.listDate}
-                onChange={(listDate) => set({ listDate })}
-                options={[
-                  ["auto", "今日は時刻、それ以外は日付"],
-                  ["datetime", "常に日付と時刻"],
-                ]}
-              />
-              <SelectRow
-                label="時刻"
-                value={preferences.hour12 ? "12" : "24"}
-                onChange={(value) => set({ hour12: value === "12" })}
-                options={[
-                  ["24", "24 時間 (14:30)"],
-                  ["12", "12 時間 (午後2:30)"],
-                ]}
-              />
-            </SettingGroup>
-          </Section>
-
-          <Section title="メールの表示">
-            <SettingGroup>
-              <SelectRow
-                label="既読にするタイミング"
-                description="メールを開いたときの動作です。"
-                value={preferences.markRead}
-                onChange={(markRead) => set({ markRead })}
-                options={[
-                  ["immediately", "開いたらすぐ"],
-                  ["delay", "少し待ってから"],
-                  ["never", "自動では既読にしない"],
-                ]}
-              />
-              {preferences.markRead === "delay" && (
-                <SelectRow
-                  label="既読にするまでの時間"
-                  value={preferences.markReadDelay}
-                  onChange={(markReadDelay) => set({ markReadDelay })}
-                  options={MARK_READ_DELAYS.map((seconds) => [
-                    seconds,
-                    `${seconds} 秒`,
-                  ])}
-                />
-              )}
-              <SelectRow
-                label="本文の標準フォント"
-                description={
-                  fontList === "none"
-                    ? "フォントの指定が無いメールに使います。メール側でフォントや大きさを指定している場合は、そちらが使われます。"
-                    : "フォントの指定が無いメールに使います。ゴシック体・明朝体・等幅に使うフォントは、上の「表示」で選べます。メール側でフォントや大きさを指定している場合は、そちらが使われます。"
-                }
-                value={preferences.bodyFont}
-                onChange={(bodyFont) => set({ bodyFont })}
-                options={[
-                  ["sans", "ゴシック体 (標準)"],
-                  ["serif", "明朝体"],
-                  ["mono", "等幅"],
-                  // 一覧を取れない環境でも、ほかの端末と同じ形の設定を読めるよう、選んであれば出す。
-                  ...(fontList !== "none" || preferences.bodyFont === "custom"
-                    ? ([["custom", "フォント一覧から選ぶ"]] as const)
-                    : []),
-                ]}
-              />
-              {preferences.bodyFont === "custom" && fontList !== "none" && (
-                <FontPickerRow
-                  label="本文に使うフォント"
-                  description="この端末に入っているフォントから選びます。選ばなければゴシック体になります。"
-                  emptyLabel="選んでいません"
-                  value={preferences.bodyCustomFont}
-                  onChange={(bodyCustomFont) => set({ bodyCustomFont })}
-                />
-              )}
-              <SelectRow
-                label="本文の文字の大きさ"
-                value={preferences.bodyFontSize}
-                onChange={(bodyFontSize) => set({ bodyFontSize })}
-                options={BODY_FONT_SIZES.map((size) => [
-                  size,
-                  size === 14 ? "14 px (標準)" : `${size} px`,
-                ])}
-              />
-              <SelectRow
-                label="本文の行間"
-                value={preferences.bodyLineHeight}
-                onChange={(bodyLineHeight) => set({ bodyLineHeight })}
-                options={BODY_LINE_HEIGHTS.map((height) => [
-                  height,
-                  height === 1.6 ? "1.6 (標準)" : String(height),
-                ])}
-              />
-              <SelectRow
-                label="外部の画像"
-                description="常に表示すると、メールを開いたことが差出人に伝わる場合があります。"
-                value={preferences.remoteImages}
-                onChange={(remoteImages) => set({ remoteImages })}
-                options={[
-                  ["ask", "メールごとに確認 (標準)"],
-                  ["always", "常に表示"],
-                ]}
-              />
-              <SwitchRow
-                label="見出しを折りたたむ"
-                description="差出人、宛先、日時、件名を 2 行にまとめて、本文を広く表示します。メールの見出しのボタンでも切り替えられます。"
-                checked={preferences.messageHeader === "collapsed"}
-                onChange={(collapsed) =>
-                  set({ messageHeader: collapsed ? "collapsed" : "expanded" })
-                }
-              />
-              <SwitchRow
-                label="簡易返信欄"
-                description="メールの下に、すぐ返信を書ける欄を出します。"
-                checked={preferences.quickReply}
-                onChange={(quickReply) => set({ quickReply })}
-              />
-            </SettingGroup>
-          </Section>
-
-          <Section title="操作">
-            <SettingGroup>
-              <SwitchRow
-                label="トラックパッドでスワイプ"
-                description="2 本指で横へスクロールして、一覧の行や開いているメールをスワイプします。何をするかは、下の「スワイプ操作」で選びます。"
-                checked={preferences.trackpadSwipe}
-                onChange={(trackpadSwipe) => set({ trackpadSwipe })}
-              />
-              <SelectRow
-                label="開いているメールのスワイプ"
-                description="メールを開いた画面を、左右にスワイプしたときの動きです。「一覧と同じ操作」では、下の「スワイプ操作」で選んだ操作を行います。"
-                value={preferences.messageSwipe}
-                onChange={(messageSwipe) => set({ messageSwipe })}
-                options={[
-                  ["navigate", "前後のメールへ移動 (標準)"],
-                  ["actions", "一覧と同じ操作"],
-                  ["off", "なし"],
-                ]}
-              />
-              <SwitchRow
-                label="ショートカットキー"
-                description="J / K や C などの 1 文字のキーで操作します。一覧は下にあります。"
-                checked={preferences.shortcuts}
-                onChange={(shortcuts) => set({ shortcuts })}
-              />
-            </SettingGroup>
-            <div>
-              <Button variant="outline" size="sm" onClick={resetPreferences}>
-                <RotateCcwIcon />
-                表示と操作の設定を標準に戻す
-              </Button>
-            </div>
-          </Section>
-
-          {sidebarItems}
-
-          <Section
-            title="スワイプ操作"
-            description="メール一覧の行を、指で左右にスワイプしたときの操作です。「開いているメールのスワイプ」を「一覧と同じ操作」にすると、開いているメールでも使えます。この設定はすべての端末で共通です。その行でできない操作 (アーカイブ先が無いなど) は、スワイプしても動きません。"
-          >
-            <SettingGroup>
-              <SelectRow
-                label="左へスワイプ"
-                value={swipe.left}
-                onChange={(left) => changeSwipe({ left })}
-                options={SWIPE_ACTIONS}
-              />
-              <SelectRow
-                label="右へスワイプ"
-                value={swipe.right}
-                onChange={(right) => changeSwipe({ right })}
-                options={SWIPE_ACTIONS}
-              />
-            </SettingGroup>
-            {swipeError && (
-              <p role="alert" className="text-destructive text-xs">
-                スワイプ操作を保存できませんでした。通信の状態を確かめて、もう一度選んでください。
-              </p>
-            )}
-          </Section>
-
-          <Section
-            title="通知"
-            description="新着メールの通知は、端末 (ブラウザー) ごとに切り替えます。"
-          >
-            <div className="flex items-center gap-3 rounded-lg border p-3">
-              {notifying ? (
-                <BellIcon className="size-4 shrink-0" aria-hidden="true" />
-              ) : (
-                <BellOffIcon
-                  className="size-4 shrink-0 text-muted-foreground"
-                  aria-hidden="true"
-                />
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-sm">
-                  この端末の通知: {notifying ? "オン" : "オフ"}
-                </p>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {
-                    (isNativeApp()
-                      ? nativeNotificationDescriptions
-                      : isDesktopApp()
-                        ? desktopNotificationDescriptions
-                        : notificationDescriptions)[notificationStatus]
-                  }
-                </p>
-              </div>
-              {canToggleNotification && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={notificationBusy}
-                  onClick={() => onNotificationChange(!notifying)}
-                >
-                  {notifying ? "オフにする" : "オンにする"}
-                </Button>
-              )}
-            </div>
-            <SettingGroup>
-              <div className="px-3 py-2.5">
-                <p className="font-medium text-sm">通知に付けるボタン</p>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  通知から、メールを開かずに操作できます。
-                  {MAX_NOTIFICATION_ACTIONS} つまで選べ、選んだ順に並びます
-                  (ブラウザーの通知では、先頭の 2 つまでのことがあります)。
-                  この設定はすべての端末で共通で、次に届く通知から変わります。
-                </p>
-                <p className="mt-1 text-xs" data-notification-action-order>
-                  {notificationActions.length > 0
-                    ? `いまの並び: ${notificationActions
-                        .map(
-                          (id) =>
-                            NOTIFICATION_ACTIONS.find(
-                              (action) => action.id === id,
-                            )?.label ?? id,
-                        )
-                        .join("、")}`
-                    : "ボタンは付けません。"}
-                </p>
-              </div>
-              {NOTIFICATION_ACTIONS.map((action) => {
-                const checked = notificationActions.includes(action.id);
-                return (
-                  <SwitchRow
-                    key={action.id}
-                    label={action.label}
-                    description={action.description}
-                    checked={checked}
-                    disabled={
-                      !checked &&
-                      notificationActions.length >= MAX_NOTIFICATION_ACTIONS
-                    }
-                    onChange={(on) => changeNotificationAction(action.id, on)}
-                  />
-                );
-              })}
-            </SettingGroup>
-            {notificationActionsError && (
-              <p role="alert" className="text-destructive text-xs">
-                通知に付けるボタンを保存できませんでした。通信の状態を確かめて、もう一度選んでください。
-              </p>
-            )}
-          </Section>
-
-          <Section
-            title="メールアカウント"
-            description="表示名、色、アイコン、署名はすべての端末で共通です。並び順は、サイドバーでドラッグして変えられます。"
-          >
-            {accounts === null ? (
-              <p className="text-muted-foreground text-sm">読み込み中…</p>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {accounts.map((account) => (
-                  <AccountCard
-                    key={account.id}
-                    account={account}
-                    accounts={accounts}
-                    onDelete={onDelete}
-                    onEditSignature={onEditSignature}
-                    onReauth={onReauth}
-                    onUpdated={onAccountUpdated}
-                  />
-                ))}
-              </ul>
-            )}
-            <div>
-              <Button variant="outline" onClick={onAdd}>
-                <PlusIcon />
-                アカウントを追加
-              </Button>
-            </div>
-          </Section>
-
-          {signatureRules}
-
-          <Section
-            title="同期"
-            description="メールはサーバーが常に同期し、既読や移動などの操作はすべての端末に反映されます。"
-          >
-            <div className="flex flex-col gap-2 rounded-lg border p-3">
-              <SyncIndicator status={syncStatus} />
-              <p className="text-muted-foreground text-xs">
-                {devices > 0
-                  ? `いま接続している端末: ${devices} 台 (この端末を含む)`
-                  : "いま接続している端末の数は、サーバーに接続すると表示されます。"}
-              </p>
-            </div>
-          </Section>
-
-          <Section title="ショートカットキー">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-              {shortcuts.map(([keys, action]) => (
-                <div key={keys} className="contents">
-                  <dt>
-                    <kbd className="rounded border bg-muted px-1.5 py-0.5 font-sans text-xs">
-                      {keys}
-                    </kbd>
-                  </dt>
-                  <dd className="text-muted-foreground">{action}</dd>
-                </div>
-              ))}
-            </dl>
-          </Section>
-
-          <Section title="ログイン中の利用者">
-            <div className="flex items-center gap-3 rounded-lg border p-3">
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-medium text-sm">{user.name}</p>
-                <p className="truncate text-muted-foreground text-xs">
-                  {user.email}
-                </p>
-              </div>
-              <Button variant="outline" size="sm" onClick={onSignOut}>
-                <LogOutIcon />
-                ログアウト
-              </Button>
-            </div>
-          </Section>
+              {notifying ? "オフにする" : "オンにする"}
+            </Button>
+          )}
         </div>
-      </div>
-    </section>
+      </Section>
+      <Section title="通知に付けるボタン">
+        <SettingGroup>
+          <div className="px-3 py-2.5">
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              通知から、メールを開かずに操作できます。
+              {MAX_NOTIFICATION_ACTIONS} つまで選べ、選んだ順に並びます
+              (ブラウザーの通知では、先頭の 2 つまでのことがあります)。
+              この設定はすべての端末で共通で、次に届く通知から変わります。
+            </p>
+            <p className="mt-1 text-xs" data-notification-action-order>
+              {notificationActions.length > 0
+                ? `いまの並び: ${notificationActions
+                    .map(
+                      (id) =>
+                        NOTIFICATION_ACTIONS.find((action) => action.id === id)
+                          ?.label ?? id,
+                    )
+                    .join("、")}`
+                : "ボタンは付けません。"}
+            </p>
+          </div>
+          {NOTIFICATION_ACTIONS.map((action) => {
+            const checked = notificationActions.includes(action.id);
+            return (
+              <SwitchRow
+                key={action.id}
+                label={action.label}
+                description={action.description}
+                checked={checked}
+                disabled={
+                  !checked &&
+                  notificationActions.length >= MAX_NOTIFICATION_ACTIONS
+                }
+                onChange={(on) => changeNotificationAction(action.id, on)}
+              />
+            );
+          })}
+        </SettingGroup>
+        {notificationActionsError && (
+          <p role="alert" className="text-destructive text-xs">
+            通知に付けるボタンを保存できませんでした。通信の状態を確かめて、もう一度選んでください。
+          </p>
+        )}
+      </Section>
+    </>
+  );
+}
+
+function SignaturesPage({ accounts, onEditSignature, signatureRules }: Props) {
+  return (
+    <>
+      <Section
+        title="アカウントの署名"
+        description="連絡先や会話ごとの署名が無いときに使います。"
+      >
+        {accounts === null ? (
+          <p className="text-muted-foreground text-sm">読み込み中…</p>
+        ) : accounts.length === 0 ? (
+          <p className="rounded-lg border border-dashed p-3 text-muted-foreground text-sm">
+            メールアカウントがありません。
+          </p>
+        ) : (
+          <ul className="flex flex-col divide-y rounded-lg border">
+            {accounts.map((account) => {
+              const has =
+                account.signatureHtml !== null &&
+                htmlHasContent(account.signatureHtml);
+              return (
+                <li key={account.id} className="flex items-center gap-3 p-3">
+                  <AccountMark accounts={accounts} account={account} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-sm">
+                      {account.displayName || account.email}
+                    </p>
+                    <p className="truncate text-muted-foreground text-xs">
+                      {has ? "設定済み" : "未設定"}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`${account.email} の署名を${has ? "編集" : "設定"}`}
+                    onClick={() => onEditSignature(account)}
+                  >
+                    <SignatureIcon />
+                    {has ? "編集" : "設定"}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Section>
+      {signatureRules}
+    </>
+  );
+}
+
+function SystemPage({ user, syncStatus, devices, onSignOut }: Props) {
+  return (
+    <>
+      <Section title="同期">
+        <div className="flex flex-col gap-2 rounded-lg border p-3">
+          <SyncIndicator status={syncStatus} />
+          <p className="text-muted-foreground text-xs">
+            {devices > 0
+              ? `いま接続している端末: ${devices} 台 (この端末を含む)`
+              : "いま接続している端末の数は、サーバーに接続すると表示されます。"}
+          </p>
+        </div>
+      </Section>
+
+      <Section title="ログイン中の利用者">
+        <div className="flex items-center gap-3 rounded-lg border p-3">
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium text-sm">{user.name}</p>
+            <p className="truncate text-muted-foreground text-xs">
+              {user.email}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={onSignOut}>
+            <LogOutIcon />
+            ログアウト
+          </Button>
+        </div>
+      </Section>
+
+      <Section
+        title="この端末の設定"
+        description="外観、フォント、メール一覧、メールの表示と、操作のうちこの端末に保存している設定を、標準に戻します。アカウントや署名など、すべての端末で共通の設定は変わりません。"
+      >
+        <div>
+          <Button variant="outline" size="sm" onClick={resetPreferences}>
+            <RotateCcwIcon />
+            この端末の設定を標準に戻す
+          </Button>
+        </div>
+      </Section>
+    </>
   );
 }
 
@@ -730,7 +1075,7 @@ function Section(props: {
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <h2 className="font-semibold text-base">{props.title}</h2>
+        <h3 className="font-semibold text-base">{props.title}</h3>
         {props.description && (
           <p className="text-muted-foreground text-sm">{props.description}</p>
         )}

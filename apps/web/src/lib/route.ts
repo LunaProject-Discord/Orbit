@@ -25,6 +25,8 @@ export type MailRoute = {
   special: SpecialView | null;
   /** 開いているメール。 */
   messageId: string | null;
+  /** 設定画面で開いているページ。null なら設定の最初の画面 (狭い画面ではカテゴリの一覧)。 */
+  settings: SettingsCategory | null;
   /** 会話の全体ではなく、会話の中のその 1 通だけを開いている (一覧で会話を広げて選んだとき)。 */
   single: boolean;
   /** 作成画面で開いている下書きの ID。まだ何も書いていない新規のメールは "new"。 */
@@ -37,6 +39,29 @@ export type MailRoute = {
 export type SpecialView = "starred" | "outgoing" | "settings";
 const SPECIAL_VIEWS: readonly string[] = ["starred", "outgoing", "settings"];
 
+/** 設定画面のページ (カテゴリ)。並びは画面に出す順。 */
+export const SETTINGS_CATEGORIES = [
+  "accounts",
+  "appearance",
+  "fonts",
+  "list",
+  "reading",
+  "actions",
+  "sidebar",
+  "notifications",
+  "signatures",
+  "system",
+] as const;
+export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
+
+function settingsCategoryOf(
+  value: string | undefined,
+): SettingsCategory | null {
+  return (SETTINGS_CATEGORIES as readonly string[]).includes(value ?? "")
+    ? (value as SettingsCategory)
+    : null;
+}
+
 export const emptyRoute: MailRoute = {
   accountId: null,
   mailboxId: null,
@@ -44,6 +69,7 @@ export const emptyRoute: MailRoute = {
   drafts: false,
   special: null,
   messageId: null,
+  settings: null,
   single: false,
   composeId: null,
   search: null,
@@ -115,6 +141,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
     drafts: false,
     special: null,
     messageId: idOf(params, "message"),
+    settings: null,
     single: false,
     composeId,
     search: searchOf(params),
@@ -131,6 +158,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
  *   …/messages/<ID>                               メール (会話) を開いた状態
  *   …/messages/<ID>/single                        会話の中の 1 通だけを開いた状態
  *   /drafts  /starred  /outgoing  /settings       フォルダ以外の表示
+ *   /settings/<カテゴリ>                          設定画面のページ (fonts、notifications など)
  *   …/compose/<下書きの ID>  …/compose/new        作成画面を開いた状態
  *   …?q=<語>&from=…                               検索 (一覧の URL に付ける)
  */
@@ -164,6 +192,10 @@ export function parseRoute(url: string): MailRoute {
     index = 1;
     // スター付きの一覧では、メールを開ける。
     if (head === "starred") route.messageId = take("messages");
+    if (head === "settings") {
+      route.settings = settingsCategoryOf(segments[1]);
+      if (route.settings) index = 2;
+    }
   } else {
     route.unifiedId = take("unified");
     if (!route.unifiedId) {
@@ -203,6 +235,9 @@ export function buildRoute(route: MailRoute): string {
     if (route.special === "starred" && route.messageId) {
       segments.push("messages", route.messageId);
       if (route.single) segments.push("single");
+    }
+    if (route.special === "settings" && route.settings) {
+      segments.push(route.settings);
     }
   } else {
     if (route.unifiedId) segments.push("unified", route.unifiedId);
@@ -268,13 +303,16 @@ export function historyMode(current: MailRoute, next: MailRoute): HistoryMode {
   ) {
     return "push";
   }
+  // 設定画面は、カテゴリの一覧からページへ入るときに積み、ページどうしの移動は書き換える。
   const opened =
     (!current.messageId && next.messageId) ||
-    (!current.composeId && next.composeId);
+    (!current.composeId && next.composeId) ||
+    (!current.settings && next.settings);
   if (opened) return "push";
   const closed =
     (current.messageId && !next.messageId) ||
-    (current.composeId && !next.composeId);
+    (current.composeId && !next.composeId) ||
+    (current.settings && !next.settings);
   return closed ? "close" : "replace";
 }
 

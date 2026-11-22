@@ -63,10 +63,7 @@ import {
   UnifiedDialog,
   type UnifiedDialogTarget,
 } from "@/components/mail/unified-dialog";
-import {
-  UNIFIED_SETTINGS_ID,
-  UnifiedSettings,
-} from "@/components/mail/unified-settings";
+import { UnifiedSettings } from "@/components/mail/unified-settings";
 import { Button } from "@/components/ui/button";
 import { AccountListMark } from "@/lib/account-icons";
 import {
@@ -172,6 +169,7 @@ import {
   type MailRoute,
   NEW_COMPOSE,
   parseRoute,
+  type SettingsCategory,
   type SpecialView,
   sameSearch,
 } from "@/lib/route";
@@ -492,6 +490,9 @@ export function MailApp({ user }: { user: User }) {
   const [special, setSpecial] = useState<SpecialView | null>(
     initialRoute.special,
   );
+  /** 設定画面で開いているページ。null なら設定の最初の画面。 */
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory | null>(initialRoute.settings);
   const starred = special === "starred";
   const starredRef = useRef(starred);
   starredRef.current = starred;
@@ -1779,6 +1780,7 @@ export function MailApp({ user }: { user: User }) {
     setSelectedAccountId(null);
     setSelectedMailboxId(null);
     setSpecial(view);
+    setSettingsCategory(null);
   }
 
   const handleMissing = useCallback(() => {
@@ -1804,6 +1806,7 @@ export function MailApp({ user }: { user: User }) {
     drafts: draftsSelected,
     special,
     messageId: selectedMessageId,
+    settings: settingsCategory,
     single: single !== null && single.messageId === selectedMessageId,
     composeId: openComposeId ?? composeTarget,
     search,
@@ -1856,6 +1859,7 @@ export function MailApp({ user }: { user: User }) {
     setUnifiedId(route.unifiedId);
     setDraftsSelected(route.drafts);
     setSpecial(route.special);
+    setSettingsCategory(route.settings);
     setSelectedMessageId(route.messageId);
     setSingle((current) =>
       route.single && route.messageId
@@ -1934,12 +1938,7 @@ export function MailApp({ user }: { user: User }) {
   })();
   const openUnifiedSettings = () => {
     handleSelectSpecial("settings");
-    // 設定画面が出てから、統合フォルダの節までスクロールする。
-    setTimeout(() => {
-      document
-        .getElementById(UNIFIED_SETTINGS_ID)
-        ?.scrollIntoView({ block: "start" });
-    }, 50);
+    setSettingsCategory("sidebar");
   };
   const openUnifiedDialog = (target: UnifiedDialogTarget) => {
     setSidebarOpen(false);
@@ -2548,6 +2547,8 @@ export function MailApp({ user }: { user: User }) {
           <SettingsView
             user={user}
             accounts={accounts}
+            category={settingsCategory}
+            onCategoryChange={setSettingsCategory}
             onMenu={() => setSidebarOpen(true)}
             notificationStatus={notificationStatus}
             notificationBusy={notificationBusy}

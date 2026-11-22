@@ -471,7 +471,7 @@ shadcn/ui の CLI がフォント設定を書き換えた場合は、`--font-san
 | `/drafts` | 下書きの一覧 |
 | `/starred` | スター付きのメール (全アカウント・全フォルダ)。`/starred/messages/<ID>` でメールを開いた状態 |
 | `/outgoing` | 送信待ちのメール |
-| `/settings` | 設定 (表示、メール一覧、メールの表示、操作、通知、メールアカウント、同期の状況、ショートカットキー)。表示や操作の設定は端末ごとに localStorage へ保存する |
+| `/settings`、`/settings/<カテゴリ>` | 設定。カテゴリごとのページに分かれている (`accounts`、`appearance`、`fonts`、`list`、`reading`、`actions`、`sidebar`、`notifications`、`signatures`、`system`)。広い画面は左にカテゴリの一覧と右にページ、狭い画面は一覧からページへ入る。外観・フォント・メール一覧・メールの表示などは端末ごとに localStorage へ保存する |
 | `…/compose/<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `…/compose/new`) |
 | `…?q=<語>` | 検索。絞り込みは `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1`、表示中のフォルダだけを探すときは `in=folder` |
 

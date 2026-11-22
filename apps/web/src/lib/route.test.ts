@@ -283,6 +283,34 @@ describe("フォルダ以外の表示", () => {
     expect(parseRoute(`/settings/messages/${messageId}`).messageId).toBe(null);
   });
 
+  it("設定画面のページを URL に残す", () => {
+    const route = {
+      ...emptyRoute,
+      special: "settings" as const,
+      settings: "fonts" as const,
+    };
+    expect(buildRoute(route)).toBe("/settings/fonts");
+    expect(parseRoute("/settings/fonts")).toEqual(route);
+    // 知らないページは、設定の最初の画面として扱う。
+    expect(parseRoute("/settings/unknown").settings).toBe(null);
+    // 作成画面を重ねて開ける。
+    expect(parseRoute("/settings/fonts/compose/new").composeId).toBe("new");
+    expect(buildRoute({ ...route, composeId: "new" })).toBe(
+      "/settings/fonts/compose/new",
+    );
+    // 設定以外の表示では、ページを URL に出さない。
+    expect(buildRoute({ ...emptyRoute, settings: "fonts" })).toBe("/");
+  });
+
+  it("設定のページへ入るときは履歴に積み、ページどうしの移動は書き換える", () => {
+    const top = { ...emptyRoute, special: "settings" as const };
+    const fonts = { ...top, settings: "fonts" as const };
+    const list = { ...top, settings: "list" as const };
+    expect(historyMode(top, fonts)).toBe("push");
+    expect(historyMode(fonts, list)).toBe("replace");
+    expect(historyMode(fonts, top)).toBe("close");
+  });
+
   it("表示を切り替えたら履歴に積む", () => {
     expect(
       historyMode(emptyRoute, { ...emptyRoute, special: "settings" }),
