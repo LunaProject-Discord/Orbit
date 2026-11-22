@@ -22,13 +22,15 @@ import { cn } from "cn";
 import {
   ChevronRightIcon,
   CircleAlertIcon,
-  FilePenLineIcon,
-  InboxIcon,
+  EyeOffIcon,
+  FolderOpenIcon,
+  LayersPlusIcon,
+  ListChecksIcon,
+  PencilIcon,
   PenSquareIcon,
   PlusIcon,
-  SendIcon,
   SettingsIcon,
-  StarIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
@@ -36,13 +38,17 @@ import { MailboxIcon } from "@/components/mail/mailbox-icon";
 import {
   AccountMenuItems,
   FolderMenuItems,
+  MoveItems,
   type SidebarMenuActions,
 } from "@/components/mail/sidebar-menus";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
+import { BUILTIN_ICONS, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -51,6 +57,8 @@ import {
   type Account,
   type MailboxSummary,
   oauthProviderOf,
+  type UnifiedFolder,
+  type UnifiedState,
   type User,
 } from "@/lib/api";
 import {
@@ -62,6 +70,11 @@ import {
 } from "@/lib/mailboxes";
 import type { SpecialView } from "@/lib/route";
 import type { SyncStatus } from "@/lib/sync-status";
+import {
+  BUILTIN_LABELS,
+  type SidebarEntry,
+  sidebarEntries,
+} from "@/lib/unified";
 
 const statusLabel: Partial<Record<Account["status"], string>> = {
   auth_required: "再ログインが必要です",
@@ -106,12 +119,24 @@ type SortData = {
   group: string;
   /** 同じ group の項目の ID (いまの表示順)。 */
   ids: string[];
-  kind: "account" | "mailbox";
+  kind: "account" | "mailbox" | "view";
   /** 読み上げに使う名前。 */
   label: string;
 };
 
 const ACCOUNT_GROUP = "accounts";
+const VIEW_GROUP = "views";
+
+/** サイドバー上部の項目 (初めからある項目と統合フォルダ) の右クリックメニューから呼ぶ操作。 */
+export type ViewMenuActions = {
+  onCreate: () => void;
+  onEdit: (folder: UnifiedFolder) => void;
+  onDelete: (folder: UnifiedFolder) => void;
+  /** 項目をサイドバーから隠す。key は初めからある項目の名前か、統合フォルダの ID。 */
+  onHide: (key: string) => void;
+  /** 表示する項目を選ぶ画面 (設定) を開く。 */
+  onManage: () => void;
+};
 
 /** ドラッグ中の項目と同じ並びの項目だけを、入れ替え先の候補にする。 */
 const sameGroup: CollisionDetection = (args) => {
@@ -189,6 +214,14 @@ type Props = {
   /** フォルダ以外の表示 (スター付き、送信待ち、設定)。その間もフォルダを選択中として扱わない。 */
   special: SpecialView | null;
   onSelectSpecial: (view: SpecialView) => void;
+  /** 統合フォルダと、サイドバー上部の項目の並び順。 */
+  unified: UnifiedState;
+  /** 表示している統合フォルダ。その間もフォルダを選択中として扱わない。 */
+  selectedUnifiedId: string | null;
+  onSelectUnified: (id: string) => void;
+  /** サイドバー上部の項目を並び替えた。keys は、見えている項目の新しい表示順。 */
+  onReorderViews: (keys: string[]) => void;
+  viewActions: ViewMenuActions;
   /** まだ送り終えていないメールの数と、その中に送信できなかったものがあるか。 */
   outgoingCount: number;
   outgoingFailed: boolean;
@@ -218,6 +251,11 @@ export function AccountSidebar({
   onSelectDrafts,
   special,
   onSelectSpecial,
+  unified,
+  selectedUnifiedId,
+  onSelectUnified,
+  onReorderViews,
+  viewActions,
   outgoingCount,
   outgoingFailed,
   onCompose,
@@ -228,8 +266,11 @@ export function AccountSidebar({
   headerStart,
 }: Props) {
   /** フォルダの一覧を表示している (下書きやスター付きなどではない)。 */
-  const folderView = !draftsSelected && special === null;
+  const folderView =
+    !draftsSelected && special === null && selectedUnifiedId === null;
   const { collapsed, toggle } = useCollapsed();
+  const views = useMemo(() => sidebarEntries(unified).visible, [unified]);
+  const viewKeys = views.map((entry) => entry.key);
   const byAccount = useMemo(() => {
     const result = new Map<string, MailboxSummary[]>();
     for (const mailbox of mailboxes ?? []) {
@@ -273,7 +314,7 @@ export function AccountSidebar({
     if (!id) return;
     refocusRef.current = null;
     document.querySelector<HTMLElement>(`[data-sort-id="${id}"]`)?.focus();
-  }, [accounts, mailboxes]);
+  }, [accounts, mailboxes, unified]);
 
   /**
    * タッチでは、長押しがドラッグの開始と右クリックメニューの両方に当たる。
@@ -302,6 +343,7 @@ export function AccountSidebar({
 
   const move = (data: SortData, ids: string[], id: string) => {
     if (data.kind === "account") onReorderAccounts(ids);
+    else if (data.kind === "view") onReorderViews(ids);
     else onReorderMailboxes(ids);
     setAnnouncement(
       `${data.label} を ${ids.length} 件中 ${ids.indexOf(id) + 1} 番目に移動しました`,
@@ -351,64 +393,100 @@ export function AccountSidebar({
           event.stopPropagation();
         }}
       >
-        <SidebarItem
-          icon={<InboxIcon />}
-          label="すべての受信トレイ"
-          count={inboxUnread}
-          selected={folderView && selectedAccountId === null}
-          onClick={() => onSelect(null, null)}
-        />
-        <SidebarItem
-          icon={<StarIcon />}
-          label="スター付き"
-          selected={special === "starred"}
-          onClick={() => onSelectSpecial("starred")}
-        />
-        <SidebarItem
-          icon={<FilePenLineIcon />}
-          label="下書き"
-          count={draftCount}
-          countLabel="件数"
-          selected={draftsSelected}
-          onClick={onSelectDrafts}
-        />
-        <SidebarItem
-          icon={
-            outgoingFailed ? (
-              <CircleAlertIcon className="text-destructive" />
-            ) : (
-              <SendIcon />
-            )
-          }
-          label="送信待ち"
-          count={outgoingCount}
-          countLabel={
-            outgoingFailed ? "送信できなかったメールあり、件数" : "件数"
-          }
-          selected={special === "outgoing"}
-          onClick={() => onSelectSpecial("outgoing")}
-        />
-        <span className="h-2 shrink-0" aria-hidden="true" />
-        {accounts === null ? (
-          <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
-            <Skeleton className="h-5 w-40" />
-            <Skeleton className="h-5 w-32" />
-          </div>
-        ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={sameGroup}
-            modifiers={[restrictToVerticalAxis]}
-            accessibility={{ announcements: dragAnnouncements }}
-            onDragStart={() => {
-              draggedRef.current = true;
-            }}
-            onDragEnd={handleDragEnd}
-            onDragCancel={() => {
-              // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
-              if (!menuPressRef.current) draggedRef.current = false;
-            }}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={sameGroup}
+          modifiers={[restrictToVerticalAxis]}
+          accessibility={{ announcements: dragAnnouncements }}
+          onDragStart={() => {
+            draggedRef.current = true;
+          }}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => {
+            // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
+            if (!menuPressRef.current) draggedRef.current = false;
+          }}
+        >
+          <SortableContext
+            items={viewKeys}
+            strategy={verticalListSortingStrategy}
           >
+            {views.map((entry) => {
+              const view = entry.builtin;
+              const outgoingProblem = view === "outgoing" && outgoingFailed;
+              return (
+                <ViewItem
+                  key={entry.key}
+                  entry={entry}
+                  keys={viewKeys}
+                  icon={
+                    entry.folder ? (
+                      <UnifiedMark folder={entry.folder} className="mt-0.5" />
+                    ) : outgoingProblem ? (
+                      <CircleAlertIcon className="text-destructive" />
+                    ) : (
+                      <BuiltinIcon view={entry.builtin} />
+                    )
+                  }
+                  count={
+                    entry.folder
+                      ? entry.folder.unreadCount
+                      : view === "inbox"
+                        ? inboxUnread
+                        : view === "drafts"
+                          ? draftCount
+                          : view === "outgoing"
+                            ? outgoingCount
+                            : undefined
+                  }
+                  countLabel={
+                    view === "drafts"
+                      ? "件数"
+                      : view === "outgoing"
+                        ? outgoingFailed
+                          ? "送信できなかったメールあり、件数"
+                          : "件数"
+                        : undefined
+                  }
+                  selected={
+                    entry.folder
+                      ? selectedUnifiedId === entry.folder.id
+                      : view === "inbox"
+                        ? folderView && selectedAccountId === null
+                        : view === "drafts"
+                          ? draftsSelected
+                          : special === view
+                  }
+                  onOpen={() => {
+                    if (entry.folder) onSelectUnified(entry.folder.id);
+                    else if (view === "inbox") onSelect(null, null);
+                    else if (view === "drafts") onSelectDrafts();
+                    else if (view === "starred" || view === "outgoing") {
+                      onSelectSpecial(view);
+                    }
+                  }}
+                  onKeyboardMove={moveByKeyboard}
+                  actions={viewActions}
+                  onMenuOpenChange={handleMenuOpenChange}
+                />
+              );
+            })}
+          </SortableContext>
+          <button
+            type="button"
+            onClick={viewActions.onCreate}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0"
+          >
+            <LayersPlusIcon />
+            統合フォルダを作成
+          </button>
+          <span className="h-2 shrink-0" aria-hidden="true" />
+          {accounts === null ? (
+            <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-5 w-32" />
+            </div>
+          ) : (
             <SortableContext
               items={accountIds}
               strategy={verticalListSortingStrategy}
@@ -434,8 +512,8 @@ export function AccountSidebar({
                 />
               ))}
             </SortableContext>
-          </DndContext>
-        )}
+          )}
+        </DndContext>
         <Button
           variant="ghost"
           onClick={onAdd}
@@ -477,6 +555,119 @@ export function AccountSidebar({
 }
 
 type MoveHandler = (data: SortData, ids: string[], id: string) => void;
+
+function BuiltinIcon({ view }: { view: keyof typeof BUILTIN_ICONS }) {
+  const Icon = BUILTIN_ICONS[view];
+  return <Icon />;
+}
+
+/**
+ * サイドバー上部の 1 項目 (初めからある項目か、統合フォルダ)。
+ * ドラッグや Alt+↑↓ で並び替えられ、右クリックで編集や非表示などのメニューを出す。
+ */
+function ViewItem({
+  entry,
+  keys,
+  icon,
+  count,
+  countLabel,
+  selected,
+  onOpen,
+  onKeyboardMove,
+  actions,
+  onMenuOpenChange,
+}: {
+  entry: SidebarEntry;
+  /** 見えている項目 (いまの表示順)。 */
+  keys: string[];
+  icon: React.ReactNode;
+  count: number | undefined;
+  countLabel: string | undefined;
+  selected: boolean;
+  onOpen: () => void;
+  onKeyboardMove: MoveHandler;
+  actions: ViewMenuActions;
+  onMenuOpenChange: (open: boolean) => void;
+}) {
+  const label = entry.folder
+    ? entry.folder.name
+    : BUILTIN_LABELS[entry.builtin];
+  const sortData: SortData = {
+    group: VIEW_GROUP,
+    ids: keys,
+    kind: "view",
+    label,
+  };
+  const item = useSortableItem(entry.key, sortData, onKeyboardMove);
+  const { folder } = entry;
+  return (
+    <div
+      ref={item.setNodeRef}
+      style={item.style}
+      className={cn("relative", item.isDragging && "z-10 opacity-70")}
+    >
+      <ContextMenu onOpenChange={onMenuOpenChange}>
+        <ContextMenuTrigger render={<div />}>
+          <Hint label={label} side="right" whenClipped>
+            <SidebarItem
+              icon={icon}
+              label={label}
+              {...(count !== undefined ? { count } : {})}
+              {...(countLabel !== undefined ? { countLabel } : {})}
+              selected={selected}
+              onClick={onOpen}
+              handle={item.handle}
+              className={cn(item.isDragging && "bg-sidebar-accent")}
+            />
+          </Hint>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-60">
+          <ContextMenuItem onClick={onOpen}>
+            <FolderOpenIcon />
+            開く
+          </ContextMenuItem>
+          {folder && (
+            <ContextMenuItem onClick={() => actions.onEdit(folder)}>
+              <PencilIcon />
+              編集…
+            </ContextMenuItem>
+          )}
+          <ContextMenuSeparator />
+          <MoveItems
+            id={entry.key}
+            ids={keys}
+            onReorder={(ids) => onKeyboardMove(sortData, ids, entry.key)}
+          />
+          <ContextMenuItem onClick={() => actions.onHide(entry.key)}>
+            <EyeOffIcon />
+            サイドバーから隠す
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={actions.onCreate}>
+            <LayersPlusIcon />
+            統合フォルダを作成…
+          </ContextMenuItem>
+          <ContextMenuItem onClick={actions.onManage}>
+            <ListChecksIcon />
+            表示する項目を選ぶ…
+          </ContextMenuItem>
+          {folder && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                variant="destructive"
+                onClick={() => actions.onDelete(folder)}
+              >
+                <Trash2Icon />
+                削除…
+              </ContextMenuItem>
+            </>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
+    </div>
+  );
+}
 
 const NO_MAILBOXES: MailboxSummary[] = [];
 
@@ -845,7 +1036,18 @@ function FolderItem({
   );
 }
 
-function SidebarItem(props: {
+function SidebarItem({
+  icon,
+  label,
+  sublabel,
+  problem,
+  count,
+  countLabel,
+  selected,
+  className,
+  handle,
+  ...rest
+}: {
   icon: React.ReactNode;
   label: string;
   sublabel?: string | undefined;
@@ -859,38 +1061,37 @@ function SidebarItem(props: {
   className?: string;
   /** 並び替えられる行に付ける、ドラッグとキーボード操作の受け口。 */
   handle?: SortHandle;
-}) {
+  // 説明 (Hint) で包んだときに渡される、ボタンの属性。
+} & Omit<React.ComponentProps<"button">, "onClick" | "className">) {
   return (
     <button
       type="button"
-      onClick={props.onClick}
-      aria-current={props.selected ? "page" : undefined}
-      {...props.handle}
+      aria-current={selected ? "page" : undefined}
+      {...rest}
+      {...handle}
       className={cn(
-        props.handle && "touch-manipulation select-none",
+        handle && "touch-manipulation select-none",
         "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
-        props.selected &&
+        selected &&
           "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
-        props.className,
+        className,
       )}
     >
-      {props.icon}
+      {icon}
       <span className="min-w-0 flex-1">
-        <span className="block truncate">{props.label}</span>
-        {props.sublabel && (
+        <span className="block truncate">{label}</span>
+        {sublabel && (
           <span className="block truncate font-normal text-muted-foreground text-xs">
-            {props.sublabel}
+            {sublabel}
           </span>
         )}
-        {props.problem && (
+        {problem && (
           <span className="mt-0.5 line-clamp-3 block font-normal text-destructive text-xs">
-            {props.problem}
+            {problem}
           </span>
         )}
       </span>
-      {props.count !== undefined && (
-        <UnreadCount count={props.count} label={props.countLabel} />
-      )}
+      {count !== undefined && <UnreadCount count={count} label={countLabel} />}
     </button>
   );
 }

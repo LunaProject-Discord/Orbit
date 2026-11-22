@@ -46,6 +46,8 @@ export function ColorPicker({
   chosen,
   onChange,
   labelledBy,
+  unsetLabel,
+  resetLabel = "自動に戻す",
 }: {
   /** いま出している色 ("#rrggbb")。選んでいなければ、自動で割り当てた色。 */
   value: string;
@@ -55,6 +57,9 @@ export function ColorPicker({
   onChange: (next: string | null) => void;
   /** このボタンの名前になる要素の id。 */
   labelledBy: string;
+  /** 色を選んでいないときにボタンへ出す文言と、選んだ色を外すボタンの文言 (既定は自動の色)。 */
+  unsetLabel?: string;
+  resetLabel?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -110,7 +115,9 @@ export function ColorPicker({
           className={cn("size-3.5 shrink-0 rounded-full", ACCOUNT_DOT_CLASS)}
         />
         <span className={cn(!accountColorLabel(value) && "tabular-nums")}>
-          {accountColorLabel(value) ?? value.toUpperCase()}
+          {!chosen && unsetLabel
+            ? unsetLabel
+            : (accountColorLabel(value) ?? value.toUpperCase())}
         </span>
         <ChevronDownIcon className="text-muted-foreground" aria-hidden="true" />
       </PopoverTrigger>
@@ -185,7 +192,7 @@ export function ColorPicker({
             onClick={() => choose(null)}
             className="shrink-0"
           >
-            自動に戻す
+            {resetLabel}
           </Button>
         </div>
       </PopoverContent>

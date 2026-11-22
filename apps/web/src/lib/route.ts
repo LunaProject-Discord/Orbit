@@ -17,6 +17,8 @@ export type MailRoute = {
   accountId: string | null;
   /** 表示するフォルダ。null なら受信トレイ。 */
   mailboxId: string | null;
+  /** 表示する統合フォルダ。null なら通常のフォルダ。 */
+  unifiedId: string | null;
   /** 下書きの一覧を表示している。 */
   drafts: boolean;
   /** フォルダ以外の表示 (スター付き、送信待ち、設定)。null ならフォルダの一覧。 */
@@ -36,6 +38,7 @@ const SPECIAL_VIEWS: readonly string[] = ["starred", "outgoing", "settings"];
 export const emptyRoute: MailRoute = {
   accountId: null,
   mailboxId: null,
+  unifiedId: null,
   drafts: false,
   special: null,
   messageId: null,
@@ -104,6 +107,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
   return {
     accountId: idOf(params, "account"),
     mailboxId: idOf(params, "folder"),
+    unifiedId: null,
     drafts: false,
     special: null,
     messageId: idOf(params, "message"),
@@ -118,6 +122,7 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
  *   /                                             すべての受信トレイ
  *   /accounts/<ID>                                アカウントの受信トレイ
  *   /accounts/<ID>/folders/<ID>                   フォルダ
+ *   /unified/<ID>                                 統合フォルダ
  *   …/messages/<ID>                               メール (会話) を開いた状態
  *   /drafts  /starred  /outgoing  /settings       フォルダ以外の表示
  *   …/compose/<下書きの ID>  …/compose/new        作成画面を開いた状態
@@ -154,8 +159,11 @@ export function parseRoute(url: string): MailRoute {
     // スター付きの一覧では、メールを開ける。
     if (head === "starred") route.messageId = take("messages");
   } else {
-    route.accountId = take("accounts");
-    route.mailboxId = take("folders");
+    route.unifiedId = take("unified");
+    if (!route.unifiedId) {
+      route.accountId = take("accounts");
+      route.mailboxId = take("folders");
+    }
     route.messageId = take("messages");
     route.search = searchOf(params);
   }
@@ -186,8 +194,11 @@ export function buildRoute(route: MailRoute): string {
       segments.push("messages", route.messageId);
     }
   } else {
-    if (route.accountId) segments.push("accounts", route.accountId);
-    if (route.mailboxId) segments.push("folders", route.mailboxId);
+    if (route.unifiedId) segments.push("unified", route.unifiedId);
+    else {
+      if (route.accountId) segments.push("accounts", route.accountId);
+      if (route.mailboxId) segments.push("folders", route.mailboxId);
+    }
     if (route.messageId) segments.push("messages", route.messageId);
     const search = route.search;
     if (search && isSearchActive(search)) {
@@ -237,6 +248,7 @@ export function historyMode(current: MailRoute, next: MailRoute): HistoryMode {
   if (
     current.accountId !== next.accountId ||
     current.mailboxId !== next.mailboxId ||
+    current.unifiedId !== next.unifiedId ||
     current.drafts !== next.drafts ||
     current.special !== next.special
   ) {

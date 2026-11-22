@@ -243,7 +243,12 @@ export async function cachedMessages(
 /** メールを検索する。サーバーに届かなければ、端末に保存してあるメールから探す。 */
 export async function searchMessages(
   params: api.SearchParams &
-    Partial<ListScope> & { cursor?: string | null; limit?: number },
+    Partial<ListScope> & {
+      /** scope が folder のときに探す統合フォルダ (オフラインでは絞り込めない)。 */
+      unifiedId?: string | null;
+      cursor?: string | null;
+      limit?: number;
+    },
   signal?: AbortSignal,
 ): Promise<SearchPage> {
   try {

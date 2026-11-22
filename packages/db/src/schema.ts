@@ -555,3 +555,78 @@ export const drafts = pgTable(
     index("drafts_account_idx").on(t.accountId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// 統合フォルダ
+// ---------------------------------------------------------------------------
+
+/** 統合フォルダが集めるフォルダの役割 (mailboxes.specialUse のうち選べるもの)。 */
+export type UnifiedRole =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "archive"
+  | "junk"
+  | "trash";
+
+/** 統合フォルダが集めるメールの場所。 */
+export type UnifiedScope = {
+  /** すべてのフォルダ (ごみ箱と迷惑メールを除く) から集める。true なら下の 2 つは見ない。 */
+  all: boolean;
+  /** 全アカウントの、この役割のフォルダ (後から足したアカウントの分も入る)。 */
+  roles: UnifiedRole[];
+  /** 個別に選んだフォルダ (mailboxes.id)。無くなったフォルダの ID は無視する。 */
+  mailboxIds: string[];
+};
+
+/** 統合フォルダに並べるメールの条件。指定したものすべてに当てはまるメールを並べる。 */
+export type UnifiedFilters = {
+  unread: boolean;
+  flagged: boolean;
+  hasAttachment: boolean;
+  /** 差出人 / 宛先 / 件名 / 件名か本文などに含まれる文字。空なら条件にしない。 */
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  /** 受信してからこの日数以内。null なら期間を問わない。 */
+  withinDays: number | null;
+};
+
+/**
+ * 利用者が作った統合フォルダ。複数のアカウントのフォルダを 1 つの一覧にまとめ、
+ * 条件で絞り込める。メールサーバーには何も作らない (画面での見せ方だけ)。
+ */
+export const unifiedFolders = pgTable(
+  "unified_folders",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    /** アイコンの名前か絵文字。選んでいなければ null (既定のアイコンを出す)。 */
+    icon: text(),
+    /** アイコンの色 ("#rrggbb")。選んでいなければ null。 */
+    color: text(),
+    scope: jsonb().$type<UnifiedScope>().notNull(),
+    filters: jsonb().$type<UnifiedFilters>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("unified_folders_user_idx").on(t.userId)],
+);
+
+/**
+ * サイドバー上部の項目 (すべての受信トレイ、スター付き、下書き、送信待ち、統合フォルダ) の
+ * 並び順と、隠している項目。項目は、決まった名前 (inbox など) か統合フォルダの ID で表す。
+ */
+export const sidebarLayouts = pgTable("sidebar_layouts", {
+  userId: uuid()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** 上から順の項目。載っていない項目は、既定の順でその後ろに並ぶ。 */
+  order: jsonb().$type<string[]>().notNull().default([]),
+  hidden: jsonb().$type<string[]>().notNull().default([]),
+  updatedAt: updatedAt(),
+});

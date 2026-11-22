@@ -3,21 +3,19 @@
 import { cn } from "cn";
 import {
   CircleAlertIcon,
-  FilePenLineIcon,
-  InboxIcon,
+  LayersPlusIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PenSquareIcon,
-  SendIcon,
   SettingsIcon,
-  StarIcon,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
+import { BUILTIN_ICONS, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
 import { ACCOUNT_ON_CLASS } from "@/lib/account-colors";
 import { AccountDot, AccountMark } from "@/lib/account-icons";
-import type { Account, MailboxSummary } from "@/lib/api";
+import type { Account, MailboxSummary, UnifiedState } from "@/lib/api";
 import {
   hoveredOverlayScrollbarOwner,
   overlayScrollbarOwner,
@@ -28,6 +26,7 @@ import {
   PEEK_OPEN_DELAY,
   SIDEBAR_FOLD_KEY_LABEL,
 } from "@/lib/sidebar-fold";
+import { BUILTIN_LABELS, sidebarEntries } from "@/lib/unified";
 
 /** サイドバーを折りたたむ / 広げたままにするボタン。帯とサイドバーの同じ位置に置く。 */
 export function SidebarFoldButton({
@@ -73,6 +72,11 @@ type RailProps = {
   onSelect: (accountId: string | null, mailboxId: string | null) => void;
   onSelectDrafts: () => void;
   onSelectSpecial: (view: SpecialView) => void;
+  /** 統合フォルダと、サイドバー上部の項目の並び順。 */
+  unified: UnifiedState;
+  selectedUnifiedId: string | null;
+  onSelectUnified: (id: string) => void;
+  onCreateUnified: () => void;
   onCompose: (() => void) | null;
   onToggleFold: () => void;
   /** サイドバーが上に重なっている間は true。隠れている帯を操作や読み上げの対象から外す。 */
@@ -98,6 +102,10 @@ export function SidebarRail({
   onSelect,
   onSelectDrafts,
   onSelectSpecial,
+  unified,
+  selectedUnifiedId,
+  onSelectUnified,
+  onCreateUnified,
   onCompose,
   onToggleFold,
   inert,
@@ -139,48 +147,79 @@ export function SidebarRail({
         aria-label="メールアカウントとフォルダ (折りたたみ中)"
         className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-hidden py-1"
       >
-        <RailItem
-          label="すべての受信トレイ"
-          badge={inboxUnread > 0 ? `未読 ${inboxUnread} 件` : null}
-          selected={folderView && selectedAccountId === null}
-          onClick={() => onSelect(null, null)}
-        >
-          <InboxIcon />
-        </RailItem>
-        <RailItem
-          label="スター付き"
-          selected={special === "starred"}
-          onClick={() => onSelectSpecial("starred")}
-        >
-          <StarIcon />
-        </RailItem>
-        <RailItem
-          label="下書き"
-          badge={draftCount > 0 ? `${draftCount} 件` : null}
-          badgeTone="muted"
-          selected={draftsSelected}
-          onClick={onSelectDrafts}
-        >
-          <FilePenLineIcon />
-        </RailItem>
-        <RailItem
-          label="送信待ち"
-          badge={
-            outgoingCount > 0
-              ? outgoingFailed
-                ? `送信できなかったメールあり、${outgoingCount} 件`
-                : `${outgoingCount} 件`
-              : null
+        {sidebarEntries(unified).visible.map((entry) => {
+          if (entry.folder) {
+            const { folder } = entry;
+            return (
+              <RailItem
+                key={entry.key}
+                label={folder.name}
+                badge={
+                  folder.unreadCount > 0
+                    ? `未読 ${folder.unreadCount} 件`
+                    : null
+                }
+                selected={selectedUnifiedId === folder.id}
+                onClick={() => onSelectUnified(folder.id)}
+              >
+                <UnifiedMark folder={folder} />
+              </RailItem>
+            );
           }
-          badgeTone={outgoingFailed ? "problem" : "muted"}
-          selected={special === "outgoing"}
-          onClick={() => onSelectSpecial("outgoing")}
+          const view = entry.builtin;
+          const Icon = BUILTIN_ICONS[view];
+          const count =
+            view === "inbox"
+              ? inboxUnread
+              : view === "drafts"
+                ? draftCount
+                : view === "outgoing"
+                  ? outgoingCount
+                  : 0;
+          const problem = view === "outgoing" && outgoingFailed;
+          return (
+            <RailItem
+              key={entry.key}
+              label={BUILTIN_LABELS[view]}
+              badge={
+                count > 0
+                  ? view === "inbox"
+                    ? `未読 ${count} 件`
+                    : problem
+                      ? `送信できなかったメールあり、${count} 件`
+                      : `${count} 件`
+                  : null
+              }
+              badgeTone={
+                view === "inbox" ? "unread" : problem ? "problem" : "muted"
+              }
+              selected={
+                view === "inbox"
+                  ? folderView && selectedAccountId === null
+                  : view === "drafts"
+                    ? draftsSelected
+                    : special === view
+              }
+              onClick={() => {
+                if (view === "inbox") onSelect(null, null);
+                else if (view === "drafts") onSelectDrafts();
+                else onSelectSpecial(view);
+              }}
+            >
+              {problem ? (
+                <CircleAlertIcon className="text-destructive" />
+              ) : (
+                <Icon />
+              )}
+            </RailItem>
+          );
+        })}
+        <RailItem
+          label="統合フォルダを作成"
+          selected={false}
+          onClick={onCreateUnified}
         >
-          {outgoingFailed ? (
-            <CircleAlertIcon className="text-destructive" />
-          ) : (
-            <SendIcon />
-          )}
+          <LayersPlusIcon className="text-muted-foreground" />
         </RailItem>
         <span className="h-2 shrink-0" aria-hidden="true" />
         {(accounts ?? []).map((account) => {

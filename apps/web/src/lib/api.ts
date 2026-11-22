@@ -625,6 +625,8 @@ export async function searchMessages(
     accountId?: string | null;
     /** scope が folder のときに探すフォルダ。省略すると受信トレイ。 */
     mailboxId?: string | null;
+    /** scope が folder のときに探す統合フォルダ (指定すると mailboxId より優先)。 */
+    unifiedId?: string | null;
     cursor?: string | null;
     limit?: number;
   },
@@ -638,6 +640,7 @@ export async function searchMessages(
   });
   if (params.accountId) query.set("accountId", params.accountId);
   if (params.mailboxId) query.set("mailboxId", params.mailboxId);
+  if (params.unifiedId) query.set("unifiedId", params.unifiedId);
   if (params.cursor) query.set("cursor", params.cursor);
   if (filters.from.trim()) query.set("from", filters.from.trim());
   if (filters.to.trim()) query.set("to", filters.to.trim());
@@ -655,6 +658,107 @@ export async function searchMessages(
     // 取得できなければ、サーバーの既定 (UTC) で区切られる。
   }
   return apiJson<SearchPage>(`/v1/messages/search?${query}`, { signal });
+}
+
+/** 統合フォルダが集めるフォルダの役割。 */
+export type UnifiedRole =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "archive"
+  | "junk"
+  | "trash";
+
+/** 統合フォルダが集めるメールの場所。 */
+export type UnifiedScope = {
+  /** すべてのフォルダ (ごみ箱と迷惑メールを除く)。true なら下の 2 つは見ない。 */
+  all: boolean;
+  /** 全アカウントの、この役割のフォルダ。 */
+  roles: UnifiedRole[];
+  /** 個別に選んだフォルダ。 */
+  mailboxIds: string[];
+};
+
+/** 統合フォルダに並べるメールの条件 (指定したものすべてに当てはまるメール)。 */
+export type UnifiedFilters = {
+  unread: boolean;
+  flagged: boolean;
+  hasAttachment: boolean;
+  from: string;
+  to: string;
+  subject: string;
+  /** 件名・差出人・宛先・本文のどこかに含む文字 (検索欄と同じ書き方)。 */
+  text: string;
+  /** 受信してからこの日数以内。null なら期間を問わない。 */
+  withinDays: number | null;
+};
+
+/** 利用者が作った統合フォルダ。 */
+export type UnifiedFolder = {
+  id: string;
+  name: string;
+  /** アイコンの名前か絵文字。null なら既定のアイコン。 */
+  icon: string | null;
+  /** アイコンの色 ("#rrggbb")。null なら色を付けない。 */
+  color: string | null;
+  scope: UnifiedScope;
+  filters: UnifiedFilters;
+  createdAt: string;
+  unreadCount: number;
+};
+
+export type UnifiedFolderInput = Pick<
+  UnifiedFolder,
+  "name" | "icon" | "color" | "scope" | "filters"
+>;
+
+/**
+ * サイドバー上部の項目の並び順と、隠している項目。項目は、初めからあるものの名前
+ * (inbox / starred / drafts / outgoing) か、統合フォルダの ID。
+ */
+export type SidebarLayout = { order: string[]; hidden: string[] };
+
+export type UnifiedState = { folders: UnifiedFolder[]; layout: SidebarLayout };
+
+export async function listUnified(signal?: AbortSignal): Promise<UnifiedState> {
+  return apiJson<UnifiedState>("/v1/unified", { signal });
+}
+
+export async function createUnifiedFolder(
+  input: UnifiedFolderInput,
+): Promise<UnifiedFolder> {
+  const { folder } = await apiJson<{
+    folder: Omit<UnifiedFolder, "unreadCount">;
+  }>("/v1/unified", { method: "POST", body: input });
+  return { ...folder, unreadCount: 0 };
+}
+
+export async function updateUnifiedFolder(
+  id: string,
+  input: Partial<UnifiedFolderInput>,
+): Promise<void> {
+  await apiFetch(`/v1/unified/${id}`, { method: "PATCH", body: input });
+}
+
+export async function deleteUnifiedFolder(id: string): Promise<void> {
+  await apiFetch(`/v1/unified/${id}`, { method: "DELETE" });
+}
+
+export async function saveSidebarLayout(layout: SidebarLayout): Promise<void> {
+  await apiFetch("/v1/unified/layout", { method: "PUT", body: layout });
+}
+
+/** 統合フォルダのメールの一覧。フォルダの一覧と同じ形で、会話ごとに 1 行。 */
+export async function listUnifiedMessages(
+  id: string,
+  params: { cursor?: string | null; limit?: number },
+  signal?: AbortSignal,
+): Promise<MessagePage> {
+  const query = new URLSearchParams({ limit: String(params.limit ?? 50) });
+  if (params.cursor) query.set("cursor", params.cursor);
+  return apiJson<MessagePage>(`/v1/unified/${id}/messages?${query}`, {
+    signal,
+  });
 }
 
 export async function getMessage(

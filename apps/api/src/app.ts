@@ -18,6 +18,7 @@ import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { sendRoutes } from "./routes/send.js";
 import { syncRoutes } from "./routes/sync.js";
+import { unifiedRoutes } from "./routes/unified.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 
 export type AppOptions = {
@@ -98,6 +99,7 @@ export function createApp({
   };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
+  authed.route("/unified", unifiedRoutes(deps));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));
   authed.route("/push", pushRoutes(deps));

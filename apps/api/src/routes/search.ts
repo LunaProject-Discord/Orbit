@@ -1,17 +1,21 @@
 import { zValidator } from "@hono/zod-validator";
 import { mailAccounts, mailboxes, messageMailboxes, messages } from "@mail/db";
-import { and, desc, eq, not, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, type SQL, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import {
   highlightTerms,
   isEmptySearch,
-  likePattern,
   normalizeDate,
   parseSearchQuery,
-  type SearchTerm,
 } from "../lib/search-query.js";
+import { termCondition } from "../lib/search-sql.js";
+import {
+  filterConditions,
+  loadUnifiedFolder,
+  scopeCondition,
+} from "../lib/unified.js";
 
 const flag = z.enum(["true", "false"]).optional();
 const dateParam = z
@@ -44,6 +48,8 @@ const searchQuery = z.object({
   accountId: z.uuid().optional(),
   /** scope が folder のときに探すフォルダ。省略すると受信トレイ。 */
   mailboxId: z.uuid().optional(),
+  /** scope が folder のときに探す統合フォルダ (その場所と条件の中から探す)。 */
+  unifiedId: z.uuid().optional(),
   /** all は全フォルダ (ごみ箱と迷惑メールを除く)、folder は 1 つのフォルダだけ。 */
   scope: z.enum(["all", "folder"]).default("all"),
   from: z.string().max(200).optional(),
@@ -68,35 +74,6 @@ const cursorPattern = /^(\d{4}-[0-9T:.-]+Z)_([0-9a-f-]{36})$/;
 /** 抜粋で、見つかった語の前に付ける文字数と全体の長さ。 */
 const EXCERPT_BEFORE = 30;
 const EXCERPT_LENGTH = 160;
-
-function termCondition(term: SearchTerm): SQL {
-  const pattern = likePattern(term.text);
-  const matches = (column: SQL | typeof messages.subject) =>
-    sql`${column} ilike ${pattern}`;
-  let condition: SQL;
-  switch (term.field) {
-    case "from":
-      condition = matches(sql`${messages.searchFrom}`);
-      break;
-    case "to":
-      condition = matches(sql`${messages.searchRecipients}`);
-      break;
-    case "subject":
-      condition = matches(messages.subject);
-      break;
-    case "body":
-      condition = matches(sql`${messages.searchBody}`);
-      break;
-    default:
-      condition = or(
-        matches(messages.subject),
-        matches(sql`${messages.searchFrom}`),
-        matches(sql`${messages.searchRecipients}`),
-        matches(sql`${messages.searchBody}`),
-      ) as SQL;
-  }
-  return term.negated ? not(condition) : condition;
-}
 
 /**
  * メールの検索。サーバーに同期済みのメール (全フォルダ) を、件名・差出人・宛先・本文の
@@ -123,6 +100,13 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
     if (query.since) search.since = query.since;
 
     const terms = highlightTerms(search);
+    const unified =
+      query.scope === "folder" && query.unifiedId
+        ? await loadUnifiedFolder(db, c.var.user.id, query.unifiedId)
+        : null;
+    if (query.scope === "folder" && query.unifiedId && !unified) {
+      return c.json({ error: "not_found" }, 404);
+    }
     if (isEmptySearch(search) && !query.until) {
       return c.json({ messages: [], nextCursor: null, terms });
     }
@@ -161,8 +145,10 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
     }
 
     // 探す範囲。1 通が複数のフォルダにあっても (Gmail のラベルなど)、結果には 1 回だけ出す。
-    const inScope =
-      query.scope === "folder"
+    if (unified) conditions.push(...filterConditions(unified.filters));
+    const inScope = unified
+      ? scopeCondition(unified.scope)
+      : query.scope === "folder"
         ? query.mailboxId
           ? eq(mailboxes.id, query.mailboxId)
           : eq(mailboxes.specialUse, "inbox")
