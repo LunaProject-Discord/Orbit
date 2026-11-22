@@ -65,17 +65,8 @@ const microsoftCompleteBody = z.object({
 
 const idParam = z.object({ id: z.uuid() });
 
-/** アカウントに付けられる色の名前。画面側 (apps/web の account-colors.ts) と揃える。 */
-const ACCOUNT_COLOR_NAMES = [
-  "sky",
-  "violet",
-  "emerald",
-  "amber",
-  "rose",
-  "teal",
-  "orange",
-  "slate",
-] as const;
+/** アカウントに付けられる色。"#rrggbb" (小文字) の色そのもの。 */
+const ACCOUNT_COLOR = /^#[0-9a-f]{6}$/;
 
 const updateAccountBody = z
   .object({
@@ -84,7 +75,7 @@ const updateAccountBody = z
     /** 画面に出す名前。null か空ならメールアドレスを出す。 */
     displayName: z.string().max(200).nullable().optional(),
     /** 画面でアカウントを見分ける色。null なら並び順から決める。 */
-    color: z.enum(ACCOUNT_COLOR_NAMES).nullable().optional(),
+    color: z.string().regex(ACCOUNT_COLOR).nullable().optional(),
     /** 画面でアカウントに付けるアイコン。null なら色の点を出す。 */
     icon: accountIcon.nullable().optional(),
   })
