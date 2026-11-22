@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import { PaperclipIcon, Trash2Icon } from "lucide-react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Account, ServerDraft } from "@/lib/api";
@@ -105,16 +106,17 @@ export function DraftList({
                 </span>
               )}
             </button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`下書き「${subject}」を破棄`}
-              title="下書きを破棄"
-              onClick={() => onDiscard(draft)}
-              className="absolute right-2 bottom-2 opacity-0 focus-visible:opacity-100 group-hover/draft:opacity-100 pointer-coarse:opacity-100"
-            >
-              <Trash2Icon />
-            </Button>
+            <Hint label="下書きを破棄">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`下書き「${subject}」を破棄`}
+                onClick={() => onDiscard(draft)}
+                className="absolute right-2 bottom-2 opacity-0 focus-visible:opacity-100 group-hover/draft:opacity-100 pointer-coarse:opacity-100"
+              >
+                <Trash2Icon />
+              </Button>
+            </Hint>
           </li>
         );
       })}

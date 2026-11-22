@@ -34,13 +34,18 @@ import {
   useState,
 } from "react";
 import { EmojiPickerButton } from "@/components/emoji-picker";
+import { Hint } from "@/components/hint";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { accountColor } from "@/lib/account-colors";
 import {
   type Account,
@@ -622,17 +627,18 @@ export function ComposeWindow({
           >
             <MinusIcon />
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={maximized ? "元の大きさに戻す" : "最大化"}
-            title={maximized ? "元の大きさに戻す" : "最大化"}
-            aria-pressed={maximized}
-            onClick={toggleMaximized}
-          >
-            {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
-          </Button>
+          <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={maximized ? "元の大きさに戻す" : "最大化"}
+              aria-pressed={maximized}
+              onClick={toggleMaximized}
+            >
+              {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+            </Button>
+          </Hint>
           <Button
             type="button"
             variant="ghost"
@@ -659,22 +665,48 @@ export function ComposeWindow({
                 accountColor(accounts, draft.accountId),
               )}
             />
-            <NativeSelect
-              id={`${id}-from`}
-              size="sm"
+            <Select
+              items={accounts.map((item) => ({
+                value: item.id,
+                label: item.displayName
+                  ? `${item.displayName} <${item.email}>`
+                  : item.email,
+              }))}
               value={draft.accountId}
-              onChange={(event) => changeAccount(event.target.value)}
+              onValueChange={(next) => {
+                if (next) changeAccount(next);
+              }}
               disabled={sending}
-              className="max-w-full [&_select]:pl-7"
             >
-              {accounts.map((item) => (
-                <NativeSelectOption key={item.id} value={item.id}>
-                  {item.displayName
-                    ? `${item.displayName} <${item.email}>`
-                    : item.email}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              <SelectTrigger
+                id={`${id}-from`}
+                size="sm"
+                className="w-auto max-w-full pl-7 *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                align="start"
+                className="w-auto max-w-[calc(100vw-1rem)]"
+              >
+                {accounts.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    <span className="flex items-center gap-2">
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          accountColor(accounts, item.id),
+                        )}
+                      />
+                      {item.displayName
+                        ? `${item.displayName} <${item.email}>`
+                        : item.email}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </Row>
 
@@ -776,18 +808,19 @@ export function ComposeWindow({
                 aria-hidden="true"
               />
               {format}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="下書きを破棄"
-                title="下書きを破棄"
-                disabled={sending}
-                onClick={handleDiscard}
-                className="ml-auto"
-              >
-                <Trash2Icon />
-              </Button>
+              <Hint label="下書きを破棄" side="top">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="下書きを破棄"
+                  disabled={sending}
+                  onClick={handleDiscard}
+                  className="ml-auto"
+                >
+                  <Trash2Icon />
+                </Button>
+              </Hint>
             </div>
           )}
         >
@@ -860,11 +893,10 @@ export function ComposeWindow({
                   >
                     <FileTypeIcon contentType={file.contentType} />
                     <span className="truncate">{file.filename}</span>
-                    <progress
+                    <Progress
                       aria-label={`${file.filename} を送信中`}
                       value={percent}
-                      max={100}
-                      className="h-1.5 w-20 shrink-0 overflow-hidden rounded-full [&::-moz-progress-bar]:bg-foreground [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:bg-foreground"
+                      className="w-20 shrink-0"
                     />
                     <span className="w-9 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
                       {percent}%
@@ -1169,36 +1201,37 @@ export function Editor({
       {toolbar(
         <>
           {formats.map(({ command, label, icon }) => (
+            <Hint key={command} label={label} side="top">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={label}
+                aria-pressed={active[command] ?? false}
+                disabled={disabled}
+                // 押しても本文の選択が外れないようにする。
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => run(command)}
+                className="aria-pressed:bg-muted"
+              >
+                {icon}
+              </Button>
+            </Hint>
+          ))}
+          <Hint label="リンク" side="top">
             <Button
-              key={command}
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={label}
-              title={label}
-              aria-pressed={active[command] ?? false}
+              aria-label="リンク"
+              aria-expanded={linkOpen}
               disabled={disabled}
-              // 押しても本文の選択が外れないようにする。
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => run(command)}
-              className="aria-pressed:bg-muted"
+              onClick={() => (linkOpen ? setLinkOpen(false) : openLink())}
             >
-              {icon}
+              <LinkIcon />
             </Button>
-          ))}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="リンク"
-            title="リンク"
-            aria-expanded={linkOpen}
-            disabled={disabled}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => (linkOpen ? setLinkOpen(false) : openLink())}
-          >
-            <LinkIcon />
-          </Button>
+          </Hint>
           <EmojiPickerButton
             disabled={disabled}
             onOpen={saveRange}

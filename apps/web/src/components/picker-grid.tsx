@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { layoutPickerRows, type PickerRow } from "@/lib/picker";
 
@@ -393,18 +394,19 @@ export function PickerGrid({
             className="h-8 w-full min-w-0 rounded-md border border-input bg-transparent pr-8 pl-8 text-base outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
           />
           {query !== "" && (
-            <button
-              type="button"
-              aria-label="検索をやめる"
-              title="検索をやめる"
-              onClick={() => {
-                changeQuery("");
-                inputRef.current?.focus();
-              }}
-              className="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <XIcon className="size-3.5" aria-hidden="true" />
-            </button>
+            <Hint label="検索をやめる">
+              <button
+                type="button"
+                aria-label="検索をやめる"
+                onClick={() => {
+                  changeQuery("");
+                  inputRef.current?.focus();
+                }}
+                className="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <XIcon className="size-3.5" aria-hidden="true" />
+              </button>
+            </Hint>
           )}
         </div>
         <div
@@ -416,24 +418,24 @@ export function PickerGrid({
           {tabs.map((tab) => {
             const selected = tab.id === currentSection;
             return (
-              <button
-                key={tab.id}
-                type="button"
-                data-section={tab.id}
-                aria-label={tab.label}
-                aria-pressed={selected}
-                title={tab.label}
-                tabIndex={-1}
-                // 押しても検索欄からフォーカスを移さない (キーボードで続けて選べるように)。
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => jumpTo(tab.id)}
-                className={cn(
-                  "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground [&_svg]:size-4",
-                  selected && "bg-muted text-foreground",
-                )}
-              >
-                {tab.icon}
-              </button>
+              <Hint key={tab.id} label={tab.label}>
+                <button
+                  type="button"
+                  data-section={tab.id}
+                  aria-label={tab.label}
+                  aria-pressed={selected}
+                  tabIndex={-1}
+                  // 押しても検索欄からフォーカスを移さない (キーボードで続けて選べるように)。
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => jumpTo(tab.id)}
+                  className={cn(
+                    "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground [&_svg]:size-4",
+                    selected && "bg-muted text-foreground",
+                  )}
+                >
+                  {tab.icon}
+                </button>
+              </Hint>
             );
           })}
           {!source && <div className="h-7" />}
@@ -573,25 +575,25 @@ function PickerRowView({
         const label = source?.label(name) ?? name;
         const current = name === value;
         return (
-          <button
-            key={name}
-            type="button"
-            role="option"
-            id={`${id}-icon-${index}`}
-            aria-selected={index === active}
-            aria-label={label}
-            title={label}
-            tabIndex={-1}
-            onClick={() => onChoose(name)}
-            onPointerEnter={() => onHover(name)}
-            className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-md text-foreground/80 text-xl leading-none outline-none hover:bg-muted hover:text-foreground [&_svg]:size-5",
-              current && cn("bg-muted", currentClass),
-              index === active && "bg-muted ring-2 ring-ring ring-inset",
-            )}
-          >
-            {source?.render(name)}
-          </button>
+          <Hint key={name} label={label} side="top">
+            <button
+              type="button"
+              role="option"
+              id={`${id}-icon-${index}`}
+              aria-selected={index === active}
+              aria-label={label}
+              tabIndex={-1}
+              onClick={() => onChoose(name)}
+              onPointerEnter={() => onHover(name)}
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-md text-foreground/80 text-xl leading-none outline-none hover:bg-muted hover:text-foreground [&_svg]:size-5",
+                current && cn("bg-muted", currentClass),
+                index === active && "bg-muted ring-2 ring-ring ring-inset",
+              )}
+            >
+              {source?.render(name)}
+            </button>
+          </Hint>
         );
       })}
     </div>

@@ -31,6 +31,7 @@ import {
   StarIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { MailboxIcon } from "@/components/mail/mailbox-icon";
 import {
   AccountMenuItems,
@@ -331,14 +332,12 @@ export function AccountSidebar({
       </div>
       {onCompose && (
         <div className="shrink-0 px-3 pb-2">
-          <Button
-            onClick={onCompose}
-            title="新規作成 (C)"
-            className="w-full justify-center gap-2"
-          >
-            <PenSquareIcon />
-            新規作成
-          </Button>
+          <Hint label="新規作成" shortcut="C">
+            <Button onClick={onCompose} className="w-full justify-center gap-2">
+              <PenSquareIcon />
+              新規作成
+            </Button>
+          </Hint>
         </div>
       )}
 
@@ -460,17 +459,18 @@ export function AccountSidebar({
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
         </div>
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label="設定"
-          title="設定"
-          aria-current={special === "settings" ? "page" : undefined}
-          onClick={() => onSelectSpecial("settings")}
-          className={cn(special === "settings" && "bg-sidebar-accent")}
-        >
-          <SettingsIcon />
-        </Button>
+        <Hint label="設定" side="top">
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="設定"
+            aria-current={special === "settings" ? "page" : undefined}
+            onClick={() => onSelectSpecial("settings")}
+            className={cn(special === "settings" && "bg-sidebar-accent")}
+          >
+            <SettingsIcon />
+          </Button>
+        </Hint>
       </div>
     </div>
   );
@@ -643,28 +643,29 @@ function AccountToggle(props: {
   const frame = "mt-1 ml-1 flex size-6 shrink-0 items-center justify-center";
   if (!props.onClick) return <span className={frame}>{props.children}</span>;
   return (
-    <button
-      type="button"
-      aria-expanded={props.open}
-      aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
-      title={props.open ? "折りたたむ" : "開く"}
-      onClick={props.onClick}
-      className={cn(
-        frame,
-        "group/toggle relative rounded-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50",
-      )}
-    >
-      <span className="flex transition-opacity group-hover/toggle:opacity-0 group-focus-visible/toggle:opacity-0">
-        {props.children}
-      </span>
-      <ChevronRightIcon
-        aria-hidden="true"
+    <Hint label={props.open ? "折りたたむ" : "開く"}>
+      <button
+        type="button"
+        aria-expanded={props.open}
+        aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
+        onClick={props.onClick}
         className={cn(
-          "absolute size-3.5 text-muted-foreground opacity-0 transition-[opacity,transform] group-hover/toggle:opacity-100 group-focus-visible/toggle:opacity-100",
-          props.open && "rotate-90",
+          frame,
+          "group/toggle relative rounded-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50",
         )}
-      />
-    </button>
+      >
+        <span className="flex transition-opacity group-hover/toggle:opacity-0 group-focus-visible/toggle:opacity-0">
+          {props.children}
+        </span>
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "absolute size-3.5 text-muted-foreground opacity-0 transition-[opacity,transform] group-hover/toggle:opacity-100 group-focus-visible/toggle:opacity-100",
+            props.open && "rotate-90",
+          )}
+        />
+      </button>
+    </Hint>
   );
 }
 
@@ -788,26 +789,27 @@ function FolderItem({
           ) : (
             <span className="size-5 shrink-0" aria-hidden="true" />
           )}
-          <button
-            type="button"
-            onClick={() => props.onSelect(mailbox)}
-            aria-current={selected ? "page" : undefined}
-            title={label}
-            className={cn(
-              "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
-              selected &&
-                "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
-              item.isDragging && "bg-sidebar-accent",
-            )}
-            {...item.handle}
-          >
-            <MailboxIcon specialUse={mailbox.specialUse} />
-            <span className="min-w-0 flex-1 truncate">{label}</span>
-            {/* 折りたたんでいる間は、中のフォルダの未読も合わせて表示する。 */}
-            <UnreadCount
-              count={open ? mailbox.unreadCount : node.unreadTotal}
-            />
-          </button>
+          <Hint label={label} side="right" whenClipped>
+            <button
+              type="button"
+              onClick={() => props.onSelect(mailbox)}
+              aria-current={selected ? "page" : undefined}
+              className={cn(
+                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                selected &&
+                  "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
+                item.isDragging && "bg-sidebar-accent",
+              )}
+              {...item.handle}
+            >
+              <MailboxIcon specialUse={mailbox.specialUse} />
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+              {/* 折りたたんでいる間は、中のフォルダの未読も合わせて表示する。 */}
+              <UnreadCount
+                count={open ? mailbox.unreadCount : node.unreadTotal}
+              />
+            </button>
+          </Hint>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-60">
           <FolderMenuItems

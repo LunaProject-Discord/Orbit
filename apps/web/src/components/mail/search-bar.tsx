@@ -5,6 +5,7 @@ import { SearchIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { SearchFilters, SearchParams } from "@/lib/api";
@@ -147,23 +148,21 @@ export function SearchBar({
               期間
             </Label>
             <div className="flex min-w-0 items-center gap-1.5">
-              <Input
+              <DatePicker
                 id={`${id}-since`}
-                type="date"
                 aria-label="期間の始まり"
                 value={filters.since}
                 max={filters.until || undefined}
-                onChange={(event) => setFilters({ since: event.target.value })}
-                className="h-8 min-w-0 px-1.5"
+                onChange={(since) => setFilters({ since })}
+                className="h-8 min-w-0 flex-1"
               />
               <span className="text-muted-foreground text-xs">〜</span>
-              <Input
-                type="date"
+              <DatePicker
                 aria-label="期間の終わり"
                 value={filters.until}
                 min={filters.since || undefined}
-                onChange={(event) => setFilters({ until: event.target.value })}
-                className="h-8 min-w-0 px-1.5"
+                onChange={(until) => setFilters({ until })}
+                className="h-8 min-w-0 flex-1"
               />
             </div>
           </div>

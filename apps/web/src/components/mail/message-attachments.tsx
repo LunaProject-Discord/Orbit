@@ -15,6 +15,7 @@ import {
   PresentationIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -249,41 +250,43 @@ export function MessageAttachments({
               </span>
               <span className="min-w-0 flex-1">
                 {/* カード全体を押せるように、ボタンの当たり判定をカードいっぱいに広げる。 */}
-                <button
-                  type="button"
-                  disabled={loading}
-                  title={nameOf(file)}
-                  onClick={() => void open(file)}
-                  className="block w-full truncate text-left font-medium text-sm outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring"
-                >
-                  {nameOf(file)}
-                  <span className="sr-only">
-                    {previewable ? " をプレビュー" : " を保存"}
-                  </span>
-                </button>
+                <Hint label={nameOf(file)} whenClipped>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void open(file)}
+                    className="block w-full truncate text-left font-medium text-sm outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-2 focus-visible:after:ring-ring"
+                  >
+                    {nameOf(file)}
+                    <span className="sr-only">
+                      {previewable ? " をプレビュー" : " を保存"}
+                    </span>
+                  </button>
+                </Hint>
                 <span className="block text-muted-foreground text-xs">
                   {formatSize(file.size)}
                   {previewable && " · プレビュー可"}
                 </span>
               </span>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`${nameOf(file)} を保存`}
-                title="保存"
-                // プレビューできないファイルはカード自体が保存のボタンなので、重複させない。
-                aria-hidden={previewable ? undefined : true}
-                tabIndex={previewable ? undefined : -1}
-                disabled={loading}
-                onClick={() => void save(file)}
-                className="relative"
-              >
-                {loading ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <DownloadIcon />
-                )}
-              </Button>
+              <Hint label="保存">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`${nameOf(file)} を保存`}
+                  // プレビューできないファイルはカード自体が保存のボタンなので、重複させない。
+                  aria-hidden={previewable ? undefined : true}
+                  tabIndex={previewable ? undefined : -1}
+                  disabled={loading}
+                  onClick={() => void save(file)}
+                  className="relative"
+                >
+                  {loading ? (
+                    <Loader2Icon className="animate-spin" />
+                  ) : (
+                    <DownloadIcon />
+                  )}
+                </Button>
+              </Hint>
             </li>
           );
         })}

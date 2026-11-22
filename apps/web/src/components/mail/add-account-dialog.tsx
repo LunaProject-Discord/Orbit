@@ -476,13 +476,20 @@ function ServerFields(props: {
           <Label htmlFor={`${props.idPrefix}-port`}>ポート</Label>
           <Input
             id={`${props.idPrefix}-port`}
-            type="number"
+            type="text"
             inputMode="numeric"
             required
-            min={1}
-            max={65535}
+            // 1〜65535 の数字だけを受け付ける (ブラウザーの数値欄の上下ボタンは使わない)。
+            pattern="[1-9][0-9]{0,4}"
+            maxLength={5}
+            autoComplete="off"
             value={props.port}
-            onChange={(event) => props.onPort(event.target.value)}
+            onChange={(event) => {
+              const digits = event.target.value.replace(/\D/g, "").slice(0, 5);
+              props.onPort(
+                Number(digits) > 65535 ? "65535" : digits.replace(/^0+/, ""),
+              );
+            }}
           />
         </div>
       </div>
