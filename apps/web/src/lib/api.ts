@@ -4,7 +4,6 @@
  * セッショントークンを localStorage に置いて Authorization ヘッダーで送る。
  */
 
-import type { AccountColorName } from "@/lib/account-colors";
 import type { AccountIconName } from "@/lib/account-icons";
 import { resolveApiUrl } from "@/lib/api-url";
 import { reportReachable } from "@/lib/offline/network";
@@ -158,8 +157,8 @@ export type Account = {
   signatureHtml: string | null;
   /** サイドバーでの表示順 (小さいほど上)。並び替えていなければ null。 */
   sortOrder: number | null;
-  /** 画面でアカウントを見分ける色の名前。選んでいなければ null (並び順から決まる)。 */
-  color: AccountColorName | null;
+  /** 見分けるための色 ("#rrggbb")。null なら追加した順に割り当てる。 */
+  color: string | null;
   /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
   icon: AccountIconName | null;
   createdAt: string;
@@ -562,7 +561,7 @@ export async function updateAccount(
   id: string,
   patch: {
     displayName?: string | null;
-    color?: AccountColorName | null;
+    color?: string | null;
     icon?: AccountIconName | null;
   },
 ): Promise<Account> {

@@ -3,6 +3,7 @@
 import { cn } from "cn";
 import { ChevronDownIcon } from "lucide-react";
 import {
+  type CSSProperties,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -54,6 +55,7 @@ export function IconPicker({
   labelledBy,
   colorClass,
   dotClass,
+  colorStyle,
 }: {
   /** 選んでいるアイコンの名前か絵文字。null なら、アイコンなし (色の点)。 */
   value: string | null;
@@ -64,6 +66,8 @@ export function IconPicker({
   colorClass?: string;
   /** アイコンなしのときに出す点の色のクラス。 */
   dotClass?: string;
+  /** 上の 2 つのクラスが CSS 変数を使うときの、変数の値。 */
+  colorStyle?: CSSProperties;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -111,6 +115,7 @@ export function IconPicker({
             size="sm"
             id={`${id}-trigger`}
             aria-labelledby={`${labelledBy} ${id}-trigger`}
+            style={colorStyle}
             className="max-w-full justify-start gap-2 font-normal"
           />
         }
@@ -143,6 +148,7 @@ export function IconPicker({
       <PopoverContent
         align="start"
         initialFocus={inputRef}
+        style={colorStyle}
         className={PICKER_POPOVER_CLASS}
       >
         <PopoverTitle className="sr-only">アイコンを選ぶ</PopoverTitle>

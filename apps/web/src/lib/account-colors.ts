@@ -1,84 +1,71 @@
+import type { CSSProperties } from "react";
 import type { Account } from "@/lib/api";
+import { normalizeHex, readableOn, textOn } from "@/lib/color";
 
 /**
  * アカウントを見分けるための色。一覧の点、サイドバー、作成画面の差出人で同じ色を使う。
- * dot は点の色、text はアイコンの色、tint はアイコンの背景 (同じ色を薄めたもの)。
- * 名前は API (apps/api の accounts.ts) と揃える。
+ * 保存するのは "#rrggbb" の色そのもの (mail_accounts.color)。見本から選んでも、
+ * 自由に作った色でもよい。
  */
-export const ACCOUNT_COLORS = [
-  {
-    name: "sky",
-    label: "水色",
-    dot: "bg-sky-500",
-    text: "text-sky-500",
-    tint: "bg-sky-500/15",
-  },
-  {
-    name: "violet",
-    label: "紫",
-    dot: "bg-violet-500",
-    text: "text-violet-500",
-    tint: "bg-violet-500/15",
-  },
-  {
-    name: "emerald",
-    label: "緑",
-    dot: "bg-emerald-500",
-    text: "text-emerald-500",
-    tint: "bg-emerald-500/15",
-  },
-  {
-    name: "amber",
-    label: "黄",
-    dot: "bg-amber-500",
-    text: "text-amber-500",
-    tint: "bg-amber-500/15",
-  },
-  {
-    name: "rose",
-    label: "赤",
-    dot: "bg-rose-500",
-    text: "text-rose-500",
-    tint: "bg-rose-500/15",
-  },
-  {
-    name: "teal",
-    label: "青緑",
-    dot: "bg-teal-500",
-    text: "text-teal-500",
-    tint: "bg-teal-500/15",
-  },
-  {
-    name: "orange",
-    label: "オレンジ",
-    dot: "bg-orange-500",
-    text: "text-orange-500",
-    tint: "bg-orange-500/15",
-  },
-  {
-    name: "slate",
-    label: "グレー",
-    dot: "bg-slate-500",
-    text: "text-slate-500",
-    tint: "bg-slate-500/15",
-  },
+
+/** 色の見本。上の段が明るい色、下の段が同じ色合いの濃い色。 */
+export const ACCOUNT_COLOR_PRESETS = [
+  { hex: "#f43f5e", label: "赤" },
+  { hex: "#f97316", label: "オレンジ" },
+  { hex: "#f59e0b", label: "黄" },
+  { hex: "#10b981", label: "緑" },
+  { hex: "#14b8a6", label: "青緑" },
+  { hex: "#0ea5e9", label: "水色" },
+  { hex: "#6366f1", label: "藍" },
+  { hex: "#8b5cf6", label: "紫" },
+  { hex: "#ec4899", label: "ピンク" },
+  { hex: "#64748b", label: "グレー" },
+  { hex: "#be123c", label: "濃い赤" },
+  { hex: "#c2410c", label: "濃いオレンジ" },
+  { hex: "#b45309", label: "濃い黄" },
+  { hex: "#047857", label: "濃い緑" },
+  { hex: "#0f766e", label: "濃い青緑" },
+  { hex: "#0369a1", label: "濃い水色" },
+  { hex: "#4338ca", label: "濃い藍" },
+  { hex: "#6d28d9", label: "濃い紫" },
+  { hex: "#be185d", label: "濃いピンク" },
+  { hex: "#334155", label: "濃いグレー" },
 ] as const;
 
-export type AccountColorName = (typeof ACCOUNT_COLORS)[number]["name"];
+/** 見本の 1 段に並べる数。 */
+export const ACCOUNT_COLOR_COLUMNS = 10;
+
+/**
+ * 以前の保存形式 (色の名前)。マイグレーション 0016 で色そのものに直したが、
+ * 端末に保存した古い内容 (オフライン用) にも残りうるので、読むときは受け付ける。
+ * 色を選んでいないアカウントには、この並びの順に割り当てる。
+ */
+const NAMED_COLORS: Readonly<Record<string, string>> = {
+  sky: "#0ea5e9",
+  violet: "#8b5cf6",
+  emerald: "#10b981",
+  amber: "#f59e0b",
+  rose: "#f43f5e",
+  teal: "#14b8a6",
+  orange: "#f97316",
+  slate: "#64748b",
+};
+const AUTO_COLORS = Object.values(NAMED_COLORS);
 
 type Colored = Pick<Account, "id" | "color" | "createdAt">;
 
 /**
- * アカウントの色の名前。選んでいなければ、追加した順に割り当てる
+ * アカウントの色 ("#rrggbb")。選んでいなければ、追加した順に割り当てる
  * (並び替えたり、ほかのアカウントの色を変えたりしても、色が入れ替わらないようにする)。
  */
-export function accountColorName(
+export function accountColorHex(
   accounts: readonly Colored[],
   accountId: string,
-): AccountColorName {
+): string {
   const chosen = accounts.find((account) => account.id === accountId)?.color;
-  if (chosen && ACCOUNT_COLORS.some((color) => color.name === chosen)) {
-    return chosen;
+  if (chosen) {
+    const hex = NAMED_COLORS[chosen] ?? normalizeHex(chosen);
+    if (hex) return hex;
   }
   const index = [...accounts]
     .sort(
@@ -86,20 +73,55 @@ export function accountColorName(
         a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
     )
     .findIndex((account) => account.id === accountId);
-  return (
-    ACCOUNT_COLORS[(index < 0 ? 0 : index) % ACCOUNT_COLORS.length] ??
-    ACCOUNT_COLORS[0]
-  ).name;
+  return AUTO_COLORS[(index < 0 ? 0 : index) % AUTO_COLORS.length] ?? "#0ea5e9";
 }
 
-/** アカウントの色の点に付けるクラス (背景色)。 */
-export function accountColor(
-  accounts: readonly Colored[],
-  accountId: string,
-): string {
-  const name = accountColorName(accounts, accountId);
+/** 色の名前 (見本にある色だけ)。読み上げや説明に使う。 */
+export function accountColorLabel(hex: string): string | null {
   return (
-    ACCOUNT_COLORS.find((color) => color.name === name)?.dot ??
-    ACCOUNT_COLORS[0].dot
+    ACCOUNT_COLOR_PRESETS.find((preset) => preset.hex === hex)?.label ?? null
   );
 }
+
+/** 明るい配色と暗い配色の、地の色のめやす (暗い方はカードやサイドバーの色)。 */
+const LIGHT_BACKGROUND = "#ffffff";
+const DARK_BACKGROUND = "#171717";
+/** アイコンの背景に重ねる色の割合。下の ACCOUNT_TINT_CLASS と揃える。 */
+const LIGHT_TINT = 0.15;
+const DARK_TINT = 0.2;
+
+const styles = new Map<string, CSSProperties>();
+
+/**
+ * 色を、下の ACCOUNT_*_CLASS が使う CSS 変数にする。
+ * 選んだ色のままだと、白に近い色は明るい配色で、黒に近い色は暗い配色で見えなくなるので、
+ * 配色ごとに、地の色と見分けられる明るさへ寄せた色を渡す (足りている色はそのまま)。
+ */
+export function accountColorStyle(hex: string): CSSProperties {
+  let style = styles.get(hex);
+  if (!style) {
+    const light = readableOn(hex, LIGHT_BACKGROUND, { tint: LIGHT_TINT });
+    const dark = readableOn(hex, DARK_BACKGROUND, { tint: DARK_TINT });
+    style = {
+      "--ac-l": light,
+      "--ac-d": dark,
+      "--ac-on-l": textOn(light),
+      "--ac-on-d": textOn(dark),
+    } as CSSProperties;
+    styles.set(hex, style);
+  }
+  return style;
+}
+
+/** アカウントの色の変数 (accountColorStyle) を持つ要素か、その中で使うクラス。 */
+/** 点などの塗り。 */
+export const ACCOUNT_DOT_CLASS = "bg-(--ac-l) dark:bg-(--ac-d)";
+/** アイコンの色。 */
+export const ACCOUNT_TEXT_CLASS = "text-(--ac-l) dark:text-(--ac-d)";
+/** アイコンの背景 (同じ色を薄めたもの)。 */
+export const ACCOUNT_TINT_CLASS = "bg-(--ac-l)/15 dark:bg-(--ac-d)/20";
+/** 塗りの上に置く文字の色。 */
+export const ACCOUNT_ON_CLASS = "text-(--ac-on-l) dark:text-(--ac-on-d)";
+
+/** 最近使った色を覚えておく場所 (端末ごと)。 */
+export const RECENT_COLORS_KEY = "mail.account-color-recent.v1";

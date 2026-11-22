@@ -1,8 +1,11 @@
 import { cn } from "cn";
+import type { ReactNode } from "react";
 import {
-  ACCOUNT_COLORS,
-  accountColor,
-  accountColorName,
+  ACCOUNT_DOT_CLASS,
+  ACCOUNT_TEXT_CLASS,
+  ACCOUNT_TINT_CLASS,
+  accountColorHex,
+  accountColorStyle,
 } from "@/lib/account-colors";
 import type { Account } from "@/lib/api";
 import { EMOJI_FONT_FAMILY, isEmojiIcon } from "@/lib/emoji/emoji";
@@ -38,8 +41,7 @@ export function AccountMark({
   size?: keyof typeof SIZES;
   className?: string;
 }) {
-  const name = accountColorName(accounts, account.id);
-  const color = ACCOUNT_COLORS.find((item) => item.name === name);
+  const style = accountColorStyle(accountColorHex(accounts, account.id));
   const emoji =
     account.icon !== null && isEmojiIcon(account.icon) ? account.icon : null;
   const node = useIconNode(emoji ? null : account.icon);
@@ -47,12 +49,16 @@ export function AccountMark({
   const box = cn(
     "flex shrink-0 items-center justify-center",
     sizes.box,
-    color?.tint,
+    ACCOUNT_TINT_CLASS,
     className,
   );
   if (emoji) {
     return (
-      <span aria-hidden="true" className={cn(box, "overflow-hidden")}>
+      <span
+        aria-hidden="true"
+        style={style}
+        className={cn(box, "overflow-hidden")}
+      >
         <span
           style={{ fontFamily: EMOJI_FONT_FAMILY }}
           className={cn("leading-none", sizes.emoji)}
@@ -65,9 +71,12 @@ export function AccountMark({
   // 図形を読み込んでいる間 (undefined) は、背景だけを出しておく (点からアイコンへ変わって見えないように)。
   if (node !== null) {
     return (
-      <span aria-hidden="true" className={box}>
+      <span aria-hidden="true" style={style} className={box}>
         {node && (
-          <LucideSvg node={node} className={cn(sizes.icon, color?.text)} />
+          <LucideSvg
+            node={node}
+            className={cn(sizes.icon, ACCOUNT_TEXT_CLASS)}
+          />
         )}
       </span>
     );
@@ -75,13 +84,14 @@ export function AccountMark({
   return (
     <span
       aria-hidden="true"
+      style={style}
       className={cn(
         "flex shrink-0 items-center justify-center",
         size === "md" ? "size-6" : "size-2",
         className,
       )}
     >
-      <span className={cn("size-2 rounded-full", color?.dot)} />
+      <span className={cn("size-2 rounded-full", ACCOUNT_DOT_CLASS)} />
     </span>
   );
 }
@@ -115,14 +125,33 @@ export function AccountListMark({
     );
   }
   return (
+    <AccountDot
+      accounts={accounts}
+      accountId={account.id}
+      className={cn(dotClass, className)}
+    />
+  );
+}
+
+/** アカウントの色の点。中に文字を置くときは ACCOUNT_ON_CLASS を付ける。 */
+export function AccountDot({
+  accounts,
+  accountId,
+  className,
+  children,
+}: {
+  accounts: readonly Pick<Account, "id" | "color" | "createdAt">[];
+  accountId: string;
+  className?: string;
+  children?: ReactNode;
+}) {
+  return (
     <span
       aria-hidden="true"
-      className={cn(
-        "shrink-0 rounded-full",
-        dotClass,
-        accountColor(accounts, account.id),
-        className,
-      )}
-    />
+      style={accountColorStyle(accountColorHex(accounts, accountId))}
+      className={cn("shrink-0 rounded-full", ACCOUNT_DOT_CLASS, className)}
+    >
+      {children}
+    </span>
   );
 }

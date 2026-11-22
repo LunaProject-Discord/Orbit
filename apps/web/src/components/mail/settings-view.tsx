@@ -4,7 +4,6 @@ import { cn } from "cn";
 import {
   BellIcon,
   BellOffIcon,
-  CheckIcon,
   CircleAlertIcon,
   LogOutIcon,
   MenuIcon,
@@ -18,7 +17,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
-import { Hint } from "@/components/hint";
+import { ColorPicker } from "@/components/mail/color-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
@@ -33,9 +32,10 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
-  ACCOUNT_COLORS,
-  type AccountColorName,
-  accountColorName,
+  ACCOUNT_DOT_CLASS,
+  ACCOUNT_TEXT_CLASS,
+  accountColorHex,
+  accountColorStyle,
 } from "@/lib/account-colors";
 import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
@@ -548,8 +548,7 @@ function AccountCard({
   }
   const problem = accountProblems[account.status];
   const provider = oauthProviderOf(account);
-  const color = accountColorName(accounts, account.id);
-  const colorItem = ACCOUNT_COLORS.find((item) => item.name === color);
+  const color = accountColorHex(accounts, account.id);
 
   const save = (patch: Parameters<typeof updateAccount>[1]) => {
     setError(null);
@@ -564,7 +563,7 @@ function AccountCard({
     const next = name.trim() || null;
     if (next !== account.displayName) save({ displayName: next });
   };
-  const chooseColor = (next: AccountColorName) => {
+  const chooseColor = (next: string | null) => {
     if (next === account.color) return;
     saveNow({ color: next });
   };
@@ -573,7 +572,7 @@ function AccountCard({
     saveNow({ icon: next });
   };
   const saveNow = (
-    patch: { color: AccountColorName } | { icon: AccountIconName | null },
+    patch: { color: string | null } | { icon: AccountIconName | null },
   ) => {
     // 押してすぐ画面に反映し、保存できなければ元に戻す。
     onUpdated({ ...account, ...patch });
@@ -638,33 +637,12 @@ function AccountCard({
           <span id={`${id}-color`} className="text-xs">
             色
           </span>
-          <div
-            role="radiogroup"
-            aria-labelledby={`${id}-color`}
-            className="flex h-8 items-center gap-1.5"
-          >
-            {ACCOUNT_COLORS.map((item) => (
-              <Hint key={item.name} label={item.label}>
-                {/* biome-ignore lint/a11y/useSemanticElements: 色の見本をそのまま選択肢にするため、radio の役割を持つボタンにしている */}
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={color === item.name}
-                  aria-label={item.label}
-                  onClick={() => chooseColor(item.name)}
-                  className={cn(
-                    "flex size-6 items-center justify-center rounded-full text-white outline-none ring-offset-2 ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring",
-                    item.dot,
-                    color === item.name && "ring-2 ring-foreground/40",
-                  )}
-                >
-                  {color === item.name && (
-                    <CheckIcon className="size-3.5" aria-hidden="true" />
-                  )}
-                </button>
-              </Hint>
-            ))}
-          </div>
+          <ColorPicker
+            value={color}
+            chosen={account.color !== null}
+            onChange={chooseColor}
+            labelledBy={`${id}-color`}
+          />
         </div>
       </div>
 
@@ -676,8 +654,9 @@ function AccountCard({
           value={account.icon}
           onChange={chooseIcon}
           labelledBy={`${id}-icon`}
-          colorClass={colorItem?.text}
-          dotClass={colorItem?.dot}
+          colorClass={ACCOUNT_TEXT_CLASS}
+          dotClass={ACCOUNT_DOT_CLASS}
+          colorStyle={accountColorStyle(color)}
         />
       </div>
 
