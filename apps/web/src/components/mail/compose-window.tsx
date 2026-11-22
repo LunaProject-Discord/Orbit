@@ -69,6 +69,7 @@ import {
 import { insertIntoField } from "@/lib/emoji/insert";
 import { formatSize } from "@/lib/format";
 import { sendMailOrQueue, useOnline } from "@/lib/offline";
+import { randomUuid } from "@/lib/uuid";
 
 function sendErrorOf(error: unknown, limit: number): string {
   if (error instanceof NetworkError) {
@@ -320,7 +321,7 @@ export function ComposeWindow({
         }
         total += file.size;
         count++;
-        const key = crypto.randomUUID();
+        const key = randomUuid();
         const owner = current.idempotencyKey;
         const { promise, abort } = uploadAttachment(file, (progress) =>
           setUploads((list) =>

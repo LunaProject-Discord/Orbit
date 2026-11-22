@@ -6,11 +6,13 @@
 
 import type { AccountColorName } from "@/lib/account-colors";
 import type { AccountIconName } from "@/lib/account-icons";
+import { resolveApiUrl } from "@/lib/api-url";
 import { reportReachable } from "@/lib/offline/network";
 
-export const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
-).replace(/\/+$/, "");
+export const API_URL = resolveApiUrl(
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787",
+  typeof window === "undefined" ? null : window.location,
+);
 
 const TOKEN_KEY = "mail.session-token";
 

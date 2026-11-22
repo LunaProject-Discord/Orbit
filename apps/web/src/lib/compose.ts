@@ -10,6 +10,7 @@ import type {
 } from "@/lib/api";
 import { splitAttachments } from "@/lib/attachments";
 import { addressFull, formatFullDate } from "@/lib/format";
+import { randomUuid } from "@/lib/uuid";
 
 /** 作成画面の種類。reply と replyAll は、送信時にはどちらも「返信」として扱う。 */
 export type ComposeMode = "new" | "reply" | "replyAll" | "forward";
@@ -200,7 +201,7 @@ export function newDraft(
   signatureHtml?: string | null,
 ): ComposeDraft {
   return {
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey: randomUuid(),
     accountId,
     to: field(),
     cc: field(),
@@ -343,7 +344,7 @@ export function replaceSignature(
 export function draftFromOutgoing(mail: OutgoingMail): ComposeDraft {
   return {
     // 前回の送信とは別の依頼として扱ってもらうため、ID は作り直す。
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey: randomUuid(),
     accountId: mail.accountId,
     to: field(mail.to),
     cc: field(mail.cc),

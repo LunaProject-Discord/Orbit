@@ -1,4 +1,5 @@
 import type { Account } from "@/lib/api";
+import { randomUuid } from "@/lib/uuid";
 
 /** サイドバーなどに出す、同期の状況。 */
 export type SyncStatus = {
@@ -92,10 +93,10 @@ export function deviceId(): string {
   try {
     const saved = window.localStorage.getItem(DEVICE_KEY);
     if (saved && /^[0-9a-f-]{36}$/i.test(saved)) return saved;
-    const created = crypto.randomUUID();
+    const created = randomUuid();
     window.localStorage.setItem(DEVICE_KEY, created);
     return created;
   } catch {
-    return crypto.randomUUID();
+    return randomUuid();
   }
 }
