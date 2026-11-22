@@ -13,6 +13,10 @@
 	# API。SSE (/v1/events) と Microsoft Graph の変更通知 (/v1/webhooks/microsoft) もここを通る。
 	@api path /v1 /v1/* /healthz
 	handle @api {
+		# 手前に nginx などの逆プロキシがあっても、変更の通知 (SSE) をため込まずにすぐ流してもらう。
+		@events path /v1/events
+		header @events X-Accel-Buffering "no"
+
 		reverse_proxy api:8787
 	}
 

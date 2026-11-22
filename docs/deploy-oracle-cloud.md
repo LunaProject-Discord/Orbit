@@ -2,13 +2,18 @@
 
 Oracle Cloud の既存のサーバー (AlmaLinux 9、arm64) に、Docker Compose で一式を動かす手順です。
 80 番はすでに Apache (httpd) が使っているので、アプリはサーバー内のポートだけで動かし、
-外への公開と HTTPS は既存の Apache から逆プロキシします。Web も API も同じドメインで公開します。
+外への公開は既存の Apache から逆プロキシします。Web も API も同じドメインで公開します。
 
 ```
 ブラウザー / Microsoft Graph
-        │  https://mail.example.com (443)
+        │  https://mail.example.com
         ▼
-既存の Apache (httpd)   HTTPS、証明書 (certbot)、ほかのサイトと同居
+Cloudflare            HTTPS と証明書
+        ▼
+Linode (DDoS 対策)     Oracle Cloud へ中継
+        │  80 番
+        ▼
+既存の Apache (httpd)   ほかのサイトと同居。ドメイン名でメールアプリへ振り分け
         │  http://127.0.0.1:18080
         ▼
 ┌─ Docker Compose ─────────────────────────────────────────┐
@@ -20,6 +25,11 @@ Oracle Cloud の既存のサーバー (AlmaLinux 9、arm64) に、Docker Compose
 │  backup        毎日 DB を deploy/backups/ に書き出す       │
 └──────────────────────────────────────────────────────────┘
 ```
+
+HTTPS を受ける場所によって、手順 2、5、6 が 2 通りに分かれます。
+
+- **A. 手前の Cloudflare が HTTPS を受ける** (上の図。既存のサイトと同じ経路に載せる)。このサーバーでは証明書を取りません。
+- **B. このサーバーの Apache が直接 HTTPS を受ける** (Cloudflare などを通さない場合)。certbot で証明書を取ります。
 
 80 番と 443 番をほかに使っていないサーバーなら、Apache を使わずに Caddy が直接公開する構成も選べます
 (末尾の「Apache を使わない場合」を参照)。
@@ -43,8 +53,8 @@ Oracle Cloud の既存のサーバー (AlmaLinux 9、arm64) に、Docker Compose
 > 確認の状況: Docker Compose 一式の起動、Apache (2.4) からの逆プロキシ経由でのログイン、変更の通知 (SSE)、
 > 20 MB の添付ファイルの受け取り、バックアップと復元は、手元の環境 (x86_64、Ubuntu の Apache) で確認しています。
 > arm64 でのビルドと起動は GitHub Actions の arm64 の実行環境で確認しています。
-> AlmaLinux 上での各コマンド (dnf、firewalld、SELinux、certbot)、Let's Encrypt の証明書の取得、
-> GitHub Actions からの更新は、実際のサーバーでは未確認です。うまくいかない箇所があれば、表示された内容を教えてください。
+> AlmaLinux 上での各コマンド (dnf、firewalld、SELinux、certbot)、Cloudflare と Linode を通した経路、
+> Let's Encrypt の証明書の取得、GitHub Actions からの更新は、実際のサーバーでは未確認です。うまくいかない箇所があれば、表示された内容を教えてください。
 
 以下では、ドメインを `mail.example.com` として説明します。自分のドメインに読み替えてください。
 コマンドは、特に断りがなければサーバーに SSH で入って実行します。
@@ -76,19 +86,41 @@ sudo firewall-cmd --state          # firewalld が動いているか
   手順 6 の Apache の設定も同じ番号にします。
 - イメージのビルドには、空きメモリが 2 GB ほど、ディスクが 5 GB ほどあると安心です (目安で、実測した値ではありません)。
 
-## 2. DNS と 443 番を用意する
+## 2. ドメインをサーバーへ向ける
 
-**DNS**: ドメインの DNS に、サーバーの IP アドレスを指す A レコードを追加します。
+### A. Cloudflare → Linode → このサーバー の経路に載せる
 
-| 種類 | 名前 | 値 |
-| --- | --- | --- |
-| A | `mail` (`mail.example.com` の場合) | サーバーのパブリック IP アドレス |
+既存のサイトと同じやり方で、新しいドメイン (`mail.example.com`) をこの経路に載せます。
+Linode の設定は見ていないので、下の 2 は既存のサイトの設定に合わせてください。
 
-Cloudflare を使っている場合は、証明書を取るまではプロキシ (オレンジ色の雲) を切って「DNS のみ」にしてください。
-反映されたかは、手元の PC で `nslookup mail.example.com` を実行して確認できます。
+1. **Cloudflare**: DNS に `mail` のレコードを、既存のサイトと同じ向き先 (Linode) で追加し、プロキシを有効 (オレンジ色の雲) にします。
+2. **Linode**: 中継の設定がドメインごとに分かれている場合は、`mail.example.com` を既存のサイトと同じように追加します
+   (すべてのドメインをそのまま Oracle Cloud へ流している場合は、追加の設定は不要です)。
+   Host ヘッダーは `mail.example.com` のまま Oracle Cloud へ渡る必要があります。
+3. このサーバーの 80 番は、すでに Linode から届いているはずなので、新しく開けるポートはありません。
+
+中継に nginx を使っている場合は、次の 2 点を確認してください (ほかのソフトでも同じ趣旨の設定があります)。
+
+| 項目 | 理由 |
+| --- | --- |
+| `client_max_body_size` を 30m 以上にする | 既定は 1 MB で、添付ファイル (1 通あたり合計 25 MB まで) を上げると 413 になる |
+| `proxy_read_timeout` を 60 秒以上にする (既定の 60 秒のままで可) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントを送っている |
+
+変更の通知をため込まずに流すための指定 (`X-Accel-Buffering: no`) は、アプリ側が応答に付けるので、nginx の設定は不要です。
+
+Cloudflare については次の点に注意してください。
+
+- Microsoft Graph の変更通知は、Microsoft のサーバーから `https://mail.example.com/v1/webhooks/microsoft` に届きます。
+  Cloudflare の Bot 対策や WAF がこれを止めると、即時の通知が届かず、定期的な確認だけの同期になります (同期自体は続きます)。
+  ワーカーのログに購読の失敗が出る場合は、このパスを対象外にするルールを Cloudflare に追加してください。
+- アップロードの大きさの上限 (無料プランは 100 MB のはずです) は、添付の上限 25 MB より大きいので問題ありません。
+
+### B. このサーバーで直接 HTTPS を受ける
+
+**DNS**: ドメインの DNS に、サーバーのパブリック IP アドレスを指す A レコードを追加します。
 
 **Oracle Cloud 側 (セキュリティ・リスト)**: コンソールでインスタンスの詳細 → サブネット → セキュリティ・リスト →
-「イングレス・ルールの追加」を開き、ソース `0.0.0.0/0`、TCP、宛先ポート 443 を追加します (80 番はすでに開いているはずです)。
+「イングレス・ルールの追加」を開き、ソース `0.0.0.0/0`、TCP、宛先ポート 443 を追加します。
 
 **サーバー側 (firewalld)**: 手順 1 で `running` と出た場合だけ実行します。
 
@@ -153,15 +185,20 @@ docker compose run --rm api node apps/api/dist/cli/create-user.js you@example.co
 
 ## 5. Apache から繋ぐ準備をする
 
-Apache からコンテナへ繋ぐことを SELinux に許可し (手順 1 の `getenforce` が `Enforcing` の場合)、HTTPS 用のモジュールと certbot を入れます。
+Apache からコンテナへ繋ぐことを SELinux に許可します (手順 1 の `getenforce` が `Enforcing` の場合)。
 
 ```sh
 sudo setsebool -P httpd_can_network_connect 1
+```
+
+B (このサーバーで直接 HTTPS を受ける) の場合だけ、HTTPS 用のモジュールと certbot も入れます。
+
+```sh
 sudo dnf -y install epel-release
 sudo dnf -y install mod_ssl certbot python3-certbot-apache
 ```
 
-## 6. Apache にサイトを追加して証明書を取る
+## 6. Apache にサイトを追加する
 
 設定の見本をドメインに合わせて置き、文法を確かめてから読み込み直します。
 
@@ -175,9 +212,16 @@ sudo httpd -S
 
 - `configtest` が `Syntax OK` 以外を返したら、読み込み直さずに `sudo rm /etc/httpd/conf.d/mail.conf` で元に戻せます。
 - `httpd -S` で、既存のサイトがこれまでどおり並び、そこに `mail.example.com` が加わっていることを確認します。
-- この時点で `http://mail.example.com/healthz` が `{"status":"ok"}` を返します。
+- サーバーの中から、ドメイン名で振り分けられることを確認できます。
 
-続けて証明書を取ります。certbot が HTTPS 用の設定 (`/etc/httpd/conf.d/mail-le-ssl.conf`) を作り、HTTP から HTTPS への転送も設定します。
+  ```sh
+  curl -s -H "Host: $DOMAIN" http://127.0.0.1/healthz    # {"status":"ok"} が返る
+  ```
+
+**A の場合**は、これで完了です。ブラウザーで `https://mail.example.com` を開き、手順 4 で作った利用者でログインできることを確認します。
+Cloudflare が HTTPS を受けるので、このサーバーでは証明書を取りません。
+
+**B の場合**は、続けて証明書を取ります。certbot が HTTPS 用の設定 (`/etc/httpd/conf.d/mail-le-ssl.conf`) を作り、HTTP から HTTPS への転送も設定します。
 
 ```sh
 sudo certbot --apache -d mail.example.com
@@ -185,7 +229,7 @@ sudo systemctl enable --now certbot-renew.timer    # 証明書の自動更新
 ```
 
 途中で連絡先のメールアドレスと利用規約への同意を聞かれます。
-ブラウザーで `https://mail.example.com` を開き、手順 4 で作った利用者でログインできれば完了です。
+ブラウザーで `https://mail.example.com` を開き、ログインできれば完了です。
 
 ## 7. Microsoft と Google の設定を本番用にする
 
@@ -337,21 +381,23 @@ sudo tail -n 50 /var/log/httpd/mail_error.log   # Apache 側のエラー
 
 | 症状 | 確認すること |
 | --- | --- |
-| ブラウザーで繋がらない (時間切れ) | 手順 2 の 2 か所で 443 番が開いているか。DNS がサーバーの IP アドレスを指しているか |
+| ブラウザーで繋がらない、Cloudflare のエラー画面 (52x) が出る | 手順 2 の経路 (Cloudflare の DNS、Linode の中継) に新しいドメインが載っているか。サーバーの中では `curl -H "Host: <DOMAIN>" http://127.0.0.1/healthz` が返るか |
+| 既存のサイトの画面が出る | Linode が Host ヘッダーを `<DOMAIN>` のまま渡しているか。`sudo httpd -S` に `<DOMAIN>` が出ているか |
+| 添付ファイルを上げると 413 になる | 手前の中継 (nginx なら `client_max_body_size`) の上限 |
 | 503 Service Unavailable | コンテナが動いているか (`docker compose ps`、`curl http://127.0.0.1:18080/healthz`)。動いているのに 503 なら、Apache のエラーログに `Permission denied` が出ていないか (出ていれば手順 5 の `setsebool`) |
 | 既存のサイトがメールアプリに繋がってしまう | 手順 1 の空の VirtualHost (`000-default.conf`) を置いて `sudo systemctl reload httpd` |
-| certbot が失敗する | DNS が反映済みか。80 番が外から届くか。Cloudflare のプロキシを切っているか |
+| certbot が失敗する (B の場合) | DNS が反映済みか。80 番と 443 番が外から届くか |
 | `api` が起動しない | `docker compose logs migrate api`。`deploy/.env` の値が空でないか |
 | ログインできない | 利用者を作ったか (手順 4)。パスワードは 12 文字以上 |
 | Microsoft / Google のログインで戻ってこられない | リダイレクト URI が `https://<DOMAIN>/oauth/microsoft` (`/oauth/google`) と完全に一致しているか |
-| 新着の反映が遅い | Apache の設定の `ProxyPass` に `flushpackets=on` が付いているか (certbot が作った `mail-le-ssl.conf` も確認) |
+| 新着の反映が遅い | Apache の設定の `ProxyPass` に `flushpackets=on` が付いているか。手前の中継が応答をため込んでいないか。Microsoft のアカウントなら、ワーカーのログに変更通知の購読の失敗が出ていないか |
 | ディスクが足りない | `docker system df` で内訳を確認し、`docker builder prune` で古いビルドの残りを消す |
 
 元に戻す (メールアプリを取り除く) ときは、次の順に行います。既存のサイトの設定には触れません。
 
 ```sh
 cd /opt/mail/deploy && docker compose down          # コンテナを止める (データは残る。消すなら down -v)
-sudo rm /etc/httpd/conf.d/mail.conf /etc/httpd/conf.d/mail-le-ssl.conf
+sudo rm -f /etc/httpd/conf.d/mail.conf /etc/httpd/conf.d/mail-le-ssl.conf
 sudo apachectl configtest && sudo systemctl reload httpd
 ```
 
