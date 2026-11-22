@@ -11,6 +11,7 @@ export type ShortcutCommand =
   | "archive"
   | "delete"
   | "move"
+  | "junk"
   | "compose"
   | "search"
   | "reply"
@@ -44,6 +45,8 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
         return "markUnread";
       case "#":
         return "delete";
+      case "!":
+        return "junk";
       case "R":
         return "replyAll";
       default:
@@ -109,6 +112,7 @@ export const shortcutLabels = {
   archive: "E",
   delete: "Delete",
   move: "V",
+  junk: "!",
   compose: "C",
   reply: "R",
   replyAll: "Shift+R",

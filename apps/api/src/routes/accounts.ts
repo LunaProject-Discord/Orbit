@@ -2,6 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import {
   CHANNEL_ACCOUNTS,
   CHANNEL_CHANGES,
+  CHANNEL_OUTBOX,
   type ChangeNotification,
   createGoogleAuthorizeUrl,
   createMicrosoftAuthorizeUrl,
@@ -686,6 +687,23 @@ export function accountRoutes({
     return c.body(null, 204);
   });
 
+  /** 次の定期確認を待たずに、いますぐ全フォルダを確認させる。 */
+  app.post("/:id/sync", zValidator("param", idParam), async (c) => {
+    const { id } = c.req.valid("param");
+    const [account] = await db
+      .select({ id: mailAccounts.id })
+      .from(mailAccounts)
+      .where(
+        and(eq(mailAccounts.id, id), eq(mailAccounts.userId, c.var.user.id)),
+      );
+    if (!account) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    // 操作を積んだときと同じ知らせ。同期ワーカーはキューを処理したあと、全フォルダを確認する。
+    await db.execute(sql`select pg_notify(${CHANNEL_OUTBOX}, ${id})`);
+    return c.body(null, 204);
+  });
+
   app.get("/:id/mailboxes", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");
     const rows = await db
@@ -695,6 +713,7 @@ export function accountRoutes({
         path: mailboxes.path,
         name: mailboxes.name,
         specialUse: mailboxes.specialUse,
+        sortOrder: mailboxes.sortOrder,
         lastSyncedAt: mailboxes.lastSyncedAt,
       })
       .from(mailboxes)

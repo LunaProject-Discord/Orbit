@@ -5,6 +5,11 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { isDistinct, recordChanges } from "../lib/changes.js";
+import { enqueueMessageAction } from "../lib/message-actions.js";
+
+const idParam = z.object({ id: z.uuid() });
+/** 「すべて既読にする」で、1 回の操作にまとめるメッセージの数。 */
+const MARK_READ_BATCH = 500;
 
 const orderBody = z.object({
   /** 上から順に並べたいフォルダの ID (同じ親を持つフォルダをすべて)。 */
@@ -74,6 +79,72 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
       return c.json({ error: "not_found" }, 404);
     }
     return c.body(null, 204);
+  });
+
+  /** 並び替えたフォルダを、既定の順 (役割、次に名前) に戻す。 */
+  app.post("/order/reset", zValidator("json", orderBody), async (c) => {
+    const { mailboxIds } = c.req.valid("json");
+    const user = c.var.user;
+    await db.transaction(async (tx) => {
+      const owned = await tx
+        .select({ id: mailboxes.id })
+        .from(mailboxes)
+        .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+        .where(
+          and(
+            eq(mailAccounts.userId, user.id),
+            inArray(mailboxes.id, mailboxIds),
+          ),
+        );
+      const ids = owned.map((row) => row.id);
+      if (ids.length === 0) return;
+      await tx
+        .update(mailboxes)
+        .set({ sortOrder: null })
+        .where(inArray(mailboxes.id, ids));
+      await recordChanges(tx, user.id, "mailbox", ids);
+    });
+    return c.body(null, 204);
+  });
+
+  /**
+   * フォルダの未読のメールを、すべて既読にする。
+   * 1 通ずつ既読にするのと同じ経路 (DB に反映し、メールサーバーへは後から反映) を使う。
+   */
+  app.post("/:id/read", zValidator("param", idParam), async (c) => {
+    const { id } = c.req.valid("param");
+    const user = c.var.user;
+    const [mailbox] = await db
+      .select({ id: mailboxes.id })
+      .from(mailboxes)
+      .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+      .where(and(eq(mailboxes.id, id), eq(mailAccounts.userId, user.id)));
+    if (!mailbox) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    let count = 0;
+    for (;;) {
+      const unread = await db
+        .select({ id: messages.id })
+        .from(messageMailboxes)
+        .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
+        .where(
+          and(eq(messageMailboxes.mailboxId, id), eq(messages.seen, false)),
+        )
+        .limit(MARK_READ_BATCH);
+      if (unread.length === 0) break;
+      const result = await enqueueMessageAction(db, user.id, {
+        action: "set_flags",
+        idempotencyKey: crypto.randomUUID(),
+        messageIds: unread.map((row) => row.id),
+        seen: true,
+      });
+      // 受け付けられなかった分を繰り返し取り出さないよう、そこで止める。
+      if (!result.ok) break;
+      count += unread.length;
+      if (unread.length < MARK_READ_BATCH) break;
+    }
+    return c.json({ count });
   });
 
   return app;

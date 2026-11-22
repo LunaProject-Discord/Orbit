@@ -8,9 +8,11 @@ import {
   FolderInputIcon,
   ForwardIcon,
   ImageOffIcon,
+  MailCheckIcon,
   MailIcon,
   MailOpenIcon,
   MoreHorizontalIcon,
+  OctagonAlertIcon,
   PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
@@ -18,6 +20,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import { QuickReply } from "@/components/mail/quick-reply";
 import { Button } from "@/components/ui/button";
@@ -619,10 +622,8 @@ function MessageToolbar({
   onCompose: (mode: ReplyMode) => void;
 }) {
   const mailboxes = useMailboxes(accountId);
-  const { archive, trash, inTrash, destinations } = actionTargets(
-    mailboxes,
-    mailboxId,
-  );
+  const { archive, trash, inTrash, junk, notJunk, destinations } =
+    actionTargets(mailboxes, mailboxId);
   // 移動先のメニュー。ショートカットキー (V) からも開く。
   const [moveOpen, setMoveOpen] = useState(false);
   const handledMoveRequest = useRef(moveRequest);
@@ -727,6 +728,26 @@ function MessageToolbar({
           </span>
         </Button>
       )}
+      {junk && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => act({ action: "move", mailboxId: junk.id })}
+        >
+          <OctagonAlertIcon />
+          <span className="sr-only sm:not-sr-only">迷惑メールとして扱う</span>
+        </Button>
+      )}
+      {notJunk && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => act({ action: "move", mailboxId: notJunk.id })}
+        >
+          <MailCheckIcon />
+          <span className="sr-only sm:not-sr-only">迷惑メールから戻す</span>
+        </Button>
+      )}
       {destinations.length > 0 && (
         <DropdownMenu open={moveOpen} onOpenChange={setMoveOpen}>
           <DropdownMenuTrigger
@@ -738,12 +759,14 @@ function MessageToolbar({
             移動
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
-            {destinations.map((mailbox) => (
+            {destinations.map((entry) => (
               <DropdownMenuItem
-                key={mailbox.id}
-                onClick={() => act({ action: "move", mailboxId: mailbox.id })}
+                key={entry.mailbox.id}
+                onClick={() =>
+                  act({ action: "move", mailboxId: entry.mailbox.id })
+                }
               >
-                <span className="truncate">{mailboxLabel(mailbox)}</span>
+                <MoveTarget entry={entry} />
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -780,15 +803,14 @@ function MessageToolbar({
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuLabel>移動</DropdownMenuLabel>
-                {destinations.map((mailbox) => (
+                {destinations.map((entry) => (
                   <DropdownMenuItem
-                    key={mailbox.id}
+                    key={entry.mailbox.id}
                     onClick={() =>
-                      act({ action: "move", mailboxId: mailbox.id })
+                      act({ action: "move", mailboxId: entry.mailbox.id })
                     }
                   >
-                    <FolderInputIcon />
-                    <span className="truncate">{mailboxLabel(mailbox)}</span>
+                    <MoveTarget entry={entry} />
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuGroup>

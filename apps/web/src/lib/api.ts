@@ -278,13 +278,13 @@ export type Mailbox = {
     | "all"
     | "flagged"
     | null;
+  /** 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null。 */
+  sortOrder: number | null;
 };
 
 /** フォルダ一覧用。全アカウント分をまとめて取得する。 */
 export type MailboxSummary = Mailbox & {
   accountId: string;
-  /** 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null。 */
-  sortOrder: number | null;
   /** 同期が一度終わっていれば、その時刻。 */
   lastSyncedAt: string | null;
   totalCount: number;
@@ -694,6 +694,24 @@ export async function saveMailboxOrder(mailboxIds: string[]): Promise<void> {
     method: "PUT",
     body: { mailboxIds },
   });
+}
+
+/** 並び替えたフォルダを、既定の順に戻す。 */
+export async function resetMailboxOrder(mailboxIds: string[]): Promise<void> {
+  await apiFetch("/v1/mailboxes/order/reset", {
+    method: "POST",
+    body: { mailboxIds },
+  });
+}
+
+/** フォルダの未読のメールを、すべて既読にする。 */
+export async function markMailboxRead(mailboxId: string): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}/read`, { method: "POST" });
+}
+
+/** 次の定期確認を待たずに、アカウントの全フォルダをいますぐ確認させる。 */
+export async function syncAccountNow(accountId: string): Promise<void> {
+  await apiFetch(`/v1/accounts/${accountId}/sync`, { method: "POST" });
 }
 
 /** アカウントの並び順を保存する。 */
