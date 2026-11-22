@@ -76,7 +76,7 @@ export function MessageMenuItems({
             <FolderInputIcon />
             移動
           </ContextMenuSubTrigger>
-          <ContextMenuSubContent className="w-56">
+          <ContextMenuSubContent className="w-56" title="移動">
             {destinations.map((entry) => (
               <ContextMenuItem
                 key={entry.mailbox.id}

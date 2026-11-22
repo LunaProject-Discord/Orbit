@@ -719,7 +719,7 @@ export function ComposeWindow({
             <button
               type="button"
               onClick={() => setExtraShownFor(draft.idempotencyKey)}
-              className="shrink-0 rounded-sm px-1 text-muted-foreground text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="relative shrink-0 rounded-sm px-1 text-muted-foreground text-xs outline-none pointer-coarse:px-2 pointer-coarse:py-2 pointer-coarse:text-sm pointer-coarse:after:absolute pointer-coarse:after:-inset-1 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               Cc Bcc
             </button>
@@ -754,7 +754,7 @@ export function ComposeWindow({
             value={draft.subject}
             onChange={(event) => set("subject", event.target.value)}
             disabled={sending}
-            className="h-7 min-w-0 flex-1 bg-transparent font-medium text-base outline-none md:text-sm"
+            className="h-7 min-w-0 pointer-coarse:h-10 flex-1 bg-transparent font-medium text-base outline-none md:text-sm"
           />
           <EmojiPickerButton
             label="件名に絵文字を入れる"
