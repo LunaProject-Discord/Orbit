@@ -440,7 +440,8 @@ export function AccountSidebar({
         <Button
           variant="ghost"
           onClick={onAdd}
-          className="mt-1 justify-start gap-2 px-2 text-muted-foreground"
+          // ボタンには 1px の枠があるので、その分を引いてアイコンを上の項目の列に揃える。
+          className="mt-1 justify-start gap-2 px-[7px] text-muted-foreground"
         >
           <PlusIcon />
           アカウントを追加
@@ -638,7 +639,8 @@ function AccountToggle(props: {
   onClick: (() => void) | null;
   children: React.ReactNode;
 }) {
-  const frame = "mt-1 flex size-6 shrink-0 items-center justify-center";
+  // 左に 4px 空けて、アイコンの中心を上の項目 (受信トレイなど) のアイコンの列に揃える。
+  const frame = "mt-1 ml-1 flex size-6 shrink-0 items-center justify-center";
   if (!props.onClick) return <span className={frame}>{props.children}</span>;
   return (
     <button
@@ -770,7 +772,10 @@ function FolderItem({
           render={
             <div
               className="flex items-center"
-              style={{ paddingLeft: `${props.depth * 0.75}rem` }}
+              // 開閉の矢印はアカウントのアイコンの列に、フォルダのアイコンはアカウント名の列に揃える。
+              style={{
+                paddingLeft: `calc(${props.depth * 0.75}rem - 0.375rem)`,
+              }}
             />
           }
         >
