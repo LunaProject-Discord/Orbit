@@ -29,6 +29,8 @@ describe("resolveShortcut", () => {
     expect(key("v")).toBe("move");
     expect(key("x")).toBe("select");
     expect(key("F9")).toBe("toggleSidebar");
+    expect(key("ArrowRight")).toBe("expandThread");
+    expect(key("ArrowLeft")).toBe("collapseThread");
     expect(key("z")).toBeNull();
   });
 

@@ -8,9 +8,11 @@ import {
   FolderInputIcon,
   ForwardIcon,
   ImageOffIcon,
+  InfoIcon,
   MailCheckIcon,
   MailIcon,
   MailOpenIcon,
+  MessagesSquareIcon,
   MoreHorizontalIcon,
   OctagonAlertIcon,
   PaperclipIcon,
@@ -148,6 +150,10 @@ type ReplyMode = Exclude<ComposeMode, "new">;
 type Props = {
   /** 開いたメール。会話 (スレッド) がある場合は、その会話全体を表示する。 */
   messageId: string;
+  /** 会話の全体ではなく、このメール 1 通だけを表示する (一覧で会話を広げて選んだとき)。 */
+  single?: boolean;
+  /** 1 通だけを表示しているときに、会話の全体の表示へ切り替える。 */
+  onShowThread?: () => void;
   /** 値が変わると、表示を保ったまま取得し直す (同期による更新の反映)。 */
   refreshKey: number;
   /**
@@ -180,10 +186,13 @@ type State =
   | { status: "loading" }
   | { status: "error" }
   /** thread は会話のメッセージ (古い順)。1 通だけのメールでは 1 件。 */
-  | { status: "ready"; thread: ThreadMessage[] };
+  /** size は会話全体の通数 (1 通だけを表示しているときも、会話全体を数える)。 */
+  | { status: "ready"; thread: ThreadMessage[]; size: number };
 
 export function MessageView({
   messageId,
+  single = false,
+  onShowThread,
   refreshKey,
   summary,
   accounts,
@@ -201,10 +210,12 @@ export function MessageView({
   const [state, setState] = useState<State>({ status: "loading" });
   /** 会話の中で、本文を開いているメッセージ。 */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [shownId, setShownId] = useState(messageId);
-  if (shownId !== messageId) {
+  // 同じメールでも、会話の全体と 1 通だけの表示は別のものとして扱う。
+  const viewKey = `${messageId}:${single}`;
+  const [shownId, setShownId] = useState(viewKey);
+  if (shownId !== viewKey) {
     // 別のメールを選んだら、前の本文を出したままにしない。
-    setShownId(messageId);
+    setShownId(viewKey);
     setState({ status: "loading" });
     setExpanded(new Set());
   }
@@ -215,7 +226,7 @@ export function MessageView({
   onActionRef.current = onAction;
   /** 開いているメールについて、これまでに会話の中で見たメッセージと、既読にしたかどうか。 */
   const session = useRef({
-    messageId,
+    messageId: viewKey,
     known: new Set<string>(),
     markedRead: false,
   });
@@ -229,20 +240,31 @@ export function MessageView({
     undefined,
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: 開いているメールが変わるたびに取り消す
-  useEffect(() => () => clearTimeout(readTimer.current), [messageId]);
+  useEffect(() => () => clearTimeout(readTimer.current), [viewKey]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey は再取得のきっかけとして使う
   useEffect(() => {
     const controller = new AbortController();
-    if (session.current.messageId !== messageId) {
-      session.current = { messageId, known: new Set(), markedRead: false };
+    if (session.current.messageId !== viewKey) {
+      session.current = {
+        messageId: viewKey,
+        known: new Set(),
+        markedRead: false,
+      };
     }
     getThread(
       messageId,
       summaryRef.current?.mailboxId ?? null,
       controller.signal,
     )
-      .then((thread) => {
+      .then((all) => {
+        const thread = single
+          ? all.filter((message) => message.id === messageId)
+          : all;
+        if (thread.length === 0) {
+          onMissing();
+          return;
+        }
         const current = session.current;
         const last = thread.at(-1);
         // 初めて見るメッセージのうち、未読のものと最新のものは本文を開いておく。
@@ -258,7 +280,7 @@ export function MessageView({
         if (open.length > 0) {
           setExpanded((ids) => new Set([...ids, ...open]));
         }
-        setState({ status: "ready", thread });
+        setState({ status: "ready", thread, size: all.length });
 
         // 開いたら既読にする (1 回だけ。あとから未読に戻した場合は、そのままにする)。
         // 設定によって、すぐに、少し待ってから、または自動では既読にしない。
@@ -267,7 +289,8 @@ export function MessageView({
         if (markRead === "never") return;
         current.markedRead = true;
         const mark = () => {
-          const row = summaryRef.current;
+          // 1 通だけを表示しているときは、会話のほかのメールは既読にしない。
+          const row = single ? null : summaryRef.current;
           const unread = thread
             .filter((message) => !message.seen)
             .map((message) => message.id);
@@ -298,7 +321,7 @@ export function MessageView({
         );
       });
     return () => controller.abort();
-  }, [messageId, refreshKey, onMissing]);
+  }, [messageId, single, viewKey, refreshKey, onMissing]);
 
   const thread = state.status === "ready" ? state.thread : null;
   /** 返信・転送の元にするメッセージ (会話の最新)。 */
@@ -336,6 +359,38 @@ export function MessageView({
     if (replyTargetId) composeRef.current(composeRequest.mode);
   }, [composeRequest, replyTargetId]);
 
+  /** 既読やスターの操作を、表示中の内容にもすぐ反映する (1 通だけの表示は、一覧の行の値を使えないため)。 */
+  const act: Props["onAction"] = (ids, input) => {
+    if (input.action === "set_flags") {
+      const targets = new Set(ids);
+      setState((current) =>
+        current.status === "ready"
+          ? {
+              ...current,
+              thread: current.thread.map((message) =>
+                targets.has(message.id)
+                  ? {
+                      ...message,
+                      seen: input.seen ?? message.seen,
+                      flagged: input.flagged ?? message.flagged,
+                    }
+                  : message,
+              ),
+            }
+          : current,
+      );
+    }
+    onAction(ids, input);
+  };
+  // 一覧の行は会話全体を表すので、1 通だけの表示では使わない。
+  const row = single ? null : summary;
+  const profile: ProfileActions = {
+    onSearch: onSearchAddress,
+    onCompose: (address) => {
+      const accountId = thread?.[0]?.accountId;
+      if (accountId) onComposeTo(address, accountId);
+    },
+  };
   const handleDetail = (message: MessageDetail) => {
     details.current.set(message.id, message);
   };
@@ -344,9 +399,13 @@ export function MessageView({
 
   // 見出しの下に出す、メールのある場所 (アカウントとフォルダ)。
   const account = accounts.find((item) => item.id === first?.accountId);
-  const mailbox = mailboxes.find(
-    (item) => item.id === (summary?.mailboxId ?? last?.mailboxIds[0] ?? null),
-  );
+  // 1 通だけの表示では、そのメールのあるフォルダ (一覧のフォルダにあれば、そちら)。
+  const mailboxId =
+    row?.mailboxId ??
+    (summary && last?.mailboxIds.includes(summary.mailboxId)
+      ? summary.mailboxId
+      : (last?.mailboxIds[0] ?? null));
+  const mailbox = mailboxes.find((item) => item.id === mailboxId);
   const place = [
     account ? account.displayName || account.email : null,
     mailbox ? mailboxLabel(mailbox) : null,
@@ -358,6 +417,21 @@ export function MessageView({
       <span className="min-w-0 truncate">{place.join(" · ")}</span>
     </p>
   );
+  // 1 通だけを表示しているときに出す、会話の全体への入り口。
+  const threadLink = single &&
+    onShowThread &&
+    state.status === "ready" &&
+    state.size > 1 && (
+      <div className="flex shrink-0 items-center gap-2 border-b bg-muted/50 px-4 py-1.5 text-muted-foreground text-xs sm:px-6">
+        <MessagesSquareIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate">
+          {state.size} 通のやり取りのうちの 1 通を表示しています。
+        </span>
+        <Button variant="link" size="xs" onClick={onShowThread}>
+          会話の全体を表示
+        </Button>
+      </div>
+    );
   // 返信の宛先になる相手。自分が送ったメールへの返信は、元の宛先へ送る。
   const own = new Set(accounts.map((item) => item.email.toLowerCase()));
   const sender = last?.from[0];
@@ -397,15 +471,13 @@ export function MessageView({
           <MessageToolbar
             accountId={first.accountId}
             // 会話のうち、表示中のフォルダにある分をまとめて操作する。
-            targetIds={summary?.threadMessageIds ?? [messageId]}
-            starId={summary?.id ?? messageId}
-            mailboxId={summary?.mailboxId ?? null}
-            seen={summary?.seen ?? thread.every((message) => message.seen)}
-            flagged={
-              summary?.flagged ?? thread.some((message) => message.flagged)
-            }
+            targetIds={row?.threadMessageIds ?? [messageId]}
+            starId={row?.id ?? messageId}
+            mailboxId={single ? mailboxId : (row?.mailboxId ?? null)}
+            seen={row?.seen ?? thread.every((message) => message.seen)}
+            flagged={row?.flagged ?? thread.some((message) => message.flagged)}
             moveRequest={moveRequest}
-            onAction={onAction}
+            onAction={act}
             onCompose={compose}
           />
         )}
@@ -418,6 +490,7 @@ export function MessageView({
         </p>
       ) : state.thread.length === 1 ? (
         <>
+          {threadLink}
           <LoadedMessage
             // 別のメールを開いたら、スクロール位置を先頭に戻す。
             key={first.id}
@@ -425,10 +498,7 @@ export function MessageView({
             refreshKey={refreshKey}
             meta={meta}
             mailbox={mailbox}
-            profile={{
-              onSearch: onSearchAddress,
-              onCompose: (address) => onComposeTo(address, first.accountId),
-            }}
+            profile={profile}
             onDetail={handleDetail}
           />
           {quickReplyBox}
@@ -448,6 +518,7 @@ export function MessageView({
                 message={message}
                 expanded={expanded.has(message.id)}
                 refreshKey={refreshKey}
+                profile={profile}
                 onToggle={() =>
                   setExpanded((ids) => {
                     const next = new Set(ids);
@@ -482,6 +553,7 @@ function LoadedMessage({
   id,
   refreshKey,
   inThread = false,
+  details = false,
   meta,
   mailbox,
   profile,
@@ -496,6 +568,8 @@ function LoadedMessage({
   profile?: ProfileActions;
   /** 会話の中の 1 通として表示する (件名と宛先の見出しは会話側で出す)。 */
   inThread?: boolean;
+  /** 会話の中の 1 通で、宛先や日時などの詳細の表を本文の上に出す。 */
+  details?: boolean;
   onDetail: (message: MessageDetail) => void;
 }) {
   const [message, setMessage] = useState<MessageDetail | null>(null);
@@ -524,6 +598,7 @@ function LoadedMessage({
       <MessageContent
         message={message}
         inThread={inThread}
+        details={details}
         meta={meta}
         mailbox={mailbox}
         profile={profile}
@@ -545,92 +620,129 @@ function ThreadItem({
   message,
   expanded,
   refreshKey,
+  profile,
   onToggle,
   onDetail,
 }: {
   message: ThreadMessage;
   expanded: boolean;
   refreshKey: number;
+  profile: ProfileActions;
   onToggle: () => void;
   onDetail: (message: MessageDetail) => void;
 }) {
   const preferences = usePreferences();
+  // 詳細 (宛先、Cc、返信先、日時などの表) を出しているか。
+  // 見出しを広げて使う設定なら、最初から出す。メールごとに切り替えられる。
+  const [details, setDetails] = useState(
+    preferences.messageHeader === "expanded",
+  );
   const sender = message.from[0];
   const name = addressLabel(sender);
   const recipients = [...message.to, ...message.cc];
   return (
     <li className="border-b last:border-b-0">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={onToggle}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
-      >
-        <span
-          className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-sm"
-          aria-hidden="true"
+      {/* 行を押すと本文を開閉する。詳細のボタンは、行のボタンの外に並べる。 */}
+      <div className="flex items-center transition-colors focus-within:bg-muted/40 hover:bg-muted/60">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 pl-4 text-left outline-none focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset sm:pl-6"
         >
-          {Array.from(name)[0] ?? "?"}
-        </span>
-        <span className="min-w-0 flex-1">
           <span
-            className={cn(
-              "block truncate text-sm",
-              (expanded || !message.seen) && "font-medium",
-            )}
+            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-sm"
+            aria-hidden="true"
           >
-            {!message.seen && <span className="sr-only">未読 </span>}
-            {name}
-            {expanded && sender?.name && (
-              <span className="font-normal text-muted-foreground">
-                {" "}
-                &lt;{sender.address}&gt;
-              </span>
-            )}
+            {Array.from(name)[0] ?? "?"}
           </span>
-          <span className="block truncate text-muted-foreground text-xs">
-            {expanded
-              ? `${
-                  recipients.length > 0
-                    ? `宛先: ${recipients.map(addressLabel).join("、")} · `
-                    : ""
-                }${formatFullDate(message.receivedAt, preferences)}`
-              : message.snippet}
+          <span className="min-w-0 flex-1">
+            <span
+              className={cn(
+                "block truncate text-sm",
+                (expanded || !message.seen) && "font-medium",
+              )}
+            >
+              {!message.seen && <span className="sr-only">未読 </span>}
+              {name}
+              {expanded && sender?.name && (
+                <span className="font-normal text-muted-foreground">
+                  {" "}
+                  &lt;{sender.address}&gt;
+                </span>
+              )}
+            </span>
+            <span className="block truncate text-muted-foreground text-xs">
+              {expanded
+                ? `${
+                    recipients.length > 0
+                      ? `宛先: ${recipients.map(addressLabel).join("、")} · `
+                      : ""
+                  }${formatFullDate(message.receivedAt, preferences)}`
+                : message.snippet}
+            </span>
           </span>
-        </span>
-        {message.flagged && (
-          <StarIcon
-            className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
-            aria-label="スター付き"
-          />
-        )}
-        {!expanded && message.hasAttachments && (
-          <PaperclipIcon
-            className="size-3.5 shrink-0 text-muted-foreground"
-            aria-label="添付ファイルあり"
-          />
-        )}
-        {!expanded && (
-          <time
-            dateTime={message.receivedAt}
-            className="shrink-0 text-muted-foreground text-xs tabular-nums"
-          >
-            {formatListDate(message.receivedAt, new Date(), preferences)}
-          </time>
-        )}
-        <ChevronDownIcon
-          className={cn(
-            "size-4 shrink-0 text-muted-foreground transition-transform",
-            expanded && "rotate-180",
+          {message.flagged && (
+            <StarIcon
+              className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+              aria-label="スター付き"
+            />
           )}
+          {!expanded && message.hasAttachments && (
+            <PaperclipIcon
+              className="size-3.5 shrink-0 text-muted-foreground"
+              aria-label="添付ファイルあり"
+            />
+          )}
+          {!expanded && (
+            <time
+              dateTime={message.receivedAt}
+              className="shrink-0 text-muted-foreground text-xs tabular-nums"
+            >
+              {formatListDate(message.receivedAt, new Date(), preferences)}
+            </time>
+          )}
+        </button>
+        {expanded && (
+          <Hint label={details ? "詳細を隠す" : "詳細を表示"}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-expanded={details}
+              aria-label={details ? "詳細を隠す" : "詳細を表示"}
+              onClick={() => setDetails((shown) => !shown)}
+              className={cn(
+                "shrink-0 text-muted-foreground",
+                details && "bg-muted text-foreground",
+              )}
+            >
+              <InfoIcon />
+            </Button>
+          </Hint>
+        )}
+        {/* 矢印を押しても開閉できる。キーボードと読み上げでは、行のボタンを使う。 */}
+        <button
+          type="button"
+          tabIndex={-1}
           aria-hidden="true"
-        />
-      </button>
+          onClick={onToggle}
+          className="flex shrink-0 self-stretch items-center pr-4 pl-2 outline-none sm:pr-6"
+        >
+          <ChevronDownIcon
+            className={cn(
+              "size-4 text-muted-foreground transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
+        </button>
+      </div>
       {expanded && (
         <LoadedMessage
           id={message.id}
           refreshKey={refreshKey}
           inThread
+          details={details}
+          profile={profile}
           onDetail={onDetail}
         />
       )}
@@ -1016,11 +1128,14 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
 function MessageContent({
   message,
   inThread = false,
+  details = false,
   meta,
   mailbox,
   profile,
 }: {
   message: MessageDetail;
+  /** 会話の中の 1 通で、詳細の表を本文の上に出す。 */
+  details?: boolean;
   meta?: React.ReactNode;
   mailbox?: MailboxSummary;
   /** 差出人や宛先のプロフィールカードから始める操作。 */
@@ -1073,6 +1188,103 @@ function MessageContent({
     message.sentAt !== null &&
     Math.abs(Date.parse(message.sentAt) - Date.parse(message.receivedAt)) >=
       60_000;
+  /** 差出人、宛先、日時などの表。 */
+  const detailRows = (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+      <dt className="text-muted-foreground">差出人</dt>
+      <dd className="min-w-0 break-words">
+        {message.from.length > 0 ? (
+          <ProfileNames addresses={message.from} full {...profile} />
+        ) : (
+          addressLabel(undefined)
+        )}
+      </dd>
+      {senderShown && (
+        <>
+          <dt className="text-muted-foreground">代理送信</dt>
+          <dd className="min-w-0 break-words">
+            <ProfileNames addresses={message.sender ?? []} full {...profile} />
+          </dd>
+        </>
+      )}
+      {message.to.length > 0 && (
+        <>
+          <dt className="text-muted-foreground">宛先</dt>
+          <dd className="min-w-0 break-words">
+            <ProfileNames addresses={message.to} full {...profile} />
+          </dd>
+        </>
+      )}
+      {message.cc.length > 0 && (
+        <>
+          <dt className="text-muted-foreground">Cc</dt>
+          <dd className="min-w-0 break-words">
+            <ProfileNames addresses={message.cc} full {...profile} />
+          </dd>
+        </>
+      )}
+      {message.bcc.length > 0 && (
+        <>
+          <dt className="text-muted-foreground">Bcc</dt>
+          <dd className="min-w-0 break-words">
+            <ProfileNames addresses={message.bcc} full {...profile} />
+          </dd>
+        </>
+      )}
+      {replyToShown && (
+        <>
+          <dt className="text-muted-foreground">返信先</dt>
+          <dd className="min-w-0 break-words">
+            <ProfileNames addresses={message.replyTo} full {...profile} />
+          </dd>
+        </>
+      )}
+      <dt className="text-muted-foreground">
+        {sentAtShown ? "受信日時" : "日時"}
+      </dt>
+      <dd>
+        <time dateTime={message.receivedAt}>
+          {formatFullDate(message.receivedAt, preferences)}
+        </time>
+      </dd>
+      {sentAtShown && message.sentAt && (
+        <>
+          <dt className="text-muted-foreground">送信日時</dt>
+          <dd>
+            <time dateTime={message.sentAt}>
+              {formatFullDate(message.sentAt, preferences)}
+            </time>
+          </dd>
+        </>
+      )}
+      {message.listId && (
+        <>
+          <dt className="text-muted-foreground">メーリングリスト</dt>
+          <dd className="min-w-0 break-words">{message.listId}</dd>
+        </>
+      )}
+      {unsubscribe.length > 0 && (
+        <>
+          <dt className="text-muted-foreground">配信停止</dt>
+          <dd className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
+            {unsubscribe.map((link) => (
+              <a
+                key={link.href}
+                href={link.href}
+                // mailto はメールソフトが開くので、新しいタブは要らない。
+                target={link.href.startsWith("https:") ? "_blank" : undefined}
+                rel="noopener noreferrer"
+                title={link.href}
+                className="min-w-0 break-words underline underline-offset-2 hover:text-foreground"
+              >
+                {link.label}
+              </a>
+            ))}
+          </dd>
+        </>
+      )}
+    </dl>
+  );
   const toggle = (
     <Hint label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}>
       <Button
@@ -1164,115 +1376,19 @@ function MessageContent({
                 {toggle}
               </div>
               {meta}
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                <dt className="text-muted-foreground">差出人</dt>
-                <dd className="min-w-0 break-words">
-                  {message.from.length > 0 ? (
-                    <ProfileNames addresses={message.from} full {...profile} />
-                  ) : (
-                    addressLabel(undefined)
-                  )}
-                </dd>
-                {senderShown && (
-                  <>
-                    <dt className="text-muted-foreground">代理送信</dt>
-                    <dd className="min-w-0 break-words">
-                      <ProfileNames
-                        addresses={message.sender ?? []}
-                        full
-                        {...profile}
-                      />
-                    </dd>
-                  </>
-                )}
-                {message.to.length > 0 && (
-                  <>
-                    <dt className="text-muted-foreground">宛先</dt>
-                    <dd className="min-w-0 break-words">
-                      <ProfileNames addresses={message.to} full {...profile} />
-                    </dd>
-                  </>
-                )}
-                {message.cc.length > 0 && (
-                  <>
-                    <dt className="text-muted-foreground">Cc</dt>
-                    <dd className="min-w-0 break-words">
-                      <ProfileNames addresses={message.cc} full {...profile} />
-                    </dd>
-                  </>
-                )}
-                {message.bcc.length > 0 && (
-                  <>
-                    <dt className="text-muted-foreground">Bcc</dt>
-                    <dd className="min-w-0 break-words">
-                      <ProfileNames addresses={message.bcc} full {...profile} />
-                    </dd>
-                  </>
-                )}
-                {replyToShown && (
-                  <>
-                    <dt className="text-muted-foreground">返信先</dt>
-                    <dd className="min-w-0 break-words">
-                      <ProfileNames
-                        addresses={message.replyTo}
-                        full
-                        {...profile}
-                      />
-                    </dd>
-                  </>
-                )}
-                <dt className="text-muted-foreground">
-                  {sentAtShown ? "受信日時" : "日時"}
-                </dt>
-                <dd>
-                  <time dateTime={message.receivedAt}>
-                    {formatFullDate(message.receivedAt, preferences)}
-                  </time>
-                </dd>
-                {sentAtShown && message.sentAt && (
-                  <>
-                    <dt className="text-muted-foreground">送信日時</dt>
-                    <dd>
-                      <time dateTime={message.sentAt}>
-                        {formatFullDate(message.sentAt, preferences)}
-                      </time>
-                    </dd>
-                  </>
-                )}
-                {message.listId && (
-                  <>
-                    <dt className="text-muted-foreground">メーリングリスト</dt>
-                    <dd className="min-w-0 break-words">{message.listId}</dd>
-                  </>
-                )}
-                {unsubscribe.length > 0 && (
-                  <>
-                    <dt className="text-muted-foreground">配信停止</dt>
-                    <dd className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
-                      {unsubscribe.map((link) => (
-                        <a
-                          key={link.href}
-                          href={link.href}
-                          // mailto はメールソフトが開くので、新しいタブは要らない。
-                          target={
-                            link.href.startsWith("https:")
-                              ? "_blank"
-                              : undefined
-                          }
-                          rel="noopener noreferrer"
-                          title={link.href}
-                          className="min-w-0 break-words underline underline-offset-2 hover:text-foreground"
-                        >
-                          {link.label}
-                        </a>
-                      ))}
-                    </dd>
-                  </>
-                )}
-              </dl>
+              {detailRows}
             </div>
           )}
         </header>
+      )}
+
+      {inThread && details && (
+        <div
+          className="pr-4 pb-3 pl-16 sm:pr-6 sm:pl-[4.5rem]"
+          data-slot="thread-details"
+        >
+          {detailRows}
+        </div>
       )}
 
       {message.bodyFetchedAt === null ? (
