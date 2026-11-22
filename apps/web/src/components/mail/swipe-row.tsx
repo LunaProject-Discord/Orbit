@@ -14,6 +14,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { startsDrawerOpen } from "@/lib/drawer-swipe";
 import {
   clampOffset,
   type SwipeOutcome,
@@ -279,6 +280,8 @@ export function SwipeRow({
         // マウスのドラッグは対象にしない (文字の選択やクリックと紛らわしい)。
         if (event.pointerType === "mouse" || !event.isPrimary) return;
         if (disabled || (!left && !right) || settleTimer.current) return;
+        // 画面の左端から始めた動きは、サイドバー (ドロワー) を開く操作に任せる。
+        if (startsDrawerOpen(event.clientX, window.innerWidth)) return;
         suppressClick.current = false;
         gesture.current = {
           pointerId: event.pointerId,

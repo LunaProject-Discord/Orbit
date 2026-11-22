@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { startsDrawerOpen } from "@/lib/drawer-swipe";
 import {
   insideSidewaysScroller,
   insideTextField,
@@ -263,6 +264,8 @@ export function MessageSwipe({
       // 位置は画面を基準に読む (iframe の中と外で同じになり、中身をずらしても変わらない)。
       const x = touch.screenX - window.screenX;
       if (x < EDGE_PX || x > window.innerWidth - EDGE_PX) return;
+      // 左端から始めた動きは、サイドバー (ドロワー) を開く操作に任せる。
+      if (startsDrawerOpen(x, window.innerWidth)) return;
       gesture.current = {
         id: touch.identifier,
         startX: touch.screenX,
