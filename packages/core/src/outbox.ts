@@ -88,12 +88,78 @@ export type AppendPayload = {
   targets: OutboxTarget[];
 };
 
+/**
+ * フォルダを作る。IMAP では path (親のパス + 区切り文字 + 名前) で、
+ * Microsoft Graph では親フォルダの ID (parentPath) と名前で作る。
+ */
+export type MailboxCreatePayload = {
+  name: string;
+  /** 親フォルダの path。最上位に作るなら null。 */
+  parentPath: string | null;
+  /** IMAP で作るフォルダのパス。 */
+  path: string;
+  /** 移動などの操作と形を揃えるための空の配列。 */
+  targets: OutboxTarget[];
+};
+
+/** フォルダの名前を変える。親は変えない。 */
+export type MailboxRenamePayload = {
+  mailboxId: string;
+  /** いまの path (IMAP ではパス、Microsoft Graph ではフォルダの ID)。 */
+  path: string;
+  /** IMAP での変更後のパス。 */
+  newPath: string;
+  /** 変更後の名前。 */
+  name: string;
+  /** IMAP の階層の区切り文字。中のフォルダのパスを直すのに使う。 */
+  delimiter: string | null;
+  targets: OutboxTarget[];
+};
+
+/** フォルダを、中のメールごと削除する。 */
+export type MailboxDeletePayload = {
+  mailboxId: string;
+  path: string;
+  /** 失敗を知らせるときに出す名前。 */
+  name: string;
+  targets: OutboxTarget[];
+};
+
+/** フォルダそのものへの操作。 */
+export type MailboxOperation =
+  | { kind: "mailbox_create"; payload: MailboxCreatePayload }
+  | { kind: "mailbox_rename"; payload: MailboxRenamePayload }
+  | { kind: "mailbox_delete"; payload: MailboxDeletePayload };
+
 /** 受け付けた順に、同期の接続を使ってプロバイダへ反映する操作。 */
 export type OutboxOperation =
   | { kind: "set_flags"; payload: SetFlagsPayload }
   | { kind: "move"; payload: MovePayload }
   | { kind: "delete"; payload: DeletePayload }
-  | { kind: "append"; payload: AppendPayload };
+  | { kind: "append"; payload: AppendPayload }
+  | MailboxOperation;
+
+export type MailboxNameError = "empty" | "too_long" | "invalid_character";
+
+/** フォルダ名の長さの上限。 */
+export const MAILBOX_NAME_MAX = 100;
+
+/**
+ * 新しく付けるフォルダ名を確かめる。問題が無ければ null。
+ * 階層の区切り文字と、IMAP の一覧取得で特別な意味を持つ文字 (% と *)、制御文字は使えない。
+ */
+export function mailboxNameError(
+  name: string,
+  delimiter: string | null,
+): MailboxNameError | null {
+  if (name.trim() === "") return "empty";
+  if (name !== name.trim()) return "invalid_character";
+  if ([...name].length > MAILBOX_NAME_MAX) return "too_long";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を弾くため。
+  if (/[\u0000-\u001f\u007f%*]/.test(name)) return "invalid_character";
+  if (delimiter && name.includes(delimiter)) return "invalid_character";
+  return null;
+}
 
 /**
  * アカウント単位の排他に使う PostgreSQL の勧告ロックのキー。

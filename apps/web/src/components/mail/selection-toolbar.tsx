@@ -3,12 +3,15 @@
 import {
   ArchiveIcon,
   FolderInputIcon,
+  MailCheckIcon,
   MailIcon,
   MailOpenIcon,
+  OctagonAlertIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { MoveTarget } from "@/components/mail/mailbox-icon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -19,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MailboxSummary, MessageSummary } from "@/lib/api";
-import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
+import { actionTargets, useMailboxes } from "@/lib/mailboxes";
 
 type Props = {
   /** チェックを付けた行。 */
@@ -28,6 +31,8 @@ type Props = {
   total: number;
   /** 表示中のフォルダ。受信トレイをまとめて表示している間は null。 */
   mailbox: MailboxSummary | null;
+  /** 選んだメールのアカウントすべてに、迷惑メールのフォルダがある。 */
+  junkAvailable: boolean;
   /** 値が増えると、移動先のメニューを開く (ショートカットキー用)。 */
   moveRequest: number;
   onAction: (rows: MessageSummary[], input: MessageActionInput) => void;
@@ -41,6 +46,7 @@ export function SelectionToolbar({
   rows,
   total,
   mailbox,
+  junkAvailable,
   moveRequest,
   onAction,
   onSelectAll,
@@ -50,6 +56,7 @@ export function SelectionToolbar({
   const allSeen = rows.every((row) => row.seen);
   const inTrash = mailbox?.specialUse === "trash";
   const inArchive = mailbox?.specialUse === "archive";
+  const inJunk = mailbox?.specialUse === "junk";
   const act = (input: MessageActionInput) => onAction(rows, input);
   // 移動先はアカウントごとに違うので、1 つのアカウントのメールだけを選んでいるときに出す。
   const accountId = rows[0]?.accountId ?? null;
@@ -111,6 +118,31 @@ export function SelectionToolbar({
       >
         <Trash2Icon />
       </Button>
+      {inJunk ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          disabled={count === 0}
+          aria-label="迷惑メールから戻す"
+          title="迷惑メールから戻す"
+          onClick={() => act({ action: "move", destination: "inbox" })}
+        >
+          <MailCheckIcon />
+        </Button>
+      ) : (
+        junkAvailable && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={count === 0}
+            aria-label="迷惑メールとして扱う"
+            title="迷惑メールとして扱う"
+            onClick={() => act({ action: "move", destination: "junk" })}
+          >
+            <OctagonAlertIcon />
+          </Button>
+        )
+      )}
       {singleAccount && accountId && (
         <MoveMenu
           accountId={accountId}
@@ -170,9 +202,12 @@ function MoveMenu({
         <FolderInputIcon />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        {destinations.map((mailbox) => (
-          <DropdownMenuItem key={mailbox.id} onClick={() => onMove(mailbox.id)}>
-            <span className="truncate">{mailboxLabel(mailbox)}</span>
+        {destinations.map((entry) => (
+          <DropdownMenuItem
+            key={entry.mailbox.id}
+            onClick={() => onMove(entry.mailbox.id)}
+          >
+            <MoveTarget entry={entry} />
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

@@ -28,6 +28,10 @@ import {
   ToastRegion,
 } from "@/components/mail/failure-toast";
 import {
+  FolderDialogs,
+  type FolderDialogTarget,
+} from "@/components/mail/folder-dialogs";
+import {
   MessageList,
   type MessageListHandle,
 } from "@/components/mail/message-list";
@@ -64,8 +68,10 @@ import {
   type MessageAction,
   type MessageDetail,
   type MessageSummary,
+  markMailboxRead,
   type OutgoingMail,
   oauthProviderOf,
+  resetMailboxOrder,
   retryFailure,
   type SearchParams,
   type ServerDraft,
@@ -74,6 +80,7 @@ import {
   saveMailboxOrder,
   sendFocus,
   startOAuthLogin,
+  syncAccountNow,
   type User,
 } from "@/lib/api";
 import {
@@ -95,6 +102,7 @@ import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import {
   mailboxLabel,
+  refreshMailboxes,
   showsRecipients,
   sortAccounts,
   withSortOrder,
@@ -159,6 +167,16 @@ const emptySearch: SearchParams = {
 };
 const ACTION_ERROR =
   "操作を反映できませんでした。一覧を最新の状態に戻しました。";
+const MARK_READ_ERROR =
+  "既読にできませんでした。時間をおいて、もう一度お試しください。";
+const SYNC_NOW_ERROR =
+  "同期を始められませんでした。時間をおいて、もう一度お試しください。";
+/** フォルダへの操作を受け付けたときの知らせ。画面に出るのは、メールサーバーへの反映と同期のあと。 */
+const FOLDER_NOTICES: Record<FolderDialogTarget["kind"], string> = {
+  create: "フォルダを作成しています。少しすると一覧に表示されます。",
+  rename: "フォルダの名前を変更しています。少しすると一覧に反映されます。",
+  delete: "フォルダを削除しています。少しすると一覧から消えます。",
+};
 const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
 const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
 const RETRY_ERROR =
@@ -270,6 +288,13 @@ export function MailApp({ user }: { user: User }) {
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
+  const [folderDialog, setFolderDialog] = useState<FolderDialogTarget | null>(
+    null,
+  );
+  const openFolderDialog = (target: FolderDialogTarget) => {
+    setSidebarOpen(false);
+    setFolderDialog(target);
+  };
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // 広い画面で左のサイドバーを折りたたんでいるか。スマホ幅では使わない (引き出し式のまま)。
   const [sidebarFolded, setSidebarFolded] = useState(false);
@@ -400,6 +425,8 @@ export function MailApp({ user }: { user: User }) {
   const loadMailboxes = useCallback(async () => {
     try {
       setMailboxes(await listAllMailboxes());
+      // 移動先のメニューなど、フォルダ一覧を別に持っている場所も更新する。
+      refreshMailboxes();
     } catch {
       // 一覧は次の通知や操作でまた取得する。
     }
@@ -1361,6 +1388,41 @@ export function MailApp({ user }: { user: User }) {
     accounts?.find((account) => account.id === selectedAccountId) ?? null;
   const selectedMailbox =
     mailboxes?.find((mailbox) => mailbox.id === selectedMailboxId) ?? null;
+  /** フォルダの未読をすべて既読にする。画面にはすぐ反映し、失敗したらサーバーの状態に戻す。 */
+  const handleMarkAllRead = (target: MailboxSummary) => {
+    setMailboxes(
+      (current) =>
+        current?.map((mailbox) =>
+          mailbox.id === target.id ? { ...mailbox, unreadCount: 0 } : mailbox,
+        ) ?? null,
+    );
+    setMessages(
+      (current) =>
+        current?.map((message) =>
+          message.mailboxId === target.id && !message.seen
+            ? { ...message, seen: true }
+            : message,
+        ) ?? null,
+    );
+    markMailboxRead(target.id).catch(() => {
+      setNotice({ message: MARK_READ_ERROR, tone: "error" });
+      void loadMailboxes();
+      void loadFirstPage(selectionRef.current, false);
+    });
+  };
+  /** メールのアカウントすべてに迷惑メールのフォルダがある (迷惑メールとして扱える)。 */
+  const junkAvailable = (rows: MessageSummary[]) =>
+    rows.length > 0 &&
+    rows.every(
+      (row) =>
+        row.mailboxId !== null &&
+        mailboxes?.some(
+          (mailbox) =>
+            mailbox.accountId === row.accountId &&
+            mailbox.specialUse === "junk" &&
+            mailbox.id !== row.mailboxId,
+        ),
+    );
   const accountName = selectedAccount
     ? selectedAccount.displayName || selectedAccount.email
     : null;
@@ -1506,6 +1568,7 @@ export function MailApp({ user }: { user: User }) {
       const flags = (input: { seen?: boolean; flagged?: boolean }) =>
         performBulk(checkedRows, { action: "set_flags", ...input });
       const inTrash = selectedMailbox?.specialUse === "trash";
+      const inJunk = selectedMailbox?.specialUse === "junk";
       let handled = true;
       switch (command) {
         case "close":
@@ -1536,6 +1599,13 @@ export function MailApp({ user }: { user: User }) {
           break;
         case "move":
           setBulkMoveRequest((count) => count + 1);
+          break;
+        case "junk":
+          if (inJunk) {
+            performBulk(checkedRows, { action: "move", destination: "inbox" });
+          } else if (junkAvailable(checkedRows)) {
+            performBulk(checkedRows, { action: "move", destination: "junk" });
+          }
           break;
         default:
           handled = false;
@@ -1595,6 +1665,15 @@ export function MailApp({ user }: { user: User }) {
         break;
       case "move":
         setMoveRequest((count) => count + 1);
+        break;
+      case "junk":
+        if (selectedMailbox?.specialUse === "junk") {
+          performAction(id, { action: "move", destination: "inbox" });
+          open(neighbor);
+        } else if (junkAvailable([message])) {
+          performAction(id, { action: "move", destination: "junk" });
+          open(neighbor);
+        }
         break;
       case "reply":
       case "replyAll":
@@ -1697,6 +1776,42 @@ export function MailApp({ user }: { user: User }) {
               setMailboxes((current) => current && withSortOrder(current, ids));
               saveOrder(() => saveMailboxOrder(ids));
             }}
+            menuActions={{
+              onMarkAllRead: handleMarkAllRead,
+              onResetOrder: (ids) => {
+                const reset = new Set(ids);
+                setMailboxes(
+                  (current) =>
+                    current?.map((mailbox) =>
+                      reset.has(mailbox.id)
+                        ? { ...mailbox, sortOrder: null }
+                        : mailbox,
+                    ) ?? null,
+                );
+                saveOrder(() => resetMailboxOrder(ids));
+              },
+              onSyncNow: (account) => {
+                syncAccountNow(account.id).catch(() =>
+                  setNotice({ message: SYNC_NOW_ERROR, tone: "error" }),
+                );
+              },
+              onEditSignature: (account) => {
+                setSidebarOpen(false);
+                setSignatureTarget(account);
+              },
+              onDeleteAccount: (account) => {
+                setSidebarOpen(false);
+                setDeleteTarget(account);
+              },
+              onOpenSettings: () => handleSelectSpecial("settings"),
+              onReauth: handleReauth,
+              onCreateFolder: (account, parent) =>
+                openFolderDialog({ kind: "create", account, parent }),
+              onRenameFolder: (mailbox) =>
+                openFolderDialog({ kind: "rename", mailbox }),
+              onDeleteFolder: (mailbox) =>
+                openFolderDialog({ kind: "delete", mailbox }),
+            }}
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
             onSelectDrafts={handleSelectDrafts}
@@ -1770,6 +1885,7 @@ export function MailApp({ user }: { user: User }) {
                 rows={checkedRows}
                 total={messages?.length ?? 0}
                 mailbox={selectedMailbox}
+                junkAvailable={junkAvailable(checkedRows)}
                 moveRequest={bulkMoveRequest}
                 onAction={performBulk}
                 onSelectAll={(checked) =>
@@ -2048,6 +2164,20 @@ export function MailApp({ user }: { user: User }) {
               ) ?? null,
           )
         }
+      />
+      <FolderDialogs
+        target={folderDialog}
+        onClose={() => setFolderDialog(null)}
+        onAccepted={(target) => {
+          setNotice({ message: FOLDER_NOTICES[target.kind], tone: "info" });
+          // 開いているフォルダを消したら、そのアカウントの受信トレイへ移る。
+          if (
+            target.kind === "delete" &&
+            selectionRef.current.mailboxId === target.mailbox.id
+          ) {
+            handleSelectFolder(target.mailbox.accountId, null);
+          }
+        }}
       />
       <DeleteAccountDialog
         account={deleteTarget}

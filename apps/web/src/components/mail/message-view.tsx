@@ -8,9 +8,11 @@ import {
   FolderInputIcon,
   ForwardIcon,
   ImageOffIcon,
+  MailCheckIcon,
   MailIcon,
   MailOpenIcon,
   MoreHorizontalIcon,
+  OctagonAlertIcon,
   PaperclipIcon,
   ReplyAllIcon,
   ReplyIcon,
@@ -18,6 +20,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import { QuickReply } from "@/components/mail/quick-reply";
 import { Button } from "@/components/ui/button";
@@ -73,18 +76,24 @@ export function hasRemoteImages(html: string): boolean {
 
 /**
  * 本文の iframe の中のスクロールバー。アプリ側 (globals.css) と同じ見た目にする。
- * iframe の中ではスクリプトを動かさないので、太くなるのはつまみに乗ったときだけ。
+ * iframe の中ではスクリプトを動かさず、スクロール中かどうかが分からないので、
+ * 本文にカーソルを乗せている間だけつまみを出し、つまみに乗ったら太くする。
+ * 色は html に持たせた値 (--mail-sb) をつまみが引き継ぐ形にしている
+ * (html:hover をスクロールバーに直接掛けても、表示が切り替わらないため)。
  * 本文の背景は白に固定しているので、色も明るい画面用に固定する。
  */
 const BODY_SCROLLBAR_STYLE = [
-  "<style>@media (hover:hover) and (pointer:fine){",
+  '<style>@property --mail-sb{syntax:"<color>";inherits:true;initial-value:transparent}',
+  "@media (hover:hover) and (pointer:fine){",
+  "html{--mail-sb:transparent;transition:--mail-sb .5s ease-out}",
+  "html:hover{--mail-sb:rgb(0 0 0/.35);transition-duration:.1s}",
   "@supports selector(::-webkit-scrollbar){",
   "::-webkit-scrollbar{width:12px;height:12px;background:transparent}",
   "::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}",
-  "::-webkit-scrollbar-thumb{min-height:32px;min-width:32px;border:solid transparent;border-width:2px 2px 2px 6px;border-radius:999px;background-color:rgb(0 0 0/.28);background-clip:content-box}",
-  "::-webkit-scrollbar-thumb:horizontal{border-width:6px 2px 2px}",
+  "::-webkit-scrollbar-thumb{min-height:36px;min-width:36px;border:solid transparent;border-width:2px 2px 2px 4px;border-radius:999px;background-color:var(--mail-sb);background-clip:content-box}",
+  "::-webkit-scrollbar-thumb:horizontal{border-width:4px 2px 2px}",
   "::-webkit-scrollbar-thumb:hover,::-webkit-scrollbar-thumb:active{border-width:2px;background-color:rgb(0 0 0/.5)}}",
-  "@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:rgb(0 0 0/.28) transparent}}",
+  "@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:var(--mail-sb) transparent}}",
   "}</style>",
 ].join("");
 
@@ -619,10 +628,8 @@ function MessageToolbar({
   onCompose: (mode: ReplyMode) => void;
 }) {
   const mailboxes = useMailboxes(accountId);
-  const { archive, trash, inTrash, destinations } = actionTargets(
-    mailboxes,
-    mailboxId,
-  );
+  const { archive, trash, inTrash, junk, notJunk, destinations } =
+    actionTargets(mailboxes, mailboxId);
   // 移動先のメニュー。ショートカットキー (V) からも開く。
   const [moveOpen, setMoveOpen] = useState(false);
   const handledMoveRequest = useRef(moveRequest);
@@ -727,6 +734,26 @@ function MessageToolbar({
           </span>
         </Button>
       )}
+      {junk && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => act({ action: "move", mailboxId: junk.id })}
+        >
+          <OctagonAlertIcon />
+          <span className="sr-only sm:not-sr-only">迷惑メールとして扱う</span>
+        </Button>
+      )}
+      {notJunk && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => act({ action: "move", mailboxId: notJunk.id })}
+        >
+          <MailCheckIcon />
+          <span className="sr-only sm:not-sr-only">迷惑メールから戻す</span>
+        </Button>
+      )}
       {destinations.length > 0 && (
         <DropdownMenu open={moveOpen} onOpenChange={setMoveOpen}>
           <DropdownMenuTrigger
@@ -738,12 +765,14 @@ function MessageToolbar({
             移動
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
-            {destinations.map((mailbox) => (
+            {destinations.map((entry) => (
               <DropdownMenuItem
-                key={mailbox.id}
-                onClick={() => act({ action: "move", mailboxId: mailbox.id })}
+                key={entry.mailbox.id}
+                onClick={() =>
+                  act({ action: "move", mailboxId: entry.mailbox.id })
+                }
               >
-                <span className="truncate">{mailboxLabel(mailbox)}</span>
+                <MoveTarget entry={entry} />
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -780,15 +809,14 @@ function MessageToolbar({
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuLabel>移動</DropdownMenuLabel>
-                {destinations.map((mailbox) => (
+                {destinations.map((entry) => (
                   <DropdownMenuItem
-                    key={mailbox.id}
+                    key={entry.mailbox.id}
                     onClick={() =>
-                      act({ action: "move", mailboxId: mailbox.id })
+                      act({ action: "move", mailboxId: entry.mailbox.id })
                     }
                   >
-                    <FolderInputIcon />
-                    <span className="truncate">{mailboxLabel(mailbox)}</span>
+                    <MoveTarget entry={entry} />
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuGroup>

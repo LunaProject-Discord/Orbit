@@ -26,6 +26,12 @@ export function failureLabel(
       return "削除";
     case "append":
       return "送信済みフォルダへの保存";
+    case "mailbox_create":
+      return "フォルダの作成";
+    case "mailbox_rename":
+      return "フォルダの名前の変更";
+    case "mailbox_delete":
+      return "フォルダの削除";
     case "set_flags":
       if (failure.seen !== null && failure.flagged === null) {
         return failure.seen ? "既読への変更" : "未読への変更";
@@ -50,6 +56,16 @@ export function failureDescription(
     );
     if (destination) {
       return `${failure.count} 件を「${mailboxLabel(destination)}」へ移動`;
+    }
+  }
+  if (failure.mailboxName) {
+    switch (failure.kind) {
+      case "mailbox_create":
+        return `フォルダ「${failure.mailboxName}」の作成`;
+      case "mailbox_rename":
+        return `フォルダの名前を「${failure.mailboxName}」へ変更`;
+      case "mailbox_delete":
+        return `フォルダ「${failure.mailboxName}」の削除`;
     }
   }
   return `${failure.count} 件の${label}`;

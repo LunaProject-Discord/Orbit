@@ -31,6 +31,7 @@ import {
   syncGraphFolders,
 } from "./graph-sync.js";
 import { syncPriority } from "./mailbox-list.js";
+import { isMailboxOperation } from "./mailbox-operations.js";
 import { processOutbox } from "./outbox.js";
 import { applyGraphOperation } from "./outbox-graph.js";
 import { processSends } from "./send.js";
@@ -476,7 +477,12 @@ export class GraphAccountSync {
       const outbox = await processOutbox(
         this.db,
         this.account.id,
-        (operation) => applyGraphOperation(client, operation, signal),
+        async (operation) => {
+          const result = await applyGraphOperation(client, operation, signal);
+          // フォルダを変えたあとは、次の確認でフォルダ一覧から取り直す。
+          if (isMailboxOperation(operation)) foldersSyncedAt = 0;
+          return result;
+        },
         (message) => this.log(message),
       );
       // まだ Microsoft 側へ置いていない下書きを、下書きフォルダへ置く。
