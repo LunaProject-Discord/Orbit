@@ -5,6 +5,7 @@ import type {
   OutboxTarget,
 } from "@mail/core";
 import type { ImapFlow } from "imapflow";
+import { clearRejection, firstRejection } from "./imap-rejection.js";
 import {
   applyImapMailboxOperation,
   isMailboxOperation,
@@ -68,9 +69,17 @@ export async function applyImapOperation(
         };
       }
       const range = targets.map((target) => target.uid).join(",");
+      clearRejection(client);
       const succeeded = await run(client, operation, range);
       if (!succeeded) {
-        return { ok: false, reason: "サーバーが操作を受け付けませんでした。" };
+        // サーバーが返した文面があれば添える (フォルダへの書き込みを禁じている、など)。
+        const response = firstRejection(client);
+        return {
+          ok: false,
+          reason: response
+            ? `サーバーが操作を受け付けませんでした。(サーバーの応答: ${response})`
+            : "サーバーが操作を受け付けませんでした。",
+        };
       }
     } finally {
       lock.release();
@@ -169,16 +178,80 @@ async function run(
       }
       return true;
     }
-    case "move":
+    case "move": {
+      const destination = operation.payload.destination.path;
       // MOVE に対応していないサーバーでは、ImapFlow がコピーと削除で代用する。
-      return Boolean(
-        await client.messageMove(
-          range,
-          operation.payload.destination.path,
-          options,
-        ),
-      );
+      if (await client.messageMove(range, destination, options)) return true;
+      return moveWithoutMove(client, range, destination);
+    }
     case "delete":
       return client.messageDelete(range, options);
   }
+}
+
+/** コピーや保存し直しのときに、移動先へ引き継がないフラグ。 */
+const TRANSIENT_FLAGS = new Set(["\\Recent", "\\Deleted"]);
+
+/**
+ * MOVE を拒否されたときの代わりの移動。フォルダによって MOVE や COPY を受け付けない
+ * メールサーバーがある (携帯会社のメールの、迷惑メール用のフォルダなど) ので、
+ * 受け付けられる方法を順に試す。
+ *
+ * 1. COPY してから元を削除する (MOVE に対応しているサーバーだけ。対応していないサーバーでは、
+ *    ImapFlow がすでに同じことを試している)。
+ * 2. メールを取得して移動先へ保存し直し (APPEND)、元を削除する。
+ *
+ * どれも受け付けられなければ false。元のメールは、移動先に入ったものだけを消す。
+ */
+async function moveWithoutMove(
+  client: ImapFlow,
+  range: string,
+  destination: string,
+): Promise<boolean> {
+  const options = { uid: true };
+  if (client.capabilities?.has("MOVE")) {
+    if (await client.messageCopy(range, destination, options)) {
+      return client.messageDelete(range, options);
+    }
+  }
+  const moved: string[] = [];
+  let complete = true;
+  for (const uid of range.split(",")) {
+    let appended = false;
+    try {
+      const message = await client.fetchOne(
+        uid,
+        { source: true, flags: true, internalDate: true },
+        options,
+      );
+      // ほかの端末で先に消されたメールは、移動できたものとして扱う (MOVE と同じ)。
+      if (!message || !message.source) continue;
+      const flags = [...(message.flags ?? [])].filter(
+        (flag) => !TRANSIENT_FLAGS.has(flag),
+      );
+      appended = Boolean(
+        await client.append(
+          destination,
+          message.source,
+          flags,
+          message.internalDate instanceof Date
+            ? message.internalDate
+            : undefined,
+        ),
+      );
+    } catch (error) {
+      if (!isRejected(error)) throw error;
+    }
+    if (!appended) {
+      // 1 通目から受け付けられないなら、残りも同じ。途中からなら、入った分だけ元を消す。
+      complete = false;
+      break;
+    }
+    moved.push(uid);
+  }
+  if (moved.length > 0) {
+    const deleted = await client.messageDelete(moved.join(","), options);
+    if (!deleted) return false;
+  }
+  return complete;
 }

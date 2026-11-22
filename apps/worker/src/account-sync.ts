@@ -23,6 +23,7 @@ import {
   pushConnectionLimit,
 } from "./folder-push.js";
 import { FolderWatcher } from "./folder-watcher.js";
+import { createRejectionLogger } from "./imap-rejection.js";
 import { isTemporaryLoginRefusal } from "./login-refusal.js";
 import {
   isSelectable,
@@ -498,7 +499,9 @@ export class AccountSync {
     if (!this.account.imapHost || !this.account.imapPort) {
       throw new Error("IMAP サーバーが設定されていません。");
     }
-    return new ImapFlow({
+    // サーバーに拒否された命令の応答だけを覚える (失敗の理由として利用者に見せる)。
+    const rejections = createRejectionLogger();
+    const client = new ImapFlow({
       host: this.account.imapHost,
       port: this.account.imapPort,
       secure: this.account.imapSecure,
@@ -507,11 +510,13 @@ export class AccountSync {
         "accessToken" in auth
           ? { user: this.account.username, accessToken: auth.accessToken }
           : { user: this.account.username, pass: auth.password },
-      logger: false,
+      logger: rejections.logger,
       // 既定の 15 秒だと、同期直後に起きた変化の通知がその分だけ遅れる。
       autoIdleDelay: AUTO_IDLE_DELAY_MS,
       maxIdleTime: MAX_IDLE_MS,
     });
+    rejections.attach(client);
+    return client;
   }
 
   /** 受信トレイ 1 回分の同期。 */
