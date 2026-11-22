@@ -640,7 +640,9 @@ function AccountToggle(props: {
   children: React.ReactNode;
 }) {
   // 左に 4px 空けて、アイコンの中心を上の項目 (受信トレイなど) のアイコンの列に揃える。
-  const frame = "mt-1 ml-1 flex size-6 shrink-0 items-center justify-center";
+  // タッチ操作では名前の行が上下に 6px ずつ広がるので、同じだけ下げて中心を揃える。
+  const frame =
+    "mt-1 ml-1 flex size-6 shrink-0 items-center justify-center pointer-coarse:mt-2.5";
   if (!props.onClick) return <span className={frame}>{props.children}</span>;
   return (
     <Hint label={props.open ? "折りたたむ" : "開く"}>
@@ -707,7 +709,7 @@ function UnreadCount({
 }) {
   if (count <= 0) return null;
   return (
-    <span className="shrink-0 font-medium text-muted-foreground text-xs tabular-nums">
+    <span className="shrink-0 font-medium text-muted-foreground text-xs tabular-nums leading-5">
       <span className="sr-only">{label} </span>
       {count > 9999 ? "9999+" : count}
     </span>
@@ -798,7 +800,7 @@ function FolderItem({
               onClick={() => props.onSelect(mailbox)}
               aria-current={selected ? "page" : undefined}
               className={cn(
-                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm pointer-coarse:min-h-11 pointer-coarse:text-base outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm pointer-coarse:min-h-11 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
                 selected &&
                   "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
                 item.isDragging && "bg-sidebar-accent",
@@ -866,7 +868,7 @@ function SidebarItem(props: {
       {...props.handle}
       className={cn(
         props.handle && "touch-manipulation select-none",
-        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-2.5 pointer-coarse:text-base outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
+        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
         props.selected &&
           "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
         props.className,

@@ -45,12 +45,13 @@ export function MailboxIcon({
 export function MoveTarget({ entry }: { entry: MailboxEntry }) {
   return (
     <>
+      {/* 字下げは余白で付ける。空の要素を並べると、項目の間隔の分だけアイコンがずれる。 */}
       <span
-        className="shrink-0"
-        style={{ width: `${entry.depth * 0.75}rem` }}
-        aria-hidden="true"
-      />
-      <MailboxIcon specialUse={entry.mailbox.specialUse} />
+        className="flex shrink-0"
+        style={{ paddingLeft: `${entry.depth * 0.75}rem` }}
+      >
+        <MailboxIcon specialUse={entry.mailbox.specialUse} />
+      </span>
       <span className="truncate">{mailboxLabel(entry.mailbox)}</span>
     </>
   );
