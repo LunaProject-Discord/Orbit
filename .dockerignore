@@ -13,3 +13,4 @@ data
 deploy/.env
 deploy/backups
 docs
+apps/mobile/android

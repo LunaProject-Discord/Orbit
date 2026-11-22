@@ -10,6 +10,7 @@ Orbit は、サーバーが IMAP / SMTP や Microsoft Graph でメールを扱�
 | `apps/api` | API サーバー (Hono)。REST API、SSE、認証 |
 | `apps/worker` | 同期ワーカー。IMAP の常時接続、Microsoft Graph の差分取得、送信キューの処理 |
 | `apps/web` | Next.js の UI。静的エクスポートし、Web / Tauri / Capacitor で共用する |
+| `apps/mobile` | Android アプリ (Capacitor)。`apps/web` の静的出力をアプリに入れる |
 | `packages/db` | PostgreSQL のスキーマとマイグレーション (Drizzle ORM) |
 | `packages/core` | サーバー側で共有する処理 (認証情報の暗号化、プロセス間通知の定義) |
 
@@ -65,6 +66,12 @@ bash deploy/setup.sh mail.example.com apache   # 同じサーバーの Apache �
 bash deploy/setup.sh mail.example.com caddy    # Caddy が 80 / 443 番で直接公開する構成
 cd deploy && docker compose up -d --build
 ```
+
+## Android アプリ
+
+`apps/mobile` に、Web 版の画面をそのまま入れた Android アプリ (Capacitor) があります。GitHub Actions の **Android** ワークフローで
+ビルドでき、新着メールの通知は FCM で届きます。ビルド、プッシュ通知、署名鍵、Google Play の手順は
+[docs/android-app.md](docs/android-app.md) にまとめています。
 
 ## ログインとメールアカウント
 
@@ -260,6 +267,8 @@ API がそれを返します。IMAP では取得のときだけ同期用とは�
 - Web Push とサービスワーカーは、HTTPS で開いたページ (または `localhost`) でだけ使えます。
   iOS / iPadOS の Safari では、ホーム画面に追加したときにだけ使えます。
 - ログアウトすると、そのブラウザーへの通知を止めます。鍵を作り直した場合は、各ブラウザーが次に画面を開いたときに登録し直します。
+- Android アプリへは Firebase Cloud Messaging (FCM) で送ります。`.env` に `FCM_SERVICE_ACCOUNT` (Firebase のサービスアカウントの鍵) が
+  あるときだけ送ります。準備は [docs/android-app.md](docs/android-app.md) を参照してください。
 
 ### メールの送信
 

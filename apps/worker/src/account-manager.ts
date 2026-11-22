@@ -21,7 +21,7 @@ import pg from "pg";
 import { AccountSync } from "./account-sync.js";
 import { notifyAttachmentReady } from "./attachment-fetch.js";
 import { GraphAccountSync } from "./graph-account-sync.js";
-import { type PushSender, parseNewMailNotification } from "./new-mail.js";
+import { type NewMailSender, parseNewMailNotification } from "./new-mail.js";
 import { accountsWithPendingOutbox } from "./outbox.js";
 
 const RECONCILE_MS = 60_000;
@@ -82,7 +82,7 @@ export class AccountManager {
     /** Gmail の OAuth2 用。未設定なら、OAuth2 の Gmail アカウントはエラーになる。 */
     private readonly google: GoogleOAuthConfig | null = null,
     /** 新着メールを Web Push で端末へ送る。Web Push を設定していなければ null。 */
-    private readonly pushSender: PushSender | null = null,
+    private readonly pushSender: NewMailSender | null = null,
   ) {}
 
   async start() {

@@ -1,0 +1,25 @@
+{
+  "name": "@mail/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orbit Mail のスマホアプリ (Capacitor)。apps/web の静的出力をアプリに同梱する。",
+  "scripts": {
+    "build:web": "pnpm --filter @mail/web build",
+    "sync": "cap sync android",
+    "android:prepare": "pnpm build:web && cap sync android",
+    "android:open": "cap open android",
+    "android:run": "cap run android",
+    "icons": "node scripts/generate-icons.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/push-notifications": "^8.1.3",
+    "@capacitor/splash-screen": "^8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "typescript": "^5.9.3"
+  }
+}

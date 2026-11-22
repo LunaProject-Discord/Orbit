@@ -1,13 +1,15 @@
 import {
   CHANNEL_NEW_MAIL,
+  type FcmClient,
+  FcmError,
   type NewMailCandidate,
   type NewMailNotification,
   toNewMailNotification,
   toPushMessages,
   type WebPushConfig,
 } from "@mail/core";
-import { type Database, pushSubscriptions } from "@mail/db";
-import { eq, sql } from "drizzle-orm";
+import { type Database, devices, pushSubscriptions } from "@mail/db";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { sendNotification, WebPushError } from "web-push";
 import type { Tx } from "./changes.js";
 import type { SyncAccount } from "./mailbox-store.js";
@@ -130,4 +132,73 @@ export class PushSender {
       }),
     );
   }
+}
+
+/** 新着メールを、スマホアプリを入れた端末へ FCM で送る。 */
+export class DevicePushSender {
+  constructor(
+    private readonly db: Database,
+    private readonly fcm: Pick<FcmClient, "send">,
+    private readonly log: (message: string) => void = console.warn,
+  ) {}
+
+  async deliver(notification: NewMailNotification): Promise<void> {
+    const targets = await this.db
+      .select({ id: devices.id, pushToken: devices.pushToken })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.userId, notification.userId),
+          eq(devices.platform, "android"),
+          isNotNull(devices.pushToken),
+        ),
+      );
+    if (targets.length === 0) return;
+    const messages = toPushMessages(notification);
+    await Promise.all(
+      targets.map(async (target) => {
+        if (!target.pushToken) return;
+        for (const message of messages) {
+          try {
+            await this.fcm.send(target.pushToken, message);
+          } catch (error) {
+            if (error instanceof FcmError && error.tokenGone) {
+              // アプリが削除された、または送り先が失効した。送り先を消す。
+              await this.db.delete(devices).where(eq(devices.id, target.id));
+            } else {
+              this.log(
+                `新着メールの通知をスマホアプリへ送れませんでした: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+            // 同じ端末への残りは送らない。
+            return;
+          }
+        }
+      }),
+    );
+  }
+}
+
+/** 新着メールの知らせを端末へ届けるもの (Web Push、FCM)。 */
+export type NewMailSender = {
+  deliver(notification: NewMailNotification): Promise<void>;
+};
+
+/** 複数の届け方をまとめる。どれかが失敗しても、ほかは届ける。 */
+export function combineSenders(
+  senders: (NewMailSender | null | undefined | false)[],
+): NewMailSender | null {
+  const active = senders.filter((sender): sender is NewMailSender => !!sender);
+  if (active.length === 0) return null;
+  return {
+    async deliver(notification) {
+      const results = await Promise.allSettled(
+        active.map((sender) => sender.deliver(notification)),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed) throw (failed as PromiseRejectedResult).reason;
+    },
+  };
 }

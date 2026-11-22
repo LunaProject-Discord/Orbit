@@ -113,7 +113,11 @@ export const devicePlatform = pgEnum("device_platform", [
   "ios",
 ]);
 
-/** ログイン中の端末。プッシュ通知 (FCM / APNs) の宛先を持つ。 */
+/**
+ * スマホアプリを入れた端末。新着メールの通知 (Android は FCM) の送り先を持つ。
+ * アプリで通知を有効にしたときに登録し、無効にしたときとログアウトのときに消す。
+ * pushToken は FCM が端末ごとに発行する値で、端末を一意に表す。
+ */
 export const devices = pgTable(
   "devices",
   {
@@ -127,7 +131,10 @@ export const devices = pgTable(
     lastSeenAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [index("devices_user_idx").on(t.userId)],
+  (t) => [
+    index("devices_user_idx").on(t.userId),
+    uniqueIndex("devices_push_token_idx").on(t.pushToken),
+  ],
 );
 
 /**

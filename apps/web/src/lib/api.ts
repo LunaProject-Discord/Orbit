@@ -1119,6 +1119,29 @@ export async function getPushPublicKey(): Promise<string | null> {
   return publicKey;
 }
 
+/** サーバーがスマホアプリへ通知 (FCM) を送れるか。古いサーバーは答えないので false。 */
+export async function getNativePushAvailable(): Promise<boolean> {
+  const { fcm } = await apiJson<{ fcm?: boolean }>("/v1/push/config");
+  return fcm === true;
+}
+
+/** この端末 (スマホアプリ) を、新着メールの通知の送り先として登録する。 */
+export async function savePushDevice(device: {
+  platform: "android";
+  token: string;
+  name?: string;
+}): Promise<void> {
+  await apiFetch("/v1/push/devices", { method: "POST", body: device });
+}
+
+export async function deletePushDevice(token: string): Promise<void> {
+  await apiFetch("/v1/push/devices", {
+    method: "DELETE",
+    body: { token },
+    handle401: false,
+  });
+}
+
 /** このブラウザーを、新着メールの通知 (Web Push) の送り先として登録する。 */
 export async function savePushSubscription(subscription: {
   endpoint: string;

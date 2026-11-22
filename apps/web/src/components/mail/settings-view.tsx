@@ -46,6 +46,7 @@ import {
   updateAccount,
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
+import { isNativeApp } from "@/lib/native/app";
 import type { NotificationStatus } from "@/lib/notifications";
 import {
   BODY_FONT_SIZES,
@@ -71,6 +72,16 @@ const notificationDescriptions: Record<NotificationStatus, string> = {
     "ブラウザーの設定で、このサイトの通知が拒否されています。通知を出すには、ブラウザーの設定で許可してください。",
   page: "新着メールを通知します。この画面を開いている間だけ届きます。",
   push: "新着メールを通知します。この画面を閉じていても届きます。",
+};
+
+/** スマホアプリでの説明 (許可するのはブラウザーではなく端末)。 */
+const nativeNotificationDescriptions: Record<NotificationStatus, string> = {
+  ...notificationDescriptions,
+  unsupported:
+    "このサーバー、またはこのアプリでは、新着メールの通知が設定されていません。",
+  blocked:
+    "端末の設定で、このアプリの通知が許可されていません。通知を出すには、端末の設定で許可してください。",
+  push: "新着メールを通知します。アプリを閉じていても届きます。",
 };
 
 const accountProblems: Partial<Record<Account["status"], string>> = {
@@ -462,7 +473,11 @@ export function SettingsView({
                   この端末の通知: {notifying ? "オン" : "オフ"}
                 </p>
                 <p className="text-muted-foreground text-xs leading-relaxed">
-                  {notificationDescriptions[notificationStatus]}
+                  {
+                    (isNativeApp()
+                      ? nativeNotificationDescriptions
+                      : notificationDescriptions)[notificationStatus]
+                  }
                 </p>
               </div>
               {canToggleNotification && (

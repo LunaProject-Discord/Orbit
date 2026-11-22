@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { isNativeApp } from "@/lib/native/app";
 
 /**
  * サービスワーカーを登録し、アプリ本体を端末に保存させる (オフラインでも画面を開けるようにする)。
@@ -8,7 +9,8 @@ import { useEffect } from "react";
  */
 export function OfflineBoot() {
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
+    // スマホアプリでは、アプリ本体は端末に入っているので保存し直す必要がない。
+    if (isNativeApp() || !("serviceWorker" in navigator)) return;
     navigator.serviceWorker
       .register("/sw.js")
       .then(() => navigator.serviceWorker.ready)

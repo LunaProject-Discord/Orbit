@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 画面 (Web 側) の背景と同じ色。起動画面と、WebView が描画を始めるまでの背景に使う。 -->
+    <color name="app_background">#FFFFFF</color>
+    <!-- 通知のアイコンとアクセントの色 (Orbit Mail の紫)。 -->
+    <color name="brand">#5B5BF0</color>
+</resources>

@@ -1,7 +1,9 @@
-import type { NewMailNotification } from "@mail/core";
+import { FcmError, type NewMailNotification } from "@mail/core";
 import type { Database } from "@mail/db";
 import { describe, expect, it } from "vitest";
 import {
+  combineSenders,
+  DevicePushSender,
   PushSender,
   type PushTransport,
   parseNewMailNotification,
@@ -31,7 +33,13 @@ describe("parseNewMailNotification", () => {
   });
 });
 
-type Row = { id: string; endpoint: string; p256dh: string; auth: string };
+type Row = Record<string, unknown> & { id: string };
+type SubscriptionRow = {
+  id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+};
 
 /** PushSender が使う範囲だけを持つ、DB の代わり。 */
 function fakeDb(rows: Row[]) {
@@ -47,7 +55,7 @@ function fakeDb(rows: Row[]) {
   return { db, deleted };
 }
 
-const row = (id: string): Row => ({
+const row = (id: string): SubscriptionRow => ({
   id,
   endpoint: `https://fcm.googleapis.com/fcm/send/${id}`,
   p256dh: "key",
@@ -108,5 +116,85 @@ describe("PushSender", () => {
       called = true;
     }).deliver(notification);
     expect(called).toBe(false);
+  });
+});
+
+describe("DevicePushSender", () => {
+  const device = (id: string) => ({ id, pushToken: `token-${id}` });
+
+  it("利用者の端末すべてに、メールごとの通知を送る", async () => {
+    const { db, deleted } = fakeDb([device("d1"), device("d2")]);
+    const sent: [string, string][] = [];
+    await new DevicePushSender(db, {
+      send: async (token, message) => {
+        sent.push([token, message.tag]);
+      },
+    }).deliver(notification);
+    expect(sent.sort()).toEqual([
+      ["token-d1", "mail:m1"],
+      ["token-d1", "mail:m2"],
+      ["token-d2", "mail:m1"],
+      ["token-d2", "mail:m2"],
+    ]);
+    expect(deleted).toEqual([]);
+  });
+
+  it("使えなくなった送り先は消し、残りは送らない", async () => {
+    const { db, deleted } = fakeDb([device("gone"), device("ok")]);
+    const sent: string[] = [];
+    await new DevicePushSender(db, {
+      send: async (token) => {
+        if (token === "token-gone") {
+          throw new FcmError(404, "UNREGISTERED", "not found");
+        }
+        sent.push(token);
+      },
+    }).deliver(notification);
+    expect(deleted).toHaveLength(1);
+    expect(sent).toEqual(["token-ok", "token-ok"]);
+  });
+
+  it("一時的な失敗では送り先を残し、記録だけする", async () => {
+    const { db, deleted } = fakeDb([device("d1")]);
+    const logs: string[] = [];
+    await new DevicePushSender(
+      db,
+      {
+        send: async () => {
+          throw new FcmError(503, "UNAVAILABLE", "busy");
+        },
+      },
+      (message) => logs.push(message),
+    ).deliver(notification);
+    expect(deleted).toEqual([]);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("busy");
+  });
+});
+
+describe("combineSenders", () => {
+  it("設定されていなければ null", () => {
+    expect(combineSenders([null, false, undefined])).toBeNull();
+  });
+
+  it("どれかが失敗しても、ほかへは届ける", async () => {
+    const delivered: string[] = [];
+    const sender = combineSenders([
+      {
+        deliver: async () => {
+          throw new Error("web push failed");
+        },
+      },
+      null,
+      {
+        deliver: async () => {
+          delivered.push("fcm");
+        },
+      },
+    ]);
+    await expect(sender?.deliver(notification)).rejects.toThrow(
+      "web push failed",
+    );
+    expect(delivered).toEqual(["fcm"]);
   });
 });
