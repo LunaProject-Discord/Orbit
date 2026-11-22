@@ -72,6 +72,8 @@ jobs:
               echo
               curl -fsS -o /dev/null -w 'login: %{http_code}\n' http://127.0.0.1:18080/login
               curl -fsS -o /dev/null -w 'v1: %{http_code}\n' http://127.0.0.1:18080/v1
+              # 変更の通知 (SSE) には、手前の逆プロキシにため込ませないための指定が付く。
+              curl -sS -D - -o /dev/null http://127.0.0.1:18080/v1/events | grep -i '^x-accel-buffering: no'
               exit 0
             fi
             sleep 2
