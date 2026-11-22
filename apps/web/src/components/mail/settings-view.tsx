@@ -41,6 +41,7 @@ import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
   type Account,
   oauthProviderOf,
+  type SwipeSettings,
   type User,
   updateAccount,
 } from "@/lib/api";
@@ -56,6 +57,11 @@ import {
   updatePreferences,
   usePreferences,
 } from "@/lib/preferences";
+import {
+  changeSwipeSettings,
+  SWIPE_ACTIONS,
+  useSwipeSettings,
+} from "@/lib/swipe";
 import type { SyncStatus } from "@/lib/sync-status";
 
 const notificationDescriptions: Record<NotificationStatus, string> = {
@@ -141,6 +147,12 @@ export function SettingsView({
   const { theme, setTheme } = useTheme();
   const preferences = usePreferences();
   const set = updatePreferences;
+  const swipe = useSwipeSettings();
+  const [swipeError, setSwipeError] = useState(false);
+  const changeSwipe = (patch: Partial<SwipeSettings>) => {
+    setSwipeError(false);
+    void changeSwipeSettings(patch).then((saved) => setSwipeError(!saved));
+  };
   // テーマはこの端末に保存した値なので、サーバーで作った HTML と食い違わないよう、表示してから読む。
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -384,6 +396,12 @@ export function SettingsView({
           <Section title="操作">
             <SettingGroup>
               <SwitchRow
+                label="トラックパッドでスワイプ"
+                description="2 本指で横へスクロールして、一覧の行をスワイプします。何をするかは、下の「スワイプ操作」で選びます。"
+                checked={preferences.trackpadSwipe}
+                onChange={(trackpadSwipe) => set({ trackpadSwipe })}
+              />
+              <SwitchRow
                 label="ショートカットキー"
                 description="J / K や C などの 1 文字のキーで操作します。一覧は下にあります。"
                 checked={preferences.shortcuts}
@@ -399,6 +417,31 @@ export function SettingsView({
           </Section>
 
           {sidebarItems}
+
+          <Section
+            title="スワイプ操作"
+            description="メール一覧の行を、指で左右にスワイプしたときの操作です。この設定はすべての端末で共通です。その行でできない操作 (アーカイブ先が無いなど) は、スワイプしても動きません。"
+          >
+            <SettingGroup>
+              <SelectRow
+                label="左へスワイプ"
+                value={swipe.left}
+                onChange={(left) => changeSwipe({ left })}
+                options={SWIPE_ACTIONS}
+              />
+              <SelectRow
+                label="右へスワイプ"
+                value={swipe.right}
+                onChange={(right) => changeSwipe({ right })}
+                options={SWIPE_ACTIONS}
+              />
+            </SettingGroup>
+            {swipeError && (
+              <p role="alert" className="text-destructive text-xs">
+                スワイプ操作を保存できませんでした。通信の状態を確かめて、もう一度選んでください。
+              </p>
+            )}
+          </Section>
 
           <Section
             title="通知"

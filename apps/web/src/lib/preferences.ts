@@ -48,6 +48,11 @@ export type Preferences = {
   motion: "system" | "off";
   /** 1 文字のショートカットキーを使う。 */
   shortcuts: boolean;
+  /**
+   * トラックパッドの横スクロール (2 本指の横の動き) でも、一覧の行をスワイプする。
+   * 何をするかはサーバーに保存する設定 (lib/swipe.ts) で、ここは端末ごとのオン / オフ。
+   */
+  trackpadSwipe: boolean;
 };
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -71,6 +76,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   quickReply: true,
   motion: "system",
   shortcuts: true,
+  trackpadSwipe: true,
 };
 
 export const FONT_SIZES = [87.5, 93.75, 100, 106.25, 112.5, 125] as const;
