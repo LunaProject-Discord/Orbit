@@ -378,7 +378,8 @@ export function AccountSidebar({
         </span>
       </div>
       {onCompose && (
-        <div className="shrink-0 px-3 pb-2">
+        // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
+        <div className="shrink-0 pr-3 pb-2 pl-2">
           <Hint label="新規作成" shortcut="C">
             <Button onClick={onCompose} className="w-full justify-center gap-2">
               <PenSquareIcon />
@@ -532,7 +533,8 @@ export function AccountSidebar({
           variant="ghost"
           onClick={onAdd}
           // ボタンには 1px の枠があるので、その分を引いてアイコンを上の項目の列に揃える。
-          className="mt-1 justify-start gap-2 px-[7px] text-muted-foreground"
+          // タッチ操作ではボタンの左右の余白が広がるので、同じ値に戻す。
+          className="mt-1 justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
         >
           <PlusIcon />
           アカウントを追加
@@ -544,9 +546,10 @@ export function AccountSidebar({
 
       <SyncIndicator
         status={syncStatus}
-        className="shrink-0 border-t px-3 py-2"
+        // アイコンと文字を、上の項目のアイコンの列 (16px) と文字の列 (40px) に揃える。
+        className="shrink-0 gap-2.5 border-t py-2 pr-3 pl-4"
       />
-      <div className="flex shrink-0 items-center gap-2 border-t p-3">
+      <div className="flex shrink-0 items-center gap-2 border-t py-3 pr-3 pl-4">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
@@ -888,7 +891,9 @@ function ToggleButton(props: {
       aria-label={`${props.label}を${props.open ? "折りたたむ" : "開く"}`}
       onClick={props.onClick}
       className={cn(
-        "relative flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground pointer-coarse:size-7 pointer-coarse:after:absolute pointer-coarse:after:-inset-2 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+        // タッチ操作でも大きさは変えず (フォルダのアイコンの列がずれるため)、押せる範囲だけを
+        // 行の高さいっぱいと左側へ広げる。右側はフォルダの行に重ならない幅にとどめる。
+        "relative flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-y-3 pointer-coarse:after:-right-1.5 pointer-coarse:after:-left-3.5 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
         props.className,
       )}
     >
@@ -992,10 +997,7 @@ function FolderItem({
               onClick={() => props.onToggle(mailbox.id)}
             />
           ) : (
-            <span
-              className="size-5 shrink-0 pointer-coarse:size-7"
-              aria-hidden="true"
-            />
+            <span className="size-5 shrink-0" aria-hidden="true" />
           )}
           <Hint label={label} side="right" whenClipped>
             <button
@@ -1003,7 +1005,7 @@ function FolderItem({
               onClick={() => props.onSelect(mailbox)}
               aria-current={selected ? "page" : undefined}
               className={cn(
-                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm pointer-coarse:min-h-11 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                "flex min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-md py-1.5 pr-2 pl-1.5 text-left text-sm pointer-coarse:min-h-11 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
                 selected &&
                   "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
                 item.isDragging && "bg-sidebar-accent",

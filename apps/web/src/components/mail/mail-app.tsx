@@ -2427,7 +2427,7 @@ export function MailApp({ user }: { user: User }) {
                 )}
               >
                 {/* 検索欄を出している間は、メニューのボタンは検索欄の横に置く。 */}
-                {!showSearch && menuButton("-ml-2")}
+                {!showSearch && menuButton("-ml-2 pointer-coarse:-ml-2.5")}
                 <h1 className="min-w-0 truncate font-semibold text-lg">
                   {title}
                 </h1>
@@ -2448,7 +2448,8 @@ export function MailApp({ user }: { user: User }) {
                         size="icon-sm"
                         aria-label="メールを選択"
                         onClick={() => setSelectMode(true)}
-                        className="-mr-2"
+                        // タッチ操作ではボタンが大きくなるので、アイコンの右端が一覧の右端に揃うよう寄せる。
+                        className="-mr-2 pointer-coarse:-mr-2.5"
                       >
                         <ListChecksIcon />
                       </Button>
@@ -2458,7 +2459,7 @@ export function MailApp({ user }: { user: User }) {
             )}
             {showSearch && (
               <div className="flex items-start md:block">
-                {menuButton("mt-3 ml-2")}
+                {menuButton("mt-3 ml-2 pointer-coarse:ml-1.5")}
                 <SearchBar
                   value={searchInput}
                   onChange={setSearchInput}
