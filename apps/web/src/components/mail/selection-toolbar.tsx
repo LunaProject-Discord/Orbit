@@ -12,6 +12,11 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MoveTarget } from "@/components/mail/mailbox-icon";
+import {
+  ToolbarButton,
+  ToolbarSeparator,
+  ToolbarTooltip,
+} from "@/components/mail/toolbar-button";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -20,9 +25,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MailboxSummary, MessageSummary } from "@/lib/api";
 import { actionTargets, useMailboxes } from "@/lib/mailboxes";
+import { shortcutLabels } from "@/lib/shortcuts";
 
 type Props = {
   /** チェックを付けた行。 */
@@ -64,104 +71,86 @@ export function SelectionToolbar({
     accountId !== null && rows.every((row) => row.accountId === accountId);
 
   return (
-    <header
-      role="toolbar"
-      aria-label="選択したメールの操作"
-      className="flex h-14 shrink-0 items-center gap-1 border-b px-4"
-    >
-      <Checkbox
-        checked={total > 0 && count === total}
-        aria-label="すべて選択"
-        onCheckedChange={(checked) => onSelectAll(checked)}
-      />
-      <p
-        className="min-w-0 flex-1 truncate pl-3 font-medium text-sm"
-        aria-live="polite"
+    <TooltipProvider>
+      <header
+        role="toolbar"
+        aria-label="選択したメールの操作"
+        className="flex h-14 shrink-0 items-center gap-1 border-b px-4"
       >
-        {count > 0 ? `${count} 件を選択中` : "メールを選択"}
-      </p>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        disabled={count === 0}
-        aria-label={allSeen ? "未読にする" : "既読にする"}
-        title={allSeen ? "未読にする" : "既読にする"}
-        onClick={() => act({ action: "set_flags", seen: !allSeen })}
-      >
-        {allSeen ? <MailIcon /> : <MailOpenIcon />}
-      </Button>
-      {!inArchive && !inTrash && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          disabled={count === 0}
-          aria-label="アーカイブ"
-          title="アーカイブ"
-          onClick={() => act({ action: "move", destination: "archive" })}
-        >
-          <ArchiveIcon />
-        </Button>
-      )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        disabled={count === 0}
-        aria-label={inTrash ? "完全に削除" : "削除"}
-        title={inTrash ? "完全に削除" : "削除"}
-        onClick={() =>
-          act(
-            inTrash
-              ? { action: "delete" }
-              : { action: "move", destination: "trash" },
-          )
-        }
-      >
-        <Trash2Icon />
-      </Button>
-      {inJunk ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          disabled={count === 0}
-          aria-label="迷惑メールから戻す"
-          title="迷惑メールから戻す"
-          onClick={() => act({ action: "move", destination: "inbox" })}
-        >
-          <MailCheckIcon />
-        </Button>
-      ) : (
-        junkAvailable && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={count === 0}
-            aria-label="迷惑メールとして扱う"
-            title="迷惑メールとして扱う"
-            onClick={() => act({ action: "move", destination: "junk" })}
-          >
-            <OctagonAlertIcon />
-          </Button>
-        )
-      )}
-      {singleAccount && accountId && (
-        <MoveMenu
-          accountId={accountId}
-          currentMailboxId={rows[0]?.mailboxId ?? null}
-          moveRequest={moveRequest}
-          onMove={(mailboxId) => act({ action: "move", mailboxId })}
+        <Checkbox
+          checked={total > 0 && count === total}
+          aria-label="すべて選択"
+          onCheckedChange={(checked) => onSelectAll(checked)}
         />
-      )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label="選択をやめる"
-        title="選択をやめる"
-        onClick={onClose}
-        className="-mr-2"
-      >
-        <XIcon />
-      </Button>
-    </header>
+        <p
+          className="min-w-0 flex-1 truncate pl-3 font-medium text-sm"
+          aria-live="polite"
+        >
+          {count > 0 ? `${count} 件を選択中` : "メールを選択"}
+        </p>
+        <ToolbarButton
+          disabled={count === 0}
+          label={allSeen ? "未読にする" : "既読にする"}
+          onClick={() => act({ action: "set_flags", seen: !allSeen })}
+        >
+          {allSeen ? <MailIcon /> : <MailOpenIcon />}
+        </ToolbarButton>
+        {!inArchive && !inTrash && (
+          <ToolbarButton
+            disabled={count === 0}
+            label="アーカイブ"
+            onClick={() => act({ action: "move", destination: "archive" })}
+          >
+            <ArchiveIcon />
+          </ToolbarButton>
+        )}
+        {singleAccount && accountId && (
+          <MoveMenu
+            accountId={accountId}
+            currentMailboxId={rows[0]?.mailboxId ?? null}
+            moveRequest={moveRequest}
+            onMove={(mailboxId) => act({ action: "move", mailboxId })}
+          />
+        )}
+        {/* 迷惑メールと削除は、押し間違えにくいよう最後にまとめる。 */}
+        <ToolbarSeparator />
+        {inJunk ? (
+          <ToolbarButton
+            disabled={count === 0}
+            label="迷惑メールから戻す"
+            onClick={() => act({ action: "move", destination: "inbox" })}
+          >
+            <MailCheckIcon />
+          </ToolbarButton>
+        ) : (
+          junkAvailable && (
+            <ToolbarButton
+              disabled={count === 0}
+              label="迷惑メールとして扱う"
+              onClick={() => act({ action: "move", destination: "junk" })}
+            >
+              <OctagonAlertIcon />
+            </ToolbarButton>
+          )
+        )}
+        <ToolbarButton
+          disabled={count === 0}
+          label={inTrash ? "完全に削除" : "削除"}
+          onClick={() =>
+            act(
+              inTrash
+                ? { action: "delete" }
+                : { action: "move", destination: "trash" },
+            )
+          }
+        >
+          <Trash2Icon />
+        </ToolbarButton>
+        <ToolbarButton label="選択をやめる" onClick={onClose} className="-mr-2">
+          <XIcon />
+        </ToolbarButton>
+      </header>
+    </TooltipProvider>
   );
 }
 
@@ -189,18 +178,13 @@ function MoveMenu({
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="移動"
-            title="移動"
-          />
-        }
-      >
-        <FolderInputIcon />
-      </DropdownMenuTrigger>
+      <ToolbarTooltip label="移動" shortcut={shortcutLabels.move}>
+        <DropdownMenuTrigger
+          render={<Button variant="ghost" size="icon-sm" aria-label="移動" />}
+        >
+          <FolderInputIcon />
+        </DropdownMenuTrigger>
+      </ToolbarTooltip>
       <DropdownMenuContent align="end" className="w-56">
         {destinations.map((entry) => (
           <DropdownMenuItem
