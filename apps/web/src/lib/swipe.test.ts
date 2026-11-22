@@ -5,6 +5,8 @@ import {
   changeSwipeSettings,
   clampOffset,
   DEFAULT_SWIPE,
+  insideSidewaysScroller,
+  insideTextField,
   parseSwipe,
   refreshSwipeSettings,
   resetSwipeSettingsForTest,
@@ -207,5 +209,65 @@ describe("設定の保持", () => {
     expect(
       JSON.parse(window.localStorage.getItem("mail.swipe.v1") ?? ""),
     ).toEqual({ left: "delete", right: "junk" });
+  });
+});
+
+describe("開いているメールのスワイプを受け付ける場所", () => {
+  /** 幅を決めた要素を作る (テストの環境では配置を計算しないので、値を直接与える)。 */
+  function box(overflowX: string, scrollWidth: number, clientWidth: number) {
+    const element = document.createElement("div");
+    element.style.overflowX = overflowX;
+    Object.defineProperty(element, "scrollWidth", { value: scrollWidth });
+    Object.defineProperty(element, "clientWidth", { value: clientWidth });
+    return element;
+  }
+
+  it("横にスクロールできる枠の中では、スワイプにしない", () => {
+    const root = box("hidden", 300, 300);
+    const scroller = box("auto", 800, 300);
+    const inner = document.createElement("span");
+    const text = document.createTextNode("長い行");
+    inner.append(text);
+    scroller.append(inner);
+    root.append(scroller);
+    document.body.append(root);
+    expect(insideSidewaysScroller(inner, root)).toBe(true);
+    // 文字に触れたときも、その要素からたどる。
+    expect(insideSidewaysScroller(text, root)).toBe(true);
+    root.remove();
+  });
+
+  it("はみ出していない枠や、スクロールしない枠は数えない", () => {
+    const root = box("hidden", 300, 300);
+    const fits = box("auto", 300, 300);
+    const clipped = box("hidden", 800, 300);
+    const inner = document.createElement("span");
+    clipped.append(inner);
+    fits.append(clipped);
+    root.append(fits);
+    document.body.append(root);
+    expect(insideSidewaysScroller(inner, root)).toBe(false);
+    expect(insideSidewaysScroller(null, root)).toBe(false);
+    root.remove();
+  });
+
+  it("スワイプの枠より外側は見ない", () => {
+    const outer = box("auto", 800, 300);
+    const root = box("hidden", 300, 300);
+    const inner = document.createElement("span");
+    root.append(inner);
+    outer.append(root);
+    document.body.append(outer);
+    expect(insideSidewaysScroller(inner, root)).toBe(false);
+    outer.remove();
+  });
+
+  it("文字を入力する欄の中かを見分ける", () => {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML =
+      '<textarea></textarea><p>本文</p><div contenteditable="true"><b>太字</b></div>';
+    expect(insideTextField(wrapper.querySelector("textarea"))).toBe(true);
+    expect(insideTextField(wrapper.querySelector("b"))).toBe(true);
+    expect(insideTextField(wrapper.querySelector("p"))).toBe(false);
   });
 });

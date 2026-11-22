@@ -53,6 +53,11 @@ export type Preferences = {
    * 何をするかはサーバーに保存する設定 (lib/swipe.ts) で、ここは端末ごとのオン / オフ。
    */
   trackpadSwipe: boolean;
+  /**
+   * 開いているメールを左右にスワイプしたときの動き。navigate は一覧の前後のメールへ移り、
+   * actions は一覧の行と同じ操作 (lib/swipe.ts の設定) を行う。off は何もしない。
+   */
+  messageSwipe: "navigate" | "actions" | "off";
 };
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -77,6 +82,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   motion: "system",
   shortcuts: true,
   trackpadSwipe: true,
+  messageSwipe: "navigate",
 };
 
 export const FONT_SIZES = [87.5, 93.75, 100, 106.25, 112.5, 125] as const;
@@ -103,6 +109,7 @@ const choices: {
   remoteImages: ["ask", "always"],
   messageHeader: ["collapsed", "expanded"],
   motion: ["system", "off"],
+  messageSwipe: ["navigate", "actions", "off"],
 };
 
 /** 保存してあった値を読む。形の合わない項目や知らない値は、標準の値にする。 */

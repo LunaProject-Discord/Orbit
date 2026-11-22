@@ -5,6 +5,8 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   FolderInputIcon,
   ForwardIcon,
   ImageOffIcon,
@@ -23,16 +25,22 @@ import {
   Trash2Icon,
   UserRoundIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
 import { MailboxMark, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
+import {
+  MessageSwipe,
+  type MessageSwipeSide,
+  SwipeSurfaceContext,
+} from "@/components/mail/message-swipe";
 import {
   type ProfileActions,
   ProfileName,
   ProfileNames,
 } from "@/components/mail/profile-card";
 import { QuickReply } from "@/components/mail/quick-reply";
+import { swipeLooks } from "@/components/mail/swipe-row";
 import {
   ToolbarButton,
   ToolbarSeparator,
@@ -61,6 +69,7 @@ import {
   type MessageDetail,
   type MessageSummary,
   type SignatureRule,
+  type SwipeSettings,
   type ThreadMessage,
 } from "@/lib/api";
 import {
@@ -79,6 +88,7 @@ import {
 } from "@/lib/preferences";
 import { shortcutLabels } from "@/lib/shortcuts";
 import { findContactRule, findThreadRule } from "@/lib/signatures";
+import { resolveSwipe, useSwipeSettings } from "@/lib/swipe";
 import { unsubscribeLinks } from "@/lib/unsubscribe";
 
 /**
@@ -191,6 +201,10 @@ type Props = {
     subject: string;
   }) => void;
   onBack: () => void;
+  /** 一覧で前 (-1) や次 (1) にあるメールを開く。 */
+  onStep: (step: 1 | -1) => void;
+  /** 一覧の前や次に、開けるメールがあるか。 */
+  canStep: { previous: boolean; next: boolean };
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
 };
@@ -221,6 +235,8 @@ export function MessageView({
   onContactSignature,
   onThreadSignature,
   onBack,
+  onStep,
+  canStep,
   onMissing,
 }: Props) {
   const [state, setState] = useState<State>({ status: "loading" });
@@ -251,6 +267,9 @@ export function MessageView({
   const preferences = usePreferences();
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
+  const swipeSettings = useSwipeSettings();
+  /** 値が増えると、移動先のメニューを開く (スワイプで「フォルダを選んで移動」をしたとき)。 */
+  const [swipeMove, setSwipeMove] = useState(0);
   /** 「少し待ってから既読にする」設定での待ち時間。別のメールへ移るか閉じたら取り消す。 */
   const readTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -430,6 +449,9 @@ export function MessageView({
       ? summary.mailboxId
       : (last?.mailboxIds[0] ?? null));
   const mailbox = mailboxes.find((item) => item.id === mailboxId);
+  const accountMailboxes = mailboxes.filter(
+    (item) => item.accountId === first?.accountId,
+  );
   const place = [
     account ? account.displayName || account.email : null,
     mailbox ? mailboxLabel(mailbox) : null,
@@ -478,6 +500,78 @@ export function MessageView({
       </div>
     );
 
+  // 開いているメールの左右のスワイプ。設定で、前後のメールへ移るか、一覧の行と同じ操作にする。
+  const toolbarMailboxId = single ? mailboxId : (row?.mailboxId ?? null);
+  const targetIds = row?.threadMessageIds ?? [messageId];
+  const actionSide = (
+    action: SwipeSettings["left"],
+  ): MessageSwipeSide | null => {
+    if (!thread || !first) return null;
+    const outcome = resolveSwipe(
+      action,
+      {
+        seen: row?.seen ?? thread.every((message) => message.seen),
+        flagged: row?.flagged ?? thread.some((message) => message.flagged),
+        mailboxId: toolbarMailboxId ?? "",
+      },
+      accountMailboxes,
+    );
+    if (!outcome) return null;
+    const { input } = outcome;
+    return {
+      label: outcome.label,
+      ...swipeLooks[outcome.kind],
+      exits: outcome.removes,
+      run: () => {
+        if (!input) {
+          setSwipeMove((count) => count + 1);
+          return;
+        }
+        // スターは、付けるときは 1 通に、外すときは対象のすべてから外す (ツールバーと同じ)。
+        act(
+          outcome.kind === "star" ? [row?.id ?? messageId] : targetIds,
+          input,
+        );
+        if (!outcome.removes) return;
+        // 表示中のメールは一覧から無くなるので、続けて読めるよう隣のメールを開く。
+        if (canStep.next) onStep(1);
+        else if (canStep.previous) onStep(-1);
+        else onBack();
+      },
+    };
+  };
+  const swipeSides: {
+    left: MessageSwipeSide | null;
+    right: MessageSwipeSide | null;
+  } =
+    preferences.messageSwipe === "navigate"
+      ? {
+          left: canStep.next
+            ? {
+                label: "次のメール",
+                icon: ChevronRightIcon,
+                color: "bg-muted text-foreground",
+                exits: true,
+                run: () => onStep(1),
+              }
+            : null,
+          right: canStep.previous
+            ? {
+                label: "前のメール",
+                icon: ChevronLeftIcon,
+                color: "bg-muted text-foreground",
+                exits: true,
+                run: () => onStep(-1),
+              }
+            : null,
+        }
+      : preferences.messageSwipe === "actions"
+        ? {
+            left: actionSide(swipeSettings.left),
+            right: actionSide(swipeSettings.right),
+          }
+        : { left: null, right: null };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 一覧の見出しと高さを揃えた、操作用のツールバー。 */}
@@ -495,12 +589,12 @@ export function MessageView({
           <MessageToolbar
             accountId={first.accountId}
             // 会話のうち、表示中のフォルダにある分をまとめて操作する。
-            targetIds={row?.threadMessageIds ?? [messageId]}
+            targetIds={targetIds}
             starId={row?.id ?? messageId}
-            mailboxId={single ? mailboxId : (row?.mailboxId ?? null)}
+            mailboxId={toolbarMailboxId}
             seen={row?.seen ?? thread.every((message) => message.seen)}
             flagged={row?.flagged ?? thread.some((message) => message.flagged)}
-            moveRequest={moveRequest}
+            moveRequest={moveRequest + swipeMove}
             onAction={act}
             onCompose={compose}
             signatureSet={
@@ -521,57 +615,64 @@ export function MessageView({
           />
         )}
       </div>
-      {state.status === "loading" ? (
-        <MessageSkeleton />
-      ) : state.status === "error" || !first ? (
-        <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
-          メールを読み込めませんでした。
-        </p>
-      ) : state.thread.length === 1 ? (
-        <>
-          {threadLink}
-          <LoadedMessage
-            // 別のメールを開いたら、スクロール位置を先頭に戻す。
-            key={first.id}
-            id={first.id}
-            refreshKey={refreshKey}
-            meta={meta}
-            mailbox={mailbox}
-            profile={profile}
-            onDetail={handleDetail}
-          />
-          {quickReplyBox}
-        </>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <header className="flex flex-col gap-2 border-b p-4 sm:p-6">
-            <h2 className="font-semibold text-xl leading-snug">
-              {first.subject || "(件名なし)"}
-            </h2>
-            {meta}
-          </header>
-          <ol>
-            {state.thread.map((message) => (
-              <ThreadItem
-                key={message.id}
-                message={message}
-                expanded={expanded.has(message.id)}
-                refreshKey={refreshKey}
-                profile={profile}
-                onToggle={() =>
-                  setExpanded((ids) => {
-                    const next = new Set(ids);
-                    if (!next.delete(message.id)) next.add(message.id);
-                    return next;
-                  })
-                }
-                onDetail={handleDetail}
-              />
-            ))}
-          </ol>
-          {quickReplyBox}
-        </div>
-      )}
+      <MessageSwipe
+        left={swipeSides.left}
+        right={swipeSides.right}
+        wheel={preferences.trackpadSwipe}
+        resetKey={viewKey}
+      >
+        {state.status === "loading" ? (
+          <MessageSkeleton />
+        ) : state.status === "error" || !first ? (
+          <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
+            メールを読み込めませんでした。
+          </p>
+        ) : state.thread.length === 1 ? (
+          <>
+            {threadLink}
+            <LoadedMessage
+              // 別のメールを開いたら、スクロール位置を先頭に戻す。
+              key={first.id}
+              id={first.id}
+              refreshKey={refreshKey}
+              meta={meta}
+              mailbox={mailbox}
+              profile={profile}
+              onDetail={handleDetail}
+            />
+            {quickReplyBox}
+          </>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <header className="flex flex-col gap-2 border-b p-4 sm:p-6">
+              <h2 className="font-semibold text-xl leading-snug">
+                {first.subject || "(件名なし)"}
+              </h2>
+              {meta}
+            </header>
+            <ol>
+              {state.thread.map((message) => (
+                <ThreadItem
+                  key={message.id}
+                  message={message}
+                  expanded={expanded.has(message.id)}
+                  refreshKey={refreshKey}
+                  profile={profile}
+                  onToggle={() =>
+                    setExpanded((ids) => {
+                      const next = new Set(ids);
+                      if (!next.delete(message.id)) next.add(message.id);
+                      return next;
+                    })
+                  }
+                  onDetail={handleDetail}
+                />
+              ))}
+            </ol>
+            {quickReplyBox}
+          </div>
+        )}
+      </MessageSwipe>
     </div>
   );
 }
@@ -1114,13 +1215,24 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const observer = useRef<ResizeObserver | null>(null);
   const [height, setHeight] = useState(120);
-  useEffect(() => () => observer.current?.disconnect(), []);
+  // 本文の上でのスワイプ (前後のメールへ移るなど) を、iframe の中でも受け取る。
+  const bindSwipe = useContext(SwipeSurfaceContext);
+  const unbindSwipe = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      observer.current?.disconnect();
+      unbindSwipe.current?.();
+    },
+    [],
+  );
 
   const measure = () => {
     const doc = frame.current?.contentDocument;
     const view = doc?.defaultView;
     const body = doc?.body;
     if (!doc || !view || !body) return;
+    unbindSwipe.current?.();
+    unbindSwipe.current = bindSwipe?.(doc) ?? null;
     const root = doc.documentElement;
     /**
      * body の外にはみ出した中身 (html 側の余白、位置を固定した要素など) を収めるのに必要だった高さ。

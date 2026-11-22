@@ -23,19 +23,21 @@ import {
 } from "@/lib/swipe";
 
 /** 操作ごとの、行の後ろに出すアイコンと色。 */
-const looks: Record<SwipeOutcome["kind"], { icon: LucideIcon; color: string }> =
-  {
-    read: { icon: MailOpenIcon, color: "bg-sky-600 text-white" },
-    unread: { icon: MailIcon, color: "bg-sky-600 text-white" },
-    star: { icon: StarIcon, color: "bg-amber-500 text-white" },
-    unstar: { icon: StarOffIcon, color: "bg-amber-500 text-white" },
-    archive: { icon: ArchiveIcon, color: "bg-emerald-600 text-white" },
-    trash: { icon: Trash2Icon, color: "bg-red-600 text-white" },
-    delete: { icon: Trash2Icon, color: "bg-red-600 text-white" },
-    junk: { icon: OctagonAlertIcon, color: "bg-orange-600 text-white" },
-    not_junk: { icon: MailCheckIcon, color: "bg-emerald-600 text-white" },
-    move: { icon: FolderInputIcon, color: "bg-violet-600 text-white" },
-  };
+export const swipeLooks: Record<
+  SwipeOutcome["kind"],
+  { icon: LucideIcon; color: string }
+> = {
+  read: { icon: MailOpenIcon, color: "bg-sky-600 text-white" },
+  unread: { icon: MailIcon, color: "bg-sky-600 text-white" },
+  star: { icon: StarIcon, color: "bg-amber-500 text-white" },
+  unstar: { icon: StarOffIcon, color: "bg-amber-500 text-white" },
+  archive: { icon: ArchiveIcon, color: "bg-emerald-600 text-white" },
+  trash: { icon: Trash2Icon, color: "bg-red-600 text-white" },
+  delete: { icon: Trash2Icon, color: "bg-red-600 text-white" },
+  junk: { icon: OctagonAlertIcon, color: "bg-orange-600 text-white" },
+  not_junk: { icon: MailCheckIcon, color: "bg-emerald-600 text-white" },
+  move: { icon: FolderInputIcon, color: "bg-violet-600 text-white" },
+};
 
 /** 指を離したあと、行が元の位置へ戻る / 画面の外へ出るまでの時間 (ms)。 */
 const SETTLE_MS = 180;
@@ -262,7 +264,7 @@ export function SwipeRow({
   }, [wheel]);
 
   const outcome = shown ? latest.current[shown.direction] : null;
-  const look = outcome ? looks[outcome.kind] : null;
+  const look = outcome ? swipeLooks[outcome.kind] : null;
   const Icon = look?.icon;
 
   return (

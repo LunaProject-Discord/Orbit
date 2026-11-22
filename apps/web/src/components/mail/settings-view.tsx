@@ -409,9 +409,20 @@ export function SettingsView({
             <SettingGroup>
               <SwitchRow
                 label="トラックパッドでスワイプ"
-                description="2 本指で横へスクロールして、一覧の行をスワイプします。何をするかは、下の「スワイプ操作」で選びます。"
+                description="2 本指で横へスクロールして、一覧の行や開いているメールをスワイプします。何をするかは、下の「スワイプ操作」で選びます。"
                 checked={preferences.trackpadSwipe}
                 onChange={(trackpadSwipe) => set({ trackpadSwipe })}
+              />
+              <SelectRow
+                label="開いているメールのスワイプ"
+                description="メールを開いた画面を、左右にスワイプしたときの動きです。「一覧と同じ操作」では、下の「スワイプ操作」で選んだ操作を行います。"
+                value={preferences.messageSwipe}
+                onChange={(messageSwipe) => set({ messageSwipe })}
+                options={[
+                  ["navigate", "前後のメールへ移動 (標準)"],
+                  ["actions", "一覧と同じ操作"],
+                  ["off", "なし"],
+                ]}
               />
               <SwitchRow
                 label="ショートカットキー"
@@ -432,7 +443,7 @@ export function SettingsView({
 
           <Section
             title="スワイプ操作"
-            description="メール一覧の行を、指で左右にスワイプしたときの操作です。この設定はすべての端末で共通です。その行でできない操作 (アーカイブ先が無いなど) は、スワイプしても動きません。"
+            description="メール一覧の行を、指で左右にスワイプしたときの操作です。「開いているメールのスワイプ」を「一覧と同じ操作」にすると、開いているメールでも使えます。この設定はすべての端末で共通です。その行でできない操作 (アーカイブ先が無いなど) は、スワイプしても動きません。"
           >
             <SettingGroup>
               <SelectRow
