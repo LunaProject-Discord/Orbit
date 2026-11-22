@@ -244,9 +244,63 @@ https://mail.example.com/oauth/google
 
 ### 利用者へ送るメール (パスワードの再設定など)
 
-パスワードの再設定とメールアドレスの変更では、Orbit 自身が利用者へメールを送ります。送信用の SMTP サーバーを
-`deploy/.env` に書いてください。未設定でも Orbit は動きますが、この 2 つは使えません (画面にも出ません)。
-パスワードの変更、2 段階認証、パスキーは、設定しなくても使えます。
+パスワードの再設定とメールアドレスの変更では、Orbit 自身が利用者へメールを送ります。送り方は次の 2 つから選び、
+`deploy/.env` に書いてください (両方を書くと起動時に止まります)。未設定でも Orbit は動きますが、この 2 つは使えません
+(画面にも出ません)。パスワードの変更、2 段階認証、パスキーは、設定しなくても使えます。
+
+| 送り方 | 向いている場合 |
+| --- | --- |
+| Microsoft 365 (Microsoft Graph) | Microsoft 365 (Exchange Online) のメールボックスから送る |
+| SMTP | 独自ドメインのメールサーバー、Gmail のアプリ パスワード、送信専用のサービスなど |
+
+反映はどちらも `docker compose up -d` です。API のログ (`docker compose logs api`) に、どちらで送るかが 1 行出ます
+(「利用者へのメールは Microsoft Graph で送ります」など)。実際に送れるかは、ログイン画面の「パスワードを忘れた場合」で
+確かめてください。送れなかったときは、API のログに「メールを送れませんでした」と理由が出ます
+(画面には、登録の有無を漏らさないよう、どちらの場合も同じ文を出します)。
+
+#### Microsoft 365 から送る (Microsoft Graph)
+
+Microsoft 365 の SMTP は、ユーザー名とパスワードでのログイン (基本認証) が廃止される予定で、テナントによっては
+すでに無効です ([Exchange Team の告知](https://techcommunity.microsoft.com/blog/exchange/updated-exchange-online-smtp-auth-basic-authentication-deprecation-timeline/4489835)。
+2026 年 1 月の更新では、2026 年 12 月から標準で無効)。そのため Microsoft 365 では、SMTP ではなく Microsoft Graph の
+`sendMail` で送ります。利用者のログインを介さない、アプリ専用の認証 (client credentials) を使います。
+
+1. [Microsoft Entra 管理センター](https://entra.microsoft.com/) の「アプリの登録」で、メールアカウントの追加に使っている
+   アプリ (手順 7 のもの) を開きます。送信専用に別のアプリを作っても構いません
+   (その場合は「クライアント シークレット」も作ります)。
+2. 「API のアクセス許可」→「アクセス許可の追加」→「Microsoft Graph」→「**アプリケーションの許可**」で `Mail.Send` を追加します
+   (「委任されたアクセス許可」の `Mail.Send` とは別のものです)。
+3. 同じ画面の「(テナント名) に管理者の同意を与えます」を押します。全体管理者などの権限が要ります。
+4. 「概要」の「ディレクトリ (テナント) ID」を控えます。
+5. `deploy/.env` に書きます。
+
+   ```sh
+   # 送信に使うメールボックス (このアドレスが差出人になる)。共有メールボックスでもよい
+   SYSTEM_MAIL_GRAPH_SENDER=no-reply@example.com
+   # 手順 4 の ID (example.onmicrosoft.com のようなドメインでもよい)
+   SYSTEM_MAIL_GRAPH_TENANT=00000000-0000-0000-0000-000000000000
+   # 送信専用に別のアプリを作ったときだけ書く。空なら MICROSOFT_CLIENT_ID / MICROSOFT_CLIENT_SECRET を使う
+   SYSTEM_MAIL_GRAPH_CLIENT_ID=
+   SYSTEM_MAIL_GRAPH_CLIENT_SECRET=
+   ```
+
+注意する点:
+
+- 職場または学校のアカウント (Microsoft 365 のテナント) だけで使えます。個人の Outlook.com のアカウントでは使えません。
+- `SYSTEM_MAIL_GRAPH_TENANT` は必ず自分のテナントにします (`common` は使えません)。メールアカウントの追加に使う
+  `MICROSOFT_TENANT` は `common` のままで構いません。
+- 送ったメールは、差出人のメールボックスの「送信済みアイテム」には残しません (再設定のリンクを残さないため)。
+- **送れる範囲**: 手順 2 と 3 の許可は、そのアプリが**テナントのどのメールボックスからでも**送れる許可です。
+  クライアント シークレットが漏れると、ほかの人になりすまして送られるおそれがあります。自分だけのテナントでなければ、
+  送れるメールボックスを絞ってください。Exchange Online の
+  [アプリケーション用の RBAC](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac) で、対象のメールボックスだけに
+  `Application Mail.Send` の役割を割り当て、Entra 側のテナント全体の `Mail.Send` (手順 2 と 3) は外します。
+  両方を残すと許可が足し合わされ、絞り込みが効きません (以前の「アプリケーション アクセス ポリシー」は、この仕組みに置き換えられています)。
+  この絞り込みは、こちらでは実際のテナントで試していません。
+- うまく送れないとき、ログの理由が `invalid_client` ならシークレットの間違いか期限切れ、`ErrorAccessDenied` や 403 なら
+  手順 2 と 3 (許可と管理者の同意)、`ErrorInvalidUser` や 404 なら `SYSTEM_MAIL_GRAPH_SENDER` のアドレスを確かめてください。
+
+#### SMTP で送る
 
 ```sh
 SYSTEM_MAIL_HOST=smtp.example.com
@@ -256,14 +310,9 @@ SYSTEM_MAIL_PASSWORD=...
 SYSTEM_MAIL_FROM="Orbit <no-reply@example.com>"
 ```
 
-- 送信に使えるのは、SMTP でログインして送れるメールサービスです (独自ドメインのメールサーバー、Gmail のアプリ パスワード、
-  送信専用のサービスなど)。差出人 (`SYSTEM_MAIL_FROM`) は、そのサービスで送ってよいアドレスにします。
+- 差出人 (`SYSTEM_MAIL_FROM`) は、そのサービスで送ってよいアドレスにします。
 - ポートは 587 (STARTTLS) か 465 (最初から TLS) を使います。Oracle Cloud は、25 番への送信を標準で止めています。
 - 暗号化なしの接続では送りません (587 番では STARTTLS が必須です)。
-- 反映は `docker compose up -d` です。API のログ (`docker compose logs api`) に
-  「SYSTEM_MAIL_HOST が未設定のため…」が出なければ、設定を読めています。
-  実際に送れるかは、ログイン画面の「パスワードを忘れた場合」で確かめてください。送れなかったときは、API のログに
-  「メールを送れませんでした」と理由が出ます (画面には、登録の有無を漏らさないよう、どちらの場合も同じ文を出します)。
 
 **パスキー**は、公開しているドメイン (`DOMAIN`) に結び付きます。追加の設定は要りませんが、ドメインを変えると
 登録済みのパスキーは使えなくなります。ブラウザーの Web 版でだけ使えます (Android アプリとデスクトップ版では使えません。
@@ -405,7 +454,10 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump.gpg .
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | | 新着メールの通知 (Web Push) の鍵の組 (自動生成)。変えると端末で通知を許可し直す必要がある |
 | `VAPID_SUBJECT` | | プッシュサービスが運営者へ連絡するための宛先。既定は `https://<DOMAIN>` |
 | `FCM_SERVICE_ACCOUNT` | | Android アプリへの新着メールの通知 (FCM) に使う、Firebase のサービスアカウントの鍵 (JSON を base64 にした値)。空なら送らない。手順は [android-app.md](android-app.md) |
-| `SYSTEM_MAIL_HOST` | | 利用者へ送るメール (パスワードの再設定、メールアドレスの変更の確認) の送信用 SMTP サーバー。空なら、この 2 つは使えない |
+| `SYSTEM_MAIL_GRAPH_SENDER` | | 利用者へ送るメールを Microsoft 365 (Microsoft Graph) から送るときの、差出人のメールボックス。書くと Graph で送る |
+| `SYSTEM_MAIL_GRAPH_TENANT` | | Entra のテナント (ディレクトリ) の ID かドメイン。`SYSTEM_MAIL_GRAPH_SENDER` を書いたら必須 (`common` は不可) |
+| `SYSTEM_MAIL_GRAPH_CLIENT_ID` / `SYSTEM_MAIL_GRAPH_CLIENT_SECRET` | | 送信専用のアプリ登録を使うときだけ。既定は `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` |
+| `SYSTEM_MAIL_HOST` | | 利用者へ送るメール (パスワードの再設定、メールアドレスの変更の確認) の送信用 SMTP サーバー (Microsoft Graph を使わないとき)。どちらも空なら、この 2 つは使えない |
 | `SYSTEM_MAIL_PORT` | | 既定は 587 (STARTTLS)。465 なら最初から TLS |
 | `SYSTEM_MAIL_USER` / `SYSTEM_MAIL_PASSWORD` | | SMTP サーバーにログインする名前とパスワード |
 | `SYSTEM_MAIL_FROM` | | 差出人 (`Orbit <no-reply@example.com>` の形でもよい)。`SYSTEM_MAIL_HOST` を書いたら必須 |

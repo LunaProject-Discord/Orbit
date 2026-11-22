@@ -7,7 +7,7 @@ import {
   loadWebPushConfig,
 } from "@mail/core";
 import { lanOrigins } from "./lib/lan-origins.js";
-import { loadSystemMailConfig } from "./lib/system-mail.js";
+import { loadSystemMail } from "./lib/system-mail.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -64,18 +64,19 @@ export function loadEnv() {
   const googleConfig = loadGoogleOAuthConfig(process.env);
   const webOrigin = configuredOrigins[0] ?? "http://localhost:3000";
   const production = process.env.NODE_ENV === "production";
-  const systemMail = loadSystemMailConfig(process.env);
+  const systemMail = loadSystemMail(process.env);
   return {
     /** Web の URL。メールに書くリンクの先になる。 */
     webOrigin,
     /**
      * Orbit 自身が利用者へ送るメール (パスワードの再設定、メールアドレスの変更の確認)。
+     * - graph: Microsoft 365 のメールボックスから、Microsoft Graph で送る (SYSTEM_MAIL_GRAPH_*)。
      * - smtp: SYSTEM_MAIL_* の SMTP サーバーから送る。
-     * - console: 開発用。送らずに API サーバーのログへ出す (SMTP が未設定で、本番ではないとき)。
-     * - null: 送れない (本番で SMTP が未設定)。再設定とメールアドレスの変更は使えない。
+     * - console: 開発用。送らずに API サーバーのログへ出す (どちらも未設定で、本番ではないとき)。
+     * - null: 送れない (本番でどちらも未設定)。再設定とメールアドレスの変更は使えない。
      */
     systemMail: systemMail
-      ? ({ kind: "smtp", config: systemMail } as const)
+      ? systemMail
       : production
         ? null
         : ({ kind: "console" } as const),

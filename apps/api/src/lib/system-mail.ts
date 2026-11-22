@@ -163,3 +163,186 @@ export function createConsoleMailer(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Microsoft 365 (Microsoft Graph) から送る
+// ---------------------------------------------------------------------------
+
+export type GraphMailConfig = {
+  /** Entra のテナント (ディレクトリ) の ID かドメイン。アプリ専用の認証では common は使えない。 */
+  tenant: string;
+  clientId: string;
+  clientSecret: string;
+  /** 送信に使うメールボックスのアドレス (このメールボックスが差出人になる)。 */
+  sender: string;
+};
+
+/**
+ * 環境変数から Microsoft Graph での送信の設定を読む。SYSTEM_MAIL_GRAPH_SENDER が空なら null。
+ * クライアント ID とシークレットは、メールアカウントの追加に使っているアプリ登録
+ * (MICROSOFT_CLIENT_ID / MICROSOFT_CLIENT_SECRET) を既定で使う。
+ */
+export function loadGraphMailConfig(
+  env: Record<string, string | undefined>,
+): GraphMailConfig | null {
+  const sender = env.SYSTEM_MAIL_GRAPH_SENDER?.trim();
+  if (!sender) return null;
+  if (!/^[^\s@]+@[^\s@]+$/.test(sender)) {
+    throw new Error(
+      "SYSTEM_MAIL_GRAPH_SENDER は、送信に使うメールボックスのメールアドレスにしてください。",
+    );
+  }
+  const tenant =
+    env.SYSTEM_MAIL_GRAPH_TENANT?.trim() || env.MICROSOFT_TENANT?.trim() || "";
+  if (!tenant || ["common", "organizations", "consumers"].includes(tenant)) {
+    throw new Error(
+      "SYSTEM_MAIL_GRAPH_SENDER を設定したときは、SYSTEM_MAIL_GRAPH_TENANT にテナント (ディレクトリ) の ID かドメインを設定してください (common などは使えません)。",
+    );
+  }
+  const clientId =
+    env.SYSTEM_MAIL_GRAPH_CLIENT_ID?.trim() || env.MICROSOFT_CLIENT_ID?.trim();
+  const clientSecret =
+    env.SYSTEM_MAIL_GRAPH_CLIENT_SECRET?.trim() ||
+    env.MICROSOFT_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "SYSTEM_MAIL_GRAPH_SENDER を設定したときは、SYSTEM_MAIL_GRAPH_CLIENT_ID と SYSTEM_MAIL_GRAPH_CLIENT_SECRET (または MICROSOFT_CLIENT_ID と MICROSOFT_CLIENT_SECRET) も設定してください。",
+    );
+  }
+  return { tenant, clientId, clientSecret, sender };
+}
+
+/**
+ * 利用者へ送るメールの設定をまとめて読む。
+ * Microsoft Graph (SYSTEM_MAIL_GRAPH_SENDER) と SMTP (SYSTEM_MAIL_HOST) のどちらか一方を使う。
+ */
+export function loadSystemMail(
+  env: Record<string, string | undefined>,
+):
+  | { kind: "graph"; config: GraphMailConfig }
+  | { kind: "smtp"; config: SystemMailConfig }
+  | null {
+  const graph = loadGraphMailConfig(env);
+  const smtp = loadSystemMailConfig(env);
+  if (graph && smtp) {
+    throw new Error(
+      "SYSTEM_MAIL_GRAPH_SENDER (Microsoft Graph) と SYSTEM_MAIL_HOST (SMTP) は、どちらか一方だけを設定してください。",
+    );
+  }
+  if (graph) return { kind: "graph", config: graph };
+  if (smtp) return { kind: "smtp", config: smtp };
+  return null;
+}
+
+/** Graph やトークンの応答から、ログに出す短い理由を取り出す。 */
+async function graphErrorOf(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  try {
+    const data = JSON.parse(text) as {
+      error?: { code?: string; message?: string } | string;
+      error_description?: string;
+    };
+    if (typeof data.error === "string") {
+      return `${data.error}: ${data.error_description ?? ""}`.slice(0, 500);
+    }
+    if (data.error) {
+      return `${data.error.code ?? ""}: ${data.error.message ?? ""}`.slice(
+        0,
+        500,
+      );
+    }
+  } catch {
+    // JSON でなければ、そのまま出す。
+  }
+  return text.slice(0, 500);
+}
+
+/**
+ * Microsoft Graph の sendMail で送る。
+ * 利用者のログインを介さない、アプリ専用の認証 (client credentials) を使うので、
+ * アプリ登録に Mail.Send の「アプリケーションの許可」と管理者の同意が要る。
+ */
+export function createGraphMailer(
+  config: GraphMailConfig,
+  fetchFn: typeof fetch = fetch,
+): SystemMailer {
+  let cached: { token: string; expiresAt: number } | null = null;
+
+  async function accessToken(): Promise<string> {
+    // 期限の 1 分前までは、前に受け取ったトークンを使う。
+    if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
+    const response = await fetchFn(
+      `https://login.microsoftonline.com/${encodeURIComponent(config.tenant)}/oauth2/v2.0/token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          scope: "https://graph.microsoft.com/.default",
+        }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Microsoft のトークンを取得できませんでした (${response.status}): ${await graphErrorOf(response)}`,
+      );
+    }
+    const data = (await response.json()) as {
+      access_token?: string;
+      expires_in?: number;
+    };
+    if (!data.access_token) {
+      throw new Error(
+        "Microsoft のトークンの応答に access_token がありません。",
+      );
+    }
+    cached = {
+      token: data.access_token,
+      expiresAt: Date.now() + (data.expires_in ?? 300) * 1000,
+    };
+    return cached.token;
+  }
+
+  async function post(mail: SystemMail, token: string): Promise<Response> {
+    const { html } = renderSystemMail(mail);
+    return fetchFn(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(config.sender)}/sendMail`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: {
+            subject: mail.subject,
+            body: { contentType: "HTML", content: html },
+            toRecipients: [{ emailAddress: { address: mail.to } }],
+          },
+          // 再設定のリンクなどを、送信済みアイテムに残さない。
+          saveToSentItems: false,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+  }
+
+  return {
+    async send(mail) {
+      let response = await post(mail, await accessToken());
+      if (response.status === 401) {
+        // トークンが取り消されていたら、取り直して 1 度だけやり直す。
+        cached = null;
+        response = await post(mail, await accessToken());
+      }
+      if (!response.ok) {
+        throw new Error(
+          `Microsoft Graph で送れませんでした (${response.status}): ${await graphErrorOf(response)}`,
+        );
+      }
+    },
+  };
+}

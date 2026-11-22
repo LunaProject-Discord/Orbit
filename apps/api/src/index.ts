@@ -4,19 +4,33 @@ import { createApp } from "./app.js";
 import { createAuth } from "./auth.js";
 import { loadEnv } from "./env.js";
 import { EventsHub } from "./lib/events-hub.js";
-import { createConsoleMailer, createSmtpMailer } from "./lib/system-mail.js";
+import {
+  createConsoleMailer,
+  createGraphMailer,
+  createSmtpMailer,
+} from "./lib/system-mail.js";
 
 const env = loadEnv();
 const { db, pool } = createDb(env.databaseUrl);
 const mailer =
-  env.systemMail?.kind === "smtp"
-    ? createSmtpMailer(env.systemMail.config)
-    : env.systemMail?.kind === "console"
-      ? createConsoleMailer()
-      : null;
+  env.systemMail?.kind === "graph"
+    ? createGraphMailer(env.systemMail.config)
+    : env.systemMail?.kind === "smtp"
+      ? createSmtpMailer(env.systemMail.config)
+      : env.systemMail?.kind === "console"
+        ? createConsoleMailer()
+        : null;
 if (!mailer) {
   console.warn(
-    "SYSTEM_MAIL_HOST が未設定のため、パスワードの再設定とメールアドレスの変更は使えません。",
+    "SYSTEM_MAIL_GRAPH_SENDER も SYSTEM_MAIL_HOST も未設定のため、パスワードの再設定とメールアドレスの変更は使えません。",
+  );
+} else if (env.systemMail?.kind === "graph") {
+  console.log(
+    `利用者へのメールは Microsoft Graph で送ります (差出人: ${env.systemMail.config.sender})。`,
+  );
+} else if (env.systemMail?.kind === "smtp") {
+  console.log(
+    `利用者へのメールは SMTP で送ります (${env.systemMail.config.host}:${env.systemMail.config.port})。`,
   );
 }
 const auth = createAuth({
