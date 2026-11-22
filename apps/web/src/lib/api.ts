@@ -218,6 +218,8 @@ export type MessageSummary = {
 export type ThreadMessage = {
   id: string;
   accountId: string;
+  /** 会話のキー。端末に保存してあった古い内容には無いことがある。 */
+  threadKey?: string;
   subject: string;
   from: Address[];
   to: Address[];
@@ -578,6 +580,66 @@ export async function updateAccountSignature(
     { method: "PATCH", body: { signatureHtml } },
   );
   return account;
+}
+
+/**
+ * 連絡先 (宛先のアドレス) ごと、会話ごとの署名。アカウントの署名より優先して使う。
+ * 優先順位は lib/signatures.ts の resolveSignature を参照。
+ */
+export type SignatureRule = {
+  id: string;
+  kind: "contact" | "thread";
+  /** 会話のあるアカウント。連絡先の決まりでは null (すべてのアカウントに効く)。 */
+  accountId: string | null;
+  /** 連絡先は小文字のメールアドレス、会話は会話のキー (threadKey)。 */
+  key: string;
+  /** 一覧に出す名前 (連絡先の名前、会話の件名)。 */
+  label: string | null;
+  /** 使う署名 (書式付き)。null は「署名を付けない」。 */
+  signatureHtml: string | null;
+  updatedAt: string;
+};
+
+export async function listSignatureRules(
+  signal?: AbortSignal,
+): Promise<SignatureRule[]> {
+  const { rules } = await apiJson<{ rules: SignatureRule[] }>(
+    "/v1/signatures",
+    { signal },
+  );
+  return rules;
+}
+
+/** 連絡先の署名を決める。signatureHtml が null なら、その相手には署名を付けない。 */
+export async function saveContactSignature(input: {
+  address: string;
+  label: string | null;
+  signatureHtml: string | null;
+}): Promise<SignatureRule> {
+  const { rule } = await apiJson<{ rule: SignatureRule }>(
+    "/v1/signatures/contact",
+    { method: "PUT", body: input },
+  );
+  return rule;
+}
+
+/** 会話の署名を決める。signatureHtml が null なら、その会話では署名を付けない。 */
+export async function saveThreadSignature(input: {
+  accountId: string;
+  threadKey: string;
+  label: string | null;
+  signatureHtml: string | null;
+}): Promise<SignatureRule> {
+  const { rule } = await apiJson<{ rule: SignatureRule }>(
+    "/v1/signatures/thread",
+    { method: "PUT", body: input },
+  );
+  return rule;
+}
+
+/** 連絡先や会話の署名の決まりを消す (1 つ下の優先順位の署名に戻る)。 */
+export async function deleteSignatureRule(id: string): Promise<void> {
+  await apiJson(`/v1/signatures/${id}`, { method: "DELETE" });
 }
 
 /** アカウントの表示名、色、アイコン、TLS の設定を変える。指定した項目だけが変わる。 */

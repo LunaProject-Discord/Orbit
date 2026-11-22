@@ -47,7 +47,11 @@ import {
   SidebarRail,
   useSidebarPeek,
 } from "@/components/mail/sidebar-rail";
-import { SignatureDialog } from "@/components/mail/signature-dialog";
+import {
+  SignatureDialog,
+  type SignatureTarget,
+} from "@/components/mail/signature-dialog";
+import { SignatureRulesSettings } from "@/components/mail/signature-rules-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import {
   UnifiedDialog,
@@ -71,10 +75,12 @@ import {
   ApiError,
   deleteDraft,
   deleteOutgoing,
+  deleteSignatureRule,
   dismissFailure,
   type FailedOperation,
   listFailures,
   listOutgoing,
+  listSignatureRules,
   listUnified,
   listUnifiedMessages,
   type MailboxSummary,
@@ -90,6 +96,7 @@ import {
   type SearchParams,
   type ServerDraft,
   type SidebarLayout,
+  type SignatureRule,
   saveAccountOrder,
   saveDraft,
   saveMailboxOrder,
@@ -107,6 +114,7 @@ import {
   draftFromOutgoing,
   draftFromServer,
   draftSaveInput,
+  draftSignature,
   htmlToText,
   loadUnsavedDrafts,
   newDraft,
@@ -165,6 +173,12 @@ import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
+import {
+  findContactRule,
+  findThreadRule,
+  loadCachedSignatureRules,
+  storeCachedSignatureRules,
+} from "@/lib/signatures";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
 import {
   applyActionToThreads,
@@ -216,6 +230,7 @@ const FOLDER_NOTICES: Record<FolderDialogTarget["kind"], string> = {
   rename: "フォルダの名前を変更しています。少しすると一覧に反映されます。",
   delete: "フォルダを削除しています。少しすると一覧から消えます。",
 };
+const SIGNATURE_RULE_DELETE_ERROR = "署名の設定を解除できませんでした。";
 const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
 const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
 const RETRY_ERROR =
@@ -360,7 +375,10 @@ export function MailApp({ user }: { user: User }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
-  const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
+  const [signatureTarget, setSignatureTarget] =
+    useState<SignatureTarget | null>(null);
+  /** 連絡先ごと、会話ごとの署名 (どの端末でも同じ内容)。 */
+  const [signatureRules, setSignatureRules] = useState<SignatureRule[]>([]);
   const [folderDialog, setFolderDialog] = useState<FolderDialogTarget | null>(
     null,
   );
@@ -522,6 +540,22 @@ export function MailApp({ user }: { user: User }) {
     } catch {
       // 一覧は次の通知や操作でまた取得する。
     }
+  }, []);
+
+  const loadSignatureRules = useCallback(async () => {
+    try {
+      const rules = await listSignatureRules();
+      setSignatureRules(rules);
+      storeCachedSignatureRules(rules);
+    } catch {
+      // 次の通知や操作でまた取得する。
+    }
+  }, []);
+  // サーバーの応答を待つ間 (オフラインならその後も) は、前回取得した内容を使う。
+  useEffect(() => {
+    const cached = loadCachedSignatureRules();
+    if (cached.length > 0)
+      setSignatureRules((current) => (current.length === 0 ? cached : current));
   }, []);
 
   const loadUnified = useCallback(async () => {
@@ -720,6 +754,7 @@ export function MailApp({ user }: { user: User }) {
     void loadFailures();
     void loadDrafts();
     void loadUnified();
+    void loadSignatureRules();
   }, [
     loadAccounts,
     loadMailboxes,
@@ -727,6 +762,7 @@ export function MailApp({ user }: { user: User }) {
     loadFailures,
     loadDrafts,
     loadUnified,
+    loadSignatureRules,
   ]);
 
   // 短い知らせは、しばらくしたら消す。
@@ -1137,6 +1173,7 @@ export function MailApp({ user }: { user: User }) {
         void loadFailures();
         void loadDrafts();
         void loadUnified();
+        void loadSignatureRules();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
@@ -1157,6 +1194,7 @@ export function MailApp({ user }: { user: User }) {
     loadFailures,
     loadDrafts,
     loadUnified,
+    loadSignatureRules,
     openFromNotification,
   ]);
 
@@ -1170,6 +1208,7 @@ export function MailApp({ user }: { user: User }) {
       void loadFailures();
       void loadDrafts();
       void loadUnified();
+      void loadSignatureRules();
       void loadFirstPage(selectionRef.current, false);
       void saverRef.current?.flush();
       setRefreshKey((key) => key + 1);
@@ -1193,6 +1232,7 @@ export function MailApp({ user }: { user: User }) {
     loadFailures,
     loadDrafts,
     loadUnified,
+    loadSignatureRules,
     loadFirstPage,
   ]);
 
@@ -1205,6 +1245,19 @@ export function MailApp({ user }: { user: User }) {
       }),
     [loadOutgoing, loadDrafts],
   );
+
+  /** 署名の決まりを画面に反映する (サーバーへの保存は済んでいる)。 */
+  const updateSignatureRules = (
+    update: (current: SignatureRule[]) => SignatureRule[],
+  ) =>
+    setSignatureRules((current) => {
+      const next = update(current);
+      storeCachedSignatureRules(next);
+      return next;
+    });
+  /** 連絡先や会話の署名をまだ決めていないときに、書き始めの内容にするアカウントの署名。 */
+  const accountSignature = (accountId: string) =>
+    accounts?.find((item) => item.id === accountId)?.signatureHtml ?? null;
 
   /**
    * 作成画面でメールを開く。それまで開いていたメールは、下書きとしてサーバーに残る。
@@ -1234,9 +1287,16 @@ export function MailApp({ user }: { user: User }) {
   function handleComposeTo(address: Address, accountId: string) {
     const account = accounts?.find((item) => item.id === accountId);
     if (!account) return;
-    const next = newDraft(account.id, account.signatureHtml);
+    const to = { list: [address], text: "" };
+    // この相手に署名を決めてあれば、アカウントの署名の代わりに使う。
+    const signature = draftSignature(
+      { accountId: account.id, to },
+      accounts ?? [],
+      signatureRules,
+    );
+    const next = newDraft(account.id, signature.html);
     showInCompose(
-      { ...next, to: { list: [address], text: "" } },
+      { ...next, to },
       // 宛先を入れてあるので、下書きとして保存する。
       true,
     );
@@ -1274,7 +1334,7 @@ export function MailApp({ user }: { user: User }) {
     /** 本文の下の返信欄に書いてあった文章。あれば本文の先頭に入れる。 */
     text = "",
   ) => {
-    const built = buildDraftFrom(mode, message, accounts ?? []);
+    const built = buildDraftFrom(mode, message, accounts ?? [], signatureRules);
     showInCompose(withReplyText(built, text), text.trim() !== "");
   };
 
@@ -1284,7 +1344,7 @@ export function MailApp({ user }: { user: User }) {
     text: string,
   ): Promise<boolean> {
     const reply = withReplyText(
-      buildDraftFrom("reply", message, accounts ?? []),
+      buildDraftFrom("reply", message, accounts ?? [], signatureRules),
       text,
     );
     if (reply.to.list.length === 0) {
@@ -2181,7 +2241,7 @@ export function MailApp({ user }: { user: User }) {
               },
               onEditSignature: (account) => {
                 setSidebarOpen(false);
-                setSignatureTarget(account);
+                setSignatureTarget({ kind: "account", account });
               },
               onDeleteAccount: (account) => {
                 setSidebarOpen(false);
@@ -2256,7 +2316,9 @@ export function MailApp({ user }: { user: User }) {
             devices={devices}
             onAdd={() => setAddOpen(true)}
             onDelete={setDeleteTarget}
-            onEditSignature={setSignatureTarget}
+            onEditSignature={(account) =>
+              setSignatureTarget({ kind: "account", account })
+            }
             onReauth={handleReauth}
             onAccountUpdated={(account) =>
               setAccounts(
@@ -2271,6 +2333,48 @@ export function MailApp({ user }: { user: User }) {
               window.history.replaceState(null, "", "/");
               void signOut();
             }}
+            signatureRules={
+              <SignatureRulesSettings
+                rules={signatureRules}
+                accounts={accounts ?? []}
+                onEdit={(rule) => {
+                  if (rule.kind === "contact") {
+                    setSignatureTarget({
+                      kind: "contact",
+                      address: {
+                        name: rule.label ?? undefined,
+                        address: rule.key,
+                      },
+                      rule,
+                      fallbackHtml: null,
+                    });
+                  } else if (rule.accountId) {
+                    setSignatureTarget({
+                      kind: "thread",
+                      accountId: rule.accountId,
+                      threadKey: rule.key,
+                      subject: rule.label ?? "",
+                      rule,
+                      fallbackHtml: null,
+                    });
+                  }
+                }}
+                onDelete={(rule) => {
+                  deleteSignatureRule(rule.id)
+                    .then(() =>
+                      updateSignatureRules((current) =>
+                        current.filter((item) => item.id !== rule.id),
+                      ),
+                    )
+                    .catch(() =>
+                      setNotice({
+                        message: SIGNATURE_RULE_DELETE_ERROR,
+                        tone: "error",
+                      }),
+                    );
+                }}
+              />
+            }
             sidebarItems={
               <UnifiedSettings
                 unified={unified}
@@ -2523,6 +2627,27 @@ export function MailApp({ user }: { user: User }) {
               onQuickReply={handleQuickReply}
               onSearchAddress={handleSearchAddress}
               onComposeTo={handleComposeTo}
+              signatureRules={signatureRules}
+              onContactSignature={(address, accountId) =>
+                setSignatureTarget({
+                  kind: "contact",
+                  address,
+                  rule: findContactRule(signatureRules, address.address),
+                  fallbackHtml: accountSignature(accountId),
+                })
+              }
+              onThreadSignature={(thread) =>
+                setSignatureTarget({
+                  kind: "thread",
+                  ...thread,
+                  rule: findThreadRule(
+                    signatureRules,
+                    thread.accountId,
+                    thread.threadKey,
+                  ),
+                  fallbackHtml: accountSignature(thread.accountId),
+                })
+              }
               onBack={() => setSelectedMessageId(null)}
               onMissing={handleMissing}
             />
@@ -2552,6 +2677,7 @@ export function MailApp({ user }: { user: User }) {
         draft={draft}
         open={composeOpen}
         accounts={accounts ?? []}
+        signatureRules={signatureRules}
         notice={composeNotice}
         savedAt={draftSavedAt}
         saveProblem={draftSaveProblem}
@@ -2602,9 +2728,20 @@ export function MailApp({ user }: { user: User }) {
         />
       </ToastRegion>
       <SignatureDialog
-        account={signatureTarget}
+        target={signatureTarget}
         onClose={() => setSignatureTarget(null)}
-        onSaved={(account) =>
+        onRuleSaved={(rule) =>
+          updateSignatureRules((current) => [
+            ...current.filter((item) => item.id !== rule.id),
+            rule,
+          ])
+        }
+        onRuleDeleted={(id) =>
+          updateSignatureRules((current) =>
+            current.filter((item) => item.id !== id),
+          )
+        }
+        onAccountSaved={(account) =>
           setAccounts(
             (current) =>
               current?.map((item) =>

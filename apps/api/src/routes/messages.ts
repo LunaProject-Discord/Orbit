@@ -230,6 +230,7 @@ export function messageRoutes({
         .select({
           id: t.id,
           accountId: t.accountId,
+          threadKey: t.threadKey,
           subject: t.subject,
           from: t.from,
           to: t.to,

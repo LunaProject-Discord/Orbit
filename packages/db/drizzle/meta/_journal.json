@@ -148,6 +148,13 @@
       "when": 1795346548010,
       "tag": "0020_mailbox_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795347172882,
+      "tag": "0021_signature_rules",
+      "breakpoints": true
     }
   ]
 }
