@@ -2,8 +2,8 @@
 #   cd deploy && docker compose up -d --build
 # 設定は deploy/.env から読む (deploy/setup.sh で作る)。
 # 外への公開のしかたは、deploy/.env の COMPOSE_FILE でこのファイルに重ねるファイルで決まる。
-#   compose.apache.yml: 既存の Web サーバー (Apache など) から逆プロキシする。web は 127.0.0.1 のポートだけで待ち受ける
-#   compose.caddy.yml:  Caddy が 80 / 443 番で直接公開し、証明書も自動で取得する
+#   compose.proxy.yml: 別の Web サーバー (中継用のサーバーや、同じサーバーの Apache) から逆プロキシする
+#   compose.caddy.yml: Caddy が 80 / 443 番で直接公開し、証明書も自動で取得する
 name: mail
 
 x-logging: &logging
@@ -102,7 +102,7 @@ services:
         NEXT_PUBLIC_API_URL: https://${DOMAIN}
     restart: unless-stopped
     logging: *logging
-    # 待ち受けるアドレスとポートは、重ねるファイル (compose.apache.yml / compose.caddy.yml) が決める。
+    # 待ち受けるアドレスとポートは、重ねるファイル (compose.proxy.yml / compose.caddy.yml) が決める。
     environment:
       SITE_ADDRESS: ":80"
     depends_on:

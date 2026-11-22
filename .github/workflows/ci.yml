@@ -57,8 +57,11 @@ jobs:
         working-directory: deploy
     steps:
       - uses: actions/checkout@v4
-      - name: 設定ファイルを用意 (既存の Web サーバーから逆プロキシする構成)
-        run: bash setup.sh mail.example.com apache
+      - name: 設定ファイルを用意 (別のサーバーから逆プロキシする構成)
+        run: |
+          bash setup.sh mail.example.com relay
+          grep -x 'LOCAL_BIND=0.0.0.0' .env
+          grep -x 'COMPOSE_FILE=compose.yml:compose.proxy.yml' .env
       - name: Caddy が直接公開する構成も検証
         run: COMPOSE_FILE=compose.yml:compose.caddy.yml docker compose config --quiet
       - name: イメージをビルド
