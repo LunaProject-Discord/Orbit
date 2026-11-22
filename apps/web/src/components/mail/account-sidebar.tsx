@@ -1085,7 +1085,9 @@ function SidebarItem({
       {...handle}
       className={cn(
         handle && "touch-manipulation select-none",
-        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
+        // アイコンは 1 行目の文字の中央に合わせて 2px 下げる。枠で包んだ印 (BuiltinMark など) は
+        // 枠の側で下げているので、中の svg まで下げない (二重に下がってしまう)。
+        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0",
         selected &&
           "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
         className,
