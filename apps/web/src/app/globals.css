@@ -107,8 +107,9 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  --scrollbar-thumb: oklch(0 0 0 / 28%);
+  --scrollbar-thumb: oklch(0 0 0 / 35%);
   --scrollbar-thumb-hover: oklch(0 0 0 / 50%);
+  --scrollbar-track: oklch(0 0 0 / 6%);
 }
 
 .dark {
@@ -143,17 +144,51 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
-  --scrollbar-thumb: oklch(1 0 0 / 28%);
+  --scrollbar-thumb: oklch(1 0 0 / 35%);
   --scrollbar-thumb-hover: oklch(1 0 0 / 50%);
+  --scrollbar-track: oklch(1 0 0 / 8%);
 }
 
 /*
- * スクロールバー。ふだんは細い線で表示し、バーにカーソルを乗せたときだけ太くする。
- * 幅を変えると中身がずれるので、バーの場所 (12px) は常に確保し、つまみの見た目だけを変える。
- * バーの空いている部分に乗ったことは CSS では分からないため、
- * components/scrollbar-hover.tsx が data-scrollbar-hover を付けて知らせる。
+ * スクロールバー。macOS のように、ふだんは隠しておき、スクロールしている間と
+ * バーにカーソルを乗せたときだけ、角の丸い半透明のつまみを出す。
+ * バーに乗っている間は、つまみを太くして下地 (溝) も見せる。
+ * 幅を変えると中身がずれるので、バーの場所 (12px) は常に確保し、見た目だけを変える。
+ * スクロール中かどうかと、バーに乗っているかどうかは CSS では分からないため、
+ * components/scrollbar-hover.tsx が data-scrolling / data-scrollbar-hover を付けて知らせる。
  * タッチ操作の端末は、OS の重ねて表示するバーのままにする。
  */
+@property --scrollbar-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --scrollbar-track-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@layer base {
+  /* 色を要素ごとに持たせ (中のスクロール領域へ引き継がない)、消えるときはゆっくり薄くする。 */
+  * {
+    --scrollbar-color: transparent;
+    --scrollbar-track-color: transparent;
+    transition:
+      --scrollbar-color 0.5s ease-out,
+      --scrollbar-track-color 0.5s ease-out;
+  }
+  [data-scrolling] {
+    --scrollbar-color: var(--scrollbar-thumb);
+    transition-duration: 0.1s;
+  }
+  [data-scrollbar-hover] {
+    --scrollbar-color: var(--scrollbar-thumb-hover);
+    --scrollbar-track-color: var(--scrollbar-track);
+    transition-duration: 0.1s;
+  }
+}
+
 @media (hover: hover) and (pointer: fine) {
   @supports selector(::-webkit-scrollbar) {
     ::-webkit-scrollbar {
@@ -161,35 +196,34 @@
       height: 12px;
       background: transparent;
     }
-    ::-webkit-scrollbar-track,
+    ::-webkit-scrollbar-track {
+      background-color: var(--scrollbar-track-color);
+    }
     ::-webkit-scrollbar-corner {
       background: transparent;
     }
     ::-webkit-scrollbar-thumb {
-      min-height: 32px;
-      min-width: 32px;
+      min-height: 36px;
+      min-width: 36px;
       border: solid transparent;
-      border-width: 2px 2px 2px 6px;
+      border-width: 2px 2px 2px 4px;
       border-radius: 999px;
-      background-color: var(--scrollbar-thumb);
+      background-color: var(--scrollbar-color);
       background-clip: content-box;
     }
     ::-webkit-scrollbar-thumb:horizontal {
-      border-width: 6px 2px 2px;
+      border-width: 4px 2px 2px;
     }
-    ::-webkit-scrollbar-thumb:hover,
-    ::-webkit-scrollbar-thumb:active,
     [data-scrollbar-hover]::-webkit-scrollbar-thumb {
       border-width: 2px;
-      background-color: var(--scrollbar-thumb-hover);
     }
   }
 
-  /* Firefox はつまみの太さを細かく指定できないので、常に細いバーにする。 */
+  /* Firefox はつまみの太さと下地を細かく指定できないので、表示と非表示だけを切り替える。 */
   @supports not selector(::-webkit-scrollbar) {
     * {
       scrollbar-width: thin;
-      scrollbar-color: var(--scrollbar-thumb) transparent;
+      scrollbar-color: var(--scrollbar-color) var(--scrollbar-track-color);
     }
   }
 }

@@ -33,3 +33,9 @@ export function overScrollbar(
 
 /** スクロールバーにカーソルが乗っている要素に付ける属性。globals.css がこれを見て太くする。 */
 export const SCROLLBAR_HOVER_ATTRIBUTE = "data-scrollbar-hover";
+
+/** スクロールしている要素に付ける属性。止まってから少しの間は残し、その後つまみを隠す。 */
+export const SCROLLING_ATTRIBUTE = "data-scrolling";
+
+/** スクロールが止まってから、つまみを隠し始めるまでの時間 (ミリ秒)。 */
+export const SCROLLBAR_HIDE_DELAY = 800;
