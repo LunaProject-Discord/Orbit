@@ -54,12 +54,14 @@ Node.js 25 以降には Corepack が同梱されていないため、pnpm は `n
 
 ## 本番への配置 (Oracle Cloud)
 
-Docker Compose で一式 (Web、API、同期ワーカー、PostgreSQL、HTTPS を受ける Caddy、バックアップ) を動かします。
-サーバーの用意から、独自ドメインと HTTPS、更新、バックアップ、環境変数の一覧までを
+Docker Compose で一式 (Web、API、同期ワーカー、PostgreSQL、バックアップ) を動かします。
+外への公開は、既存の Web サーバー (Apache など) から逆プロキシする構成と、同梱の Caddy が直接 HTTPS を受ける構成を選べます。
+Docker の導入から、Apache と証明書の設定、更新、バックアップ、環境変数の一覧までを
 [docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md) にまとめています。
 
 ```sh
-bash deploy/setup.sh mail.example.com   # deploy/.env を作り、秘密の値を生成
+bash deploy/setup.sh mail.example.com          # deploy/.env を作り、秘密の値を生成 (逆プロキシの構成)
+bash deploy/setup.sh mail.example.com caddy    # Caddy が 80 / 443 番で直接公開する構成にする場合
 cd deploy && docker compose up -d --build
 ```
 

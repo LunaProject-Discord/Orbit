@@ -1,6 +1,9 @@
 # 本番 (Oracle Cloud) 用の構成。手順は docs/deploy-oracle-cloud.md を参照。
 #   cd deploy && docker compose up -d --build
 # 設定は deploy/.env から読む (deploy/setup.sh で作る)。
+# 外への公開のしかたは、deploy/.env の COMPOSE_FILE でこのファイルに重ねるファイルで決まる。
+#   compose.apache.yml: 既存の Web サーバー (Apache など) から逆プロキシする。web は 127.0.0.1 のポートだけで待ち受ける
+#   compose.caddy.yml:  Caddy が 80 / 443 番で直接公開し、証明書も自動で取得する
 name: mail
 
 x-logging: &logging
@@ -27,6 +30,9 @@ x-server: &server
     API_PUBLIC_URL: https://${DOMAIN:?deploy/.env に DOMAIN がありません}
     ALLOWED_ORIGINS: https://${DOMAIN},${EXTRA_ALLOWED_ORIGINS:-}
     MICROSOFT_REDIRECT_URI: https://${DOMAIN}/oauth/microsoft
+    GOOGLE_REDIRECT_URI: https://${DOMAIN}/oauth/google
+    # プッシュサービスが運営者へ連絡するための宛先。既定は公開している URL。
+    VAPID_SUBJECT: ${VAPID_SUBJECT:-https://${DOMAIN}}
     ALLOW_PRIVATE_MAIL_HOSTS: "false"
     # API が受け取った添付ファイルをワーカーが読むので、同じボリュームを両方に付ける。
     ATTACHMENTS_DIR: /data/attachments
@@ -96,16 +102,9 @@ services:
         NEXT_PUBLIC_API_URL: https://${DOMAIN}
     restart: unless-stopped
     logging: *logging
+    # 待ち受けるアドレスとポートは、重ねるファイル (compose.apache.yml / compose.caddy.yml) が決める。
     environment:
-      DOMAIN: ${DOMAIN}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      # 取得した証明書。消すと取り直しになり、Let's Encrypt の発行回数の制限に当たることがある。
-      - caddy-data:/data
-      - caddy-config:/config
+      SITE_ADDRESS: ":80"
     depends_on:
       - api
 
@@ -124,8 +123,9 @@ services:
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
       TZ: ${TZ:-Asia/Tokyo}
     volumes:
-      - ./backup.sh:/backup.sh:ro
-      - ./backups:/backups
+      # 末尾の z は SELinux が有効なホスト (AlmaLinux など) でコンテナから読めるようにする指定。
+      - ./backup.sh:/backup.sh:ro,z
+      - ./backups:/backups:z
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,5 +133,3 @@ services:
 volumes:
   postgres-data:
   attachments:
-  caddy-data:
-  caddy-config:
