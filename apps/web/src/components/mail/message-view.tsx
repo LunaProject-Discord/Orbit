@@ -73,6 +73,7 @@ import {
   usePreferences,
 } from "@/lib/preferences";
 import { shortcutLabels } from "@/lib/shortcuts";
+import { unsubscribeLinks } from "@/lib/unsubscribe";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
@@ -1045,6 +1046,11 @@ function MessageContent({
   const replyToShown = message.replyTo.some(
     (item) => !senders.has(item.address.toLowerCase()),
   );
+  // 代理送信 (Sender) も、差出人と違うときだけ出す。
+  const senderShown = (message.sender ?? []).some(
+    (item) => !senders.has(item.address.toLowerCase()),
+  );
+  const unsubscribe = unsubscribeLinks(message.listUnsubscribe ?? []);
   // 送信日時は、届いた日時と 1 分以上ずれているときだけ出す。
   const sentAtShown =
     message.sentAt !== null &&
@@ -1136,6 +1142,14 @@ function MessageContent({
                     ? message.from.map(addressFull).join(", ")
                     : addressLabel(undefined)}
                 </dd>
+                {senderShown && (
+                  <>
+                    <dt className="text-muted-foreground">代理送信</dt>
+                    <dd className="min-w-0 break-words">
+                      {(message.sender ?? []).map(addressFull).join(", ")}
+                    </dd>
+                  </>
+                )}
                 {message.to.length > 0 && (
                   <>
                     <dt className="text-muted-foreground">宛先</dt>
@@ -1183,6 +1197,36 @@ function MessageContent({
                       <time dateTime={message.sentAt}>
                         {formatFullDate(message.sentAt, preferences)}
                       </time>
+                    </dd>
+                  </>
+                )}
+                {message.listId && (
+                  <>
+                    <dt className="text-muted-foreground">メーリングリスト</dt>
+                    <dd className="min-w-0 break-words">{message.listId}</dd>
+                  </>
+                )}
+                {unsubscribe.length > 0 && (
+                  <>
+                    <dt className="text-muted-foreground">配信停止</dt>
+                    <dd className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
+                      {unsubscribe.map((link) => (
+                        <a
+                          key={link.href}
+                          href={link.href}
+                          // mailto はメールソフトが開くので、新しいタブは要らない。
+                          target={
+                            link.href.startsWith("https:")
+                              ? "_blank"
+                              : undefined
+                          }
+                          rel="noopener noreferrer"
+                          title={link.href}
+                          className="min-w-0 break-words underline underline-offset-2 hover:text-foreground"
+                        >
+                          {link.label}
+                        </a>
+                      ))}
                     </dd>
                   </>
                 )}

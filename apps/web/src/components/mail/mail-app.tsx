@@ -150,6 +150,7 @@ import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
+import { randomUuid } from "@/lib/uuid";
 
 const PAGE_SIZE = 50;
 /** 表示中のフォルダをサーバーへ知らせる間隔。 */
@@ -775,7 +776,7 @@ export function MailApp({ user }: { user: User }) {
   const performAction = useCallback(
     (messageIds: string[], input: MessageActionInput) => {
       const action: MessageAction = {
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: randomUuid(),
         messageIds,
         ...input,
       };

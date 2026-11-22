@@ -5,11 +5,13 @@
  */
 
 import type { AccountIconName } from "@/lib/account-icons";
+import { resolveApiUrl } from "@/lib/api-url";
 import { reportReachable } from "@/lib/offline/network";
 
-export const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
-).replace(/\/+$/, "");
+export const API_URL = resolveApiUrl(
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787",
+  typeof window === "undefined" ? null : window.location,
+);
 
 const TOKEN_KEY = "mail.session-token";
 
@@ -246,6 +248,13 @@ export type MessageDetail = {
   cc: Address[];
   bcc: Address[];
   replyTo: Address[];
+  /**
+   * 代理で送った人 (Sender ヘッダー)、メーリングリストの ID、配信停止の URL (https / mailto)。
+   * 端末に保存してあった古い内容には無いことがある。
+   */
+  sender?: Address[];
+  listId?: string | null;
+  listUnsubscribe?: string[];
   sentAt: string | null;
   receivedAt: string;
   snippet: string;

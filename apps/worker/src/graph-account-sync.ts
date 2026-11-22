@@ -30,6 +30,7 @@ import {
 } from "./graph-push.js";
 import {
   fetchGraphBodies,
+  fetchGraphHeaders,
   syncGraphFolder,
   syncGraphFolders,
 } from "./graph-sync.js";
@@ -595,6 +596,15 @@ export class GraphAccountSync {
           signal,
           focused?.id ?? inbox.id,
         ))
+      ) {
+        // 続きを取得する
+      }
+      // 代理送信やメーリングリストの情報を足す前に取り込んだメールへ、その情報を補う。
+      while (
+        !this.stopped &&
+        !this.wakeRequested &&
+        Date.now() < nextPollAt &&
+        (await fetchGraphHeaders(this.db, client, this.account, signal))
       ) {
         // 続きを取得する
       }
