@@ -17,6 +17,9 @@ function required(name: string): string {
   return value;
 }
 
+/** スマホ版 (Capacitor) の画面のオリジン。Android は https://localhost、iOS は capacitor://localhost。 */
+const APP_ORIGINS = ["https://localhost", "capacitor://localhost"];
+
 /** 環境変数を読み込む。不足があれば起動時に止める。 */
 export function loadEnv() {
   const authSecret = required("BETTER_AUTH_SECRET");
@@ -34,15 +37,21 @@ export function loadEnv() {
   const allowLan =
     process.env.NODE_ENV !== "production" &&
     process.env.ALLOW_LAN_ORIGINS !== "false";
-  const allowedOrigins = allowLan
-    ? [
-        ...configuredOrigins,
-        ...lanOrigins(configuredOrigins, hostname(), networkInterfaces()),
-      ]
-    : configuredOrigins;
+  // 同梱アプリの画面のオリジンは固定なので、設定しなくても通す。
+  // 認証は Authorization ヘッダーのトークンで行い Cookie を使わないため、オリジンを足しても
+  // 他のサイトから利用者の権限で呼ばれることはない。
+  const allowedOrigins = [
+    ...new Set([
+      ...configuredOrigins,
+      ...(allowLan
+        ? lanOrigins(configuredOrigins, hostname(), networkInterfaces())
+        : []),
+      ...APP_ORIGINS,
+    ]),
+  ];
   const microsoftConfig = loadMicrosoftOAuthConfig(process.env);
   const googleConfig = loadGoogleOAuthConfig(process.env);
-  const webOrigin = allowedOrigins[0] ?? "http://localhost:3000";
+  const webOrigin = configuredOrigins[0] ?? "http://localhost:3000";
   return {
     databaseUrl: required("DATABASE_URL"),
     port: Number(process.env.API_PORT ?? 8787),
