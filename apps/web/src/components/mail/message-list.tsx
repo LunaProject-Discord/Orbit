@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "cn";
 import { FolderIcon, PaperclipIcon, ReplyIcon, StarIcon } from "lucide-react";
 import {
+  type ReactNode,
   type Ref,
   type RefObject,
   useEffect,
@@ -75,12 +76,12 @@ type Props = {
   /** 検索結果で、メールのある場所 (アカウントとフォルダ) を各行に出すための関数。 */
   locationLabel?: (message: MessageSummary) => string | null;
   /**
-   * 複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを色の点で示すための関数。
-   * 色の点に付けるクラスと、読み上げ用のアカウント名を返す。
+   * 複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示すための関数。
+   * アカウントの印 (設定したアイコンか色の点) と、読み上げ用のアカウント名を返す。
    */
   accountMark?: (
     message: MessageSummary,
-  ) => { color: string; name: string } | null;
+  ) => { mark: ReactNode; name: string } | null;
   /** チェックを付けた行 (複数選択)。 */
   checkedIds: ReadonlySet<string>;
   /** 選択中。各行にチェックボックスを出し、行を押すとチェックを切り替える。 */
@@ -402,11 +403,10 @@ export function MessageList({
                         role="img"
                         aria-label={mark.name}
                         title={mark.name}
-                        className={cn(
-                          "size-1.5 shrink-0 rounded-full",
-                          mark.color,
-                        )}
-                      />
+                        className="flex shrink-0"
+                      >
+                        {mark.mark}
+                      </span>
                     )}
                     <time
                       dateTime={message.receivedAt}

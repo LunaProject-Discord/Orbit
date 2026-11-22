@@ -41,7 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { accountColor } from "@/lib/account-colors";
+import { AccountListMark } from "@/lib/account-icons";
 import type { MessageActionInput } from "@/lib/actions";
 import {
   type Account,
@@ -345,15 +345,7 @@ export function MessageView({
   ].filter(Boolean);
   const meta = place.length > 0 && (
     <p className="flex items-center gap-2 text-muted-foreground text-xs">
-      {account && (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "size-2 shrink-0 rounded-full",
-            accountColor(accounts, account.id),
-          )}
-        />
-      )}
+      {account && <AccountListMark accounts={accounts} account={account} />}
       <span className="min-w-0 truncate">{place.join(" · ")}</span>
     </p>
   );

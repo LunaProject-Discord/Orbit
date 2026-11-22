@@ -254,10 +254,20 @@ export function SettingsView({
                 onChange={(showListIcons) => set({ showListIcons })}
               />
               <SwitchRow
-                label="アカウントの色の点"
+                label="アカウントの印"
                 description="複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示します。"
                 checked={preferences.showAccountMark}
                 onChange={(showAccountMark) => set({ showAccountMark })}
+              />
+              <SelectRow
+                label="アカウントの印の見た目"
+                description="アイコンや絵文字を設定していないアカウントは、どちらでも色の点になります。"
+                value={preferences.accountMarkStyle}
+                onChange={(accountMarkStyle) => set({ accountMarkStyle })}
+                options={[
+                  ["icon", "設定したアイコン (標準)"],
+                  ["dot", "色の点だけ"],
+                ]}
               />
               <SelectRow
                 label="日付"
@@ -574,7 +584,7 @@ function AccountCard({
   return (
     <li className="flex flex-col gap-3 rounded-lg border p-3">
       <div className="flex items-start gap-3">
-        <AccountMark accounts={accounts} account={account} className="mt-0.5" />
+        <AccountMark accounts={accounts} account={account} />
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">
             {account.displayName || account.email}
