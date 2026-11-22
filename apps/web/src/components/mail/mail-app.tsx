@@ -24,6 +24,7 @@ import { AddAccountDialog } from "@/components/mail/add-account-dialog";
 import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { DraftList } from "@/components/mail/draft-list";
+import { useDrawerSwipe } from "@/components/mail/drawer-swipe";
 import { FailureToast } from "@/components/mail/failure-toast";
 import {
   FolderDialogs,
@@ -415,6 +416,7 @@ export function MailApp({ user }: { user: User }) {
     setFolderDialog(target);
   };
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const backdropRef = useRef<HTMLButtonElement>(null);
   // 広い画面で左のサイドバーを折りたたんでいるか。スマホ幅では使わない (引き出し式のまま)。
   const [sidebarFolded, setSidebarFolded] = useState(false);
   useLayoutEffect(() => {
@@ -510,6 +512,14 @@ export function MailApp({ user }: { user: User }) {
   /** 開いてから内容を変えたか。変えていない新規のメールは、閉じたら残さない。 */
   const [draftDirty, setDraftDirty] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
+  // スマホ幅では、サイドバーを画面の左端からのスワイプで開き、左へのスワイプで閉じる。
+  useDrawerSwipe({
+    asideRef,
+    backdropRef,
+    open: sidebarOpen,
+    onOpenChange: setSidebarOpen,
+    disabled: composeOpen,
+  });
   const [composeNotice, setComposeNotice] = useState<string | null>(null);
   /** 下書きをサーバーに保存した時刻。 */
   const [draftSavedAt, setDraftSavedAt] = useState<Date | null>(null);
@@ -2360,14 +2370,18 @@ export function MailApp({ user }: { user: User }) {
     // body は縦並びの flex なので、ここに flex-1 を付けると高さの指定が効かず、
     // メールの件数に合わせてページ全体が伸びてしまう。
     <div className="flex h-dvh shrink-0 overflow-hidden">
-      {sidebarOpen && (
-        <button
-          type="button"
-          aria-label="メニューを閉じる"
-          onClick={() => setSidebarOpen(false)}
-          className="fixed inset-0 z-30 bg-black/30 md:hidden"
-        />
-      )}
+      {/* 閉じている間も置いておく (スワイプで開く途中に、開き具合に合わせて暗くするため)。 */}
+      <button
+        ref={backdropRef}
+        type="button"
+        aria-label="メニューを閉じる"
+        tabIndex={sidebarOpen ? 0 : -1}
+        onClick={() => setSidebarOpen(false)}
+        className={cn(
+          "fixed inset-0 z-30 bg-black/30 md:hidden",
+          !sidebarOpen && "hidden",
+        )}
+      />
       <aside
         ref={asideRef}
         id="mail-sidebar"
