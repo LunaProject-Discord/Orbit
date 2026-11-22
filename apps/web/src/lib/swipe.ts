@@ -213,6 +213,50 @@ export function clampOffset(
   return Math.min(max, Math.max(min, offset));
 }
 
+/**
+ * 触れた場所が、横にスクロールできる枠 (幅を固定したメールの本文、横に長い表やコードなど) の
+ * 中か。その中では、横の動きをスクロールに使うので、スワイプとして扱わない。
+ * 本文の iframe の中からも、外側の文書までたどる。stopAt まで来たら、そこで終える。
+ */
+export function insideSidewaysScroller(
+  target: unknown,
+  stopAt: Element | null,
+): boolean {
+  let node = toElement(target);
+  while (node && node !== stopAt) {
+    const view = node.ownerDocument.defaultView;
+    if (!view) return false;
+    if (node.scrollWidth - node.clientWidth > 1) {
+      const overflow = view.getComputedStyle(node).overflowX;
+      // 文書のいちばん外側 (html) は、指定が無くても画面ごとスクロールする。
+      const scrolls =
+        node === node.ownerDocument.documentElement
+          ? overflow !== "hidden" && overflow !== "clip"
+          : overflow === "auto" || overflow === "scroll";
+      if (scrolls) return true;
+    }
+    node = node.parentElement ?? (view.frameElement as Element | null);
+  }
+  return false;
+}
+
+/** 文字を入力する欄の中か (横の動きは、カーソルの移動や選択に使う)。 */
+export function insideTextField(target: unknown): boolean {
+  return (
+    toElement(target)?.closest(
+      'input, textarea, select, [contenteditable=""], [contenteditable="true"]',
+    ) != null
+  );
+}
+
+/** イベントの対象を要素にする。iframe の中の要素は instanceof で見分けられないので、形で見る。 */
+function toElement(target: unknown): Element | null {
+  if (typeof target !== "object" || target === null) return null;
+  const node = target as Node;
+  if (node.nodeType === 1) return node as Element;
+  return node.nodeType === 3 ? node.parentElement : null;
+}
+
 // ---------------------------------------------------------------------------
 // 設定の保持 (サーバーに保存し、前回の内容を端末にも残す)
 // ---------------------------------------------------------------------------

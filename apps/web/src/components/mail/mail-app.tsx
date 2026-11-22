@@ -2287,6 +2287,36 @@ export function MailApp({ user }: { user: User }) {
         break;
     }
   };
+  // 開いているメールの、一覧での前後 (メール表示のスワイプで移る先)。
+  // 画面に並んでいる順 (広げた会話の中のメールを含む) で数える。
+  const stepItems = useMemo(
+    () => flattenRows(messages ?? [], expandedIds, threadRows),
+    [messages, expandedIds, threadRows],
+  );
+  const stepAt = !selectedMessage
+    ? -1
+    : indexOfOpen(stepItems, {
+        rowId: selectedMessage.id,
+        childId: isSingle ? selectedMessageId : null,
+      });
+  const stepTo = (step: 1 | -1) =>
+    stepAt === -1 ? null : stepItem(stepItems, stepAt, step);
+  const canStep = {
+    previous: stepTo(-1) !== null,
+    next: stepTo(1) !== null,
+  };
+  const handleStep = (step: 1 | -1) => {
+    const item = stepTo(step);
+    if (!item || item.kind === "status") return;
+    if (item.kind === "row") {
+      handleSelectMessage(item.message.id);
+      messageListRef.current?.scrollToMessage(item.message.id);
+    } else {
+      handleSelectChild(item.parent.id, item.child.id);
+      messageListRef.current?.scrollToMessage(item.parent.id, item.child.id);
+    }
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => shortcutRef.current(event);
     window.addEventListener("keydown", onKeyDown);
@@ -2816,6 +2846,8 @@ export function MailApp({ user }: { user: User }) {
                 })
               }
               onBack={() => setSelectedMessageId(null)}
+              onStep={handleStep}
+              canStep={canStep}
               onMissing={handleMissing}
             />
           ) : (
