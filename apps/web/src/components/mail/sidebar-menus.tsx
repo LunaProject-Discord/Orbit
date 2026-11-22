@@ -6,6 +6,8 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   FolderOpenIcon,
+  FolderPenIcon,
+  FolderPlusIcon,
   InboxIcon,
   ListRestartIcon,
   LogInIcon,
@@ -35,6 +37,10 @@ export type SidebarMenuActions = {
   onDeleteAccount: (account: Account) => void;
   onOpenSettings: () => void;
   onReauth: (account: Account) => void;
+  /** フォルダを作る。parent が null ならアカウントの最上位に作る。 */
+  onCreateFolder: (account: Account, parent: MailboxSummary | null) => void;
+  onRenameFolder: (mailbox: MailboxSummary) => void;
+  onDeleteFolder: (mailbox: MailboxSummary) => void;
 };
 
 /** 上へ / 下へ動かす 2 項目。ids は同じ並びの項目 (いまの表示順)。 */
@@ -67,6 +73,7 @@ function MoveItems({
 
 /** サイドバーのフォルダを右クリックしたときのメニューの中身。 */
 export function FolderMenuItems({
+  account,
   mailbox,
   unread,
   siblings,
@@ -77,6 +84,7 @@ export function FolderMenuItems({
   onReorder,
   actions,
 }: {
+  account: Account;
   mailbox: MailboxSummary;
   /** このフォルダの未読数 (中のフォルダは含めない)。 */
   unread: number;
@@ -120,6 +128,28 @@ export function FolderMenuItems({
         <ListRestartIcon />
         並び順を元に戻す
       </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onClick={() => actions.onCreateFolder(account, mailbox)}>
+        <FolderPlusIcon />
+        新しいサブフォルダ…
+      </ContextMenuItem>
+      {/* 受信トレイなどの役割があるフォルダは、名前の変更や削除ができない。 */}
+      {mailbox.specialUse === null && (
+        <>
+          <ContextMenuItem onClick={() => actions.onRenameFolder(mailbox)}>
+            <FolderPenIcon />
+            名前を変更…
+          </ContextMenuItem>
+          <ContextMenuItem
+            variant="destructive"
+            disabled={hasChildren}
+            onClick={() => actions.onDeleteFolder(mailbox)}
+          >
+            <Trash2Icon />
+            フォルダを削除…
+          </ContextMenuItem>
+        </>
+      )}
     </>
   );
 }
@@ -159,6 +189,10 @@ export function AccountMenuItems({
       <ContextMenuItem onClick={() => actions.onSyncNow(account)}>
         <RefreshCwIcon />
         今すぐ同期
+      </ContextMenuItem>
+      <ContextMenuItem onClick={() => actions.onCreateFolder(account, null)}>
+        <FolderPlusIcon />
+        新しいフォルダ…
       </ContextMenuItem>
       {provider && (
         <ContextMenuItem onClick={() => actions.onReauth(account)}>

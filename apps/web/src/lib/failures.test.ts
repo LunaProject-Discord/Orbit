@@ -19,6 +19,7 @@ function failure(overrides: Partial<FailedOperation> = {}): FailedOperation {
     accountId: "a1",
     kind: "move",
     count: 1,
+    mailboxName: null,
     seen: null,
     flagged: null,
     answered: null,
@@ -118,5 +119,19 @@ describe("failureReport", () => {
     expect(report).toContain("理由: NO [CANNOT] Mailbox is read-only");
     expect(report).toContain("1 件の削除 (aoi@example.com)");
     expect(report).toContain("理由: 不明");
+  });
+
+  it("フォルダへの操作は、フォルダの名前を添えて説明する", () => {
+    const create = failure({ kind: "mailbox_create", mailboxName: "請求書" });
+    expect(failureLabel(create, mailboxes)).toBe("フォルダの作成");
+    expect(failureDescription(create, mailboxes)).toBe(
+      "フォルダ「請求書」の作成",
+    );
+    expect(
+      failureDescription(
+        failure({ kind: "mailbox_delete", mailboxName: "旧" }),
+        mailboxes,
+      ),
+    ).toBe("フォルダ「旧」の削除");
   });
 });

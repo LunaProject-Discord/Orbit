@@ -27,9 +27,18 @@ import { recordChanges, removePlacements, type Tx } from "./message-actions.js";
 export type FailedOperation = {
   id: string;
   accountId: string;
-  kind: "set_flags" | "move" | "delete" | "append";
-  /** 対象のメールの数。 */
+  kind:
+    | "set_flags"
+    | "move"
+    | "delete"
+    | "append"
+    | "mailbox_create"
+    | "mailbox_rename"
+    | "mailbox_delete";
+  /** 対象のメールの数 (フォルダへの操作では 1)。 */
   count: number;
+  /** フォルダへの操作の対象 (作成と名前の変更では、付けようとした名前)。 */
+  mailboxName: string | null;
   /** set_flags で変えようとした内容。 */
   seen: boolean | null;
   flagged: boolean | null;
@@ -42,7 +51,18 @@ export type FailedOperation = {
   failedAt: Date;
 };
 
-const FAILURE_KINDS = ["set_flags", "move", "delete", "append"] as const;
+const FAILURE_KINDS = [
+  "set_flags",
+  "move",
+  "delete",
+  "append",
+  "mailbox_create",
+  "mailbox_rename",
+  "mailbox_delete",
+] as const;
+
+/** メッセージを対象にする操作。やり直すときに、対象がまだあるかを確かめる。 */
+const MESSAGE_KINDS: readonly string[] = ["set_flags", "move", "delete"];
 
 function targetsOf(payload: Record<string, unknown>): OutboxTarget[] {
   return Array.isArray(payload.targets)
@@ -70,6 +90,9 @@ function toFailedOperation(row: {
     kind: row.kind as FailedOperation["kind"],
     // 控えの保存 (append) は対象を持たないが、メール 1 通分。
     count: Math.max(messageIds.size, 1),
+    mailboxName: row.kind.startsWith("mailbox_")
+      ? String((row.payload as { name?: unknown }).name ?? "")
+      : null,
     seen: row.kind === "set_flags" ? (flags.seen ?? null) : null,
     flagged: row.kind === "set_flags" ? (flags.flagged ?? null) : null,
     answered: row.kind === "set_flags" ? (flags.answered ?? null) : null,
@@ -262,7 +285,7 @@ export async function retryFailedOperation(
     const accountId = row.accountId;
     let payload = row.payload;
 
-    if (row.kind !== "append") {
+    if (MESSAGE_KINDS.includes(row.kind)) {
       const { present, absent } = await resolveTargets(
         tx,
         accountId,

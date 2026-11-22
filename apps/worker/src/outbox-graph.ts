@@ -1,5 +1,9 @@
-import type { OutboxOperation } from "@mail/core";
+import type { MailboxOperation, OutboxOperation } from "@mail/core";
 import { type GraphClient, GraphError } from "./graph-client.js";
+import {
+  applyGraphMailboxOperation,
+  isMailboxOperation,
+} from "./mailbox-operations.js";
 import type { OutboxResult } from "./outbox.js";
 
 /** 同時に送る数。Outlook の制限 (1 メールボックスあたり同時 4 件) より少なくする。 */
@@ -16,6 +20,9 @@ export async function applyGraphOperation(
 ): Promise<OutboxResult> {
   // 送信済みアイテムへの保存は Graph が自動で行うので、この操作は積まれない。
   if (operation.kind === "append") return { ok: true };
+  if (isMailboxOperation(operation)) {
+    return applyGraphMailboxOperation(client, operation, signal);
+  }
   const ids = [
     ...new Set(
       operation.payload.targets.flatMap(
@@ -54,7 +61,7 @@ export async function applyGraphOperation(
 
 function run(
   client: GraphClient,
-  operation: Exclude<OutboxOperation, { kind: "append" }>,
+  operation: Exclude<OutboxOperation, { kind: "append" } | MailboxOperation>,
   id: string,
   signal?: AbortSignal,
 ): Promise<unknown> {

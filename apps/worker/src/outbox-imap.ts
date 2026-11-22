@@ -1,5 +1,14 @@
-import type { AppendPayload, OutboxOperation, OutboxTarget } from "@mail/core";
+import type {
+  AppendPayload,
+  MailboxOperation,
+  OutboxOperation,
+  OutboxTarget,
+} from "@mail/core";
 import type { ImapFlow } from "imapflow";
+import {
+  applyImapMailboxOperation,
+  isMailboxOperation,
+} from "./mailbox-operations.js";
 import { buildMime, missingAttachments } from "./mime.js";
 import type { OutboxResult } from "./outbox.js";
 
@@ -25,6 +34,9 @@ export async function applyImapOperation(
 ): Promise<OutboxResult> {
   if (operation.kind === "append") {
     return appendSentCopy(client, operation.payload);
+  }
+  if (isMailboxOperation(operation)) {
+    return applyImapMailboxOperation(client, operation);
   }
   for (const [path, targets] of groupByMailbox(operation.payload.targets)) {
     let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>>;
@@ -133,7 +145,7 @@ async function appendSentCopy(
 /** 存在しない UID は、サーバーが単に無視する (他の端末で先に消された場合など)。 */
 async function run(
   client: ImapFlow,
-  operation: Exclude<OutboxOperation, { kind: "append" }>,
+  operation: Exclude<OutboxOperation, { kind: "append" } | MailboxOperation>,
   range: string,
 ): Promise<boolean> {
   const options = { uid: true };

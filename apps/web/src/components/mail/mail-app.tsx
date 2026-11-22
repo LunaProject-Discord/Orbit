@@ -28,6 +28,10 @@ import {
   ToastRegion,
 } from "@/components/mail/failure-toast";
 import {
+  FolderDialogs,
+  type FolderDialogTarget,
+} from "@/components/mail/folder-dialogs";
+import {
   MessageList,
   type MessageListHandle,
 } from "@/components/mail/message-list";
@@ -167,6 +171,12 @@ const MARK_READ_ERROR =
   "既読にできませんでした。時間をおいて、もう一度お試しください。";
 const SYNC_NOW_ERROR =
   "同期を始められませんでした。時間をおいて、もう一度お試しください。";
+/** フォルダへの操作を受け付けたときの知らせ。画面に出るのは、メールサーバーへの反映と同期のあと。 */
+const FOLDER_NOTICES: Record<FolderDialogTarget["kind"], string> = {
+  create: "フォルダを作成しています。少しすると一覧に表示されます。",
+  rename: "フォルダの名前を変更しています。少しすると一覧に反映されます。",
+  delete: "フォルダを削除しています。少しすると一覧から消えます。",
+};
 const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
 const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
 const RETRY_ERROR =
@@ -278,6 +288,13 @@ export function MailApp({ user }: { user: User }) {
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
+  const [folderDialog, setFolderDialog] = useState<FolderDialogTarget | null>(
+    null,
+  );
+  const openFolderDialog = (target: FolderDialogTarget) => {
+    setSidebarOpen(false);
+    setFolderDialog(target);
+  };
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // 広い画面で左のサイドバーを折りたたんでいるか。スマホ幅では使わない (引き出し式のまま)。
   const [sidebarFolded, setSidebarFolded] = useState(false);
@@ -1788,6 +1805,12 @@ export function MailApp({ user }: { user: User }) {
               },
               onOpenSettings: () => handleSelectSpecial("settings"),
               onReauth: handleReauth,
+              onCreateFolder: (account, parent) =>
+                openFolderDialog({ kind: "create", account, parent }),
+              onRenameFolder: (mailbox) =>
+                openFolderDialog({ kind: "rename", mailbox }),
+              onDeleteFolder: (mailbox) =>
+                openFolderDialog({ kind: "delete", mailbox }),
             }}
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
@@ -2141,6 +2164,20 @@ export function MailApp({ user }: { user: User }) {
               ) ?? null,
           )
         }
+      />
+      <FolderDialogs
+        target={folderDialog}
+        onClose={() => setFolderDialog(null)}
+        onAccepted={(target) => {
+          setNotice({ message: FOLDER_NOTICES[target.kind], tone: "info" });
+          // 開いているフォルダを消したら、そのアカウントの受信トレイへ移る。
+          if (
+            target.kind === "delete" &&
+            selectionRef.current.mailboxId === target.mailbox.id
+          ) {
+            handleSelectFolder(target.mailbox.accountId, null);
+          }
+        }}
       />
       <DeleteAccountDialog
         account={deleteTarget}
