@@ -16,7 +16,8 @@ export type ShortcutCommand =
   | "search"
   | "reply"
   | "replyAll"
-  | "forward";
+  | "forward"
+  | "toggleSidebar";
 
 type KeyLike = {
   key: string;
@@ -84,6 +85,9 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       return "reply";
     case "f":
       return "forward";
+    // Thunderbird のフォルダペインの表示切り替えと同じキー。
+    case "F9":
+      return "toggleSidebar";
     default:
       return null;
   }

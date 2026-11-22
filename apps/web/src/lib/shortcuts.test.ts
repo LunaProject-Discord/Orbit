@@ -28,6 +28,7 @@ describe("resolveShortcut", () => {
     expect(key("Delete")).toBe("delete");
     expect(key("v")).toBe("move");
     expect(key("x")).toBe("select");
+    expect(key("F9")).toBe("toggleSidebar");
     expect(key("z")).toBeNull();
   });
 
