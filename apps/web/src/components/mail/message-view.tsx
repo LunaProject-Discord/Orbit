@@ -841,7 +841,9 @@ function MessageToolbar({
       <div
         role="toolbar"
         aria-label="メールの操作"
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+        // タッチ操作ではボタンの押せる範囲 (after) がボタンの外へ 2px 広がる。その分の余白を
+        // 持たせないと、はみ出しとして扱われてスクロールバーが出る。
+        className="-m-0.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-0.5 pointer-coarse:[scrollbar-width:none]"
       >
         {/* 狭い画面では、返信・転送・移動は「その他」にまとめる。 */}
         <ToolbarButton
@@ -1105,6 +1107,9 @@ const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
  * 高さを測るために allow-same-origin を付けるが、allow-scripts は付けないので、
  * 本文の中のスクリプトは動かず、このアプリのデータにも触れない。
  */
+/** 横に長い本文を枠に収めるときの、いちばん小さい倍率。 */
+const MIN_BODY_ZOOM = 0.5;
+
 function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const observer = useRef<ResizeObserver | null>(null);
@@ -1130,6 +1135,29 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
     let chased = 0;
     let lastShort = 0;
     let width = view.innerWidth;
+    /**
+     * 枠より横に長い本文 (幅を固定したメールなど) は、枠の幅に収まるよう全体を縮める。
+     * 縮めすぎると読めないので MIN_BODY_ZOOM までにとどめ、残りは横にスクロールする。
+     * 縮める前の幅を測り直すのは、幅が変わったときと画像を読み込んだときだけにする
+     * (測るたびに大きさが変わり、大きさの監視が回り続けるのを避ける)。
+     */
+    const fit = () => {
+      const before = root.style.zoom;
+      root.style.zoom = "";
+      const natural = root.scrollWidth;
+      const available = root.clientWidth;
+      const zoom =
+        natural > available + 1 && available > 0
+          ? Math.max(MIN_BODY_ZOOM, available / natural)
+          : 1;
+      const next = zoom < 1 ? String(Math.floor(zoom * 1000) / 1000) : "";
+      root.style.zoom = next;
+      if (next !== before) {
+        floor = 0;
+        chased = 0;
+        lastShort = 0;
+      }
+    };
     const update = () => {
       if (view.innerWidth !== width) {
         width = view.innerWidth;
@@ -1137,6 +1165,7 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
         chased = 0;
         lastShort = 0;
         root.style.overflowY = "";
+        fit();
       }
       if (chased >= 3) return;
       const margin = Number.parseFloat(
@@ -1162,6 +1191,7 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
       const next = content + (view.innerHeight - root.clientHeight);
       setHeight((current) => (Math.abs(current - next) < 1 ? current : next));
     };
+    fit();
     update();
     // 画像の読み込みや幅の変化で高さが変わったら、合わせ直す。
     observer.current?.disconnect();
@@ -1169,7 +1199,14 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
     observer.current.observe(body);
     observer.current.observe(doc.documentElement);
     // body の大きさが変わらない (高さを固定している) 本文でも、画像を読み込んだら測り直す。
-    doc.addEventListener("load", update, true);
+    doc.addEventListener(
+      "load",
+      () => {
+        fit();
+        update();
+      },
+      true,
+    );
   };
 
   return (
