@@ -1,3 +1,4 @@
+import type { BodyFetchPriority } from "@mail/core";
 import { type Database, messages } from "@mail/db";
 import { and, eq } from "drizzle-orm";
 import type { ImapFlow } from "imapflow";
@@ -6,6 +7,7 @@ import {
   loadMessageLocations,
   readFromLocations,
 } from "./attachment-fetch.js";
+import { BodyQueue } from "./body-queue.js";
 import { recordChanges } from "./changes.js";
 import type { GraphClient } from "./graph-client.js";
 import { fetchGraphBody, type GraphBodyTarget } from "./graph-sync.js";
@@ -47,45 +49,46 @@ export async function loadBodyTarget(
 }
 
 /**
- * 利用者が開いたメールの本文を、取り込みの順番を待たずに取得する依頼を受け付ける。
- * 同じメールへの依頼が重なっても取得は 1 回にする。取得できたら変更を記録し、
- * 端末は通常の変更通知で本文を読み直す。
+ * 利用者が見ているメールの本文を、取り込みの順番を待たずに取得する依頼を受け付ける。
+ * 取得する順番と数の制限は BodyQueue が決める。取得できたら変更を記録し、
+ * 端末は通常の変更通知で本文を読み直す。取得済みのメールへの依頼は何もしない。
  */
 export class BodyRequests {
-  private readonly running = new Map<string, Promise<void>>();
+  private readonly queue: BodyQueue;
 
   constructor(
     private readonly db: Database,
     private readonly account: SyncAccount,
     private readonly fetchBody: BodyFetcher,
     private readonly log: (message: string) => void,
-  ) {}
+    /** 同時に取得する数。 */
+    concurrency = 1,
+  ) {
+    this.queue = new BodyQueue(
+      (messageId) => this.fetch(messageId),
+      concurrency,
+    );
+  }
 
-  request(messageId: string): Promise<void> {
-    const current = this.running.get(messageId);
-    if (current) return current;
-    const task = (async () => {
-      try {
-        const target = await loadBodyTarget(
-          this.db,
-          this.account.id,
+  request(messageIds: string[], priority: BodyFetchPriority) {
+    this.queue.request(messageIds, priority);
+  }
+
+  private async fetch(messageId: string) {
+    try {
+      const target = await loadBodyTarget(this.db, this.account.id, messageId);
+      if (!target || !(await this.fetchBody(target))) return;
+      await this.db.transaction((tx) =>
+        recordChanges(tx, this.account.userId, "message", "upsert", [
           messageId,
-        );
-        if (!target || !(await this.fetchBody(target))) return;
-        await this.db.transaction((tx) =>
-          recordChanges(tx, this.account.userId, "message", "upsert", [
-            messageId,
-          ]),
-        );
-      } catch (cause) {
-        // 失敗しても、通常の取り込みの順番が来れば取得される。
-        this.log(
-          `開いたメールの本文を取得できませんでした: ${cause instanceof Error ? cause.message : String(cause)}`,
-        );
-      }
-    })().finally(() => this.running.delete(messageId));
-    this.running.set(messageId, task);
-    return task;
+        ]),
+      );
+    } catch (cause) {
+      // 失敗しても、通常の取り込みの順番が来れば取得される。
+      this.log(
+        `本文を先に取得できませんでした: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
   }
 }
 

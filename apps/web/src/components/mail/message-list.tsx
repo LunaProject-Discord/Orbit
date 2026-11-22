@@ -23,6 +23,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary } from "@/lib/api";
+import { BodyPrefetcher, type PrefetchReason } from "@/lib/body-prefetch";
 import { addressLabel, formatListDate } from "@/lib/format";
 import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
@@ -91,6 +92,11 @@ type Props = {
   onAction: (messageIds: string[], input: MessageActionInput) => void;
   onLoadMore: () => void;
   onRetry: () => void;
+  /**
+   * 本文をまだ取り込んでいないメールの先読みを頼む (カーソルを載せた行、画面に見えている行)。
+   * 渡さなければ頼まない。
+   */
+  onPrefetch?: (ids: string[], reason: PrefetchReason) => void;
 };
 
 /** 検索した語に当たる部分を目立たせて表示する。 */
@@ -133,6 +139,7 @@ export function MessageList({
   onAction,
   onLoadMore,
   onRetry,
+  onPrefetch,
 }: Props) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -185,6 +192,37 @@ export function MessageList({
       return instance.measurementsCache[index]?.size ?? ESTIMATED_ROW_HEIGHT;
     },
   });
+
+  // 本文をまだ取り込んでいないメール (アカウントを追加した直後など) は、見ているものから
+  // 先に取得してもらう。スクロールが止まっている間の、カーソルを載せた行と見えている行が対象。
+  const onPrefetchRef = useRef(onPrefetch);
+  onPrefetchRef.current = onPrefetch;
+  const [prefetcher] = useState(
+    () =>
+      new BodyPrefetcher((ids, reason) => onPrefetchRef.current?.(ids, reason)),
+  );
+  useEffect(() => {
+    const element = scrollRef.current;
+    const onScroll = () => prefetcher.scrolled();
+    element?.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      element?.removeEventListener("scroll", onScroll);
+      prefetcher.dispose();
+    };
+  }, [prefetcher, scrollRef]);
+  const viewTop = virtualizer.scrollOffset ?? 0;
+  const viewBottom = viewTop + (virtualizer.scrollRect?.height ?? 0);
+  const pendingVisibleKey = virtualizer
+    .getVirtualItems()
+    .filter((row) => row.end > viewTop && row.start < viewBottom)
+    .flatMap((row) => {
+      const message = messages?.[row.index];
+      return message?.bodyPending ? [message.id] : [];
+    })
+    .join(",");
+  useEffect(() => {
+    prefetcher.visible(pendingVisibleKey ? pendingVisibleKey.split(",") : []);
+  }, [prefetcher, pendingVisibleKey]);
 
   useImperativeHandle(ref, () => ({
     scrollToMessage(id) {
@@ -264,6 +302,14 @@ export function MessageList({
                     aria-setsize={hasMore ? -1 : count}
                     aria-posinset={row.index + 1}
                     className="absolute top-0 left-0 w-full border-b"
+                    onPointerEnter={(event) => {
+                      if (event.pointerType === "mouse") {
+                        prefetcher.hover(
+                          message.bodyPending ? message.id : null,
+                        );
+                      }
+                    }}
+                    onPointerLeave={() => prefetcher.hover(null)}
                     style={{
                       transform: `translateY(${row.start - scrollMargin}px)`,
                     }}

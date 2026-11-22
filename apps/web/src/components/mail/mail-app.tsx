@@ -71,6 +71,7 @@ import {
   markMailboxRead,
   type OutgoingMail,
   oauthProviderOf,
+  prefetchBodies,
   resetMailboxOrder,
   retryFailure,
   type SearchParams,
@@ -238,6 +239,14 @@ function compareMessages(a: MessageSummary, b: MessageSummary): number {
     return a.receivedAt < b.receivedAt ? 1 : -1;
   }
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+/**
+ * 一覧で見ているメールの本文を先に取得するよう頼む。頼めなくても (オフラインなど)
+ * 困らないので、失敗は無視する。
+ */
+function handlePrefetch(ids: string[], reason: "hover" | "visible") {
+  void prefetchBodies(ids, reason).catch(() => {});
 }
 
 /**
@@ -2016,6 +2025,7 @@ export function MailApp({ user }: { user: User }) {
               <MessageList
                 ref={messageListRef}
                 scrollRef={listScrollRef}
+                onPrefetch={handlePrefetch}
                 messages={messages}
                 error={listError}
                 selectedId={selectedMessage?.id ?? selectedMessageId}

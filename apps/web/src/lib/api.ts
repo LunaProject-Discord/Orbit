@@ -190,6 +190,8 @@ export type MessageSummary = {
   to: Address[];
   receivedAt: string;
   snippet: string;
+  /** 本文をまだ取り込んでいない (フォルダの一覧でだけ入る)。 */
+  bodyPending?: boolean;
   hasAttachments: boolean;
   seen: boolean;
   flagged: boolean;
@@ -773,6 +775,20 @@ export async function sendFocus(
   await apiFetch("/v1/focus", {
     method: "POST",
     body: { accountId, mailboxId },
+  });
+}
+
+/**
+ * 見ているメール (カーソルを載せた行、画面に見えている行) の本文を、取り込みの順番を
+ * 待たずに取得するようサーバーへ頼む。取得が終わると、変更の知らせで一覧と本文が更新される。
+ */
+export async function prefetchBodies(
+  ids: string[],
+  reason: "hover" | "visible",
+): Promise<void> {
+  await apiFetch("/v1/messages/prefetch", {
+    method: "POST",
+    body: { ids, reason },
   });
 }
 

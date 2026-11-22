@@ -1,4 +1,5 @@
 import {
+  type BodyFetchPriority,
   decryptCredentials,
   GoogleAccessTokenSource,
   type GoogleOAuthConfig,
@@ -153,11 +154,11 @@ export class AccountSync {
   }
 
   /**
-   * 利用者が開いたメールの本文を、取り込みの順番を待たずに取得してほしい。
-   * 同期用の接続は一覧の取り込みで長く塞がることがあるので、別の接続で取得する。
+   * 利用者が見ているメールの本文を、取り込みの順番を待たずに取得してほしい。
+   * 同期用の接続は一覧の取り込みで長く塞がることがあるので、別の接続で 1 通ずつ取得する。
    */
-  notifyBody(messageId: string) {
-    if (!this.stopped) void this.bodyRequests.request(messageId);
+  notifyBody(messageIds: string[], priority: BodyFetchPriority) {
+    if (!this.stopped) this.bodyRequests.request(messageIds, priority);
   }
 
   private log(message: string, error?: unknown) {
@@ -591,26 +592,35 @@ export class AccountSync {
   /**
    * 本文をまだ取得していないメッセージの本文を、フォルダごとに取得する。
    * 時間がかかるので、新しい変化が来たら中断して同期を優先する。
+   * priorityOnly は、他のフォルダの一覧の取り込みがまだ残っている間の呼び出し。
+   * 利用者が開いているフォルダと受信トレイの分だけを、一定時間だけ進める。
    */
-  private async fetchPendingBodies(client: ImapFlow) {
+  private async fetchPendingBodies(client: ImapFlow, priorityOnly = false) {
     const deadline = Date.now() + BACKGROUND_SLICE_MS;
     const interrupted = () =>
       this.stopped ||
       this.syncRequested ||
-      this.foldersDue ||
+      (!priorityOnly && this.foldersDue) ||
       this.focusDue !== null;
     // 利用者が開いているフォルダを最初に、あとは決まった順に取得する。
     const rank = (mailbox: { id: string; specialUse: SpecialUse | null }) =>
       mailbox.id === this.focus?.mailboxId
         ? -1
         : syncPriority(mailbox.specialUse);
-    const pending = (
-      await mailboxesWithPendingBodies(this.db, this.account.id)
-    ).sort((a, b) => rank(a) - rank(b));
+    const pending = (await mailboxesWithPendingBodies(this.db, this.account.id))
+      .filter(
+        (mailbox) =>
+          !priorityOnly ||
+          mailbox.id === this.focus?.mailboxId ||
+          mailbox.path === INBOX,
+      )
+      .sort((a, b) => rank(a) - rank(b));
     for (const mailbox of pending) {
       if (interrupted()) return;
-      // 受信トレイを開いている間は通知が届くので、時間で区切らなくてよい。
-      const expired = () => mailbox.path !== INBOX && Date.now() > deadline;
+      // 受信トレイを開いている間は通知が届くので、時間で区切らなくてよい
+      // (他のフォルダの一覧の取り込みが残っている場合は、そちらへ戻るために区切る)。
+      const expired = () =>
+        (priorityOnly || mailbox.path !== INBOX) && Date.now() > deadline;
       const lock = await this.openMailbox(client, mailbox.path);
       if (!lock) continue;
       let remaining = true;
@@ -628,7 +638,7 @@ export class AccountSync {
       }
       if (remaining && expired()) {
         // 受信トレイを確認してから続きを取得する。
-        this.syncRequested = true;
+        if (!priorityOnly) this.syncRequested = true;
         return;
       }
     }
@@ -711,14 +721,23 @@ export class AccountSync {
           this.focusDue = null;
           await this.syncFocused(client, kind);
         }
+        let foldersRemain = false;
         if (this.foldersDue && !this.syncRequested && !this.focusDue) {
           // 確認中に次の時刻が来た場合に取りこぼさないよう、先に下ろしておく。
           this.foldersDue = false;
-          if (!(await this.syncOtherFolders(client))) this.foldersDue = true;
+          if (!(await this.syncOtherFolders(client))) {
+            this.foldersDue = true;
+            foldersRemain = true;
+          }
         }
         const pending = () =>
           this.syncRequested || this.foldersDue || this.focusDue !== null;
         if (!pending()) await this.fetchPendingBodies(client);
+        else if (foldersRemain && !this.syncRequested && !this.focusDue) {
+          // メールの多いアカウントでは、他のフォルダの一覧の取り込みに長くかかる。
+          // その間も、開いているフォルダと受信トレイの本文は交互に少しずつ進める。
+          await this.fetchPendingBodies(client, true);
+        }
         if (this.stopped || pending()) continue;
 
         // IDLE で通知を受けるフォルダを受信トレイに戻す。

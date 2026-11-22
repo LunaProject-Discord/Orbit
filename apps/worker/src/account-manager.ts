@@ -1,5 +1,6 @@
 import {
   type AttachmentFetchNotification,
+  BODY_FETCH_PRIORITIES,
   type BodyFetchNotification,
   CHANNEL_ACCOUNTS,
   CHANNEL_ATTACHMENT_FETCH,
@@ -11,6 +12,7 @@ import {
   type FocusNotification,
   type GoogleOAuthConfig,
   type GraphPushNotification,
+  MAX_BODY_FETCH_IDS,
   type MicrosoftOAuthConfig,
 } from "@mail/core";
 import { type Database, mailAccounts } from "@mail/db";
@@ -149,10 +151,19 @@ export class AccountManager {
       if (message.channel === CHANNEL_BODY_FETCH) {
         const payload = parsePayload<BodyFetchNotification>(message.payload);
         // 同期していないアカウントでは何もしない (同期を再開すれば順に取得される)。
-        if (payload && typeof payload.messageId === "string") {
+        if (
+          payload &&
+          Array.isArray(payload.messageIds) &&
+          BODY_FETCH_PRIORITIES.includes(payload.priority)
+        ) {
           this.running
             .get(payload.accountId)
-            ?.sync.notifyBody(payload.messageId);
+            ?.sync.notifyBody(
+              payload.messageIds
+                .filter((id) => typeof id === "string")
+                .slice(0, MAX_BODY_FETCH_IDS),
+              payload.priority,
+            );
         }
         return;
       }
