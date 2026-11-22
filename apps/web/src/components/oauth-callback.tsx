@@ -11,8 +11,11 @@ import {
   NetworkError,
   type OAuthProvider,
 } from "@/lib/api";
-import { isNativeApp } from "@/lib/native/app";
-import { appOAuthUrl, isAppOAuthReturn } from "@/lib/native/oauth";
+import {
+  appOAuthUrl,
+  isAppOAuthReturn,
+  usesAppOAuth,
+} from "@/lib/native/oauth";
 
 const names: Record<OAuthProvider, string> = {
   google: "Google",
@@ -83,7 +86,7 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
 
   useEffect(() => {
     if (started.current) return;
-    if (!isNativeApp() && isAppOAuthReturn(window.location.search)) {
+    if (!usesAppOAuth() && isAppOAuthReturn(window.location.search)) {
       started.current = true;
       const url = appOAuthUrl(provider, window.location.search);
       // code を履歴やリファラーに残さない。

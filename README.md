@@ -11,6 +11,7 @@ Orbit は、サーバーが IMAP / SMTP や Microsoft Graph でメールを扱�
 | `apps/worker` | 同期ワーカー。IMAP の常時接続、Microsoft Graph の差分取得、送信キューの処理 |
 | `apps/web` | Next.js の UI。静的エクスポートし、Web / Tauri / Capacitor で共用する |
 | `apps/mobile` | Android アプリ (Capacitor)。`apps/web` の静的出力をアプリに入れる |
+| `apps/desktop` | デスクトップ版 (Tauri、Windows / macOS / Linux)。`apps/web` の静的出力をアプリに入れる |
 | `packages/db` | PostgreSQL のスキーマとマイグレーション (Drizzle ORM) |
 | `packages/core` | サーバー側で共有する処理 (認証情報の暗号化、プロセス間通知の定義) |
 
@@ -72,6 +73,12 @@ cd deploy && docker compose up -d --build
 `apps/mobile` に、Web 版の画面をそのまま入れた Android アプリ (Capacitor) があります。GitHub Actions の **Android** ワークフローで
 ビルドでき、新着メールの通知は FCM で届きます。ビルド、プッシュ通知、署名鍵、Google Play の手順は
 [docs/android-app.md](docs/android-app.md) にまとめています。
+
+## デスクトップ版
+
+`apps/desktop` に、Web 版の画面をそのまま入れたデスクトップ版 (Tauri、Windows / macOS / Linux) があります。GitHub Actions の
+**Desktop** ワークフローでインストーラーを作れます。ウィンドウを閉じても通知領域に残り、新着メールを OS の通知で知らせます。
+入れ方、更新、署名の手順は [docs/desktop-app.md](docs/desktop-app.md) にまとめています。
 
 ## ログインとメールアカウント
 

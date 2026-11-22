@@ -64,8 +64,7 @@ function forgetUser(): void {
   if (user) void clearOffline(user.id);
 }
 
-import { isNativeApp } from "@/lib/native/app";
-import { isAppOAuthReturn } from "@/lib/native/oauth";
+import { isAppOAuthReturn, usesAppOAuth } from "@/lib/native/oauth";
 import { safeReturnPath } from "@/lib/route";
 import { hasServerUrl, isBundledApp } from "@/lib/server-url";
 
@@ -190,7 +189,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [appReturn, setAppReturn] = useState(false);
   useEffect(() => {
     if (
-      !isNativeApp() &&
+      !usesAppOAuth() &&
       window.location.pathname.startsWith("/oauth/") &&
       isAppOAuthReturn(window.location.search)
     ) {

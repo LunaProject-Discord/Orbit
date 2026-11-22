@@ -1,0 +1,138 @@
+/**
+ * デスクトップ版 (Tauri) の中で動いているときだけ使う、OS 側の機能への入口。
+ * Tauri の API は、アプリの中でだけ読み込む (Web 版の読み込みを重くしない)。
+ * 呼び先のコマンドとイベントは apps/desktop/src-tauri/src にある。
+ */
+
+type TauriWindow = { __TAURI_INTERNALS__?: unknown };
+
+export type DesktopPlatform = "windows" | "macos" | "linux";
+
+/** デスクトップ版 (Windows / macOS / Linux) の中で動いているか。 */
+export function isDesktopApp(): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as unknown as TauriWindow).__TAURI_INTERNALS__ !== undefined;
+}
+
+/** html の data-desktop の値を OS の種類として読む。知らない値は null。 */
+export function toDesktopPlatform(
+  value: string | undefined,
+): DesktopPlatform | null {
+  return value === "windows" || value === "macos" || value === "linux"
+    ? value
+    : null;
+}
+
+/**
+ * どの OS のデスクトップ版か。ブラウザーでは null。
+ * アプリ側が、画面を描く前に html へ data-desktop を付けている。
+ */
+export function desktopPlatform(): DesktopPlatform | null {
+  if (typeof document === "undefined") return null;
+  return toDesktopPlatform(document.documentElement.dataset.desktop);
+}
+
+/** アプリ側のコマンドを呼ぶ。呼べなければ null (画面の操作は続けられる)。 */
+export async function invokeDesktop<T = void>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<T>(command, args);
+  } catch {
+    return null;
+  }
+}
+
+/** アプリ側からのイベントを受け取る。戻り値の関数で解除する。 */
+export function listenDesktop<T>(
+  event: string,
+  listener: (payload: T) => void,
+): () => void {
+  if (!isDesktopApp()) return () => {};
+  let cancelled = false;
+  let remove: (() => void) | null = null;
+  void (async () => {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      const unlisten = await listen<T>(event, ({ payload }) =>
+        listener(payload),
+      );
+      if (cancelled) unlisten();
+      else remove = unlisten;
+    } catch {
+      // 受け取れなくても、画面の操作は続けられる。
+    }
+  })();
+  return () => {
+    cancelled = true;
+    remove?.();
+  };
+}
+
+/** 通知が押されたときに届く。開くメールの ID (無ければ受信トレイを開くだけ)。 */
+export const OPEN_MESSAGE_EVENT = "desktop://open-message";
+/** アプリ専用の URL (外のブラウザーでのログインからの戻り) で開かれたときに届く。 */
+export const APP_URL_EVENT = "desktop://app-url";
+
+/** 新着メールを OS の通知で知らせる。 */
+export function notifyNewMail(notification: {
+  title: string;
+  body: string;
+  messageId: string | null;
+}): Promise<null> {
+  return invokeDesktop<null>("notify_new_mail", notification);
+}
+
+/** 未読数を、通知領域とタスクバー (Dock) のアイコンに出す。 */
+export function setDesktopUnreadCount(count: number): void {
+  void invokeDesktop("set_unread_count", {
+    count: Math.max(0, Math.min(Math.trunc(count), 99_999)),
+  });
+}
+
+async function currentWindow() {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow();
+}
+
+/** タイトルバーのボタンの操作。 */
+export const desktopWindow = {
+  async minimize() {
+    await (await currentWindow()).minimize().catch(() => {});
+  },
+  async toggleMaximize() {
+    await (await currentWindow()).toggleMaximize().catch(() => {});
+  },
+  /** 設定によっては、閉じずに通知領域へ入る (アプリ側が決める)。 */
+  async close() {
+    await (await currentWindow()).close().catch(() => {});
+  },
+  async isMaximized(): Promise<boolean> {
+    try {
+      return await (await currentWindow()).isMaximized();
+    } catch {
+      return false;
+    }
+  },
+  /** ウィンドウの大きさが変わるたびに呼ぶ。戻り値の関数で解除する。 */
+  onResized(listener: () => void): () => void {
+    let cancelled = false;
+    let remove: (() => void) | null = null;
+    void (async () => {
+      try {
+        const unlisten = await (await currentWindow()).onResized(listener);
+        if (cancelled) unlisten();
+        else remove = unlisten;
+      } catch {
+        // 受け取れなければ、最大化のボタンの絵が切り替わらないだけ。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
+  },
+};

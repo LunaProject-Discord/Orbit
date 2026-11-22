@@ -21,6 +21,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@tanstack/react-virtual": "^3.14.26",
+    "@tauri-apps/api": "^2.12.5",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.2",
     "gen-interface-jp": "^0.8.0",

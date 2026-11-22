@@ -2369,7 +2369,7 @@ export function MailApp({ user }: { user: User }) {
     // 高さは画面に固定し、一覧と本文をそれぞれの枠の中でスクロールさせる。
     // body は縦並びの flex なので、ここに flex-1 を付けると高さの指定が効かず、
     // メールの件数に合わせてページ全体が伸びてしまう。
-    <div className="flex h-dvh shrink-0 overflow-hidden">
+    <div className="flex h-[calc(100dvh-var(--titlebar-height))] shrink-0 overflow-hidden">
       {/* 閉じている間も置いておく (スワイプで開く途中に、開き具合に合わせて暗くするため)。 */}
       <button
         ref={backdropRef}
@@ -2378,7 +2378,7 @@ export function MailApp({ user }: { user: User }) {
         tabIndex={sidebarOpen ? 0 : -1}
         onClick={() => setSidebarOpen(false)}
         className={cn(
-          "fixed inset-0 z-30 bg-black/30 md:hidden",
+          "fixed inset-0 top-(--titlebar-height) z-30 bg-black/30 md:hidden",
           !sidebarOpen && "hidden",
         )}
       />
@@ -2386,7 +2386,7 @@ export function MailApp({ user }: { user: User }) {
         ref={asideRef}
         id="mail-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] transition-transform md:translate-x-0",
+          "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-72 max-w-[85vw] transition-transform md:translate-x-0",
           // 折りたたみ中は細い帯の幅だけを確保し、サイドバーは一覧の上に重ねて出す。
           sidebarFolded
             ? "md:relative md:w-12 md:max-w-none md:shrink-0"

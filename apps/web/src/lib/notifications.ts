@@ -5,6 +5,13 @@ import {
   type MailNotification,
   savePushSubscription,
 } from "@/lib/api";
+import {
+  isDesktopApp,
+  listenDesktop,
+  notifyNewMail,
+  OPEN_MESSAGE_EVENT,
+  setDesktopUnreadCount,
+} from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
 
 /**
@@ -12,6 +19,10 @@ import { isNativeApp } from "@/lib/native/app";
  * - push: サーバーからの Web Push をサービスワーカーが受けて通知する (画面を閉じていても届く)。
  * - page: Web Push が使えないとき。画面を開いている間だけ、SSE で届いた新着を通知する。
  * 有効にするかどうかは端末 (ブラウザー) ごとに選び、localStorage に覚えておく。
+ *
+ * デスクトップ版 (Tauri) は page と同じ仕組みで、SSE で届いた新着を OS の通知で出す。
+ * ウィンドウを閉じても通知領域に残って動き続けるので、アプリを終了するまで届く。
+ * メールソフトとして入れたものなので、切らない限り最初から有効にする。
  */
 export type NotificationStatus =
   /** このブラウザーでは通知を出せない。 */
@@ -64,17 +75,26 @@ function sameBytes(a: ArrayBuffer | null, b: Uint8Array): boolean {
   );
 }
 
+/** 保存した値から、通知が有効かどうかを決める。未設定のときはデスクトップ版だけ有効。 */
+export function enabledFrom(stored: string | null, desktop: boolean): boolean {
+  return desktop ? stored !== "off" : stored === "on";
+}
+
 function isEnabled(): boolean {
   try {
-    return window.localStorage.getItem(SETTING_KEY) === "on";
+    return enabledFrom(
+      window.localStorage.getItem(SETTING_KEY),
+      isDesktopApp(),
+    );
   } catch {
-    return false;
+    return isDesktopApp();
   }
 }
 
 function setEnabled(enabled: boolean) {
   try {
     if (enabled) window.localStorage.setItem(SETTING_KEY, "on");
+    else if (isDesktopApp()) window.localStorage.setItem(SETTING_KEY, "off");
     else window.localStorage.removeItem(SETTING_KEY);
   } catch {
     // 保存できなければ、このページを開いている間だけ有効になる。
@@ -149,6 +169,8 @@ export async function syncNotifications(): Promise<NotificationStatus> {
     const { syncNativePush } = await import("@/lib/native/push");
     return syncNativePush(isEnabled());
   }
+  // デスクトップ版は OS の許可を尋ねる必要がない (拒否は OS の設定側で行う)。
+  if (isDesktopApp()) return isEnabled() ? "page" : "off";
   if (!supported()) return "unsupported";
   if (Notification.permission === "denied") return "blocked";
   if (!isEnabled() || Notification.permission !== "granted") return "off";
@@ -163,6 +185,10 @@ export async function enableNotifications(): Promise<NotificationStatus> {
     const status = await enableNativePush();
     if (status === "push") setEnabled(true);
     return status;
+  }
+  if (isDesktopApp()) {
+    setEnabled(true);
+    return "page";
   }
   if (!supported()) return "unsupported";
   let permission: NotificationPermission = Notification.permission;
@@ -188,6 +214,8 @@ export async function releasePush(toServer: boolean): Promise<void> {
     const { releaseNativePush } = await import("@/lib/native/push");
     return releaseNativePush(toServer);
   }
+  // デスクトップ版はサーバーに送り先を登録していない。
+  if (isDesktopApp()) return;
   try {
     const registration = await existingRegistration();
     const subscription = await registration?.pushManager?.getSubscription();
@@ -208,6 +236,7 @@ export async function disableNotifications(): Promise<NotificationStatus> {
     const { nativePushOffStatus } = await import("@/lib/native/push");
     return nativePushOffStatus();
   }
+  if (isDesktopApp()) return "off";
   if (!supported()) return "unsupported";
   return Notification.permission === "denied" ? "blocked" : "off";
 }
@@ -221,6 +250,15 @@ export async function showPageNotification(
   notification: MailNotification,
   onOpen: (messageId: string | null) => void,
 ): Promise<void> {
+  if (isDesktopApp()) {
+    // 押されたときは、アプリ側からのイベントが onNotificationOpen に届く。
+    await notifyNewMail({
+      title: notification.title,
+      body: notification.body,
+      messageId: notification.messageId,
+    });
+    return;
+  }
   if (!supported() || Notification.permission !== "granted") return;
   const options = {
     body: notification.body,
@@ -267,6 +305,13 @@ export function onNotificationOpen(
       remove?.();
     };
   }
+  if (isDesktopApp()) {
+    return listenDesktop<{ messageId?: unknown }>(
+      OPEN_MESSAGE_EVENT,
+      ({ messageId }) =>
+        check(typeof messageId === "string" ? messageId : null),
+    );
+  }
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
     return () => {};
   }
@@ -302,6 +347,10 @@ export function parseMailEvent(data: string): MailNotification[] {
 /** タブの題名とアプリのアイコンに、受信トレイの未読数を出す。 */
 export function showUnreadCount(count: number) {
   document.title = unreadTitle(count);
+  if (isDesktopApp()) {
+    setDesktopUnreadCount(count);
+    return;
+  }
   const nav = navigator as Navigator & {
     setAppBadge?: (count?: number) => Promise<void>;
     clearAppBadge?: () => Promise<void>;

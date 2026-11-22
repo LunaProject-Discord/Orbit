@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Orbit Mail",
+  "version": "../package.json",
+  "identifier": "jp.lunaproject.orbit.mail",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @mail/web dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "pnpm --filter @mail/web build",
+    "frontendDist": "../../web/out"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Orbit Mail",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 380,
+        "minHeight": 520,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["jp.lunaproject.orbit.mail"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "複数の端末でリアルタイムに同期するメールアプリ",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "languages": ["Japanese", "English"]
+      },
+      "wix": {
+        "language": "ja-JP"
+      }
+    }
+  }
+}

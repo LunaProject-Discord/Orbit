@@ -1,5 +1,5 @@
 /**
- * スマホアプリから Google / Microsoft アカウントを追加するときの行き来。
+ * スマホアプリやデスクトップ版から Google / Microsoft アカウントを追加するときの行き来。
  *
  * ログイン画面はアプリの外のブラウザーで開く (WebView の中では Google がログインを断るため)。
  * ログイン後の戻り先は Web 版の URL (https://<サーバー>/oauth/google など) に決まっているので、
@@ -13,7 +13,18 @@
  * ほかのアプリがこの URL を横取りしても悪用はできない。
  */
 
-/** アプリ専用の URL のスキーム。Android のアプリ ID と同じ (AndroidManifest.xml と合わせる)。 */
+import { isDesktopApp } from "@/lib/desktop/app";
+import { isNativeApp } from "@/lib/native/app";
+
+/**
+ * ログイン画面を外のブラウザーで開き、アプリ専用の URL で戻ってくる方式を使うか
+ * (スマホアプリとデスクトップ版)。ブラウザーで開いた Web 版では false。
+ */
+export function usesAppOAuth(): boolean {
+  return isNativeApp() || isDesktopApp();
+}
+
+/** アプリ専用の URL のスキーム。Android のアプリ ID と同じ (AndroidManifest.xml、デスクトップ版の tauri.conf.json と合わせる)。 */
 export const APP_URL_SCHEME = "jp.lunaproject.orbit.mail";
 /** アプリから始めたログインの state に付く目印。サーバー (apps/api) と合わせる。 */
 export const APP_STATE_PREFIX = "app~";
