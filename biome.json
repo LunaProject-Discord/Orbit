@@ -9,7 +9,8 @@
       "!**/.next",
       "!**/dist",
       "!**/out",
-      "!**/drizzle"
+      "!**/drizzle",
+      "!apps/web/src/lib/lucide/*.json"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },
