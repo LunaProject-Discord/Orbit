@@ -92,6 +92,7 @@ const gradient = (id, from, to) =>
 
 /**
  * アイコン。shape: rounded (角丸、角は透明) / square (四角いっぱい。OS が切り抜く用)。
+ * 輪の中心を枠の中心に置く (月は輪から少しはみ出すが、輪を基準にしないと左に寄って見える)。
  * scale は記号の大きさ (1 = 枠いっぱいに近い)。maskable は安全領域に収まる 0.66。
  */
 export function icon(
@@ -102,7 +103,7 @@ export function icon(
   const dark = theme === "dark";
   const g = glyph(product, dark ? "url(#ink)" : "#fff", { small });
   const tile = `<rect width="512" height="512"${shape === "rounded" ? ' rx="116"' : ""} fill="${dark ? DARK_TILE : "url(#tile)"}"/>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs>${gradient("tile", p.from, p.to)}${gradient("ink", p.tint, p.tintTo)}${g.defs}</defs>${tile}<g transform="translate(250 250) scale(${scale}) translate(-256 -256)">${g.body}</g></svg>\n`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs>${gradient("tile", p.from, p.to)}${gradient("ink", p.tint, p.tintTo)}${g.defs}</defs>${tile}<g transform="translate(256 256) scale(${scale}) translate(-256 -256)">${g.body}</g></svg>\n`;
 }
 
 /** 背景のない記号だけ。theme は置く背景の明暗。 */
