@@ -1063,7 +1063,7 @@ function MessageContent({
                 </time>
                 {toggle}
               </div>
-              <h2 className="line-clamp-2 font-semibold text-base leading-snug">
+              <h2 className="line-clamp-2 font-semibold text-xl leading-snug">
                 {message.subject || "(件名なし)"}
               </h2>
             </div>
