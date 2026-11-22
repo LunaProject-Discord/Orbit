@@ -1,4 +1,8 @@
-import { FcmError, type NewMailNotification } from "@mail/core";
+import {
+  FcmError,
+  type NewMailNotification,
+  verifyNotificationAction,
+} from "@mail/core";
 import type { Database } from "@mail/db";
 import { describe, expect, it } from "vitest";
 import {
@@ -116,6 +120,42 @@ describe("PushSender", () => {
       called = true;
     }).deliver(notification);
     expect(called).toBe(false);
+  });
+});
+
+describe("通知のボタン", () => {
+  it("設定があれば、メールごとの通知にボタンと合言葉を付ける", async () => {
+    // 設定の行が無い利用者 (この DB の代わりは、どの問い合わせにも同じ行を返す) は標準のボタン。
+    const { db } = fakeDb([row("s1")]);
+    const sent: { messageId: string; actions?: Record<string, unknown> }[] = [];
+    const key = Buffer.alloc(32, 3);
+    await new PushSender(
+      db,
+      async (_subscription, body) => {
+        sent.push(JSON.parse(body));
+      },
+      undefined,
+      { key, url: "https://x/v1/notification-actions" },
+    ).deliver(notification);
+    expect(sent).toHaveLength(2);
+    for (const message of sent) {
+      expect(message.actions).toMatchObject({
+        buttons: [
+          { id: "read", title: "既読にする" },
+          { id: "archive", title: "アーカイブ" },
+          { id: "delete", title: "削除" },
+        ],
+        url: "https://x/v1/notification-actions",
+      });
+      expect(
+        verifyNotificationAction(
+          key,
+          "u1",
+          message.messageId,
+          message.actions?.token,
+        ),
+      ).toBe(true);
+    }
   });
 });
 

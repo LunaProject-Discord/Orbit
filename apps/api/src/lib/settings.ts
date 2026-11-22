@@ -1,3 +1,4 @@
+import { MAX_NOTIFICATION_ACTIONS, NOTIFICATION_ACTIONS } from "@mail/core";
 import type { SwipeSettings } from "@mail/db";
 import { z } from "zod";
 
@@ -42,3 +43,14 @@ export function readSwipe(saved: unknown): SwipeSettings {
     right: right.success ? right.data : DEFAULT_SWIPE.right,
   };
 }
+
+/**
+ * 新着メールの通知に付けるボタン。出す順に並べる (重複は不可)。
+ * 空の配列は、ボタンを付けない。
+ */
+export const notificationActionSettings = z.object({
+  actions: z
+    .array(z.enum(NOTIFICATION_ACTIONS))
+    .max(MAX_NOTIFICATION_ACTIONS)
+    .refine((actions) => new Set(actions).size === actions.length),
+});

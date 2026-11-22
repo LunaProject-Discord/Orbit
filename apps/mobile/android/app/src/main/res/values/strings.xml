@@ -8,4 +8,6 @@
     <string name="channel_new_mail_id" translatable="false">new-mail</string>
     <string name="channel_new_mail_name">新着メール</string>
     <string name="channel_new_mail_description">新しいメールが届いたときに知らせます</string>
+    <!-- 通知のボタンの操作を、サーバーへ送れなかったときの知らせ。 -->
+    <string name="notification_action_failed">操作を反映できませんでした</string>
 </resources>

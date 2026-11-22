@@ -4,11 +4,19 @@ import {
   FcmError,
   type NewMailCandidate,
   type NewMailNotification,
+  type PushActionSigner,
+  readNotificationActions,
+  signNotificationAction,
   toNewMailNotification,
   toPushMessages,
   type WebPushConfig,
 } from "@mail/core";
-import { type Database, devices, pushSubscriptions } from "@mail/db";
+import {
+  type Database,
+  devices,
+  pushSubscriptions,
+  userSettings,
+} from "@mail/db";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { sendNotification, WebPushError } from "web-push";
 import type { Tx } from "./changes.js";
@@ -84,12 +92,41 @@ function statusOf(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
+/** 通知にボタンを付けるための設定。null なら、ボタンを付けない。 */
+export type PushActionConfig = {
+  /** 合言葉の計算に使う鍵 (API サーバーと同じもの)。 */
+  key: Buffer;
+  /** ボタンを押したときの送り先 (API の URL)。 */
+  url: string;
+} | null;
+
+/** 利用者が選んだボタンを読み、通知に付けるための材料を作る。 */
+async function actionSigner(
+  db: Database,
+  config: PushActionConfig | undefined,
+  userId: string,
+): Promise<PushActionSigner | null> {
+  if (!config) return null;
+  const [row] = await db
+    .select({ actions: userSettings.notificationActions })
+    .from(userSettings)
+    .where(eq(userSettings.userId, userId));
+  const actions = readNotificationActions(row?.actions);
+  if (actions.length === 0) return null;
+  return {
+    actions,
+    url: config.url,
+    sign: (messageId) => signNotificationAction(config.key, userId, messageId),
+  };
+}
+
 /** 新着メールを、利用者が通知を有効にした端末へ Web Push で送る。 */
 export class PushSender {
   constructor(
     private readonly db: Database,
     private readonly transport: PushTransport,
     private readonly log: (message: string) => void = console.warn,
+    private readonly actions: PushActionConfig = null,
   ) {}
 
   async deliver(notification: NewMailNotification): Promise<void> {
@@ -103,7 +140,12 @@ export class PushSender {
       .from(pushSubscriptions)
       .where(eq(pushSubscriptions.userId, notification.userId));
     if (subscriptions.length === 0) return;
-    const bodies = toPushMessages(notification).map((message) =>
+    const signer = await actionSigner(
+      this.db,
+      this.actions,
+      notification.userId,
+    );
+    const bodies = toPushMessages(notification, signer).map((message) =>
       JSON.stringify(message),
     );
     await Promise.all(
@@ -140,6 +182,7 @@ export class DevicePushSender {
     private readonly db: Database,
     private readonly fcm: Pick<FcmClient, "send">,
     private readonly log: (message: string) => void = console.warn,
+    private readonly actions: PushActionConfig = null,
   ) {}
 
   async deliver(notification: NewMailNotification): Promise<void> {
@@ -154,7 +197,12 @@ export class DevicePushSender {
         ),
       );
     if (targets.length === 0) return;
-    const messages = toPushMessages(notification);
+    const signer = await actionSigner(
+      this.db,
+      this.actions,
+      notification.userId,
+    );
+    const messages = toPushMessages(notification, signer);
     await Promise.all(
       targets.map(async (target) => {
         if (!target.pushToken) return;

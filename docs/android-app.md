@@ -6,7 +6,8 @@ Orbit Mail の Android アプリ (`apps/mobile`) のビルド、プッシュ通�
 
 - [Capacitor](https://capacitorjs.com/) で、Web 版の画面 (`apps/web` の静的出力) をそのままアプリに入れています。画面のコードは Web 版と共通です。
 - アプリの中にあるのは画面だけで、メールは自分のサーバー (API) から取得します。最初に接続するサーバーはビルド時に決め (既定は `https://orbit.lunaproject.jp`)、アプリのログイン画面の「接続先 … 変更」から後で変えられます。
-- 新着メールの通知は Firebase Cloud Messaging (FCM) で届きます。サーバーの同期ワーカーが FCM へ送り、Android がアプリを閉じていても通知を出します。
+- 新着メールの通知は Firebase Cloud Messaging (FCM) で届きます。サーバーの同期ワーカーが FCM へ送り、アプリを閉じていても通知を出します。
+- 通知にはボタン (既読にする、スターを付ける、アーカイブ、削除、迷惑メールから 3 つまで) が付き、アプリを開かずに操作できます。どれを出すかは **設定 → 通知 → 通知に付けるボタン** で選びます (すべての端末で共通)。
 - アプリの ID (パッケージ名) は `jp.lunaproject.orbit.mail` です。
 
 | 場所 | 中身 |
@@ -15,6 +16,7 @@ Orbit Mail の Android アプリ (`apps/mobile`) のビルド、プッシュ通�
 | `apps/mobile/android/` | Android Studio で開くプロジェクト (コミットしてある) |
 | `apps/mobile/scripts/generate-icons.mjs` | `assets/brand/` からアイコンと起動画面の画像を作る |
 | `apps/web/src/lib/native/` | アプリの中でだけ動く処理 (起動画面、戻るボタン、テーマ、通知) |
+| `apps/mobile/android/app/src/main/java/…/OrbitMessagingService.java` ほか | 通知の組み立て (`MailNotifications`) と、通知のボタンの処理 (`NotificationActionReceiver`) |
 | `.github/workflows/android.yml` | GitHub Actions でのビルド |
 
 ## 1. GitHub Actions でビルドする (いちばん手軽)
@@ -86,6 +88,8 @@ Firebase の設定を入れてビルドし直したアプリを入れ、**設定
 | --- | --- |
 | 「このサーバー、またはこのアプリでは…設定されていません」 | アプリに `google-services.json` が入っていない (2-2)、またはサーバーに `FCM_SERVICE_ACCOUNT` が無い (2-3) |
 | 「端末の設定で…許可されていません」 | Android の設定 → アプリ → Orbit Mail → 通知 を許可する |
+| 通知は届くがボタンが無い | 何通かまとめた通知 (「新着メール 4 件」など) にはボタンが付きません。1 通ずつの通知にも無いときは、設定の「通知に付けるボタン」で 1 つ以上選んであるか、サーバーの `API_PUBLIC_URL` がアプリから届く URL かを確かめる |
+| ボタンを押すと「操作を反映できませんでした」と出る | 端末がオフライン、または通知が 7 日より古い。通知を押してアプリを開き、そこで操作する |
 | オンにできるが届かない | 同期ワーカーのログに「新着メールの通知をスマホアプリへ送れませんでした」が無いか確かめる。Firebase のプロジェクトが、アプリとサーバーで同じかも確かめる |
 
 ## 3. 署名鍵 (配布用のアプリ)
@@ -161,6 +165,13 @@ Google と Microsoft のログイン画面は、アプリの外のブラウザ�
 ```sh
 pnpm --filter @mail/mobile icons
 ```
+
+## 通知のしくみ (ボタン)
+
+- サーバーは、通知の中身 (差出人、件名、ボタン) を FCM の data だけで送ります。アプリの受け口 (`OrbitMessagingService`) がそれを受けて、通知を組み立てて出します。そのため、**サーバーとアプリの両方を新しくする必要があります** (古いアプリには、新しいサーバーからの通知が出ません)。
+- ボタンを押すと、アプリを開かずにサーバーの `POST /v1/notification-actions` へ操作を送ります。ログインの代わりに、通知ごとに付けた合言葉 (その 1 通だけを 7 日間操作できる。サーバーの `CREDENTIALS_ENCRYPTION_KEY` から計算) を使います。
+- 送り先は、サーバーの `API_PUBLIC_URL` です (`deploy/` の構成では自動で `https://<ドメイン>` になります)。
+- ブラウザー (PWA) の通知にも同じボタンが付きます。ブラウザーが並べられる数 (Chrome は 2 つ) までで、設定で選んだ順に先頭から出ます。
 
 ## いまの制限
 

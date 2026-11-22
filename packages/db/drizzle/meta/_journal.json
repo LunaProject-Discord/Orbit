@@ -169,6 +169,13 @@
       "when": 1795349270316,
       "tag": "0023_device_push_token",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795354783200,
+      "tag": "0024_notification_actions",
+      "breakpoints": true
     }
   ]
 }
