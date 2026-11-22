@@ -1,0 +1,176 @@
+package jp.lunaproject.orbit.mail;
+
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
+import java.util.Map;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+/** 新着メールの通知を組み立てて出す。ボタン (既読にする、アーカイブなど) もここで付ける。 */
+final class MailNotifications {
+
+    /** 通知に並べるボタンの数の上限 (Android が表示できる数)。 */
+    private static final int MAX_ACTIONS = 3;
+    /** 通知は tag で見分けるので、番号はすべて同じにする。 */
+    private static final int NOTIFICATION_ID = 0;
+
+    private MailNotifications() {}
+
+    /**
+     * サーバーから届いた内容で通知を出す。
+     * data: title、body、tag、messageId (まとめた通知では空)、
+     * actions (ボタンの JSON)、actionUrl、actionToken (ボタンがあるとき)。
+     */
+    static void show(Context context, String fcmMessageId, Map<String, String> data) {
+        String title = data.get("title");
+        String body = orEmpty(data.get("body"));
+        String messageId = orEmpty(data.get("messageId"));
+        String tag = data.get("tag");
+        if (tag == null || tag.isEmpty()) tag = "mail:" + messageId;
+
+        NotificationCompat.Builder builder = base(context, tag, fcmMessageId, messageId).setContentTitle(title).setContentText(body);
+        if (!body.isEmpty()) {
+            builder.setStyle(new NotificationCompat.BigTextStyle().bigText(body));
+        }
+
+        String url = data.get("actionUrl");
+        String token = data.get("actionToken");
+        String actions = data.get("actions");
+        if (!messageId.isEmpty() && url != null && token != null && actions != null) {
+            addActions(context, builder, actions, tag, messageId, url, token, title);
+        }
+        post(context, tag, builder);
+    }
+
+    /** ボタンの操作をサーバーへ送れなかったことを知らせる。押すと、そのメールを開く。 */
+    static void showFailure(Context context, String tag, String messageId, String title) {
+        NotificationCompat.Builder builder = base(context, tag, null, messageId)
+            .setContentTitle(context.getString(R.string.notification_action_failed))
+            .setContentText(orEmpty(title));
+        post(context, tag, builder);
+    }
+
+    static void cancel(Context context, String tag) {
+        NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) manager.cancel(tag, NOTIFICATION_ID);
+    }
+
+    private static NotificationCompat.Builder base(Context context, String tag, String fcmMessageId, String messageId) {
+        // 通知を押したらアプリを開く。google.message_id があると、プッシュ通知のプラグインが
+        // 「通知が押された」として画面へ伝え、画面が messageId のメールを開く。
+        Intent open = new Intent(context, MainActivity.class);
+        open.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        open.putExtra("google.message_id", fcmMessageId == null || fcmMessageId.isEmpty() ? tag : fcmMessageId);
+        open.putExtra("messageId", messageId);
+        PendingIntent content = PendingIntent.getActivity(
+            context,
+            tag.hashCode(),
+            open,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+        return new NotificationCompat.Builder(context, channel(context))
+            .setSmallIcon(R.drawable.ic_stat_mail)
+            .setColor(ContextCompat.getColor(context, R.color.brand))
+            .setCategory(NotificationCompat.CATEGORY_EMAIL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(content);
+    }
+
+    private static void addActions(
+        Context context,
+        NotificationCompat.Builder builder,
+        String json,
+        String tag,
+        String messageId,
+        String url,
+        String token,
+        String title
+    ) {
+        try {
+            JSONArray buttons = new JSONArray(json);
+            int count = Math.min(buttons.length(), MAX_ACTIONS);
+            for (int index = 0; index < count; index++) {
+                JSONObject button = buttons.getJSONObject(index);
+                String id = button.getString("id");
+                String label = button.getString("title");
+
+                Intent intent = new Intent(context, NotificationActionReceiver.class);
+                intent.setAction(NotificationActionReceiver.ACTION);
+                intent.putExtra(NotificationActionReceiver.EXTRA_TAG, tag);
+                intent.putExtra(NotificationActionReceiver.EXTRA_MESSAGE_ID, messageId);
+                intent.putExtra(NotificationActionReceiver.EXTRA_ACTION, id);
+                intent.putExtra(NotificationActionReceiver.EXTRA_URL, url);
+                intent.putExtra(NotificationActionReceiver.EXTRA_TOKEN, token);
+                intent.putExtra(NotificationActionReceiver.EXTRA_TITLE, title);
+                PendingIntent pending = PendingIntent.getBroadcast(
+                    context,
+                    (tag + ":" + id).hashCode(),
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                );
+                builder.addAction(
+                    new NotificationCompat.Action.Builder(0, label, pending)
+                        .setSemanticAction(semanticAction(id))
+                        .setShowsUserInterface(false)
+                        .build()
+                );
+            }
+        } catch (JSONException e) {
+            // ボタンを読み取れなくても、通知そのものは出す。
+        }
+    }
+
+    /** 時計や車などが、ボタンの意味を知るための分類。 */
+    private static int semanticAction(String id) {
+        switch (id) {
+            case "read":
+                return NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ;
+            case "archive":
+                return NotificationCompat.Action.SEMANTIC_ACTION_ARCHIVE;
+            case "delete":
+                return NotificationCompat.Action.SEMANTIC_ACTION_DELETE;
+            default:
+                return NotificationCompat.Action.SEMANTIC_ACTION_NONE;
+        }
+    }
+
+    private static void post(Context context, String tag, NotificationCompat.Builder builder) {
+        // 利用者が通知を許可していなければ出さない (Android 13 以降は許可が要る)。
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return;
+        NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        // 同じ tag の通知は置き換わる (再送で二重に出さない)。
+        manager.notify(tag, NOTIFICATION_ID, builder.build());
+    }
+
+    /** 新着メールの通知の分類。画面で通知を有効にしたときにも作るが、無ければここで作る。 */
+    private static String channel(Context context) {
+        String id = context.getString(R.string.channel_new_mail_id);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null && manager.getNotificationChannel(id) == null) {
+                NotificationChannel created = new NotificationChannel(
+                    id,
+                    context.getString(R.string.channel_new_mail_name),
+                    NotificationManager.IMPORTANCE_HIGH
+                );
+                created.setDescription(context.getString(R.string.channel_new_mail_description));
+                manager.createNotificationChannel(created);
+            }
+        }
+        return id;
+    }
+
+    private static String orEmpty(String value) {
+        return value == null ? "" : value;
+    }
+}

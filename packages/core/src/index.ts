@@ -9,5 +9,6 @@ export * from "./mail-providers.js";
 export * from "./mailbox-roles.js";
 export * from "./microsoft-oauth.js";
 export * from "./network-error.js";
+export * from "./notification-actions.js";
 export * from "./notifications.js";
 export * from "./outbox.js";

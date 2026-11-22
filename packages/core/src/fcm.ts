@@ -62,23 +62,38 @@ export const FCM_CHANNEL_NEW_MAIL = "new-mail";
 /** 届けられなかった通知を FCM が預かる時間 (端末がオフラインのとき)。 */
 const TTL_SECONDS = 24 * 60 * 60;
 
-/** FCM に渡す 1 件分のメッセージ。 */
+/**
+ * FCM に渡す 1 件分のメッセージ。
+ * notification は付けず、data だけを送る。notification を付けると Android が自分で通知を出すが、
+ * その通知にはボタンを付けられない。data だけにすると、アプリの受け口 (OrbitMessagingService) が
+ * 起こされ、ボタン付きの通知をアプリが組み立てる。値は文字列のみ。
+ */
 export function toFcmMessage(token: string, message: PushMessage) {
+  const { actions } = message;
   return {
     message: {
       token,
-      // notification を付けると、アプリが動いていなくても Android が通知を出す。
-      notification: { title: message.title, body: message.body },
-      // 通知を押したときにアプリへ渡る値 (文字列のみ)。
-      data: { messageId: message.messageId ?? "", tag: message.tag },
+      data: {
+        title: message.title,
+        body: message.body,
+        // 同じ tag の通知は置き換わる (再送で二重に出さない)。
+        tag: message.tag,
+        // 通知を押したときに開くメール。まとめた通知では空。
+        messageId: message.messageId ?? "",
+        // 通知の分類 (Android の通知チャンネル)。
+        channel: FCM_CHANNEL_NEW_MAIL,
+        ...(actions
+          ? {
+              actions: JSON.stringify(actions.buttons),
+              actionUrl: actions.url,
+              actionToken: actions.token,
+            }
+          : {}),
+      },
       android: {
         ttl: `${TTL_SECONDS}s`,
+        // 端末が休んでいても、すぐに届けてもらう。
         priority: "HIGH",
-        notification: {
-          // 同じ tag の通知は置き換わる (再送で二重に出さない)。
-          tag: message.tag,
-          channel_id: FCM_CHANNEL_NEW_MAIL,
-        },
       },
     },
   };

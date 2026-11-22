@@ -40,6 +40,7 @@ import {
 import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
   type Account,
+  type NotificationAction,
   oauthProviderOf,
   type SwipeSettings,
   type User,
@@ -47,6 +48,14 @@ import {
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
 import { isNativeApp } from "@/lib/native/app";
+import {
+  changeNotificationActions,
+  MAX_NOTIFICATION_ACTIONS,
+  NOTIFICATION_ACTIONS,
+  refreshNotificationActions,
+  toggleNotificationAction,
+  useNotificationActions,
+} from "@/lib/notification-actions";
 import type { NotificationStatus } from "@/lib/notifications";
 import {
   BODY_FONT_SIZES,
@@ -161,6 +170,19 @@ export function SettingsView({
   const set = updatePreferences;
   const swipe = useSwipeSettings();
   const [swipeError, setSwipeError] = useState(false);
+  const notificationActions = useNotificationActions();
+  const [notificationActionsError, setNotificationActionsError] =
+    useState(false);
+  // ほかの端末で変えた内容を、設定画面を開いたときに取り込む。
+  useEffect(() => {
+    void refreshNotificationActions();
+  }, []);
+  const changeNotificationAction = (id: NotificationAction, on: boolean) => {
+    setNotificationActionsError(false);
+    void changeNotificationActions(
+      toggleNotificationAction(notificationActions, id, on),
+    ).then((saved) => setNotificationActionsError(!saved));
+  };
   const changeSwipe = (patch: Partial<SwipeSettings>) => {
     setSwipeError(false);
     void changeSwipeSettings(patch).then((saved) => setSwipeError(!saved));
@@ -491,6 +513,50 @@ export function SettingsView({
                 </Button>
               )}
             </div>
+            <SettingGroup>
+              <div className="px-3 py-2.5">
+                <p className="font-medium text-sm">通知に付けるボタン</p>
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  通知から、メールを開かずに操作できます。
+                  {MAX_NOTIFICATION_ACTIONS} つまで選べ、選んだ順に並びます
+                  (ブラウザーの通知では、先頭の 2 つまでのことがあります)。
+                  この設定はすべての端末で共通で、次に届く通知から変わります。
+                </p>
+                <p className="mt-1 text-xs" data-notification-action-order>
+                  {notificationActions.length > 0
+                    ? `いまの並び: ${notificationActions
+                        .map(
+                          (id) =>
+                            NOTIFICATION_ACTIONS.find(
+                              (action) => action.id === id,
+                            )?.label ?? id,
+                        )
+                        .join("、")}`
+                    : "ボタンは付けません。"}
+                </p>
+              </div>
+              {NOTIFICATION_ACTIONS.map((action) => {
+                const checked = notificationActions.includes(action.id);
+                return (
+                  <SwitchRow
+                    key={action.id}
+                    label={action.label}
+                    description={action.description}
+                    checked={checked}
+                    disabled={
+                      !checked &&
+                      notificationActions.length >= MAX_NOTIFICATION_ACTIONS
+                    }
+                    onChange={(on) => changeNotificationAction(action.id, on)}
+                  />
+                );
+              })}
+            </SettingGroup>
+            {notificationActionsError && (
+              <p role="alert" className="text-destructive text-xs">
+                通知に付けるボタンを保存できませんでした。通信の状態を確かめて、もう一度選んでください。
+              </p>
+            )}
           </Section>
 
           <Section
@@ -880,6 +946,7 @@ function SwitchRow(props: {
   label: string;
   description?: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
   const id = useId();
@@ -892,6 +959,7 @@ function SwitchRow(props: {
       <Switch
         aria-labelledby={id}
         checked={props.checked}
+        disabled={props.disabled}
         onCheckedChange={(checked) => props.onChange(checked)}
       />
     </SettingRow>

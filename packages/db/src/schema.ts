@@ -698,6 +698,11 @@ export const userSettings = pgTable("user_settings", {
     .references(() => users.id, { onDelete: "cascade" }),
   /** 一覧のスワイプ操作。null は標準の値。 */
   swipe: jsonb().$type<SwipeSettings>(),
+  /**
+   * 新着メールの通知に付けるボタン (read、star、archive、delete、junk を出す順に)。
+   * null は標準の値、空の配列はボタンを付けない。
+   */
+  notificationActions: jsonb().$type<string[]>(),
   updatedAt: updatedAt(),
 });
 

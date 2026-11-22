@@ -8,6 +8,7 @@ import {
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
+  notificationActionUrl,
   sweepAttachments,
 } from "@mail/core";
 import { createDb, drafts } from "@mail/db";
@@ -28,6 +29,10 @@ const encryptionKey = loadEncryptionKey(process.env.CREDENTIALS_ENCRYPTION_KEY);
 const webPush = loadWebPushConfig(process.env);
 const fcm = loadFcmConfig(process.env);
 
+// 通知のボタンを押したときの送り先 (API)。URL が分からなければ、ボタンを付けない。
+const actionUrl = notificationActionUrl(process.env.API_PUBLIC_URL);
+const pushActions = actionUrl ? { key: encryptionKey, url: actionUrl } : null;
+
 const { db, pool } = createDb(databaseUrl);
 const manager = new AccountManager(
   db,
@@ -42,8 +47,10 @@ const manager = new AccountManager(
   // 新着メールの通知。ブラウザーへは Web Push (VAPID の鍵が無ければ送らない)、
   // スマホアプリへは FCM (FCM_SERVICE_ACCOUNT が無ければ送らない)。
   combineSenders([
-    webPush && new PushSender(db, webPushTransport(webPush)),
-    fcm && new DevicePushSender(db, new FcmClient(fcm)),
+    webPush &&
+      new PushSender(db, webPushTransport(webPush), console.warn, pushActions),
+    fcm &&
+      new DevicePushSender(db, new FcmClient(fcm), console.warn, pushActions),
   ]),
 );
 await manager.start();

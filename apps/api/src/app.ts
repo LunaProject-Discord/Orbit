@@ -14,6 +14,7 @@ import { failureRoutes } from "./routes/failures.js";
 import { focusRoutes } from "./routes/focus.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
+import { notificationActionRoutes } from "./routes/notification-actions.js";
 import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { sendRoutes } from "./routes/send.js";
@@ -89,6 +90,9 @@ export function createApp({
       },
     }),
   );
+
+  // 通知のボタンから呼ばれる。ログインの代わりに、通知に付けた合言葉で確かめる。
+  v1.route("/", notificationActionRoutes({ db, encryptionKey }));
 
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));

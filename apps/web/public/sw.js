@@ -1,6 +1,7 @@
 // サービスワーカー。次の 2 つを受け持つ。
 // - アプリ本体 (HTML、スクリプト、スタイル、フォント) を端末に保存し、オフラインでも画面を開けるようにする。
 // - サーバーからの Web Push を受けて新着メールの通知を出し、通知が押されたらアプリを開く。
+//   通知のボタン (既読にする、アーカイブなど) が押されたら、画面を開かずに操作する。
 // メールのデータ (API の応答) は扱わない。そちらは画面側が IndexedDB に保存する。
 
 // アプリ本体の保存先。ビルドのたびに作られる一覧 (precache-manifest.json) の内容を入れる。
@@ -174,6 +175,27 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+// 通知に付けるボタン。サーバーが選んだもの (利用者の設定) のうち、形の正しいものだけを使う。
+function readActions(data) {
+  const actions = data.actions;
+  if (
+    !actions ||
+    typeof actions.url !== "string" ||
+    typeof actions.token !== "string" ||
+    !Array.isArray(actions.buttons)
+  ) {
+    return null;
+  }
+  const buttons = actions.buttons.filter(
+    (button) =>
+      button &&
+      typeof button.id === "string" &&
+      typeof button.title === "string",
+  );
+  if (buttons.length === 0) return null;
+  return { url: actions.url, token: actions.token, buttons };
+}
+
 self.addEventListener("push", (event) => {
   let data = {};
   try {
@@ -183,22 +205,69 @@ self.addEventListener("push", (event) => {
   }
   const title =
     typeof data.title === "string" && data.title ? data.title : "新着メール";
+  const messageId = typeof data.messageId === "string" ? data.messageId : null;
+  const actions = messageId ? readActions(data) : null;
+  // 並べられるボタンの数はブラウザーごとに違う (Chrome は 2 つ)。入る分だけ、設定した順に出す。
+  const max =
+    typeof Notification !== "undefined" &&
+    typeof Notification.maxActions === "number"
+      ? Notification.maxActions
+      : 2;
   event.waitUntil(
     self.registration.showNotification(title, {
       body: typeof data.body === "string" ? data.body : "",
       // 同じメールの通知は置き換える (再送や複数のタブで二重に出さない)。
       tag: typeof data.tag === "string" ? data.tag : undefined,
       icon: "/icons/icon-192.png",
+      ...(actions
+        ? {
+            actions: actions.buttons
+              .slice(0, max)
+              .map((button) => ({ action: button.id, title: button.title })),
+          }
+        : {}),
       data: {
-        messageId: typeof data.messageId === "string" ? data.messageId : null,
+        messageId,
+        title,
+        action: actions ? { url: actions.url, token: actions.token } : null,
       },
     }),
   );
 });
 
+// 通知のボタンが押された。画面を開かずに、サーバーへ操作を送る。
+// ログインの情報は使わず、通知に付いていた合言葉で操作する。
+async function runNotificationAction(notification, action) {
+  const { messageId, title, action: target } = notification.data ?? {};
+  let done = false;
+  try {
+    const response = await fetch(target.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId, action, token: target.token }),
+    });
+    // 404 は、ほかの端末ですでに削除や移動をしたメール。済んだものとして扱う。
+    done = response.ok || response.status === 404;
+  } catch {
+    // 通信できなかった。
+  }
+  if (done) return;
+  // 反映できなかったことを知らせる。押すと、そのメールを開く。
+  await self.registration.showNotification("操作を反映できませんでした", {
+    body: typeof title === "string" ? title : "",
+    tag: notification.tag || undefined,
+    icon: "/icons/icon-192.png",
+    data: { messageId, title, action: null },
+  });
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const messageId = event.notification.data?.messageId ?? null;
+  if (event.action && messageId && event.notification.data?.action) {
+    event.waitUntil(runNotificationAction(event.notification, event.action));
+    return;
+  }
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({

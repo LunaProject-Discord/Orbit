@@ -79,15 +79,18 @@ describe("signServiceAccountJwt", () => {
 });
 
 describe("toFcmMessage", () => {
-  it("通知と、押したときに開くメールを載せる", () => {
+  it("通知の中身を data に載せる (notification は付けない)", () => {
     const { message: sent } = toFcmMessage("device-token", message);
     expect(sent.token).toBe("device-token");
-    expect(sent.notification).toEqual({ title: "佐藤 美咲", body: "ご確認" });
-    expect(sent.data).toEqual({ messageId: "m1", tag: "mail:m1" });
-    expect(sent.android.notification).toEqual({
+    expect(sent).not.toHaveProperty("notification");
+    expect(sent.data).toEqual({
+      title: "佐藤 美咲",
+      body: "ご確認",
       tag: "mail:m1",
-      channel_id: "new-mail",
+      messageId: "m1",
+      channel: "new-mail",
     });
+    expect(sent.android.priority).toBe("HIGH");
   });
 
   it("まとめた通知では messageId を空にする (data は文字列のみ)", () => {
@@ -96,6 +99,22 @@ describe("toFcmMessage", () => {
       messageId: null,
     });
     expect(sent.data.messageId).toBe("");
+  });
+
+  it("ボタンは JSON の文字列にして、送り先と合言葉と一緒に載せる", () => {
+    const { message: sent } = toFcmMessage("t", {
+      ...message,
+      actions: {
+        buttons: [{ id: "read", title: "既読にする" }],
+        url: "https://x/v1/notification-actions",
+        token: "1.abc",
+      },
+    });
+    expect(sent.data).toMatchObject({
+      actions: '[{"id":"read","title":"既読にする"}]',
+      actionUrl: "https://x/v1/notification-actions",
+      actionToken: "1.abc",
+    });
   });
 });
 

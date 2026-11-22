@@ -851,11 +851,35 @@ export type SwipeAction =
 /** 左へスワイプしたときと、右へスワイプしたときの操作。どの端末でも同じになる。 */
 export type SwipeSettings = { left: SwipeAction; right: SwipeAction };
 
+/** 新着メールの通知に付けられるボタン。 */
+export type NotificationAction =
+  | "read"
+  | "star"
+  | "archive"
+  | "delete"
+  | "junk";
+
+/** どの端末でも同じにする設定。 */
+export type SharedSettings = {
+  swipe: SwipeSettings;
+  /** 通知に付けるボタン (出す順)。 */
+  notificationActions: NotificationAction[];
+};
+
 /** どの端末でも同じにする設定を取得する。 */
 export async function getSettings(
   signal?: AbortSignal,
-): Promise<{ swipe: SwipeSettings }> {
-  return apiJson<{ swipe: SwipeSettings }>("/v1/settings", { signal });
+): Promise<SharedSettings> {
+  return apiJson<SharedSettings>("/v1/settings", { signal });
+}
+
+export async function saveNotificationActions(
+  actions: NotificationAction[],
+): Promise<void> {
+  await apiFetch("/v1/settings/notification-actions", {
+    method: "PUT",
+    body: { actions },
+  });
 }
 
 export async function saveSwipeSettings(swipe: SwipeSettings): Promise<void> {
