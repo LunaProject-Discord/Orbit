@@ -49,6 +49,8 @@ const SETTLE_MS = 180;
 const WHEEL_END_MS = 110;
 /** 操作のあと、指を離したあとも続く慣性のスクロールを無視する時間 (ms)。 */
 const WHEEL_COOLDOWN_MS = 400;
+/** 横のスクロールに任せたあと、これだけ動きが途切れるまではスワイプを始めない (ms)。 */
+const WHEEL_SCROLL_GAP_MS = 300;
 /** 画面の端から始めた動きは、端末の「戻る」などの操作に任せる (px)。 */
 const EDGE_PX = 20;
 /** その向きに行うことが無いときに、指に対して動かす割合。 */
@@ -117,6 +119,8 @@ export function MessageSwipe({
     active: false,
     endTimer: null as ReturnType<typeof setTimeout> | null,
     coolUntil: 0,
+    /** 最後に、横の動きを枠のスクロールに任せた時刻。 */
+    scrolledAt: 0,
   });
 
   const width = () => rootRef.current?.offsetWidth ?? 0;
@@ -296,7 +300,11 @@ export function MessageSwipe({
         if (
           axis === "y" ||
           insideTextField(state.target) ||
-          insideSidewaysScroller(state.target, rootRef.current) ||
+          insideSidewaysScroller(
+            state.target,
+            rootRef.current,
+            dx < 0 ? "left" : "right",
+          ) ||
           // 文字を選んでいる途中は、選択の操作に任せる。
           hasSelection(state.target)
         ) {
@@ -374,10 +382,20 @@ export function MessageSwipe({
         // その向きに行うことが無ければ、ブラウザーの動作 (戻る / 進むなど) に任せる。
         if (!(event.deltaX > 0 ? state.left : state.right)) return;
         if (settleTimer.current) return;
+        if (insideTextField(event.target)) return;
         if (
-          insideTextField(event.target) ||
-          insideSidewaysScroller(event.target, rootRef.current)
+          insideSidewaysScroller(
+            event.target,
+            rootRef.current,
+            event.deltaX > 0 ? "left" : "right",
+          )
         ) {
+          wheeling.scrolledAt = Date.now();
+          return;
+        }
+        // 横のスクロールが端に着いたあとも続く動き (慣性) では、スワイプを始めない。
+        if (Date.now() - wheeling.scrolledAt < WHEEL_SCROLL_GAP_MS) {
+          wheeling.scrolledAt = Date.now();
           return;
         }
         wheeling.active = true;

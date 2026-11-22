@@ -213,27 +213,42 @@ export function clampOffset(
   return Math.min(max, Math.max(min, offset));
 }
 
+/** これ以下のはみ出し (px) は、横にスクロールできる枠として数えない。 */
+export const SIDEWAYS_SLACK = 16;
+
 /**
- * 触れた場所が、横にスクロールできる枠 (幅を固定したメールの本文、横に長い表やコードなど) の
- * 中か。その中では、横の動きをスクロールに使うので、スワイプとして扱わない。
+ * 触れた場所が、その向きへまだ横にスクロールできる枠 (幅を固定したメールの本文、横に長い表や
+ * コードなど) の中か。その中では、横の動きをスクロールに使うので、スワイプとして扱わない。
+ * direction は指を動かす向き (left なら、中身は右側の続きが見える向きへスクロールする)。
+ *
+ * わずかにはみ出しているだけの枠は数えない (少しはみ出しただけのメールでスワイプできなく
+ * なるのを避ける)。スクロールの端まで来ていれば、その先への動きはスワイプにする。
  * 本文の iframe の中からも、外側の文書までたどる。stopAt まで来たら、そこで終える。
  */
 export function insideSidewaysScroller(
   target: unknown,
   stopAt: Element | null,
+  direction: "left" | "right",
 ): boolean {
   let node = toElement(target);
   while (node && node !== stopAt) {
     const view = node.ownerDocument.defaultView;
     if (!view) return false;
-    if (node.scrollWidth - node.clientWidth > 1) {
+    const range = node.scrollWidth - node.clientWidth;
+    if (range > SIDEWAYS_SLACK) {
       const overflow = view.getComputedStyle(node).overflowX;
       // 文書のいちばん外側 (html) は、指定が無くても画面ごとスクロールする。
       const scrolls =
         node === node.ownerDocument.documentElement
           ? overflow !== "hidden" && overflow !== "clip"
           : overflow === "auto" || overflow === "scroll";
-      if (scrolls) return true;
+      // 右から左へ書く文書では scrollLeft が負になるので、大きさで比べる。
+      const position = Math.abs(node.scrollLeft);
+      const rtl = view.getComputedStyle(node).direction === "rtl";
+      const towardEnd = (direction === "left") !== rtl;
+      if (scrolls && (towardEnd ? position < range - 2 : position > 2)) {
+        return true;
+      }
     }
     node = node.parentElement ?? (view.frameElement as Element | null);
   }
