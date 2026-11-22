@@ -10,6 +10,8 @@ const MAX_RETRY_MS = 5 * 60_000;
  * (実際の突き合わせは同期用の接続が行う)。
  * サーバーの同時接続数の上限などで繋がらない間は active が false になり、
  * 呼び出し側は短い間隔の確認に切り替える。
+ * onGiveUp を渡した場合は、繋がらなかった時点でやり直さずに知らせて終わる
+ * (張る本数を減らすかどうかを呼び出し側が決める)。
  */
 export class FolderWatcher {
   private path: string | null = null;
@@ -22,6 +24,7 @@ export class FolderWatcher {
     private readonly createClient: () => Promise<ImapFlow>,
     private readonly onChange: (path: string) => void,
     private readonly log: (message: string) => void,
+    private readonly onGiveUp?: (path: string, reason: string) => void,
   ) {}
 
   /** いま IDLE で通知を受けられているか。 */
@@ -78,9 +81,20 @@ export class FolderWatcher {
         changed();
         await closed;
       } catch (error) {
+        const reason =
+          (error as { responseText?: string }).responseText ||
+          (error instanceof Error ? error.message : String(error));
+        if (generation === this.generation && this.onGiveUp) {
+          this.connected = false;
+          client?.close();
+          this.path = null;
+          this.client = null;
+          this.generation++;
+          this.onGiveUp(path, reason);
+          return;
+        }
         if (generation === this.generation && !warned) {
           warned = true;
-          const reason = error instanceof Error ? error.message : String(error);
           this.log(
             `開いているフォルダ用の接続を張れませんでした。短い間隔の確認に切り替えます: ${reason}`,
           );

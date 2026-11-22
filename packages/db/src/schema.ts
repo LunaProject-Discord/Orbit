@@ -210,6 +210,11 @@ export const mailAccounts = pgTable(
      * 安全性が下がるので、利用者が明示的に許可したアカウントだけ true にする。
      */
     allowLegacyTls: boolean().notNull().default(false),
+    /**
+     * 受信トレイ以外のフォルダの変化をすぐ受け取るために足す IMAP 接続の本数の上限 (0〜8)。
+     * 0 なら足さない。null は自動 (サービスに合わせた数)。IMAP のアカウントでだけ使う。
+     */
+    pushConnections: integer(),
     username: text().notNull(),
     /** リフレッシュトークンまたはパスワードを AES-GCM で暗号化したもの。平文は保存しない。 */
     credentialsEncrypted: text().notNull(),
