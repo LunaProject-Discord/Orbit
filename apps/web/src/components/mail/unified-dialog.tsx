@@ -5,7 +5,7 @@ import { ChevronRightIcon, LayersIcon } from "lucide-react";
 import { type FormEvent, useId, useMemo, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
-import { MailboxIcon } from "@/components/mail/mailbox-icon";
+import { MailboxIcon, MailboxMark } from "@/components/mail/mailbox-icon";
 import { BUILTIN_ICONS } from "@/components/mail/unified-mark";
 import {
   AlertDialog,
@@ -735,7 +735,7 @@ function FolderRows({
             htmlFor={checkboxId}
             className="min-w-0 flex-1 gap-1.5 font-normal [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
           >
-            <MailboxIcon specialUse={mailbox.specialUse} />
+            <MailboxMark mailbox={mailbox} />
             <span className="truncate">{mailboxLabel(mailbox)}</span>
           </Label>
         </div>

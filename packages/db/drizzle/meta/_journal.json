@@ -141,6 +141,13 @@
       "when": 1795338126517,
       "tag": "0019_allow_legacy_tls",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795346548010,
+      "tag": "0020_mailbox_overrides",
+      "breakpoints": true
     }
   ]
 }

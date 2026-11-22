@@ -710,6 +710,11 @@ export function accountRoutes({
         path: mailboxes.path,
         name: mailboxes.name,
         specialUse: mailboxes.specialUse,
+        detectedSpecialUse: mailboxes.detectedSpecialUse,
+        roleOverride: mailboxes.roleOverride,
+        displayName: mailboxes.displayName,
+        icon: mailboxes.icon,
+        color: mailboxes.color,
         sortOrder: mailboxes.sortOrder,
         lastSyncedAt: mailboxes.lastSyncedAt,
       })

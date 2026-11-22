@@ -1,3 +1,4 @@
+import { resolveMailboxRoles } from "@mail/core";
 import { type Database, mailboxes, messageMailboxes, messages } from "@mail/db";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
@@ -61,6 +62,9 @@ export async function removePlacements(
 /**
  * サーバーのフォルダ一覧を DB に反映する (追加、名前や親の変更、削除)。
  * 変わったフォルダだけを変更履歴に載せる。
+ *
+ * サーバーが知らせてきた役割は detectedSpecialUse に入れ、実際に使う役割 (specialUse) は
+ * 利用者がアプリ内で付けた役割 (roleOverride) を当てはめて決める。
  */
 export async function applyMailboxList(
   db: Database,
@@ -79,9 +83,13 @@ export async function applyMailboxList(
         name: mailboxes.name,
         delimiter: mailboxes.delimiter,
         specialUse: mailboxes.specialUse,
+        detectedSpecialUse: mailboxes.detectedSpecialUse,
+        roleOverride: mailboxes.roleOverride,
       })
       .from(mailboxes)
-      .where(eq(mailboxes.accountId, account.id));
+      .where(eq(mailboxes.accountId, account.id))
+      // 役割の上書き (API) と同時に走っても、古い内容で役割を決めないようにする。
+      .for("update");
     const known = new Map(existing.map((row) => [row.path, row]));
     const ids = new Map<string, string>();
     const changed = new Set<string>();
@@ -90,21 +98,26 @@ export async function applyMailboxList(
       const values = {
         name: entry.name,
         delimiter: entry.delimiter,
-        specialUse: entry.specialUse,
+        detectedSpecialUse: entry.specialUse,
       };
       const row = known.get(entry.path);
       if (
         row &&
         row.name === values.name &&
         row.delimiter === values.delimiter &&
-        row.specialUse === values.specialUse
+        row.detectedSpecialUse === values.detectedSpecialUse
       ) {
         ids.set(entry.path, row.id);
         continue;
       }
       const [saved] = await tx
         .insert(mailboxes)
-        .values({ accountId: account.id, path: entry.path, ...values })
+        .values({
+          accountId: account.id,
+          path: entry.path,
+          ...values,
+          specialUse: entry.specialUse,
+        })
         .onConflictDoUpdate({
           target: [mailboxes.accountId, mailboxes.path],
           set: values,
@@ -123,6 +136,35 @@ export async function applyMailboxList(
         entry.parentPath === null ? null : (ids.get(entry.parentPath) ?? null);
       if ((known.get(entry.path)?.parentId ?? null) === parentId) continue;
       await tx.update(mailboxes).set({ parentId }).where(eq(mailboxes.id, id));
+      changed.add(id);
+    }
+
+    // 実際に使う役割を、利用者の上書きを当てはめて決め直す。
+    const roles = resolveMailboxRoles(
+      entries.flatMap((entry) => {
+        const id = ids.get(entry.path);
+        return id
+          ? [
+              {
+                id,
+                detected: entry.specialUse,
+                override: known.get(entry.path)?.roleOverride ?? null,
+              },
+            ]
+          : [];
+      }),
+    );
+    for (const entry of entries) {
+      const id = ids.get(entry.path);
+      if (!id) continue;
+      const row = known.get(entry.path);
+      const specialUse = roles.get(id) ?? null;
+      // 新しいフォルダは、サーバーが知らせてきた役割をそのまま入れてある。
+      if ((row ? row.specialUse : entry.specialUse) === specialUse) continue;
+      await tx
+        .update(mailboxes)
+        .set({ specialUse })
+        .where(eq(mailboxes.id, id));
       changed.add(id);
     }
 

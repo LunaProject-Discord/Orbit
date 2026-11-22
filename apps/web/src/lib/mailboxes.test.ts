@@ -3,6 +3,7 @@ import type { MailboxSummary } from "@/lib/api";
 import {
   actionTargets,
   buildMailboxTree,
+  hasFixedRole,
   mailboxLabel,
   moveBy,
   moveTo,
@@ -82,6 +83,41 @@ describe("mailboxLabel", () => {
     expect(mailboxLabel(mailbox("x", { name: "プロジェクト" }))).toBe(
       "プロジェクト",
     );
+  });
+
+  it("アプリ内で付けた名前があれば、役割の名前より優先する", () => {
+    expect(
+      mailboxLabel(
+        mailbox("x", {
+          name: "Spam",
+          specialUse: "junk",
+          displayName: "迷惑メール (ドコモ)",
+        }),
+      ),
+    ).toBe("迷惑メール (ドコモ)");
+    expect(
+      mailboxLabel(mailbox("x", { name: "Spam", displayName: null })),
+    ).toBe("Spam");
+  });
+});
+
+describe("hasFixedRole", () => {
+  it("受信トレイなどは役割を付け替えられない", () => {
+    expect(
+      hasFixedRole(
+        mailbox("x", { specialUse: "inbox", detectedSpecialUse: "inbox" }),
+      ),
+    ).toBe(true);
+    expect(
+      hasFixedRole(
+        mailbox("x", { specialUse: "junk", detectedSpecialUse: null }),
+      ),
+    ).toBe(false);
+    expect(
+      hasFixedRole(
+        mailbox("x", { specialUse: "trash", detectedSpecialUse: "trash" }),
+      ),
+    ).toBe(false);
   });
 });
 

@@ -1,10 +1,12 @@
 import { zValidator } from "@hono/zod-validator";
 import {
   CHANNEL_OUTBOX,
+  MAILBOX_ROLE_OVERRIDES,
   type MailboxCreatePayload,
   type MailboxDeletePayload,
   type MailboxRenamePayload,
   mailboxNameError,
+  resolveMailboxRoles,
 } from "@mail/core";
 import {
   mailAccounts,
@@ -17,6 +19,7 @@ import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { accountIcon } from "../lib/account-icon.js";
 import { isDistinct, recordChanges } from "../lib/changes.js";
 import { enqueueMessageAction } from "../lib/message-actions.js";
 
@@ -29,6 +32,19 @@ const createBody = z.object({
   name: z.string().max(400),
 });
 const renameBody = z.object({ name: z.string().max(400) });
+/**
+ * アプリ内での役割・表示名・アイコン・色の上書き。null にした項目は、上書きを外す
+ * (役割はメールサーバーが知らせてきたものに、名前とアイコンは標準に戻る)。
+ */
+const overridesBody = z.object({
+  role: z.enum(MAILBOX_ROLE_OVERRIDES).nullable(),
+  displayName: z.string().trim().max(100).nullable(),
+  icon: accountIcon.nullable(),
+  color: z
+    .string()
+    .regex(/^#[0-9a-f]{6}$/)
+    .nullable(),
+});
 /** 「すべて既読にする」で、1 回の操作にまとめるメッセージの数。 */
 const MARK_READ_BATCH = 500;
 
@@ -53,6 +69,11 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
         path: mailboxes.path,
         name: mailboxes.name,
         specialUse: mailboxes.specialUse,
+        detectedSpecialUse: mailboxes.detectedSpecialUse,
+        roleOverride: mailboxes.roleOverride,
+        displayName: mailboxes.displayName,
+        icon: mailboxes.icon,
+        color: mailboxes.color,
         sortOrder: mailboxes.sortOrder,
         lastSyncedAt: mailboxes.lastSyncedAt,
         totalCount: sql<number>`count(${messageMailboxes.messageId})::int`,
@@ -113,6 +134,7 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
         name: mailboxes.name,
         delimiter: mailboxes.delimiter,
         specialUse: mailboxes.specialUse,
+        detectedSpecialUse: mailboxes.detectedSpecialUse,
         protocol: mailAccounts.protocol,
       })
       .from(mailboxes)
@@ -217,7 +239,7 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
       if (!mailbox) {
         return c.json({ error: "not_found" }, 404);
       }
-      if (mailbox.specialUse) {
+      if (mailbox.specialUse || mailbox.detectedSpecialUse) {
         return c.json({ error: "special_mailbox" }, 400);
       }
       const delimiter = mailbox.protocol === "imap" ? mailbox.delimiter : null;
@@ -272,7 +294,7 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
     if (!mailbox) {
       return c.json({ error: "not_found" }, 404);
     }
-    if (mailbox.specialUse) {
+    if (mailbox.specialUse || mailbox.detectedSpecialUse) {
       return c.json({ error: "special_mailbox" }, 400);
     }
     const [child] = await db
@@ -291,6 +313,104 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
     });
     return c.body(null, 202);
   });
+
+  /**
+   * フォルダの役割・表示名・アイコン・色を、アプリ内でだけ上書きする (ほかの端末にも同じ内容で出る)。
+   * メールサーバー側のフォルダは変えない。迷惑メールのフォルダが独自の名前で、役割が
+   * 知らされないメールサーバーなどで使う。上書きした役割は、移動・アーカイブ・削除・
+   * 送信の控え・下書きの保存先にもそのまま使われる。
+   */
+  app.put(
+    "/:id/overrides",
+    zValidator("param", idParam),
+    zValidator("json", overridesBody),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const user = c.var.user;
+      const result = await db.transaction(async (tx) => {
+        const [target] = await tx
+          .select({ accountId: mailboxes.accountId })
+          .from(mailboxes)
+          .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+          .where(and(eq(mailboxes.id, id), eq(mailAccounts.userId, user.id)));
+        if (!target) return "not_found" as const;
+        // 同期ワーカーのフォルダ一覧の反映と、順番に実行する。
+        const rows = await tx
+          .select({
+            id: mailboxes.id,
+            specialUse: mailboxes.specialUse,
+            detectedSpecialUse: mailboxes.detectedSpecialUse,
+            roleOverride: mailboxes.roleOverride,
+          })
+          .from(mailboxes)
+          .where(eq(mailboxes.accountId, target.accountId))
+          .for("update");
+        const own = rows.find((row) => row.id === id);
+        if (!own) return "not_found" as const;
+        // 受信トレイなどは、メールサーバーの仕組みと結び付いているので役割を変えられない。
+        const fixed =
+          own.detectedSpecialUse === "inbox" ||
+          own.detectedSpecialUse === "all" ||
+          own.detectedSpecialUse === "flagged";
+        if (fixed && body.role !== null) return "fixed_role" as const;
+
+        await tx
+          .update(mailboxes)
+          .set({
+            roleOverride: body.role,
+            displayName: body.displayName === "" ? null : body.displayName,
+            icon: body.icon,
+            color: body.color,
+          })
+          .where(eq(mailboxes.id, id));
+        const changed = new Set([id]);
+        // 同じ役割をほかのフォルダに付けていたら、そちらの上書きを外す (役割は 1 つのフォルダだけ)。
+        const overrides = new Map(
+          rows.map((row) => [
+            row.id,
+            row.id === id ? body.role : row.roleOverride,
+          ]),
+        );
+        if (body.role !== null && body.role !== "none") {
+          for (const row of rows) {
+            if (row.id === id || row.roleOverride !== body.role) continue;
+            overrides.set(row.id, null);
+            await tx
+              .update(mailboxes)
+              .set({ roleOverride: null })
+              .where(eq(mailboxes.id, row.id));
+            changed.add(row.id);
+          }
+        }
+        const roles = resolveMailboxRoles(
+          rows.map((row) => ({
+            id: row.id,
+            detected: row.detectedSpecialUse,
+            override: overrides.get(row.id) ?? null,
+          })),
+        );
+        for (const row of rows) {
+          const specialUse = roles.get(row.id) ?? null;
+          if (row.specialUse === specialUse) continue;
+          await tx
+            .update(mailboxes)
+            .set({ specialUse })
+            .where(eq(mailboxes.id, row.id));
+          changed.add(row.id);
+        }
+        await recordChanges(tx, user.id, "mailbox", [...changed]);
+        return "ok" as const;
+      });
+      if (result === "not_found") {
+        return c.json({ error: "not_found" }, 404);
+      }
+      if (result === "fixed_role") {
+        return c.json({ error: "fixed_role" }, 400);
+      }
+      return c.body(null, 204);
+    },
+  );
 
   /** 並び替えたフォルダを、既定の順 (役割、次に名前) に戻す。 */
   app.post("/order/reset", zValidator("json", orderBody), async (c) => {
