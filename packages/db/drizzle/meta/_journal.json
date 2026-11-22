@@ -148,6 +148,13 @@
       "when": 1795346548010,
       "tag": "0020_mailbox_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795347324917,
+      "tag": "0021_swipe_settings",
+      "breakpoints": true
     }
   ]
 }

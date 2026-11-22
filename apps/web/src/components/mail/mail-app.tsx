@@ -13,6 +13,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -38,6 +39,7 @@ import {
   type MessageListHandle,
 } from "@/components/mail/message-list";
 import { MessageView } from "@/components/mail/message-view";
+import { MoveDialog } from "@/components/mail/move-dialog";
 import { OutgoingList } from "@/components/mail/outgoing-list";
 import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
@@ -165,6 +167,11 @@ import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
+import {
+  refreshSwipeSettings,
+  resolveSwipe,
+  useSwipeSettings,
+} from "@/lib/swipe";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
 import {
   applyActionToThreads,
@@ -720,6 +727,7 @@ export function MailApp({ user }: { user: User }) {
     void loadFailures();
     void loadDrafts();
     void loadUnified();
+    void refreshSwipeSettings();
   }, [
     loadAccounts,
     loadMailboxes,
@@ -931,6 +939,31 @@ export function MailApp({ user }: { user: User }) {
     [],
   );
 
+  // 一覧の行のスワイプ。何をするかは設定で選び、移動先はそのメールのアカウントの
+  // フォルダの役割 (アプリ内で上書きした役割を含む) から決める。
+  const swipeSettings = useSwipeSettings();
+  const mailboxesByAccount = useMemo(() => {
+    const map = new Map<string, MailboxSummary[]>();
+    for (const mailbox of mailboxes ?? []) {
+      const list = map.get(mailbox.accountId);
+      if (list) list.push(mailbox);
+      else map.set(mailbox.accountId, [mailbox]);
+    }
+    return map;
+  }, [mailboxes]);
+  const swipeFor = useCallback(
+    (message: MessageSummary) => {
+      const list = mailboxesByAccount.get(message.accountId) ?? [];
+      return {
+        left: resolveSwipe(swipeSettings.left, message, list),
+        right: resolveSwipe(swipeSettings.right, message, list),
+      };
+    },
+    [swipeSettings, mailboxesByAccount],
+  );
+  /** スワイプで「フォルダを選んで移動」をした行。移動先を選ぶ画面を出す。 */
+  const [moveTarget, setMoveTarget] = useState<MessageSummary | null>(null);
+
   /** メールを開く。既読にするのは、会話を読み込んだ本文側が行う。 */
   function handleSelectMessage(id: string) {
     // 下書きフォルダにある、このアプリの下書きの控えは、作成画面で続きを書く。
@@ -1137,6 +1170,7 @@ export function MailApp({ user }: { user: User }) {
         void loadFailures();
         void loadDrafts();
         void loadUnified();
+        void refreshSwipeSettings();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
       }, 300);
@@ -1170,6 +1204,7 @@ export function MailApp({ user }: { user: User }) {
       void loadFailures();
       void loadDrafts();
       void loadUnified();
+      void refreshSwipeSettings();
       void loadFirstPage(selectionRef.current, false);
       void saverRef.current?.flush();
       setRefreshKey((key) => key + 1);
@@ -2449,6 +2484,8 @@ export function MailApp({ user }: { user: User }) {
                 checkedIds={checkedIds}
                 selecting={selecting}
                 onToggleCheck={handleToggleCheck}
+                swipeFor={swipeFor}
+                onSwipeMove={setMoveTarget}
                 hasMore={nextCursor !== null}
                 loadingMore={loadingMore}
                 showRecipients={
@@ -2648,6 +2685,13 @@ export function MailApp({ user }: { user: User }) {
           );
           void loadMailboxes();
         }}
+      />
+      <MoveDialog
+        message={moveTarget}
+        onMove={(message, mailboxId) =>
+          performAction(message.threadMessageIds, { action: "move", mailboxId })
+        }
+        onClose={() => setMoveTarget(null)}
       />
       <UnifiedDialog
         target={unifiedDialog}

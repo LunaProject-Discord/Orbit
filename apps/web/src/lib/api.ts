@@ -768,6 +768,30 @@ export async function saveBuiltinStyle(
   return builtins;
 }
 
+/** 一覧の行を左右にスワイプしたときの操作。 */
+export type SwipeAction =
+  | "none"
+  | "toggle_read"
+  | "star"
+  | "archive"
+  | "delete"
+  | "junk"
+  | "move";
+
+/** 左へスワイプしたときと、右へスワイプしたときの操作。どの端末でも同じになる。 */
+export type SwipeSettings = { left: SwipeAction; right: SwipeAction };
+
+/** どの端末でも同じにする設定を取得する。 */
+export async function getSettings(
+  signal?: AbortSignal,
+): Promise<{ swipe: SwipeSettings }> {
+  return apiJson<{ swipe: SwipeSettings }>("/v1/settings", { signal });
+}
+
+export async function saveSwipeSettings(swipe: SwipeSettings): Promise<void> {
+  await apiFetch("/v1/settings/swipe", { method: "PUT", body: swipe });
+}
+
 export async function listUnified(signal?: AbortSignal): Promise<UnifiedState> {
   return apiJson<UnifiedState>("/v1/unified", { signal });
 }

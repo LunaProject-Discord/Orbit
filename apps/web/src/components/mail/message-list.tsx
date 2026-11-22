@@ -22,6 +22,7 @@ import {
 } from "react";
 import { Hint } from "@/components/hint";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
+import { SwipeRow } from "@/components/mail/swipe-row";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -36,6 +37,7 @@ import { BodyPrefetcher, type PrefetchReason } from "@/lib/body-prefetch";
 import { addressLabel, formatListDate } from "@/lib/format";
 import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
+import type { SwipeOutcome } from "@/lib/swipe";
 import { flattenRows, itemKey, type ThreadRows } from "@/lib/thread-rows";
 
 /** 一覧を外から操作するための窓口。 */
@@ -127,6 +129,16 @@ type Props = {
    * 渡さなければ頼まない。
    */
   onPrefetch?: (ids: string[], reason: PrefetchReason) => void;
+  /**
+   * 行を左右にスワイプしたときに行うこと。向きごとに、その行でできなければ null。
+   * 渡さなければ、スワイプでは何もしない。
+   */
+  swipeFor?: (message: MessageSummary) => {
+    left: SwipeOutcome | null;
+    right: SwipeOutcome | null;
+  };
+  /** スワイプで「フォルダを選んで移動」をしたとき。移動先を選ぶ画面を開く。 */
+  onSwipeMove?: (message: MessageSummary) => void;
 };
 
 /** 検索した語に当たる部分を目立たせて表示する。 */
@@ -255,6 +267,8 @@ export function MessageList({
   onLoadMore,
   onRetry,
   onPrefetch,
+  swipeFor,
+  onSwipeMove,
 }: Props) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -470,6 +484,7 @@ export function MessageList({
           const mark = preferences.showAccountMark
             ? accountMark?.(message)
             : undefined;
+          const swipe = swipeFor?.(message);
           return (
             <ContextMenu key={message.id}>
               <ContextMenuTrigger
@@ -495,167 +510,183 @@ export function MessageList({
                   />
                 }
               >
-                {expandable && (
-                  // 行の左端の余白に置く。行そのもの (メールを開くボタン) とは別のボタン。
+                <SwipeRow
+                  left={swipe?.left ?? null}
+                  right={swipe?.right ?? null}
+                  // 複数選択中は、行を押してチェックを切り替えるだけにする。
+                  disabled={selecting}
+                  wheel={preferences.trackpadSwipe}
+                  onCommit={(outcome) => {
+                    // 一覧の 1 行は会話 1 つなので、右クリックメニューと同じく会話ごと操作する。
+                    if (outcome.input) {
+                      onAction(message.threadMessageIds, outcome.input);
+                    } else onSwipeMove?.(message);
+                  }}
+                >
+                  {expandable && (
+                    // 行の左端の余白に置く。行そのもの (メールを開くボタン) とは別のボタン。
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-label={
+                        expanded
+                          ? "会話のメールの一覧を閉じる"
+                          : `会話のメール ${message.threadCount} 通を一覧に出す`
+                      }
+                      onClick={() => onToggleExpand(message.id)}
+                      className="absolute top-0 left-0 z-10 flex h-full w-5 items-start justify-start rounded-sm pl-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset pointer-coarse:w-7"
+                    >
+                      <ChevronRightIcon
+                        className={cn(
+                          "size-3.5 transition-transform",
+                          chevronTop[preferences.density],
+                          expanded && "rotate-90",
+                        )}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  )}
+                  {selecting && (
+                    <Checkbox
+                      checked={checked}
+                      aria-label={`${message.subject || "(件名なし)"} を選択`}
+                      // Shift を押しているかを知るため、切り替えは onClick で受ける。
+                      onClick={(event) =>
+                        onToggleCheck(message.id, event.shiftKey)
+                      }
+                      className={cn(
+                        "absolute left-4 z-10",
+                        checkboxTop[preferences.density],
+                      )}
+                    />
+                  )}
                   <button
                     type="button"
-                    aria-expanded={expanded}
-                    aria-label={
-                      expanded
-                        ? "会話のメールの一覧を閉じる"
-                        : `会話のメール ${message.threadCount} 通を一覧に出す`
-                    }
-                    onClick={() => onToggleExpand(message.id)}
-                    className="absolute top-0 left-0 z-10 flex h-full w-5 items-start justify-start rounded-sm pl-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset pointer-coarse:w-7"
-                  >
-                    <ChevronRightIcon
-                      className={cn(
-                        "size-3.5 transition-transform",
-                        chevronTop[preferences.density],
-                        expanded && "rotate-90",
-                      )}
-                      aria-hidden="true"
-                    />
-                  </button>
-                )}
-                {selecting && (
-                  <Checkbox
-                    checked={checked}
-                    aria-label={`${message.subject || "(件名なし)"} を選択`}
-                    // Shift を押しているかを知るため、切り替えは onClick で受ける。
-                    onClick={(event) =>
-                      onToggleCheck(message.id, event.shiftKey)
+                    onClick={(event) => {
+                      // Shift / Ctrl (Cmd) を押しながら、または選択中は、開かずにチェックを切り替える。
+                      if (event.shiftKey) onToggleCheck(message.id, true);
+                      else if (selecting || event.ctrlKey || event.metaKey) {
+                        onToggleCheck(message.id, false);
+                      } else onSelect(message.id);
+                    }}
+                    aria-current={
+                      selectedId === message.id ? "true" : undefined
                     }
                     className={cn(
-                      "absolute left-4 z-10",
-                      checkboxTop[preferences.density],
+                      "flex w-full select-none flex-col gap-0.5 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                      rowPadding[preferences.density],
+                      selecting && "pl-11",
+                      selectedId === message.id && "bg-muted",
+                      checked && "bg-primary/10 hover:bg-primary/15",
                     )}
-                  />
-                )}
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    // Shift / Ctrl (Cmd) を押しながら、または選択中は、開かずにチェックを切り替える。
-                    if (event.shiftKey) onToggleCheck(message.id, true);
-                    else if (selecting || event.ctrlKey || event.metaKey) {
-                      onToggleCheck(message.id, false);
-                    } else onSelect(message.id);
-                  }}
-                  aria-current={selectedId === message.id ? "true" : undefined}
-                  className={cn(
-                    "flex w-full select-none flex-col gap-0.5 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
-                    rowPadding[preferences.density],
-                    selecting && "pl-11",
-                    selectedId === message.id && "bg-muted",
-                    checked && "bg-primary/10 hover:bg-primary/15",
-                  )}
-                >
-                  <span className="flex items-center gap-2">
-                    {unread && (
-                      <span
-                        className="size-2 shrink-0 rounded-full bg-primary"
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span
-                      className={cn(
-                        "min-w-0 truncate text-sm",
-                        unread ? "font-semibold" : "text-muted-foreground",
+                  >
+                    <span className="flex items-center gap-2">
+                      {unread && (
+                        <span
+                          className="size-2 shrink-0 rounded-full bg-primary"
+                          aria-hidden="true"
+                        />
                       )}
-                    >
-                      {unread && <span className="sr-only">未読 </span>}
-                      {showRecipients
-                        ? message.to.length > 0
-                          ? `宛先: ${message.to.map(addressLabel).join("、")}`
-                          : "(宛先なし)"
-                        : addressLabel(message.from[0])}
-                    </span>
-                    {message.threadCount > 1 && (
                       <span
-                        role="img"
-                        className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
-                        aria-label={`${message.threadCount} 通のやり取り`}
+                        className={cn(
+                          "min-w-0 truncate text-sm",
+                          unread ? "font-semibold" : "text-muted-foreground",
+                        )}
                       >
-                        {message.threadCount}
+                        {unread && <span className="sr-only">未読 </span>}
+                        {showRecipients
+                          ? message.to.length > 0
+                            ? `宛先: ${message.to.map(addressLabel).join("、")}`
+                            : "(宛先なし)"
+                          : addressLabel(message.from[0])}
                       </span>
-                    )}
-                    {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
-                    <span className="flex-1" />
-                    {preferences.showListIcons && message.answered && (
-                      <ReplyIcon
-                        className="size-3.5 shrink-0 text-muted-foreground"
-                        aria-label="返信済み"
-                      />
-                    )}
-                    {preferences.showListIcons && message.flagged && (
-                      <StarIcon
-                        className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
-                        aria-label="スター付き"
-                      />
-                    )}
-                    {preferences.showListIcons && message.hasAttachments && (
-                      <PaperclipIcon
-                        className="size-3.5 shrink-0 text-muted-foreground"
-                        aria-label="添付ファイルあり"
-                      />
-                    )}
-                    {mark && (
-                      <Hint label={mark.name}>
+                      {message.threadCount > 1 && (
                         <span
                           role="img"
-                          aria-label={mark.name}
-                          className="flex shrink-0"
+                          className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
+                          aria-label={`${message.threadCount} 通のやり取り`}
                         >
-                          {mark.mark}
+                          {message.threadCount}
                         </span>
-                      </Hint>
-                    )}
-                    <time
-                      dateTime={message.receivedAt}
-                      className="shrink-0 text-muted-foreground text-xs tabular-nums"
-                    >
-                      {formatListDate(
-                        message.receivedAt,
-                        new Date(),
-                        preferences,
                       )}
-                    </time>
-                  </span>
-                  <span
-                    className={cn(
-                      "truncate text-sm",
-                      unread && "font-semibold",
-                    )}
-                  >
-                    {message.subject ? (
-                      <Highlighted
-                        text={message.subject}
-                        terms={highlightTerms}
-                      />
-                    ) : (
-                      "(件名なし)"
-                    )}
-                  </span>
-                  {preview && preferences.previewLines > 0 && (
+                      {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
+                      <span className="flex-1" />
+                      {preferences.showListIcons && message.answered && (
+                        <ReplyIcon
+                          className="size-3.5 shrink-0 text-muted-foreground"
+                          aria-label="返信済み"
+                        />
+                      )}
+                      {preferences.showListIcons && message.flagged && (
+                        <StarIcon
+                          className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+                          aria-label="スター付き"
+                        />
+                      )}
+                      {preferences.showListIcons && message.hasAttachments && (
+                        <PaperclipIcon
+                          className="size-3.5 shrink-0 text-muted-foreground"
+                          aria-label="添付ファイルあり"
+                        />
+                      )}
+                      {mark && (
+                        <Hint label={mark.name}>
+                          <span
+                            role="img"
+                            aria-label={mark.name}
+                            className="flex shrink-0"
+                          >
+                            {mark.mark}
+                          </span>
+                        </Hint>
+                      )}
+                      <time
+                        dateTime={message.receivedAt}
+                        className="shrink-0 text-muted-foreground text-xs tabular-nums"
+                      >
+                        {formatListDate(
+                          message.receivedAt,
+                          new Date(),
+                          preferences,
+                        )}
+                      </time>
+                    </span>
                     <span
                       className={cn(
-                        "text-muted-foreground text-xs",
-                        previewClamp[preferences.previewLines],
+                        "truncate text-sm",
+                        unread && "font-semibold",
                       )}
                     >
-                      <Highlighted text={preview} terms={highlightTerms} />
+                      {message.subject ? (
+                        <Highlighted
+                          text={message.subject}
+                          terms={highlightTerms}
+                        />
+                      ) : (
+                        "(件名なし)"
+                      )}
                     </span>
-                  )}
-                  {location && (
-                    <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
-                      <FolderIcon
-                        className="size-3 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">{location}</span>
-                    </span>
-                  )}
-                </button>
+                    {preview && preferences.previewLines > 0 && (
+                      <span
+                        className={cn(
+                          "text-muted-foreground text-xs",
+                          previewClamp[preferences.previewLines],
+                        )}
+                      >
+                        <Highlighted text={preview} terms={highlightTerms} />
+                      </span>
+                    )}
+                    {location && (
+                      <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
+                        <FolderIcon
+                          className="size-3 shrink-0"
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">{location}</span>
+                      </span>
+                    )}
+                  </button>
+                </SwipeRow>
               </ContextMenuTrigger>
               <ContextMenuContent className="w-56">
                 <MessageMenuItems message={message} onAction={onAction} />

@@ -667,3 +667,29 @@ export const sidebarLayouts = pgTable("sidebar_layouts", {
     .default({}),
   updatedAt: updatedAt(),
 });
+
+/** 一覧の行を左右にスワイプしたときの操作。 */
+export type SwipeAction =
+  | "none"
+  | "toggle_read"
+  | "star"
+  | "archive"
+  | "delete"
+  | "junk"
+  | "move";
+
+/** 左へスワイプしたときと、右へスワイプしたときの操作。 */
+export type SwipeSettings = { left: SwipeAction; right: SwipeAction };
+
+/**
+ * 利用者ごとの、どの端末でも同じにする設定。行の無い利用者は、すべて標準の値。
+ * 画面の大きさなどに依る設定 (フォント、行の間隔など) は端末側に保存する。
+ */
+export const userSettings = pgTable("user_settings", {
+  userId: uuid()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** 一覧のスワイプ操作。null は標準の値。 */
+  swipe: jsonb().$type<SwipeSettings>(),
+  updatedAt: updatedAt(),
+});

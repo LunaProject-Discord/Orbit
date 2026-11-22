@@ -363,6 +363,8 @@ Web の画面 (Tauri / Capacitor に同梱する場合も同じ) は、サーバ
 | `DELETE /v1/mailboxes/:id` | フォルダを、中のメールごとメールサーバーから削除する |
 | `POST /v1/mailboxes/order/reset` | 並び替えたフォルダを既定の順に戻す (`mailboxIds`) |
 | `POST /v1/mailboxes/:id/read` | フォルダの未読のメールをすべて既読にする |
+| `GET /v1/settings` | どの端末でも同じにする設定 (`swipe`: 一覧の行を左右にスワイプしたときの操作) |
+| `PUT /v1/settings/swipe` | スワイプ操作を保存 (`left` / `right` に `none`、`toggle_read`、`star`、`archive`、`delete`、`junk`、`move` のどれか) |
 | `POST /v1/accounts/:id/sync` | 次の定期確認を待たずに、いますぐ全フォルダを確認する |
 | `GET /v1/messages` | メッセージ一覧 (`mailboxId` でフォルダを指定。省略すると受信トレイで、`accountId` も省略すると全アカウント分。`cursor` でページ送り)。会話 (スレッド) ごとに 1 件にまとめ、フォルダ内で最も新しいメッセージを返す。`threadCount` は会話の通数、`threadMessageIds` は会話のうちそのフォルダにあるメッセージ |
 | `GET /v1/messages/search` | メールの検索 (`q` に語を入れる。下の「検索」を参照) |
