@@ -23,6 +23,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import { QuickReply } from "@/components/mail/quick-reply";
+import {
+  ToolbarButton,
+  ToolbarSeparator,
+  ToolbarTooltip,
+} from "@/components/mail/toolbar-button";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -34,6 +39,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { accountColor } from "@/lib/account-colors";
 import type { MessageActionInput } from "@/lib/actions";
 import {
@@ -60,6 +66,7 @@ import {
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
 import { bodyStyle, usePreferences } from "@/lib/preferences";
+import { shortcutLabels } from "@/lib/shortcuts";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
@@ -602,7 +609,10 @@ function ThreadItem({
   );
 }
 
-/** 返信、全員に返信、転送、既読、スター、アーカイブ、削除、移動のボタン。 */
+/**
+ * 返信、全員に返信、転送、既読、スター、アーカイブ、移動、迷惑メール、削除のボタン。
+ * アイコンだけを並べ、名前とショートカットキーはカーソルを合わせたときに出す。
+ */
 function MessageToolbar({
   accountId,
   targetIds,
@@ -641,190 +651,184 @@ function MessageToolbar({
   const act = (input: MessageActionInput) => onAction(targetIds, input);
 
   return (
-    <div
-      role="toolbar"
-      aria-label="メールの操作"
-      className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-    >
-      {/* 狭い画面では、返信・転送・移動は右端の「その他」にまとめる。 */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onCompose("reply")}
-        className="max-sm:hidden"
+    <TooltipProvider>
+      <div
+        role="toolbar"
+        aria-label="メールの操作"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       >
-        <ReplyIcon />
-        返信
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onCompose("replyAll")}
-        className="max-sm:hidden"
-      >
-        <ReplyAllIcon />
-        全員に返信
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onCompose("forward")}
-        className="max-sm:hidden"
-      >
-        <ForwardIcon />
-        転送
-      </Button>
-      <span
-        className="mx-1 h-5 w-px shrink-0 bg-border max-sm:hidden"
-        aria-hidden="true"
-      />
-      <span className="flex-1 sm:hidden" aria-hidden="true" />
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => act({ action: "set_flags", seen: !seen })}
-      >
-        {seen ? <MailIcon /> : <MailOpenIcon />}
-        <span className="sr-only sm:not-sr-only">
-          {seen ? "未読にする" : "既読にする"}
-        </span>
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-pressed={flagged}
-        onClick={() =>
-          flagged
-            ? act({ action: "set_flags", flagged: false })
-            : onAction([starId], { action: "set_flags", flagged: true })
-        }
-      >
-        <StarIcon
-          className={flagged ? "fill-amber-400 text-amber-500" : undefined}
-        />
-        <span className="sr-only sm:not-sr-only">
-          {flagged ? "スターを外す" : "スターを付ける"}
-        </span>
-      </Button>
-      {archive && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => act({ action: "move", mailboxId: archive.id })}
+        {/* 狭い画面では、返信・転送・移動は「その他」にまとめる。 */}
+        <ToolbarButton
+          label="返信"
+          shortcut={shortcutLabels.reply}
+          onClick={() => onCompose("reply")}
+          className="max-sm:hidden"
         >
-          <ArchiveIcon />
-          <span className="sr-only sm:not-sr-only">アーカイブ</span>
-        </Button>
-      )}
-      {(trash || inTrash) && (
-        <Button
-          variant="ghost"
-          size="sm"
+          <ReplyIcon />
+        </ToolbarButton>
+        <ToolbarButton
+          label="全員に返信"
+          shortcut={shortcutLabels.replyAll}
+          onClick={() => onCompose("replyAll")}
+          className="max-sm:hidden"
+        >
+          <ReplyAllIcon />
+        </ToolbarButton>
+        <ToolbarButton
+          label="転送"
+          shortcut={shortcutLabels.forward}
+          onClick={() => onCompose("forward")}
+          className="max-sm:hidden"
+        >
+          <ForwardIcon />
+        </ToolbarButton>
+        <ToolbarSeparator className="max-sm:hidden" />
+        <span className="flex-1 sm:hidden" aria-hidden="true" />
+        <ToolbarButton
+          label={seen ? "未読にする" : "既読にする"}
+          shortcut={seen ? shortcutLabels.markUnread : shortcutLabels.markRead}
+          onClick={() => act({ action: "set_flags", seen: !seen })}
+        >
+          {seen ? <MailIcon /> : <MailOpenIcon />}
+        </ToolbarButton>
+        <ToolbarButton
+          label={flagged ? "スターを外す" : "スターを付ける"}
+          shortcut={shortcutLabels.toggleStar}
+          aria-pressed={flagged}
           onClick={() =>
-            act(
-              inTrash || !trash
-                ? { action: "delete" }
-                : { action: "move", mailboxId: trash.id },
-            )
+            flagged
+              ? act({ action: "set_flags", flagged: false })
+              : onAction([starId], { action: "set_flags", flagged: true })
           }
         >
-          <Trash2Icon />
-          <span className="sr-only sm:not-sr-only">
-            {inTrash ? "完全に削除" : "削除"}
-          </span>
-        </Button>
-      )}
-      {junk && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => act({ action: "move", mailboxId: junk.id })}
-        >
-          <OctagonAlertIcon />
-          <span className="sr-only sm:not-sr-only">迷惑メールとして扱う</span>
-        </Button>
-      )}
-      {notJunk && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => act({ action: "move", mailboxId: notJunk.id })}
-        >
-          <MailCheckIcon />
-          <span className="sr-only sm:not-sr-only">迷惑メールから戻す</span>
-        </Button>
-      )}
-      {destinations.length > 0 && (
-        <DropdownMenu open={moveOpen} onOpenChange={setMoveOpen}>
-          <DropdownMenuTrigger
-            render={
-              <Button variant="ghost" size="sm" className="max-sm:hidden" />
-            }
+          <StarIcon
+            className={flagged ? "fill-amber-400 text-amber-500" : undefined}
+          />
+        </ToolbarButton>
+        {archive && (
+          <ToolbarButton
+            label="アーカイブ"
+            shortcut={shortcutLabels.archive}
+            onClick={() => act({ action: "move", mailboxId: archive.id })}
           >
-            <FolderInputIcon />
-            移動
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {destinations.map((entry) => (
-              <DropdownMenuItem
-                key={entry.mailbox.id}
-                onClick={() =>
-                  act({ action: "move", mailboxId: entry.mailbox.id })
+            <ArchiveIcon />
+          </ToolbarButton>
+        )}
+        {destinations.length > 0 && (
+          <DropdownMenu open={moveOpen} onOpenChange={setMoveOpen}>
+            <ToolbarTooltip label="移動" shortcut={shortcutLabels.move}>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="移動"
+                    className="max-sm:hidden"
+                  />
                 }
               >
-                <MoveTarget entry={entry} />
-              </DropdownMenuItem>
-            ))}
+                <FolderInputIcon />
+              </DropdownMenuTrigger>
+            </ToolbarTooltip>
+            <DropdownMenuContent align="start" className="w-56">
+              {destinations.map((entry) => (
+                <DropdownMenuItem
+                  key={entry.mailbox.id}
+                  onClick={() =>
+                    act({ action: "move", mailboxId: entry.mailbox.id })
+                  }
+                >
+                  <MoveTarget entry={entry} />
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        <DropdownMenu>
+          <ToolbarTooltip label="その他の操作">
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="その他の操作"
+                  className="sm:hidden"
+                />
+              }
+            >
+              <MoreHorizontalIcon />
+            </DropdownMenuTrigger>
+          </ToolbarTooltip>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem onClick={() => onCompose("reply")}>
+              <ReplyIcon />
+              返信
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onCompose("replyAll")}>
+              <ReplyAllIcon />
+              全員に返信
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onCompose("forward")}>
+              <ForwardIcon />
+              転送
+            </DropdownMenuItem>
+            {destinations.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>移動</DropdownMenuLabel>
+                  {destinations.map((entry) => (
+                    <DropdownMenuItem
+                      key={entry.mailbox.id}
+                      onClick={() =>
+                        act({ action: "move", mailboxId: entry.mailbox.id })
+                      }
+                    >
+                      <MoveTarget entry={entry} />
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuGroup>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
-      )}
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="その他の操作"
-              className="sm:hidden"
-            />
-          }
-        >
-          <MoreHorizontalIcon />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
-          <DropdownMenuItem onClick={() => onCompose("reply")}>
-            <ReplyIcon />
-            返信
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onCompose("replyAll")}>
-            <ReplyAllIcon />
-            全員に返信
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onCompose("forward")}>
-            <ForwardIcon />
-            転送
-          </DropdownMenuItem>
-          {destinations.length > 0 && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuLabel>移動</DropdownMenuLabel>
-                {destinations.map((entry) => (
-                  <DropdownMenuItem
-                    key={entry.mailbox.id}
-                    onClick={() =>
-                      act({ action: "move", mailboxId: entry.mailbox.id })
-                    }
-                  >
-                    <MoveTarget entry={entry} />
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuGroup>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
+        {/* 迷惑メールと削除は、押し間違えにくいよう最後にまとめる。 */}
+        {(junk || notJunk || trash || inTrash) && <ToolbarSeparator />}
+        {junk && (
+          <ToolbarButton
+            label="迷惑メールとして扱う"
+            shortcut={shortcutLabels.junk}
+            onClick={() => act({ action: "move", mailboxId: junk.id })}
+          >
+            <OctagonAlertIcon />
+          </ToolbarButton>
+        )}
+        {notJunk && (
+          <ToolbarButton
+            label="迷惑メールから戻す"
+            shortcut={shortcutLabels.junk}
+            onClick={() => act({ action: "move", mailboxId: notJunk.id })}
+          >
+            <MailCheckIcon />
+          </ToolbarButton>
+        )}
+        {(trash || inTrash) && (
+          <ToolbarButton
+            label={inTrash ? "完全に削除" : "削除"}
+            shortcut={shortcutLabels.delete}
+            onClick={() =>
+              act(
+                inTrash || !trash
+                  ? { action: "delete" }
+                  : { action: "move", mailboxId: trash.id },
+              )
+            }
+          >
+            <Trash2Icon />
+          </ToolbarButton>
+        )}
+      </div>
+    </TooltipProvider>
   );
 }
 

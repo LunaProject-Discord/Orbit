@@ -10,7 +10,8 @@
       "!**/dist",
       "!**/out",
       "!**/drizzle",
-      "!apps/web/src/lib/lucide/*.json"
+      "!apps/web/src/lib/lucide/*.json",
+      "!apps/web/src/lib/emoji/*.json"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },

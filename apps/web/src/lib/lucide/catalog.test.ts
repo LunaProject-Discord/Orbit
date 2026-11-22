@@ -6,7 +6,6 @@ import {
   buildIconCatalog,
   type IconMeta,
   JAPANESE_WORDS,
-  layoutIconRows,
   searchIcons,
 } from "./catalog";
 import meta from "./meta.json";
@@ -131,26 +130,5 @@ describe("searchIcons", () => {
   it("空の言葉や、合うものが無い言葉では何も返さない", () => {
     expect(searchIcons(catalog, "  ")).toEqual([]);
     expect(searchIcons(catalog, "zzzzqqqq")).toEqual([]);
-  });
-});
-
-describe("layoutIconRows", () => {
-  it("区切りごとに見出しを置き、決まった列数で折り返す", () => {
-    const { rows, count } = layoutIconRows(
-      [
-        { id: "a", label: "A", icons: ["a1", "a2", "a3"] },
-        { id: "empty", label: "空", icons: [] },
-        { id: "b", label: "B", icons: ["b1"] },
-      ],
-      2,
-    );
-    expect(count).toBe(4);
-    expect(rows).toEqual([
-      { kind: "heading", section: "a", label: "A" },
-      { kind: "icons", section: "a", names: ["a1", "a2"], offset: 0 },
-      { kind: "icons", section: "a", names: ["a3"], offset: 2 },
-      { kind: "heading", section: "b", label: "B" },
-      { kind: "icons", section: "b", names: ["b1"], offset: 3 },
-    ]);
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { installOverlayScrollbars } from "@/lib/overlay-scrollbars";
 import {
   overScrollbar,
   SCROLLBAR_HIDE_DELAY,
@@ -9,12 +10,15 @@ import {
 } from "@/lib/scrollbar-hover";
 
 /**
- * スクロールしている要素と、スクロールバーにカーソルが乗っている要素に、目印の属性を付ける。
- * スクロールバーはふだん隠してあり、globals.css がこの属性を見て表示したり太くしたりする
- * (どちらも CSS だけでは分からない)。
- * 描画はせず、ページ全体で 1 つだけ置く。
+ * スクロールバーの表示を受け持つ。描画はせず、ページ全体で 1 つだけ置く。
+ *
+ * - 内容の上に重ねて表示するバーを有効にする (lib/overlay-scrollbars.ts)。
+ * - ダイアログやメニューの中などブラウザーのバーを使う場所のために、スクロールしている要素と、
+ *   バーにカーソルが乗っている要素へ目印の属性を付ける。globals.css がこの属性を見て
+ *   表示したり太くしたりする (どちらも CSS だけでは分からない)。
  */
 export function ScrollbarHover() {
+  useEffect(() => installOverlayScrollbars(), []);
   useEffect(() => {
     let current: Element | null = null;
     const set = (next: Element | null) => {

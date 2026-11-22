@@ -247,18 +247,40 @@ async function resolveTargets(
     }
   }
 
+  return matchTargets(targets, validity, byUid, byProviderId);
+}
+
+/**
+ * 失敗した操作の対象を、いまの DB の内容と突き合わせる。
+ * validity はフォルダの ID から今の UIDVALIDITY、byUid は「フォルダの ID:UID」から、
+ * byProviderId は Microsoft Graph の不変 ID から、今の messages.id を引く。
+ */
+export function matchTargets(
+  targets: OutboxTarget[],
+  validity: Map<string, string | null>,
+  byUid: Map<string, string>,
+  byProviderId: Map<string, string>,
+) {
   /** DB に今もあるもの (messageId は今の値に直す)。 */
   const present: OutboxTarget[] = [];
   /** DB には無いが、まだ実行できるかもしれないもの。 */
   const absent: OutboxTarget[] = [];
   for (const target of targets) {
-    // フォルダが消えた、または UID が振り直された。もう同じメールを指せない。
+    // フォルダが消えた。もう同じメールを指せない。
     if (!validity.has(target.mailboxId)) continue;
     if (target.uid !== null) {
-      if (validity.get(target.mailboxId) !== target.uidValidity) continue;
+      const current = validity.get(target.mailboxId) ?? null;
+      // フォルダの最初の取り込みが終わる前に受け付けた操作は、UIDVALIDITY を持っていない
+      // (以前は取り込みが終わるまで保存していなかった)。今の値を補ってやり直せるようにする。
+      const resolved: OutboxTarget =
+        target.uidValidity === null && current !== null
+          ? { ...target, uidValidity: current }
+          : target;
+      // UID が振り直された。もう同じメールを指せない。
+      if (current !== resolved.uidValidity) continue;
       const messageId = byUid.get(`${target.mailboxId}:${target.uid}`);
-      if (messageId) present.push({ ...target, messageId });
-      else absent.push(target);
+      if (messageId) present.push({ ...resolved, messageId });
+      else absent.push(resolved);
     } else if (target.providerMessageId !== null) {
       const messageId = byProviderId.get(target.providerMessageId);
       if (messageId) present.push({ ...target, messageId });

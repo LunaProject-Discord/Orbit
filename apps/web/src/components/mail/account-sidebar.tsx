@@ -344,7 +344,8 @@ export function AccountSidebar({
 
       <nav
         aria-label="メールアカウントとフォルダ"
-        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1"
+        // 右側は、重ねて表示するスクロールバーが項目に触れないよう少し広く空ける。
+        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pr-3 pl-2"
         onClickCapture={(event) => {
           if (!draggedRef.current) return;
           event.preventDefault();

@@ -90,6 +90,8 @@ export function MessageMenuItems({
           </ContextMenuSubContent>
         </ContextMenuSub>
       )}
+      {/* 迷惑メールと削除は、押し間違えにくいよう最後にまとめる。 */}
+      {(junk || notJunk || trash || inTrash) && <ContextMenuSeparator />}
       {junk && (
         <ContextMenuItem
           onClick={() => act({ action: "move", mailboxId: junk.id })}
@@ -109,23 +111,20 @@ export function MessageMenuItems({
         </ContextMenuItem>
       )}
       {(trash || inTrash) && (
-        <>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            variant="destructive"
-            onClick={() =>
-              act(
-                inTrash || !trash
-                  ? { action: "delete" }
-                  : { action: "move", mailboxId: trash.id },
-              )
-            }
-          >
-            <Trash2Icon />
-            {inTrash ? "完全に削除" : "削除"}
-            <ContextMenuShortcut>{shortcutLabels.delete}</ContextMenuShortcut>
-          </ContextMenuItem>
-        </>
+        <ContextMenuItem
+          variant="destructive"
+          onClick={() =>
+            act(
+              inTrash || !trash
+                ? { action: "delete" }
+                : { action: "move", mailboxId: trash.id },
+            )
+          }
+        >
+          <Trash2Icon />
+          {inTrash ? "完全に削除" : "削除"}
+          <ContextMenuShortcut>{shortcutLabels.delete}</ContextMenuShortcut>
+        </ContextMenuItem>
       )}
     </>
   );

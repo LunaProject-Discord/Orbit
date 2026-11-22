@@ -24,6 +24,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { accountIcon } from "../lib/account-icon.js";
 import { isDistinct, recordChanges } from "../lib/changes.js";
 import { resolvesToPrivateAddress } from "../lib/host-check.js";
 import { verifyImap } from "../lib/imap-verify.js";
@@ -76,16 +77,6 @@ const ACCOUNT_COLOR_NAMES = [
   "slate",
 ] as const;
 
-/**
- * アカウントに付けるアイコンの名前。Lucide のアイコンの名前 (house、briefcase など) で、
- * 画面側が全アイコンから選ばせる。アイコンは増えたり名前が変わったりするので、
- * ここでは名前の形だけを確かめる (知らない名前は、画面側が色の点として出す)。
- */
-const accountIconName = z
-  .string()
-  .max(64)
-  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/);
-
 const updateAccountBody = z
   .object({
     /** 署名 (書式付き)。null か空なら署名なしにする。 */
@@ -95,7 +86,7 @@ const updateAccountBody = z
     /** 画面でアカウントを見分ける色。null なら並び順から決める。 */
     color: z.enum(ACCOUNT_COLOR_NAMES).nullable().optional(),
     /** 画面でアカウントに付けるアイコン。null なら色の点を出す。 */
-    icon: accountIconName.nullable().optional(),
+    icon: accountIcon.nullable().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 

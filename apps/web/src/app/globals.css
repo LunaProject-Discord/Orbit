@@ -110,6 +110,7 @@
   --scrollbar-thumb: oklch(0 0 0 / 35%);
   --scrollbar-thumb-hover: oklch(0 0 0 / 50%);
   --scrollbar-track: oklch(0 0 0 / 6%);
+  --scrollbar-thumb-outline: oklch(1 0 0 / 35%);
 }
 
 .dark {
@@ -147,6 +148,7 @@
   --scrollbar-thumb: oklch(1 0 0 / 35%);
   --scrollbar-thumb-hover: oklch(1 0 0 / 50%);
   --scrollbar-track: oklch(1 0 0 / 8%);
+  --scrollbar-thumb-outline: oklch(0 0 0 / 35%);
 }
 
 /*
@@ -178,6 +180,8 @@
       --scrollbar-color 0.5s ease-out,
       --scrollbar-track-color 0.5s ease-out;
   }
+  /* カーソルが中にある間は、スクロールしていなくても見せておく。 */
+  :hover,
   [data-scrolling] {
     --scrollbar-color: var(--scrollbar-thumb);
     transition-duration: 0.1s;
@@ -225,6 +229,99 @@
       scrollbar-width: thin;
       scrollbar-color: var(--scrollbar-color) var(--scrollbar-track-color);
     }
+  }
+}
+
+/*
+ * 内容の上に重ねて表示するスクロールバー (lib/overlay-scrollbars.ts)。
+ * 有効な間は、ブラウザーのバーを隠して幅を取らせない。ダイアログやメニューの中だけは、
+ * 上の指定のまま (ブラウザーのバー) にする。対象外の一覧は overlay-scrollbars.ts と揃える。
+ */
+html[data-overlay-scrollbars]
+*:not(html, body):not(
+  :is(
+      [role="dialog"],
+      [role="alertdialog"],
+      [role="menu"],
+      [role="listbox"],
+      :is(
+          [role="dialog"],
+          [role="alertdialog"],
+          [role="menu"],
+          [role="listbox"]
+        )
+        *
+    )
+) {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.overlay-scrollbar {
+  position: fixed;
+  /* 重なったサイドバーや作成画面 (z-40) より手前、ダイアログやメニュー (z-50) より奥。 */
+  z-index: 45;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  transition:
+    opacity 0.5s ease-out,
+    background-color 0.1s;
+
+  &[data-axis="y"] {
+    width: 12px;
+    margin-left: -12px;
+  }
+  &[data-axis="x"] {
+    height: 12px;
+    margin-top: -12px;
+  }
+  &[data-visible] {
+    opacity: 1;
+    pointer-events: auto;
+    transition-duration: 0.1s;
+  }
+  &:hover,
+  &[data-dragging] {
+    background-color: var(--scrollbar-track);
+  }
+
+  /* つまみ。明るい背景の上でも暗い背景の上でも見えるよう、反対の色で細く縁取る。 */
+  & > div {
+    position: absolute;
+    border-radius: 999px;
+    background-color: var(--scrollbar-thumb);
+    box-shadow: 0 0 0 1px var(--scrollbar-thumb-outline);
+    transition:
+      width 0.1s,
+      height 0.1s,
+      background-color 0.1s;
+  }
+  &[data-axis="y"] > div {
+    top: 0;
+    right: 2px;
+    width: 6px;
+  }
+  &[data-axis="x"] > div {
+    bottom: 2px;
+    left: 0;
+    height: 6px;
+  }
+  &:hover > div,
+  &[data-dragging] > div {
+    background-color: var(--scrollbar-thumb-hover);
+  }
+  &[data-axis="y"]:hover > div,
+  &[data-axis="y"][data-dragging] > div {
+    width: 8px;
+  }
+  &[data-axis="x"]:hover > div,
+  &[data-axis="x"][data-dragging] > div {
+    height: 8px;
   }
 }
 
