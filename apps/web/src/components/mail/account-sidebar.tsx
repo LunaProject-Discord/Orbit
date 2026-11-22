@@ -35,7 +35,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
 import { Hint } from "@/components/hint";
-import { MailboxIcon } from "@/components/mail/mailbox-icon";
+import { MailboxMark } from "@/components/mail/mailbox-icon";
 import {
   AccountMenuItems,
   FolderMenuItems,
@@ -1010,7 +1010,7 @@ function FolderItem({
               )}
               {...item.handle}
             >
-              <MailboxIcon specialUse={mailbox.specialUse} />
+              <MailboxMark mailbox={mailbox} />
               <span className="min-w-0 flex-1 truncate">{label}</span>
               {/* 折りたたんでいる間は、中のフォルダの未読も合わせて表示する。 */}
               <UnreadCount

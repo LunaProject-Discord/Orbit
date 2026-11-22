@@ -254,7 +254,27 @@ export const mailboxes = pgTable(
     }),
     name: text().notNull(),
     delimiter: text(),
+    /**
+     * 実際に使う役割。メールサーバーが知らせてきた役割 (detectedSpecialUse) に、
+     * 利用者の上書き (roleOverride) を当てはめた結果で、どちらかが変わるたびに計算し直す
+     * (@mail/core の resolveMailboxRoles)。移動先を探す処理などは、すべてこの列を見る。
+     */
     specialUse: mailboxSpecialUse(),
+    /** メールサーバーが知らせてきた役割 (IMAP の SPECIAL-USE、Graph の既定のフォルダ)。 */
+    detectedSpecialUse: mailboxSpecialUse(),
+    /**
+     * 利用者がアプリ内で付けた役割 (sent / drafts / archive / junk / trash)。"none" は
+     * 「役割なしとして扱う」。付けていなければ null。メールサーバー側には反映しない。
+     */
+    roleOverride: text().$type<
+      "sent" | "drafts" | "archive" | "junk" | "trash" | "none"
+    >(),
+    /** アプリ内での表示名。付けていなければ null (役割の名前か、サーバー上の名前で出す)。 */
+    displayName: text(),
+    /** アプリ内でのアイコン (Lucide の名前か絵文字)。付けていなければ null。 */
+    icon: text(),
+    /** アプリ内でのアイコンの色 ("#rrggbb")。付けていなければ null。 */
+    color: text(),
     /**
      * 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null で、
      * 既定の順 (受信トレイなどの役割、次に名前) に並ぶ。メールサーバー側には反映しない。

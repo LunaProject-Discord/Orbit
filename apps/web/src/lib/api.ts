@@ -275,6 +275,15 @@ export type MessageDetail = {
   attachments: Attachment[];
 };
 
+/** アプリ内で付けられる役割。"none" は、役割なし (ふつうのフォルダ) として扱う。 */
+export type MailboxRoleOverride =
+  | "sent"
+  | "drafts"
+  | "archive"
+  | "junk"
+  | "trash"
+  | "none";
+
 export type Mailbox = {
   id: string;
   /** 親フォルダ。最上位なら null。 */
@@ -292,6 +301,17 @@ export type Mailbox = {
     | "all"
     | "flagged"
     | null;
+  /**
+   * メールサーバーが知らせてきた役割。specialUse は、これに利用者の上書き (roleOverride) を
+   * 当てはめた「実際に使う役割」。
+   */
+  detectedSpecialUse?: Mailbox["specialUse"];
+  /** アプリ内で付けた役割。"none" は役割なしとして扱う。付けていなければ null。 */
+  roleOverride?: MailboxRoleOverride | null;
+  /** アプリ内での表示名・アイコン (Lucide の名前か絵文字)・色 ("#rrggbb")。付けていなければ null。 */
+  displayName?: string | null;
+  icon?: string | null;
+  color?: string | null;
   /** 同じ親を持つフォルダの中での表示順 (小さいほど上)。並び替えていなければ null。 */
   sortOrder: number | null;
 };
@@ -876,6 +896,28 @@ export async function renameMailbox(
 /** フォルダを、中のメールごとメールサーバーから削除する。 */
 export async function deleteMailbox(mailboxId: string): Promise<void> {
   await apiFetch(`/v1/mailboxes/${mailboxId}`, { method: "DELETE" });
+}
+
+/** フォルダの、アプリ内での役割・表示名・アイコン・色。null の項目は上書きしない。 */
+export type MailboxOverrides = {
+  role: MailboxRoleOverride | null;
+  displayName: string | null;
+  icon: string | null;
+  color: string | null;
+};
+
+/**
+ * フォルダの役割・表示名・アイコン・色を、アプリ内でだけ上書きする
+ * (メールサーバー上のフォルダは変わらない。どの端末でも同じ内容になる)。
+ */
+export async function saveMailboxOverrides(
+  mailboxId: string,
+  overrides: MailboxOverrides,
+): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}/overrides`, {
+    method: "PUT",
+    body: overrides,
+  });
 }
 
 /** 並び替えたフォルダを、既定の順に戻す。 */

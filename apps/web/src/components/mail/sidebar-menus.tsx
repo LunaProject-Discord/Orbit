@@ -5,6 +5,7 @@ import {
   ArrowUpIcon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
+  FolderCogIcon,
   FolderOpenIcon,
   FolderPenIcon,
   FolderPlusIcon,
@@ -41,6 +42,8 @@ export type SidebarMenuActions = {
   onCreateFolder: (account: Account, parent: MailboxSummary | null) => void;
   onRenameFolder: (mailbox: MailboxSummary) => void;
   onDeleteFolder: (mailbox: MailboxSummary) => void;
+  /** アプリ内での役割・表示名・アイコン・色を変える。 */
+  onCustomizeFolder: (mailbox: MailboxSummary) => void;
 };
 
 /** 上へ / 下へ動かす 2 項目。ids は同じ並びの項目 (いまの表示順)。 */
@@ -133,8 +136,12 @@ export function FolderMenuItems({
         <FolderPlusIcon />
         新しいサブフォルダ…
       </ContextMenuItem>
+      <ContextMenuItem onClick={() => actions.onCustomizeFolder(mailbox)}>
+        <FolderCogIcon />
+        役割と見た目を変更…
+      </ContextMenuItem>
       {/* 受信トレイなどの役割があるフォルダは、名前の変更や削除ができない。 */}
-      {mailbox.specialUse === null && (
+      {mailbox.specialUse === null && !mailbox.detectedSpecialUse && (
         <>
           <ContextMenuItem onClick={() => actions.onRenameFolder(mailbox)}>
             <FolderPenIcon />

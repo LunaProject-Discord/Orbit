@@ -46,7 +46,7 @@ export function useMailboxes(accountId: string): Mailbox[] {
 
 type SpecialUse = NonNullable<MailboxSummary["specialUse"]>;
 
-const specialLabels: Record<SpecialUse, string> = {
+export const specialLabels: Record<SpecialUse, string> = {
   inbox: "受信トレイ",
   flagged: "スター付き",
   drafts: "下書き",
@@ -60,13 +60,35 @@ const specialLabels: Record<SpecialUse, string> = {
 /** 並び替えていないときの並び順。役割のあるフォルダをこの順に先に並べ、残りは名前順にする。 */
 const specialOrder = Object.keys(specialLabels) as SpecialUse[];
 
-/** フォルダの表示名。受信トレイなどの役割があるフォルダは、決まった名前で表示する。 */
+/**
+ * フォルダの表示名。アプリ内で付けた名前があればそれを、無ければ、受信トレイなどの
+ * 役割があるフォルダは決まった名前で、ほかはメールサーバー上の名前で表示する。
+ */
 export function mailboxLabel(
+  mailbox: Pick<MailboxSummary, "name" | "specialUse" | "displayName">,
+): string {
+  return mailbox.displayName || defaultMailboxLabel(mailbox);
+}
+
+/** アプリ内で名前を付けていないときの表示名。 */
+export function defaultMailboxLabel(
   mailbox: Pick<MailboxSummary, "name" | "specialUse">,
 ): string {
   return (
     (mailbox.specialUse && specialLabels[mailbox.specialUse]) || mailbox.name
   );
+}
+
+/** アプリ内で役割を付け替えられないフォルダ (メールサーバーの仕組みと結び付いている)。 */
+export function hasFixedRole(
+  mailbox: Pick<MailboxSummary, "specialUse" | "detectedSpecialUse">,
+): boolean {
+  // 上書きの項目を持たない古い保存内容では、いまの役割で判断する。
+  const detected =
+    mailbox.detectedSpecialUse === undefined
+      ? mailbox.specialUse
+      : mailbox.detectedSpecialUse;
+  return detected === "inbox" || detected === "all" || detected === "flagged";
 }
 
 type TreeMailbox = Mailbox & { unreadCount?: number };

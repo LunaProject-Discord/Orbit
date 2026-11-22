@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
-import { MailboxIcon, MoveTarget } from "@/components/mail/mailbox-icon";
+import { MailboxMark, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import {
   type ProfileActions,
@@ -1338,8 +1338,8 @@ function MessageContent({
                     <span aria-hidden="true">・</span>
                     <Hint label={mailbox ? mailboxLabel(mailbox) : null}>
                       <span>
-                        <MailboxIcon
-                          specialUse={mailbox?.specialUse ?? null}
+                        <MailboxMark
+                          mailbox={mailbox}
                           className="size-4 shrink-0"
                         />
                       </span>

@@ -32,6 +32,7 @@ import {
   FolderDialogs,
   type FolderDialogTarget,
 } from "@/components/mail/folder-dialogs";
+import { MailboxOverridesDialog } from "@/components/mail/mailbox-overrides-dialog";
 import {
   MessageList,
   type MessageListHandle,
@@ -361,6 +362,10 @@ export function MailApp({ user }: { user: User }) {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [signatureTarget, setSignatureTarget] = useState<Account | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogTarget | null>(
+    null,
+  );
+  /** 役割と見た目を変えているフォルダ。 */
+  const [customizeTarget, setCustomizeTarget] = useState<MailboxSummary | null>(
     null,
   );
   const openFolderDialog = (target: FolderDialogTarget) => {
@@ -2190,6 +2195,10 @@ export function MailApp({ user }: { user: User }) {
                 openFolderDialog({ kind: "rename", mailbox }),
               onDeleteFolder: (mailbox) =>
                 openFolderDialog({ kind: "delete", mailbox }),
+              onCustomizeFolder: (mailbox) => {
+                setSidebarOpen(false);
+                setCustomizeTarget(mailbox);
+              },
             }}
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
@@ -2616,6 +2625,28 @@ export function MailApp({ user }: { user: User }) {
           ) {
             handleSelectFolder(target.mailbox.accountId, null);
           }
+        }}
+      />
+      <MailboxOverridesDialog
+        mailbox={customizeTarget}
+        mailboxes={mailboxes ?? []}
+        onClose={() => setCustomizeTarget(null)}
+        onSaved={(mailbox, overrides) => {
+          // 名前とアイコンはすぐ反映する。役割は、ほかのフォルダにも関わるので取得し直す。
+          setMailboxes(
+            (current) =>
+              current?.map((item) =>
+                item.id === mailbox.id
+                  ? {
+                      ...item,
+                      displayName: overrides.displayName,
+                      icon: overrides.icon,
+                      color: overrides.color,
+                    }
+                  : item,
+              ) ?? null,
+          );
+          void loadMailboxes();
         }}
       />
       <UnifiedDialog
