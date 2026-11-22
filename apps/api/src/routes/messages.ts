@@ -5,6 +5,8 @@ import { zValidator } from "@hono/zod-validator";
 import {
   attachmentPath,
   attachmentsDir,
+  type BodyFetchNotification,
+  CHANNEL_BODY_FETCH,
   sanitizeContentType,
   sanitizeFilename,
 } from "@mail/core";
@@ -245,6 +247,19 @@ export function messageRoutes({
         );
       if (!message) {
         return c.json({ error: "not_found" }, 404);
+      }
+      if (message.bodyFetchedAt === null) {
+        // 本文は一覧より後に順に取り込まれる。開かれたメールは順番を待たせず、
+        // 同期ワーカーに先に取得してもらう (取得が終わると変更通知で端末が読み直す)。
+        const payload: BodyFetchNotification = {
+          accountId: message.accountId,
+          messageId: message.id,
+        };
+        await db
+          .execute(
+            sql`select pg_notify(${CHANNEL_BODY_FETCH}, ${JSON.stringify(payload)})`,
+          )
+          .catch(() => {});
       }
       const files = await db
         .select({

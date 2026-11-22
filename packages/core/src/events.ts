@@ -62,6 +62,20 @@ export type NewMailNotification = {
 };
 
 /**
+ * API → ワーカー: 利用者が開いたメールの本文を、取り込みの順番を待たずに取得してほしい。
+ * 本文は一覧より後に新しい順で取り込むので、取り込みの途中で開いたメールはこれで先に取得する。
+ * 取得が終わったことは、通常の変更通知 (CHANNEL_CHANGES) で端末へ伝わる。
+ */
+export const CHANNEL_BODY_FETCH = "mail_body_fetch";
+
+/** CHANNEL_BODY_FETCH の payload。 */
+export type BodyFetchNotification = {
+  accountId: string;
+  /** messages.id */
+  messageId: string;
+};
+
+/**
  * API → ワーカー: 受信メールの添付ファイルの実体を取得してほしい。
  * 実体はメールサーバーに置いたままにしてあり、開いたときにだけ取得して置き場に保存する。
  */

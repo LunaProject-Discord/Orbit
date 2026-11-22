@@ -362,6 +362,71 @@ export async function listGraphAttachments(
   return toAttachmentInfos(items);
 }
 
+/** 本文を取得するメッセージ。 */
+export type GraphBodyTarget = {
+  messageId: string;
+  providerMessageId: string | null;
+  snippet: string;
+  hasAttachments: boolean;
+};
+
+/**
+ * メッセージ 1 通の本文 (と添付ファイルの一覧) を取得して保存する。
+ * 変更の通知 (recordChanges) は呼び出し側で行う。
+ */
+export async function fetchGraphBody(
+  db: Database,
+  client: GraphClient,
+  row: GraphBodyTarget,
+  signal?: AbortSignal,
+) {
+  let body: GraphMessage["body"] = null;
+  let files: AttachmentInfo[] | null = null;
+  if (row.providerMessageId) {
+    try {
+      const message = await client.get<GraphMessage>(
+        `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=body`,
+        signal,
+      );
+      body = message.body;
+      // 本文に埋め込まれた画像 (cid:) だけのメールは hasAttachments が false になる。
+      if (row.hasAttachments || /\bcid:/i.test(message.body?.content ?? "")) {
+        files = await listGraphAttachments(
+          client,
+          row.providerMessageId,
+          signal,
+        );
+      }
+    } catch (error) {
+      // サーバーから消えていた場合は空のまま取得済みにする (次の差分でメッセージごと消える)。
+      if (!(error instanceof GraphError && error.notFound)) throw error;
+    }
+  }
+  const { bodyText, bodyHtml } = toBody(body);
+  await db.transaction(async (tx) => {
+    if (files) {
+      await tx
+        .delete(attachments)
+        .where(eq(attachments.messageId, row.messageId));
+      if (files.length > 0) {
+        await tx
+          .insert(attachments)
+          .values(files.map((file) => ({ messageId: row.messageId, ...file })));
+      }
+    }
+    await tx
+      .update(messages)
+      .set({
+        bodyText,
+        bodyHtml,
+        // 一覧の取得で受け取った冒頭 (bodyPreview) があれば、それを使い続ける。
+        snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
+        bodyFetchedAt: new Date(),
+      })
+      .where(eq(messages.id, row.messageId));
+  });
+}
+
 /**
  * 本文をまだ取得していないメッセージを、フォルダに関係なく新しい順に 1 回分だけ取得する。
  * preferMailboxId (利用者が開いているフォルダ) に未取得のものがあれば、そちらを先に取得する。
@@ -417,56 +482,7 @@ export async function fetchGraphBodies(
   for (let i = 0; i < batch.length; i += BODY_CONCURRENCY) {
     await Promise.all(
       batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
-        let body: GraphMessage["body"] = null;
-        let files: AttachmentInfo[] | null = null;
-        if (row.providerMessageId) {
-          try {
-            const message = await client.get<GraphMessage>(
-              `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=body`,
-              signal,
-            );
-            body = message.body;
-            // 本文に埋め込まれた画像 (cid:) だけのメールは hasAttachments が false になる。
-            if (
-              row.hasAttachments ||
-              /\bcid:/i.test(message.body?.content ?? "")
-            ) {
-              files = await listGraphAttachments(
-                client,
-                row.providerMessageId,
-                signal,
-              );
-            }
-          } catch (error) {
-            // サーバーから消えていた場合は空のまま取得済みにする (次の差分でメッセージごと消える)。
-            if (!(error instanceof GraphError && error.notFound)) throw error;
-          }
-        }
-        const { bodyText, bodyHtml } = toBody(body);
-        await db.transaction(async (tx) => {
-          if (files) {
-            await tx
-              .delete(attachments)
-              .where(eq(attachments.messageId, row.messageId));
-            if (files.length > 0) {
-              await tx
-                .insert(attachments)
-                .values(
-                  files.map((file) => ({ messageId: row.messageId, ...file })),
-                );
-            }
-          }
-          await tx
-            .update(messages)
-            .set({
-              bodyText,
-              bodyHtml,
-              // 一覧の取得で受け取った冒頭 (bodyPreview) があれば、それを使い続ける。
-              snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
-              bodyFetchedAt: new Date(),
-            })
-            .where(eq(messages.id, row.messageId));
-        });
+        await fetchGraphBody(db, client, row, signal);
         done.push(row.messageId);
       }),
     );

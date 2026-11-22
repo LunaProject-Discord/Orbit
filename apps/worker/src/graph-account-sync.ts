@@ -14,6 +14,7 @@ import {
   AttachmentRequests,
   graphAttachmentDownloader,
 } from "./attachment-fetch.js";
+import { BodyRequests, graphBodyFetcher } from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { graphDraftRemote } from "./draft-graph.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -115,6 +116,7 @@ export class GraphAccountSync {
   private pushRenewedAt = 0;
   private sending: Promise<void> = Promise.resolve();
   private readonly attachmentRequests: AttachmentRequests;
+  private readonly bodyRequests: BodyRequests;
 
   constructor(
     private readonly db: Database,
@@ -130,18 +132,28 @@ export class GraphAccountSync {
       subscriptionId: account.pushSubscriptionId,
       expiresAt: account.pushExpiresAt,
     };
+    // 利用者が開いたものをすぐ取得するための窓口。同期の周期とは別に使う。
+    const onDemand = new GraphClient({
+      getToken: (force) => this.getToken(force),
+      fetchFn: this.fetchFn,
+    });
     this.attachmentRequests = new AttachmentRequests(
       db,
       account.id,
-      graphAttachmentDownloader(
-        new GraphClient({
-          getToken: (force) => this.getToken(force),
-          fetchFn: this.fetchFn,
-        }),
-        this.abort.signal,
-      ),
+      graphAttachmentDownloader(onDemand, this.abort.signal),
       (message) => this.log(message),
     );
+    this.bodyRequests = new BodyRequests(
+      db,
+      account,
+      graphBodyFetcher(db, onDemand, this.abort.signal),
+      (message) => this.log(message),
+    );
+  }
+
+  /** 利用者が開いたメールの本文を、取り込みの順番を待たずに取得してほしい。 */
+  notifyBody(messageId: string) {
+    if (!this.stopped) void this.bodyRequests.request(messageId);
   }
 
   /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期の周期とは別に、すぐ取得する。 */

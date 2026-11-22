@@ -1,7 +1,9 @@
 import {
   type AttachmentFetchNotification,
+  type BodyFetchNotification,
   CHANNEL_ACCOUNTS,
   CHANNEL_ATTACHMENT_FETCH,
+  CHANNEL_BODY_FETCH,
   CHANNEL_FOCUS,
   CHANNEL_GRAPH_PUSH,
   CHANNEL_NEW_MAIL,
@@ -53,7 +55,8 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * API サーバーからの NOTIFY (アカウントの追加・削除) ですぐに反映し、
  * 取りこぼしに備えて定期的にも DB と突き合わせる。
  * 送信待ちキューに操作が積まれた通知、利用者が開いているフォルダの通知、
- * Microsoft Graph の変更通知、添付ファイルの取得の依頼も受け取り、該当のアカウントへ伝える。
+ * Microsoft Graph の変更通知、添付ファイルや開いたメールの本文の取得の依頼も受け取り、
+ * 該当のアカウントへ伝える。
  * 新着メールの知らせは、Web Push で端末へ送る。
  */
 export class AccountManager {
@@ -143,6 +146,16 @@ export class AccountManager {
         }
         return;
       }
+      if (message.channel === CHANNEL_BODY_FETCH) {
+        const payload = parsePayload<BodyFetchNotification>(message.payload);
+        // 同期していないアカウントでは何もしない (同期を再開すれば順に取得される)。
+        if (payload && typeof payload.messageId === "string") {
+          this.running
+            .get(payload.accountId)
+            ?.sync.notifyBody(payload.messageId);
+        }
+        return;
+      }
       if (message.channel === CHANNEL_GRAPH_PUSH) {
         const payload = parsePayload<GraphPushNotification>(message.payload);
         const sync = payload && this.running.get(payload.accountId)?.sync;
@@ -162,6 +175,7 @@ export class AccountManager {
       .then(() => client.query(`LISTEN ${CHANNEL_FOCUS}`))
       .then(() => client.query(`LISTEN ${CHANNEL_GRAPH_PUSH}`))
       .then(() => client.query(`LISTEN ${CHANNEL_ATTACHMENT_FETCH}`))
+      .then(() => client.query(`LISTEN ${CHANNEL_BODY_FETCH}`))
       .then(() =>
         this.pushSender ? client.query(`LISTEN ${CHANNEL_NEW_MAIL}`) : null,
       )
