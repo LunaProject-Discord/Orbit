@@ -976,7 +976,14 @@ function MessageContent({
     hasRemoteImages(message.bodyHtml);
 
   return (
-    <article className={cn("flex flex-col", !inThread && "min-h-0 flex-1")}>
+    <article
+      className={cn(
+        "flex flex-col",
+        // 画面が低くて本文の最小の高さも取れないときは、ここをスクロールさせる。
+        // はみ出したままにすると、本文が下の簡易返信欄に重なって見える。
+        !inThread && "min-h-0 flex-1 overflow-y-auto",
+      )}
+    >
       {/* 会話の中では、件名と差出人は会話側の見出しに出ている。 */}
       <header
         className={cn(
@@ -1054,7 +1061,7 @@ function MessageContent({
               sandbox="allow-popups allow-popups-to-escape-sandbox"
               srcDoc={srcDoc}
               referrerPolicy="no-referrer"
-              className="min-h-[60vh] w-full flex-1 border-0 bg-white"
+              className="min-h-48 w-full flex-1 border-0 bg-white"
             />
           )}
         </>
