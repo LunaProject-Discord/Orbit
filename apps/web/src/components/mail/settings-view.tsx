@@ -98,6 +98,7 @@ const shortcuts: [keys: string, action: string][] = [
   ["E / A", "アーカイブ"],
   ["# / Delete", "削除"],
   ["V", "移動"],
+  ["Z", "直前の削除・移動を元に戻す"],
 ];
 
 type Props = {

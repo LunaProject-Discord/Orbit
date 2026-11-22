@@ -31,7 +31,8 @@ describe("resolveShortcut", () => {
     expect(key("F9")).toBe("toggleSidebar");
     expect(key("ArrowRight")).toBe("expandThread");
     expect(key("ArrowLeft")).toBe("collapseThread");
-    expect(key("z")).toBeNull();
+    expect(key("z")).toBe("undo");
+    expect(key("q")).toBeNull();
   });
 
   it("Shift との組み合わせは、割り当てたものだけを受け付ける", () => {
