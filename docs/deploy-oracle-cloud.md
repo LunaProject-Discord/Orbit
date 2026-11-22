@@ -10,7 +10,7 @@ Oracle Cloud の既存のサーバー (AlmaLinux 9、arm64) に、Docker Compose
         ▼
 Cloudflare            HTTPS と証明書
         ▼
-Linode (DDoS 対策)     Oracle Cloud へ中継
+Linode の Apache      DDoS 対策。ドメインごとの設定で Oracle Cloud へ中継
         │  80 番
         ▼
 既存の Apache (httpd)   ほかのサイトと同居。ドメイン名でメールアプリへ振り分け
@@ -42,7 +42,8 @@ HTTPS を受ける場所によって、手順 2、5、6 が 2 通りに分かれ
 | `deploy/compose.yml` | 本番用の構成 (共通部分) |
 | `deploy/compose.apache.yml` | 既存の Web サーバーから逆プロキシする場合に重ねる (web は 127.0.0.1 だけで待ち受け) |
 | `deploy/compose.caddy.yml` | Caddy が 80 / 443 番で直接公開する場合に重ねる |
-| `deploy/apache/mail.conf` | Apache の設定の見本 |
+| `deploy/apache/mail.conf` | Oracle Cloud 側の Apache の設定の見本 |
+| `deploy/apache/mail-relay.conf` | 中継用のサーバー (Linode) 側の Apache の設定の見本 |
 | `deploy/Caddyfile` | コンテナ内での Web / API への振り分け |
 | `deploy/.env.example` | 設定の見本。`deploy/setup.sh` がここから `deploy/.env` を作る |
 | `deploy/setup.sh` | `deploy/.env` を作り、秘密の値を生成する |
@@ -90,23 +91,51 @@ sudo firewall-cmd --state          # firewalld が動いているか
 
 ### A. Cloudflare → Linode → このサーバー の経路に載せる
 
-既存のサイトと同じやり方で、新しいドメイン (`mail.example.com`) をこの経路に載せます。
-Linode の設定は見ていないので、下の 2 は既存のサイトの設定に合わせてください。
+既存のサイト (`natsuki-api.lunaproject.jp` など) と同じやり方で、新しいドメインをこの経路に載せます。
+Linode 側の作業は、Oracle Cloud 側 (手順 3 から 6) が済んでから行うと、すぐに繋がることを確かめられます。
 
-1. **Cloudflare**: DNS に `mail` のレコードを、既存のサイトと同じ向き先 (Linode) で追加し、プロキシを有効 (オレンジ色の雲) にします。
-2. **Linode**: 中継の設定がドメインごとに分かれている場合は、`mail.example.com` を既存のサイトと同じように追加します
-   (すべてのドメインをそのまま Oracle Cloud へ流している場合は、追加の設定は不要です)。
-   Host ヘッダーは `mail.example.com` のまま Oracle Cloud へ渡る必要があります。
-3. このサーバーの 80 番は、すでに Linode から届いているはずなので、新しく開けるポートはありません。
+**1. Cloudflare**: DNS に新しいドメインのレコードを、既存のサイトと同じ向き先 (Linode) で追加し、プロキシを有効 (オレンジ色の雲) にします。
 
-中継に nginx を使っている場合は、次の 2 点を確認してください (ほかのソフトでも同じ趣旨の設定があります)。
+**2. Linode (中継用のサーバーの Apache)**: `/etc/httpd/conf.d/` に、ドメインごとの設定を 1 つ足します。
+既存のサイトの設定を写して作るのが確実です (証明書や Oracle Cloud の向き先が、すでに正しく書かれているため)。
 
-| 項目 | 理由 |
-| --- | --- |
-| `client_max_body_size` を 30m 以上にする | 既定は 1 MB で、添付ファイル (1 通あたり合計 25 MB まで) を上げると 413 になる |
-| `proxy_read_timeout` を 60 秒以上にする (既定の 60 秒のままで可) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントを送っている |
+```sh
+# Linode のサーバーで実行
+cd /etc/httpd/conf.d
+DOMAIN=mail.example.com    # 自分のドメインに置き換える
+sudo cp natsuki-api.lunaproject.jp.conf "$DOMAIN.conf"
+sudo sed -i "s/natsuki-api\.lunaproject\.jp/$DOMAIN/g" "$DOMAIN.conf"
+sudo vim "$DOMAIN.conf"
+```
 
-変更の通知をため込まずに流すための指定 (`X-Accel-Buffering: no`) は、アプリ側が応答に付けるので、nginx の設定は不要です。
+開いた設定を、次の表のとおりに直します。メールアプリに必要な指定だけを並べた見本が
+[`deploy/apache/mail-relay.conf`](../deploy/apache/mail-relay.conf) にあります。
+
+| 指定 | 直し方 | 理由 |
+| --- | --- | --- |
+| `ServerName` (80 番と 443 番の 2 か所) | 新しいドメインにする | 上の `sed` で置き換わっているはず |
+| `ProxyPass` の `timeout` | `timeout=120` にする (既存のサイトは `timeout=30`) | 変更の通知 (SSE) は繋ぎっぱなしで、25 秒ごとに空のイベントが流れる。30 秒だと余裕が無い |
+| `ProxyPass` の行末 | `flushpackets=on` を付ける | 変更の通知をため込まずにすぐ流す。無いと、新着や既読の反映が遅れる |
+| `LimitRequestBody 52428800` | 443 番の VirtualHost に足す | 添付ファイル (1 通あたり合計 25 MB まで) を受け取るため |
+| `ProxyPass` / `ProxyPassReverse` の向き先 | Oracle Cloud のサーバーの 80 番 (`http://<Oracle Cloud のアドレス>/`) のまま | メールアプリは Oracle Cloud 側の Apache (80 番) で受ける |
+| `ProxyPreserveHost on` | あることを確かめる | Oracle Cloud 側の Apache がドメイン名でメールアプリへ振り分けるため。無いと既存のサイトの画面が出る |
+| `SSLCertificateFile` など | 既存のサイトと同じまま | 証明書が新しいドメインを含んでいること (下のコマンドで確認) |
+
+証明書が新しいドメインを含んでいるかは、次で分かります (`*.lunaproject.jp` のようなワイルドカードか、新しいドメインそのものが出れば使えます)。
+
+```sh
+sudo openssl x509 -in /etc/letsencrypt/live/lunaproject.jp/cert.pem -noout -ext subjectAltName
+```
+
+文法を確かめてから読み込み直します。
+
+```sh
+sudo apachectl configtest      # Syntax OK 以外なら、読み込み直さずに sudo rm "$DOMAIN.conf" で元に戻せる
+sudo systemctl reload httpd
+curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"    # {"status":"ok"} が返れば、Oracle Cloud まで届いている
+```
+
+**3. Oracle Cloud**: 80 番は、既存のサイトと同じくすでに Linode から届いているので、新しく開けるポートはありません。
 
 Cloudflare については次の点に注意してください。
 
@@ -383,14 +412,14 @@ sudo tail -n 50 /var/log/httpd/mail_error.log   # Apache 側のエラー
 | --- | --- |
 | ブラウザーで繋がらない、Cloudflare のエラー画面 (52x) が出る | 手順 2 の経路 (Cloudflare の DNS、Linode の中継) に新しいドメインが載っているか。サーバーの中では `curl -H "Host: <DOMAIN>" http://127.0.0.1/healthz` が返るか |
 | 既存のサイトの画面が出る | Linode が Host ヘッダーを `<DOMAIN>` のまま渡しているか。`sudo httpd -S` に `<DOMAIN>` が出ているか |
-| 添付ファイルを上げると 413 になる | 手前の中継 (nginx なら `client_max_body_size`) の上限 |
+| 添付ファイルを上げると 413 になる | Linode と Oracle Cloud の両方の Apache の設定に `LimitRequestBody 52428800` があるか |
 | 503 Service Unavailable | コンテナが動いているか (`docker compose ps`、`curl http://127.0.0.1:18080/healthz`)。動いているのに 503 なら、Apache のエラーログに `Permission denied` が出ていないか (出ていれば手順 5 の `setsebool`) |
 | 既存のサイトがメールアプリに繋がってしまう | 手順 1 の空の VirtualHost (`000-default.conf`) を置いて `sudo systemctl reload httpd` |
 | certbot が失敗する (B の場合) | DNS が反映済みか。80 番と 443 番が外から届くか |
 | `api` が起動しない | `docker compose logs migrate api`。`deploy/.env` の値が空でないか |
 | ログインできない | 利用者を作ったか (手順 4)。パスワードは 12 文字以上 |
 | Microsoft / Google のログインで戻ってこられない | リダイレクト URI が `https://<DOMAIN>/oauth/microsoft` (`/oauth/google`) と完全に一致しているか |
-| 新着の反映が遅い | Apache の設定の `ProxyPass` に `flushpackets=on` が付いているか。手前の中継が応答をため込んでいないか。Microsoft のアカウントなら、ワーカーのログに変更通知の購読の失敗が出ていないか |
+| 新着の反映が遅い | Apache の設定の `ProxyPass` に `flushpackets=on` が付いているか。Linode 側の設定にも付いているか。Microsoft のアカウントなら、ワーカーのログに変更通知の購読の失敗が出ていないか |
 | ディスクが足りない | `docker system df` で内訳を確認し、`docker builder prune` で古いビルドの残りを消す |
 
 元に戻す (メールアプリを取り除く) ときは、次の順に行います。既存のサイトの設定には触れません。
