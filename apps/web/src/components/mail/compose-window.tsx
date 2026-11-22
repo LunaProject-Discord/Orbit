@@ -33,6 +33,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { EmojiPickerButton } from "@/components/emoji-picker";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,6 +61,7 @@ import {
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
+import { insertIntoField } from "@/lib/emoji/insert";
 import { formatSize } from "@/lib/format";
 import { sendMailOrQueue, useOnline } from "@/lib/offline";
 
@@ -188,6 +190,7 @@ export function ComposeWindow({
   const [extraShownFor, setExtraShownFor] = useState<string | null>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const subjectRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** 送信中の処理から、最新の下書きを読むためのもの。 */
   const draftRef = useRef(draft);
@@ -715,6 +718,7 @@ export function ComposeWindow({
         )}
         <Row label="件名" htmlFor={`${id}-subject`}>
           <input
+            ref={subjectRef}
             id={`${id}-subject`}
             type="text"
             maxLength={998}
@@ -722,6 +726,20 @@ export function ComposeWindow({
             onChange={(event) => set("subject", event.target.value)}
             disabled={sending}
             className="h-7 min-w-0 flex-1 bg-transparent font-medium text-base outline-none md:text-sm"
+          />
+          <EmojiPickerButton
+            label="件名に絵文字を入れる"
+            size="icon-sm"
+            disabled={sending}
+            onSelect={(emoji) =>
+              insertIntoField(
+                subjectRef.current,
+                subjectRef.current?.value ?? "",
+                emoji,
+                (next) => set("subject", next),
+              )
+            }
+            className="-mr-2 text-muted-foreground"
           />
         </Row>
 
@@ -976,7 +994,7 @@ export function Editor({
   const [active, setActive] = useState<Record<string, boolean>>({});
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
-  /** リンクを付ける範囲。URL の入力欄へ移る前の選択を覚えておく。 */
+  /** リンクや絵文字を入れる範囲。ほかの入力欄へ移る前の選択を覚えておく。 */
   const savedRange = useRef<Range | null>(null);
   const linkRef = useRef<HTMLInputElement>(null);
 
@@ -1019,14 +1037,7 @@ export function Editor({
   }
 
   function openLink() {
-    const selection = window.getSelection();
-    const editor = editorRef.current;
-    savedRange.current =
-      selection &&
-      selection.rangeCount > 0 &&
-      editor?.contains(selection.anchorNode)
-        ? selection.getRangeAt(0).cloneRange()
-        : null;
+    saveRange();
     setLinkUrl("");
     setLinkOpen(true);
     requestAnimationFrame(() => linkRef.current?.focus());
@@ -1053,6 +1064,38 @@ export function Editor({
     } else {
       document.execCommand("createLink", false, url);
     }
+    emit();
+  }
+
+  /** 本文の中の選択範囲を覚える (ほかの入力欄へフォーカスが移る前に呼ぶ)。 */
+  function saveRange() {
+    const selection = window.getSelection();
+    const editor = editorRef.current;
+    savedRange.current =
+      selection &&
+      selection.rangeCount > 0 &&
+      editor?.contains(selection.anchorNode)
+        ? selection.getRangeAt(0).cloneRange()
+        : null;
+  }
+
+  /** 覚えておいた位置 (無ければ本文の末尾) に、文字を入れる。 */
+  function insertText(text: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const selection = window.getSelection();
+    if (selection) {
+      let range = savedRange.current;
+      if (!range) {
+        range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+      }
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    document.execCommand("insertText", false, text);
     emit();
   }
 
@@ -1156,6 +1199,11 @@ export function Editor({
           >
             <LinkIcon />
           </Button>
+          <EmojiPickerButton
+            disabled={disabled}
+            onOpen={saveRange}
+            onSelect={insertText}
+          />
         </>,
       )}
     </>
