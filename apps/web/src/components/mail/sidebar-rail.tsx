@@ -16,6 +16,10 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { accountColor } from "@/lib/account-colors";
 import type { Account, MailboxSummary } from "@/lib/api";
+import {
+  hoveredOverlayScrollbarOwner,
+  overlayScrollbarOwner,
+} from "@/lib/overlay-scrollbars";
 import type { SpecialView } from "@/lib/route";
 import {
   PEEK_CLOSE_DELAY,
@@ -279,7 +283,9 @@ function RailItem({
 function sidebarBusy(aside: HTMLElement): boolean {
   return (
     document.querySelector('[role="menu"], [role="dialog"]') !== null ||
-    aside.querySelector('[aria-pressed="true"]') !== null
+    aside.querySelector('[aria-pressed="true"]') !== null ||
+    // サイドバーのスクロールバーは外に重ねて描いているので、その上にいる間も中として扱う。
+    aside.contains(hoveredOverlayScrollbarOwner())
   );
 }
 
@@ -331,6 +337,7 @@ export function useSidebarPeek(
     const onDocumentDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || aside.contains(target)) return;
+      if (aside.contains(overlayScrollbarOwner(target))) return;
       // サイドバーから開いたメニューやダイアログの中は、外として扱わない。
       if (
         target instanceof Element &&
