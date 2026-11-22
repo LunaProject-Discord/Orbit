@@ -79,6 +79,7 @@ import {
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
 import { addressLabel, formatFullDate, formatListDate } from "@/lib/format";
+import { useFontFaceCss } from "@/lib/local-fonts";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
 import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
 import {
@@ -142,11 +143,16 @@ export function buildSrcDoc(
   style = "font-family:system-ui,sans-serif;font-size:14px;line-height:1.6",
   /** 追加のスタイルの規則 (等幅の部分のフォントなど)。メール側のスタイルより前に置く。 */
   extraCss = "",
+  /** フォントのファイルを読み込んでよいオリジン (Android アプリで端末のフォントを使うとき)。 */
+  fontSrc = "",
 ): string {
   const imgSrc = allowRemoteImages ? "data: https:" : "data:";
+  const fontPolicy = /^https:\/\/[a-z0-9.-]+(:\d+)?$/.test(fontSrc)
+    ? `; font-src ${fontSrc}`
+    : "";
   return [
     "<!doctype html><html><head>",
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${imgSrc}">`,
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${imgSrc}${fontPolicy}">`,
     // 画像を読み込むときに、このアプリの URL を相手のサーバーへ伝えない。
     '<meta name="referrer" content="no-referrer">',
     '<base target="_blank">',
@@ -1367,7 +1373,17 @@ function MessageContent({
   const showImages =
     preferences.remoteImages === "always" || imagesShownFor === message.id;
   const frameStyle = bodyStyle(preferences);
-  const frameCss = bodyExtraCss(preferences);
+  // Android アプリでは、本文に使う端末のフォントのファイルを、本文の枠の中でも読み込む。
+  const faceCss = useFontFaceCss(
+    [
+      preferences.bodyCustomFont,
+      preferences.sansFont,
+      preferences.serifFont,
+      preferences.monoFont,
+    ].filter(Boolean),
+  );
+  const frameCss = faceCss + bodyExtraCss(preferences);
+  const fontSrc = faceCss ? window.location.origin : "";
   const { embedded, listed } = useMemo(
     () => splitAttachments(message.bodyHtml, message.attachments),
     [message.bodyHtml, message.attachments],
@@ -1381,9 +1397,10 @@ function MessageContent({
             showImages,
             frameStyle,
             frameCss,
+            fontSrc,
           )
         : null,
-    [message.bodyHtml, embeddedUrls, showImages, frameStyle, frameCss],
+    [message.bodyHtml, embeddedUrls, showImages, frameStyle, frameCss, fontSrc],
   );
   const imagesBlocked =
     !showImages &&

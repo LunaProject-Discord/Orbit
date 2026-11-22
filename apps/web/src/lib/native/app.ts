@@ -49,6 +49,8 @@ export async function hideSplash(): Promise<void> {
 type AppShell = {
   setTheme(options: { mode: ThemeMode }): Promise<void>;
   isPushConfigured(): Promise<{ configured: boolean }>;
+  /** 端末に入っているフォント (apps/mobile の FontCatalog)。形は lib/local-fonts.ts で確かめる。 */
+  listFonts(): Promise<{ fonts: unknown }>;
 };
 
 // Capacitor のプラグインは、どんな名前のメソッドも端末側へ取り次ぐ Proxy になっている。

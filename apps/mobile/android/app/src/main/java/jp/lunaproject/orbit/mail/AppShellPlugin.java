@@ -45,4 +45,19 @@ public class AppShellPlugin extends Plugin {
         result.put("configured", id != 0);
         call.resolve(result);
     }
+
+    /**
+     * 端末に入っているフォントの一覧。画面側は、ここで返すファイルを @font-face で読み込んで使う。
+     * フォントのファイルを順に開くので少し時間がかかる (プラグインの呼び出しは画面とは別のスレッドで動く)。
+     */
+    @PluginMethod
+    public void listFonts(PluginCall call) {
+        try {
+            JSObject result = new JSObject();
+            result.put("fonts", FontCatalog.list());
+            call.resolve(result);
+        } catch (RuntimeException error) {
+            call.reject("フォントの一覧を取得できませんでした。", error);
+        }
+    }
 }

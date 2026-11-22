@@ -16,6 +16,7 @@ import {
   type LocalFont,
   loadLocalFonts,
   searchFonts,
+  useFontListSupport,
   useLocalFonts,
 } from "@/lib/local-fonts";
 import { cleanFontName } from "@/lib/preferences";
@@ -54,6 +55,8 @@ export function FontPicker({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const { status, fonts } = useLocalFonts();
+  // Android アプリでは、フォントはファイルを読み込んで使うので、一覧に無い名前は指定できない。
+  const canType = useFontListSupport() !== "native";
   // 一覧の枠は開いてから描かれるので、描かれたときに並べ直せるよう state で持つ。
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
     null,
@@ -73,6 +76,7 @@ export function FontPicker({
     // (一覧を取れなかったときや、あとから入れるフォントのため)。
     const typed = cleanFontName(query);
     if (
+      canType &&
       typed &&
       !fonts.some((font) => font.family.toLowerCase() === typed.toLowerCase())
     ) {
@@ -80,7 +84,7 @@ export function FontPicker({
     }
     for (const font of ordered) result.push({ kind: "font", font });
     return result;
-  }, [fonts, query, monospaceFirst]);
+  }, [fonts, query, monospaceFirst, canType]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -209,7 +213,8 @@ export function FontPicker({
         )}
         {status === "error" && (
           <p className="text-muted-foreground text-xs leading-relaxed">
-            フォントの一覧を取得できませんでした。名前を入力して指定できます。
+            フォントの一覧を取得できませんでした。
+            {canType && "名前を入力して指定できます。"}
           </p>
         )}
         <div

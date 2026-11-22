@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  fontFaceCss,
   fontListSupport,
   loadLocalFonts,
   normalizeFonts,
@@ -66,6 +67,74 @@ describe("normalizeFonts", () => {
     ).toEqual([
       { family: "MS Gothic", label: "ＭＳ ゴシック", monospace: true },
     ]);
+  });
+});
+
+describe("fontFaceCss", () => {
+  const fonts = normalizeFonts([
+    {
+      family: "Roboto",
+      faces: [
+        {
+          path: "/system/fonts/Roboto-Regular.ttf",
+          weightMin: 100,
+          weightMax: 900,
+          italic: false,
+        },
+        {
+          path: "/system/fonts/Roboto-Italic.ttf",
+          weightMin: 400,
+          weightMax: 400,
+          italic: true,
+        },
+        {
+          path: '/system/fonts/bad".ttf',
+          weightMin: 400,
+          weightMax: 400,
+          italic: false,
+        },
+        {
+          path: "/system/../etc/passwd",
+          weightMin: 400,
+          weightMax: 400,
+          italic: false,
+        },
+      ],
+    },
+    {
+      family: "Noto Serif CJK JP",
+      faces: [{ path: "/system/fonts/NotoSerifCJK-Regular.ttc" }],
+    },
+    { family: "Arial" },
+  ]);
+  const url = (path: string) => `https://localhost/_capacitor_file_${path}`;
+
+  it("ファイルごとに、太さと傾きを付けた規則を作る", () => {
+    expect(fontFaceCss(fonts, url, new Set(["Roboto"]))).toBe(
+      '@font-face{font-family:"Roboto";src:url("https://localhost/_capacitor_file_/system/fonts/Roboto-Regular.ttf");font-weight:100 900;font-style:normal;font-display:swap}' +
+        '@font-face{font-family:"Roboto";src:url("https://localhost/_capacitor_file_/system/fonts/Roboto-Italic.ttf");font-weight:400;font-style:italic;font-display:swap}',
+    );
+  });
+
+  it("ファイルを持たないフォントの分は作らない", () => {
+    expect(fontFaceCss(fonts, url, new Set(["Arial"]))).toBe("");
+    const all = fontFaceCss(fonts, url);
+    expect(all).toContain('"Noto Serif CJK JP"');
+    expect(all).not.toContain("Arial");
+    expect(all).not.toContain("passwd");
+  });
+});
+
+describe("Android アプリ", () => {
+  it("アプリの中では native", () => {
+    (window as unknown as { Capacitor?: unknown }).Capacitor = {
+      isNativePlatform: () => true,
+    };
+    try {
+      expect(fontListSupport()).toBe("native");
+    } finally {
+      delete (window as unknown as { Capacitor?: unknown }).Capacitor;
+    }
   });
 });
 
