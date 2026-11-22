@@ -42,7 +42,7 @@ import {
   type SidebarMenuActions,
 } from "@/components/mail/sidebar-menus";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
-import { BUILTIN_ICONS, UnifiedMark } from "@/components/mail/unified-mark";
+import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -71,7 +71,9 @@ import {
 import type { SpecialView } from "@/lib/route";
 import type { SyncStatus } from "@/lib/sync-status";
 import {
-  BUILTIN_LABELS,
+  type BuiltinView,
+  builtinLabel,
+  builtinStyle,
   type SidebarEntry,
   sidebarEntries,
 } from "@/lib/unified";
@@ -131,6 +133,8 @@ const VIEW_GROUP = "views";
 export type ViewMenuActions = {
   onCreate: () => void;
   onEdit: (folder: UnifiedFolder) => void;
+  /** 初めからある項目の名前・アイコン・色を変える。 */
+  onEditBuiltin: (view: BuiltinView) => void;
   onDelete: (folder: UnifiedFolder) => void;
   /** 項目をサイドバーから隠す。key は初めからある項目の名前か、統合フォルダの ID。 */
   onHide: (key: string) => void;
@@ -418,6 +422,11 @@ export function AccountSidebar({
                 <ViewItem
                   key={entry.key}
                   entry={entry}
+                  label={
+                    entry.folder
+                      ? entry.folder.name
+                      : builtinLabel(unified, entry.builtin)
+                  }
                   keys={viewKeys}
                   icon={
                     entry.folder ? (
@@ -425,7 +434,11 @@ export function AccountSidebar({
                     ) : outgoingProblem ? (
                       <CircleAlertIcon className="text-destructive" />
                     ) : (
-                      <BuiltinIcon view={entry.builtin} />
+                      <BuiltinMark
+                        view={entry.builtin}
+                        style={builtinStyle(unified, entry.builtin)}
+                        className="mt-0.5"
+                      />
                     )
                   }
                   count={
@@ -556,17 +569,13 @@ export function AccountSidebar({
 
 type MoveHandler = (data: SortData, ids: string[], id: string) => void;
 
-function BuiltinIcon({ view }: { view: keyof typeof BUILTIN_ICONS }) {
-  const Icon = BUILTIN_ICONS[view];
-  return <Icon />;
-}
-
 /**
  * サイドバー上部の 1 項目 (初めからある項目か、統合フォルダ)。
  * ドラッグや Alt+↑↓ で並び替えられ、右クリックで編集や非表示などのメニューを出す。
  */
 function ViewItem({
   entry,
+  label,
   keys,
   icon,
   count,
@@ -578,6 +587,7 @@ function ViewItem({
   onMenuOpenChange,
 }: {
   entry: SidebarEntry;
+  label: string;
   /** 見えている項目 (いまの表示順)。 */
   keys: string[];
   icon: React.ReactNode;
@@ -589,9 +599,6 @@ function ViewItem({
   actions: ViewMenuActions;
   onMenuOpenChange: (open: boolean) => void;
 }) {
-  const label = entry.folder
-    ? entry.folder.name
-    : BUILTIN_LABELS[entry.builtin];
   const sortData: SortData = {
     group: VIEW_GROUP,
     ids: keys,
@@ -626,12 +633,16 @@ function ViewItem({
             <FolderOpenIcon />
             開く
           </ContextMenuItem>
-          {folder && (
-            <ContextMenuItem onClick={() => actions.onEdit(folder)}>
-              <PencilIcon />
-              編集…
-            </ContextMenuItem>
-          )}
+          <ContextMenuItem
+            onClick={() =>
+              folder
+                ? actions.onEdit(folder)
+                : actions.onEditBuiltin(entry.builtin)
+            }
+          >
+            <PencilIcon />
+            {folder ? "編集…" : "名前・アイコン・色を変更…"}
+          </ContextMenuItem>
           <ContextMenuSeparator />
           <MoveItems
             id={entry.key}

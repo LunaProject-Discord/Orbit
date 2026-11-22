@@ -1,4 +1,5 @@
 import type {
+  BuiltinStyle,
   MailboxSummary,
   SidebarLayout,
   UnifiedFilters,
@@ -68,7 +69,29 @@ export const emptyUnifiedFilters: UnifiedFilters = {
 export const emptyUnifiedState: UnifiedState = {
   folders: [],
   layout: { order: [], hidden: [] },
+  builtins: {},
 };
+
+const NO_STYLE: BuiltinStyle = { name: null, icon: null, color: null };
+
+/** 初めからある項目に付けた見た目 (変えていなければ、すべて null)。 */
+export function builtinStyle(
+  state: Pick<UnifiedState, "builtins">,
+  view: BuiltinView,
+): BuiltinStyle {
+  return state.builtins[view] ?? NO_STYLE;
+}
+
+/** 初めからある項目の表示名 (名前を付けていなければ、初期の名前)。 */
+export function builtinLabel(
+  state: Pick<UnifiedState, "builtins">,
+  view: BuiltinView,
+): string {
+  return state.builtins[view]?.name || BUILTIN_LABELS[view];
+}
+
+/** 並び順の計算に使う部分 (統合フォルダと、保存してある並び順)。 */
+type LayoutState = Pick<UnifiedState, "folders" | "layout">;
 
 /** サイドバー上部の 1 項目。key は、初めからある項目の名前か統合フォルダの ID。 */
 export type SidebarEntry =
@@ -83,7 +106,7 @@ const isBuiltin = (key: string): key is BuiltinView =>
  * (後から作った統合フォルダなど) は、初めからある項目、統合フォルダ (作った順) の順で後ろに足す。
  * 無くなった統合フォルダの ID は無視する。
  */
-export function sidebarEntries(state: UnifiedState): {
+export function sidebarEntries(state: LayoutState): {
   /** 隠している項目も含めた、すべての項目。 */
   all: SidebarEntry[];
   visible: SidebarEntry[];
@@ -112,7 +135,7 @@ export function sidebarEntries(state: UnifiedState): {
  * 隠している項目は、もとの位置 (直前にあった項目の後ろ) に残す。
  */
 export function reorderLayout(
-  state: UnifiedState,
+  state: LayoutState,
   visibleKeys: string[],
 ): SidebarLayout {
   const { all } = sidebarEntries(state);
@@ -131,7 +154,7 @@ export function reorderLayout(
 
 /** 項目を隠す / また表示する。並び順も、いまの表示のとおりに保存する。 */
 export function setEntryHidden(
-  state: UnifiedState,
+  state: LayoutState,
   key: string,
   hidden: boolean,
 ): SidebarLayout {
@@ -239,7 +262,8 @@ export function loadCachedUnified(): UnifiedState | null {
       Array.isArray(state.layout?.order) &&
       Array.isArray(state.layout?.hidden)
     ) {
-      return state as UnifiedState;
+      // 以前の版が保存した内容には、初めからある項目の見た目が無い。
+      return { ...(state as UnifiedState), builtins: state.builtins ?? {} };
     }
   } catch {
     // 読めなければ、サーバーから取得するまで初めからある項目だけを出す。
@@ -247,7 +271,7 @@ export function loadCachedUnified(): UnifiedState | null {
   return null;
 }
 
-export function storeCachedUnified(state: UnifiedState): void {
+export function storeCachedUnified(state: LayoutState): void {
   try {
     window.localStorage.setItem(CACHE_KEY, JSON.stringify(state));
   } catch {

@@ -15,6 +15,7 @@ import type { AppEnv, RouteDeps } from "../context.js";
 import { accountIcon } from "../lib/account-icon.js";
 import { threadCount } from "../lib/threads.js";
 import {
+  BUILTIN_VIEWS,
   loadUnifiedFolder,
   normalizeFilters,
   normalizeScope,
@@ -50,6 +51,14 @@ const updateBody = z
     filters: unifiedFilters.optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
+
+const builtinParam = z.object({ view: z.enum(BUILTIN_VIEWS) });
+/** 初めからある項目の見た目。null にした項目は、初期の設定に戻る。 */
+const builtinBody = z.object({
+  name: z.string().trim().max(100).nullable(),
+  icon: accountIcon.nullable(),
+  color: z.string().regex(COLOR).nullable(),
+});
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -99,7 +108,11 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
         .where(eq(unifiedFolders.userId, userId))
         .orderBy(asc(unifiedFolders.createdAt), asc(unifiedFolders.id)),
       db
-        .select({ order: sidebarLayouts.order, hidden: sidebarLayouts.hidden })
+        .select({
+          order: sidebarLayouts.order,
+          hidden: sidebarLayouts.hidden,
+          builtins: sidebarLayouts.builtins,
+        })
         .from(sidebarLayouts)
         .where(eq(sidebarLayouts.userId, userId)),
     ]);
@@ -111,7 +124,8 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
     );
     return c.json({
       folders,
-      layout: layout ?? { order: [], hidden: [] },
+      layout: { order: layout?.order ?? [], hidden: layout?.hidden ?? [] },
+      builtins: layout?.builtins ?? {},
     });
   });
 
@@ -151,6 +165,50 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
     await notifyChanged(db, userId);
     return c.body(null, 204);
   });
+
+  /**
+   * 初めからある項目 (すべての受信トレイ、スター付き、下書き、送信待ち) の
+   * 名前・アイコン・色を変える。すべて null なら、初期の設定に戻す。
+   */
+  app.put(
+    "/builtins/:view",
+    zValidator("param", builtinParam),
+    zValidator("json", builtinBody),
+    async (c) => {
+      const { view } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const userId = c.var.user.id;
+      const style = { ...body, name: body.name === "" ? null : body.name };
+      const builtins = await db.transaction(async (tx) => {
+        await tx
+          .insert(sidebarLayouts)
+          .values({ userId })
+          .onConflictDoNothing();
+        const [row] = await tx
+          .select({ builtins: sidebarLayouts.builtins })
+          .from(sidebarLayouts)
+          .where(eq(sidebarLayouts.userId, userId))
+          .for("update");
+        const next = { ...(row?.builtins ?? {}) };
+        if (
+          style.name === null &&
+          style.icon === null &&
+          style.color === null
+        ) {
+          delete next[view];
+        } else {
+          next[view] = style;
+        }
+        await tx
+          .update(sidebarLayouts)
+          .set({ builtins: next })
+          .where(eq(sidebarLayouts.userId, userId));
+        return next;
+      });
+      await notifyChanged(db, userId);
+      return c.json({ builtins });
+    },
+  );
 
   app.patch(
     "/:id",

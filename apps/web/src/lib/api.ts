@@ -718,7 +718,30 @@ export type UnifiedFolderInput = Pick<
  */
 export type SidebarLayout = { order: string[]; hidden: string[] };
 
-export type UnifiedState = { folders: UnifiedFolder[]; layout: SidebarLayout };
+/** 初めからある項目に付けた見た目。null は初期の設定のまま。 */
+export type BuiltinStyle = {
+  name: string | null;
+  icon: string | null;
+  color: string | null;
+};
+
+export type UnifiedState = {
+  folders: UnifiedFolder[];
+  layout: SidebarLayout;
+  /** 初めからある項目 (inbox など) に付けた名前・アイコン・色。変えていない項目は載らない。 */
+  builtins: Record<string, BuiltinStyle>;
+};
+
+/** 初めからある項目の名前・アイコン・色を保存する。すべて null なら初期の設定に戻る。 */
+export async function saveBuiltinStyle(
+  view: string,
+  style: BuiltinStyle,
+): Promise<Record<string, BuiltinStyle>> {
+  const { builtins } = await apiJson<{
+    builtins: Record<string, BuiltinStyle>;
+  }>(`/v1/unified/builtins/${view}`, { method: "PUT", body: style });
+  return builtins;
+}
 
 export async function listUnified(signal?: AbortSignal): Promise<UnifiedState> {
   return apiJson<UnifiedState>("/v1/unified", { signal });

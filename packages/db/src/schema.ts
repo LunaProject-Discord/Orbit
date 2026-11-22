@@ -617,6 +617,13 @@ export const unifiedFolders = pgTable(
   (t) => [index("unified_folders_user_idx").on(t.userId)],
 );
 
+/** 初めからある項目の見た目。null は初期の設定のまま。 */
+export type BuiltinViewStyle = {
+  name: string | null;
+  icon: string | null;
+  color: string | null;
+};
+
 /**
  * サイドバー上部の項目 (すべての受信トレイ、スター付き、下書き、送信待ち、統合フォルダ) の
  * 並び順と、隠している項目。項目は、決まった名前 (inbox など) か統合フォルダの ID で表す。
@@ -628,5 +635,10 @@ export const sidebarLayouts = pgTable("sidebar_layouts", {
   /** 上から順の項目。載っていない項目は、既定の順でその後ろに並ぶ。 */
   order: jsonb().$type<string[]>().notNull().default([]),
   hidden: jsonb().$type<string[]>().notNull().default([]),
+  /** 初めからある項目 (inbox など) に付けた名前・アイコン・色。変えていない項目は載らない。 */
+  builtins: jsonb()
+    .$type<Record<string, BuiltinViewStyle>>()
+    .notNull()
+    .default({}),
   updatedAt: updatedAt(),
 });
