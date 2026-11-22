@@ -11,6 +11,7 @@ import { OfflineBoot } from "@/components/offline-boot";
 import { PreferencesEffect } from "@/components/preferences-effect";
 import { ScrollbarHover } from "@/components/scrollbar-hover";
 import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 export const metadata: Metadata = {
@@ -46,6 +47,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <TooltipProvider>
               <AuthGate>{children}</AuthGate>
             </TooltipProvider>
+            <Toaster />
           </AuthProvider>
         </ThemeProvider>
       </body>
