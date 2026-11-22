@@ -129,7 +129,10 @@ export function buildSrcDoc(
     '<meta name="referrer" content="no-referrer">',
     '<base target="_blank">',
     '<meta charset="utf-8">',
-    `<style>html{background:#fff;color:#111}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>`,
+    // 縦のスクロールは外側 (メール表示) で行うので、枠の中には縦のバーを出さない。
+    // 高さは BodyFrame が中身に合わせる。
+    // html と body の高さの指定 (100% など) は外す。残すと、枠を伸ばすたびに中身も伸びて高さが定まらない。
+    `<style>html{background:#fff;color:#111;overflow-y:hidden}html,body{height:auto!important}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>`,
     BODY_SCROLLBAR_STYLE,
     "</head><body>",
     html,
@@ -924,22 +927,64 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
   useEffect(() => () => observer.current?.disconnect(), []);
 
   const measure = () => {
-    const body = frame.current?.contentDocument?.body;
-    if (!body) return;
+    const doc = frame.current?.contentDocument;
+    const view = doc?.defaultView;
+    const body = doc?.body;
+    if (!doc || !view || !body) return;
+    const root = doc.documentElement;
+    /**
+     * body の外にはみ出した中身 (html 側の余白、位置を固定した要素など) を収めるのに必要だった高さ。
+     * これを足さないと、枠の中にもスクロールが要り、外側のバーと二重になる。
+     * 枠を広げるとはみ出しは測れなくなるので、幅が変わるまで覚えておく。
+     */
+    let floor = 0;
+    /**
+     * 枠を伸ばしても同じだけ足りない状態が続いた回数と、その足りなかった高さ。
+     * 枠の高さに連動して伸び続ける本文 (100vh を使った指定など) を見分けるために数える。
+     */
+    let chased = 0;
+    let lastShort = 0;
+    let width = view.innerWidth;
     const update = () => {
-      const margin = Number.parseFloat(getComputedStyle(body).marginBottom);
-      setHeight(
-        Math.ceil(
-          body.getBoundingClientRect().bottom +
-            (Number.isFinite(margin) ? margin : 0),
-        ),
+      if (view.innerWidth !== width) {
+        width = view.innerWidth;
+        floor = 0;
+        chased = 0;
+        lastShort = 0;
+        root.style.overflowY = "";
+      }
+      if (chased >= 3) return;
+      const margin = Number.parseFloat(
+        view.getComputedStyle(body).marginBottom,
       );
+      // 本文 (body) の下端。幅が変わって本文が短くなったときに、縮められるようにここを基準にする。
+      const bottom = Math.ceil(
+        body.getBoundingClientRect().bottom +
+          view.scrollY +
+          (Number.isFinite(margin) ? margin : 0),
+      );
+      if (root.scrollHeight > root.clientHeight) floor = root.scrollHeight;
+      const content = Math.max(bottom, floor);
+      const short = content - root.clientHeight;
+      chased = short > 0 && Math.abs(short - lastShort) < 1 ? chased + 1 : 0;
+      lastShort = short;
+      if (chased >= 3) {
+        // 追いかけるのをやめて、枠の中でスクロールできるようにする。
+        root.style.overflowY = "auto";
+        return;
+      }
+      // 横に長い本文では、横のスクロールバーの分だけ見える高さが減る。
+      const next = content + (view.innerHeight - root.clientHeight);
+      setHeight((current) => (Math.abs(current - next) < 1 ? current : next));
     };
     update();
     // 画像の読み込みや幅の変化で高さが変わったら、合わせ直す。
     observer.current?.disconnect();
     observer.current = new ResizeObserver(update);
     observer.current.observe(body);
+    observer.current.observe(doc.documentElement);
+    // body の大きさが変わらない (高さを固定している) 本文でも、画像を読み込んだら測り直す。
+    doc.addEventListener("load", update, true);
   };
 
   return (
