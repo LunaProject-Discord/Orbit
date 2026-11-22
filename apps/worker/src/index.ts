@@ -1,8 +1,10 @@
 import {
   attachmentKey,
   attachmentsDir,
+  FcmClient,
   graphWebhookBaseUrl,
   loadEncryptionKey,
+  loadFcmConfig,
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
@@ -10,7 +12,12 @@ import {
 } from "@mail/core";
 import { createDb, drafts } from "@mail/db";
 import { AccountManager } from "./account-manager.js";
-import { PushSender, webPushTransport } from "./new-mail.js";
+import {
+  combineSenders,
+  DevicePushSender,
+  PushSender,
+  webPushTransport,
+} from "./new-mail.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -19,6 +26,7 @@ if (!databaseUrl) {
 const encryptionKey = loadEncryptionKey(process.env.CREDENTIALS_ENCRYPTION_KEY);
 
 const webPush = loadWebPushConfig(process.env);
+const fcm = loadFcmConfig(process.env);
 
 const { db, pool } = createDb(databaseUrl);
 const manager = new AccountManager(
@@ -31,13 +39,22 @@ const manager = new AccountManager(
   // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
   process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
   loadGoogleOAuthConfig(process.env),
-  // 新着メールの通知 (Web Push)。VAPID の鍵が無ければ送らない。
-  webPush && new PushSender(db, webPushTransport(webPush)),
+  // 新着メールの通知。ブラウザーへは Web Push (VAPID の鍵が無ければ送らない)、
+  // スマホアプリへは FCM (FCM_SERVICE_ACCOUNT が無ければ送らない)。
+  combineSenders([
+    webPush && new PushSender(db, webPushTransport(webPush)),
+    fcm && new DevicePushSender(db, new FcmClient(fcm)),
+  ]),
 );
 await manager.start();
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
 );
+if (!fcm) {
+  console.log(
+    "FCM_SERVICE_ACCOUNT が未設定のため、スマホアプリへの通知は送りません。",
+  );
+}
 if (!webPush) {
   console.log(
     "VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY が未設定のため、Web Push の通知は送りません。",

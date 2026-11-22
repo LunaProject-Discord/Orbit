@@ -1,6 +1,7 @@
 export * from "./attachment-store.js";
 export * from "./credentials.js";
 export * from "./events.js";
+export * from "./fcm.js";
 export * from "./google-oauth.js";
 export * from "./graph-webhook.js";
 export * from "./legacy-tls.js";

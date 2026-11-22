@@ -7,6 +7,7 @@ import "gen-interface-jp/display-600.css";
 import "gen-interface-jp/display-700.css";
 import "./globals.css";
 import { AuthGate, AuthProvider } from "@/components/auth-provider";
+import { NativeBoot } from "@/components/native-boot";
 import { OfflineBoot } from "@/components/offline-boot";
 import { PreferencesEffect } from "@/components/preferences-effect";
 import { ScrollbarHover } from "@/components/scrollbar-hover";
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <PreferencesEffect />
         <ScrollbarHover />
         <ThemeProvider>
+          <NativeBoot />
           <AuthProvider>
             <TooltipProvider>
               <AuthGate>{children}</AuthGate>

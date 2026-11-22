@@ -59,7 +59,30 @@ const createAccountBody = z.object({
 const microsoftAuthorizeBody = z.object({
   /** 再ログインするアカウントの ID。ログイン画面にそのメールアドレスを入れておく。 */
   accountId: z.uuid().optional(),
+  /** スマホアプリから始めるログイン。戻ってきた Web のページが、アプリへ引き渡す。 */
+  app: z.boolean().optional(),
 });
+
+/**
+ * アプリから始めたログインの state に付ける目印。ログイン後に戻る先は Web 版の URL なので、
+ * 戻ってきたページがこの目印を見て、アプリ専用の URL でアプリへ引き渡す。
+ * 目印は state の検証には関わらない (complete で外してから確かめる)。
+ */
+const APP_STATE_PREFIX = "app~";
+
+function markAppState(url: string, app: boolean | undefined): string {
+  if (!app) return url;
+  const parsed = new URL(url);
+  const state = parsed.searchParams.get("state");
+  if (state) parsed.searchParams.set("state", `${APP_STATE_PREFIX}${state}`);
+  return parsed.toString();
+}
+
+function unmarkAppState(state: string): string {
+  return state.startsWith(APP_STATE_PREFIX)
+    ? state.slice(APP_STATE_PREFIX.length)
+    : state;
+}
 
 const oauthAuthorizeBody = microsoftAuthorizeBody;
 
@@ -286,7 +309,7 @@ export function accountRoutes({
       if (!microsoft) {
         return c.json({ error: "microsoft_not_configured" }, 503);
       }
-      const { accountId } = c.req.valid("json");
+      const { accountId, app: fromApp } = c.req.valid("json");
       const user = c.var.user;
       let loginHint: string | undefined;
       if (accountId) {
@@ -312,7 +335,7 @@ export function accountRoutes({
         encryptionKey,
         loginHint,
       });
-      return c.json({ url });
+      return c.json({ url: markAppState(url, fromApp) });
     },
   );
 
@@ -326,7 +349,7 @@ export function accountRoutes({
       const body = c.req.valid("json");
       const user = c.var.user;
       const opened = openMicrosoftState({
-        state: body.state,
+        state: unmarkAppState(body.state),
         userId: user.id,
         encryptionKey,
       });
@@ -429,7 +452,7 @@ export function accountRoutes({
       if (!google) {
         return c.json({ error: "google_not_configured" }, 503);
       }
-      const { accountId } = c.req.valid("json");
+      const { accountId, app: fromApp } = c.req.valid("json");
       const user = c.var.user;
       let loginHint: string | undefined;
       if (accountId) {
@@ -455,7 +478,7 @@ export function accountRoutes({
         encryptionKey,
         loginHint,
       });
-      return c.json({ url });
+      return c.json({ url: markAppState(url, fromApp) });
     },
   );
 
@@ -469,7 +492,7 @@ export function accountRoutes({
       const body = c.req.valid("json");
       const user = c.var.user;
       const opened = openGoogleState({
-        state: body.state,
+        state: unmarkAppState(body.state),
         userId: user.id,
         encryptionKey,
       });

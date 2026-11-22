@@ -314,6 +314,7 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump .
 | `GOOGLE_CLIENT_SECRET` | | Google の OAuth クライアント シークレット |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | | 新着メールの通知 (Web Push) の鍵の組 (自動生成)。変えると端末で通知を許可し直す必要がある |
 | `VAPID_SUBJECT` | | プッシュサービスが運営者へ連絡するための宛先。既定は `https://<DOMAIN>` |
+| `FCM_SERVICE_ACCOUNT` | | Android アプリへの新着メールの通知 (FCM) に使う、Firebase のサービスアカウントの鍵 (JSON を base64 にした値)。空なら送らない。手順は [android-app.md](android-app.md) |
 | `EXTRA_ALLOWED_ORIGINS` | | Web 以外から API を使うときに許可するオリジン (カンマ区切り)。デスクトップ版やスマホ版を出すときに使う |
 | `BACKUP_HOUR` | | バックアップを取る時刻 (0〜23)。既定は 4 |
 | `BACKUP_KEEP_DAYS` | | バックアップを残す日数。既定は 14 |

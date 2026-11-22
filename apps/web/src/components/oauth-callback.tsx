@@ -11,6 +11,8 @@ import {
   NetworkError,
   type OAuthProvider,
 } from "@/lib/api";
+import { isNativeApp } from "@/lib/native/app";
+import { appOAuthUrl, isAppOAuthReturn } from "@/lib/native/oauth";
 
 const names: Record<OAuthProvider, string> = {
   google: "Google",
@@ -73,9 +75,25 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
   const started = useRef(false);
   const signedIn = auth.status === "signed-in";
   const name = names[provider];
+  /**
+   * スマホアプリから始めたログインが、ブラウザーの Web 版へ戻ってきたとき。
+   * このページでは追加せず、受け取った内容をアプリへ引き渡す (アプリへ戻る URL を入れる)。
+   */
+  const [appUrl, setAppUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!signedIn || started.current) return;
+    if (started.current) return;
+    if (!isNativeApp() && isAppOAuthReturn(window.location.search)) {
+      started.current = true;
+      const url = appOAuthUrl(provider, window.location.search);
+      // code を履歴やリファラーに残さない。
+      window.history.replaceState(null, "", window.location.pathname);
+      setAppUrl(url);
+      // 自動で戻れないブラウザーもあるので、ボタンも出しておく。
+      window.location.assign(url);
+      return;
+    }
+    if (!signedIn) return;
     started.current = true;
     const params = new URLSearchParams(window.location.search);
     // code を履歴やリファラーに残さない。
@@ -96,6 +114,21 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
       .then(() => router.replace("/"))
       .catch((cause) => setError(messageOf(provider, cause)));
   }, [signedIn, router, provider]);
+
+  if (appUrl) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+        <h1 className="font-semibold text-xl">アプリに戻ります</h1>
+        <p className="max-w-md text-muted-foreground text-sm">
+          {name}{" "}
+          のログインが済みました。自動で戻らないときは、下のボタンを押してください。
+        </p>
+        <a href={appUrl} className={buttonVariants()}>
+          Orbit Mail に戻る
+        </a>
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">

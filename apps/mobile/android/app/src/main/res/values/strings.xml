@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Orbit Mail</string>
+    <string name="title_activity_main">Orbit Mail</string>
+    <string name="package_name">jp.lunaproject.orbit.mail</string>
+    <string name="custom_url_scheme">jp.lunaproject.orbit.mail</string>
+    <!-- 新着メールの通知の分類 (Android の設定画面に出る名前)。ID はサーバーが送る通知と合わせる。 -->
+    <string name="channel_new_mail_id" translatable="false">new-mail</string>
+    <string name="channel_new_mail_name">新着メール</string>
+    <string name="channel_new_mail_description">新しいメールが届いたときに知らせます</string>
+</resources>

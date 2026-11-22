@@ -34,6 +34,7 @@ export type AppOptions = {
   microsoft: RouteDeps["microsoft"];
   google: RouteDeps["google"];
   webPushPublicKey: string | null;
+  fcmEnabled: boolean;
 };
 
 export function createApp({
@@ -46,6 +47,7 @@ export function createApp({
   microsoft,
   google,
   webPushPublicKey,
+  fcmEnabled,
 }: AppOptions) {
   const app = new Hono();
 
@@ -98,6 +100,7 @@ export function createApp({
     microsoft,
     google,
     webPushPublicKey,
+    fcmEnabled,
   };
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));

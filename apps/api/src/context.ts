@@ -17,6 +17,8 @@ export type RouteDeps = {
   google: { config: GoogleOAuthConfig; redirectUri: string } | null;
   /** Web Push の公開鍵 (VAPID)。未設定なら null で、端末は画面を開いている間だけ通知する。 */
   webPushPublicKey: string | null;
+  /** スマホアプリへの通知 (FCM) をサーバーが送れるか。 */
+  fcmEnabled: boolean;
 };
 
 /** ログイン済みであることを確かめ、利用者を c.var.user に入れる。 */

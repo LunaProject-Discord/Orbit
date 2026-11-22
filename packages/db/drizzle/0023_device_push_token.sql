@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "devices_push_token_idx" ON "devices" USING btree ("push_token");
