@@ -15,6 +15,7 @@ import {
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { accountColor } from "@/lib/account-colors";
+import { AccountMark } from "@/lib/account-icons";
 import type { Account, MailboxSummary } from "@/lib/api";
 import {
   hoveredOverlayScrollbarOwner,
@@ -205,15 +206,20 @@ export function SidebarRail({
               selected={folderView && selectedAccountId === account.id}
               onClick={() => onSelect(account.id, null)}
             >
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "flex size-5 items-center justify-center rounded-full font-semibold text-[10px] text-white uppercase leading-none",
-                  accountColor(accounts ?? [], account.id),
-                )}
-              >
-                {[...name][0] ?? ""}
-              </span>
+              {account.icon ? (
+                // アイコンや絵文字を選んでいるアカウントは、サイドバーと同じ印を出す。
+                <AccountMark accounts={accounts ?? []} account={account} />
+              ) : (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "flex size-5 items-center justify-center rounded-full font-semibold text-[10px] text-white uppercase leading-none",
+                    accountColor(accounts ?? [], account.id),
+                  )}
+                >
+                  {[...name][0] ?? ""}
+                </span>
+              )}
             </RailItem>
           );
         })}
