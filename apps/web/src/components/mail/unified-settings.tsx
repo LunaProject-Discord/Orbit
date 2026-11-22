@@ -36,9 +36,6 @@ const BUILTIN_DESCRIPTIONS = {
   outgoing: "まだ送り終えていないメール",
 } as const;
 
-/** この要素まで、設定画面をスクロールする (サイドバーのメニューから開いたとき)。 */
-export const UNIFIED_SETTINGS_ID = "settings-sidebar-items";
-
 /**
  * 設定画面の「サイドバーの項目と統合フォルダ」。サイドバー上部の項目の並び替えと
  * 表示 / 非表示、統合フォルダの作成・編集・削除をまとめて行う。
@@ -69,14 +66,11 @@ export function UnifiedSettings({
     if (order) onLayoutChange({ order, hidden: unified.layout.hidden });
   };
   return (
-    <section
-      id={UNIFIED_SETTINGS_ID}
-      className="flex scroll-mt-4 flex-col gap-3"
-    >
+    <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <h2 className="font-semibold text-base">
+        <h3 className="font-semibold text-base">
           サイドバーの項目と統合フォルダ
-        </h2>
+        </h3>
         <p className="text-muted-foreground text-sm">
           サイドバーの上部に並ぶ項目の順番と、表示するかどうかを選べます。統合フォルダは、複数のアカウントやフォルダのメールを
           1
