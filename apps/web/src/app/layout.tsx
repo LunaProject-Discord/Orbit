@@ -13,7 +13,8 @@ import { ScrollbarHover } from "@/components/scrollbar-hover";
 import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
-  title: "Mail",
+  title: "Orbit",
+  applicationName: "Orbit",
   description: "複数の端末でリアルタイムに同期するメールアプリ",
 };
 

@@ -24,7 +24,7 @@ export type NotificationStatus =
 const SETTING_KEY = "mail.notifications";
 /** メッセージの ID (UUID) の形。通知や URL から受け取った値を確かめる。 */
 export const MESSAGE_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const APP_NAME = "Mail";
+const APP_NAME = "Orbit";
 
 /** 受信トレイの未読数の合計 (全アカウント分)。 */
 export function inboxUnreadCount(
