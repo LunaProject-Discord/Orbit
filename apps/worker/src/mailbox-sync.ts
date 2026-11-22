@@ -21,6 +21,11 @@ import { recordChanges } from "./changes.js";
 import { toListedMailboxes } from "./mailbox-list.js";
 import { applyMailboxList, type SyncAccount } from "./mailbox-store.js";
 import {
+  FETCH_HEADERS,
+  LIST_HEADERS,
+  parseListHeaders,
+} from "./message-headers.js";
+import {
   analyzeStructure,
   clean,
   flagsOf,
@@ -36,6 +41,7 @@ import { resolveThreadKey } from "./thread-key.js";
 
 const FETCH_CHUNK = 100;
 const BODY_BATCH = 20;
+const HEADER_BATCH = 200;
 /** 本文 1 パートあたりの上限。これを超える分は切り捨てる。 */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -129,6 +135,93 @@ export async function mailboxesWithPendingBodies(
         isNull(messages.bodyFetchedAt),
       ),
     );
+}
+
+/** 代理送信やメーリングリストの情報をまだ取り込んでいないメッセージがあるフォルダ。 */
+export async function mailboxesWithPendingHeaders(
+  db: Database,
+  accountId: string,
+) {
+  return db
+    .selectDistinct({ id: mailboxes.id, path: mailboxes.path })
+    .from(messages)
+    .innerJoin(messageMailboxes, eq(messageMailboxes.messageId, messages.id))
+    .innerJoin(mailboxes, eq(mailboxes.id, messageMailboxes.mailboxId))
+    .where(
+      and(
+        eq(messages.accountId, accountId),
+        isNull(messages.headersFetchedAt),
+        isNotNull(messageMailboxes.uid),
+      ),
+    );
+}
+
+/**
+ * 代理送信 (Sender) とメーリングリストの情報をまだ取り込んでいないメッセージを、
+ * 新しい順に 1 回分だけ補う。これらの項目を足す前に取り込んだメールが対象。
+ * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
+ */
+export async function fetchHeaders(
+  db: Database,
+  client: ImapFlow,
+  account: SyncAccount,
+  mailboxId: string,
+): Promise<boolean> {
+  const pending = await db
+    .select({
+      uid: messageMailboxes.uid,
+      messageId: messages.id,
+      from: messages.from,
+    })
+    .from(messageMailboxes)
+    .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
+    .where(
+      and(
+        eq(messageMailboxes.mailboxId, mailboxId),
+        isNotNull(messageMailboxes.uid),
+        isNull(messages.headersFetchedAt),
+      ),
+    )
+    .orderBy(desc(messages.receivedAt))
+    .limit(HEADER_BATCH + 1);
+  const batch = pending.slice(0, HEADER_BATCH);
+  if (batch.length === 0) return false;
+
+  const fetched = new Map<number, FetchMessageObject>();
+  for await (const message of client.fetch(
+    batch.map((row) => Number(row.uid)),
+    { uid: true, envelope: true, headers: LIST_HEADERS },
+    { uid: true },
+  )) {
+    fetched.set(message.uid, message);
+  }
+
+  const changed: string[] = [];
+  await db.transaction(async (tx) => {
+    for (const row of batch) {
+      // サーバーから消えていた場合は、空のまま取り込み済みにする (次の同期でメッセージごと消える)。
+      const message = fetched.get(Number(row.uid));
+      const sender = toAddresses(message?.envelope?.sender);
+      const list = parseListHeaders(message?.headers);
+      await tx
+        .update(messages)
+        .set({ sender, ...list, headersFetchedAt: new Date() })
+        .where(eq(messages.id, row.messageId));
+      // 画面に出る内容が増えたメールだけ、端末へ変更を知らせる。
+      const fromAddresses = new Set(
+        row.from.map((item) => item.address.toLowerCase()),
+      );
+      if (
+        list.listId !== null ||
+        list.listUnsubscribe.length > 0 ||
+        sender.some((item) => !fromAddresses.has(item.address.toLowerCase()))
+      ) {
+        changed.push(row.messageId);
+      }
+    }
+    await recordChanges(tx, account.userId, "message", "upsert", changed);
+  });
+  return pending.length > HEADER_BATCH;
 }
 
 /**
@@ -261,7 +354,7 @@ export async function syncMailbox(
         bodyStructure: true,
         internalDate: true,
         size: true,
-        headers: ["references"],
+        headers: FETCH_HEADERS,
       },
       { uid: true },
     )) {
@@ -452,6 +545,9 @@ async function insertMessages(
           cc: toAddresses(envelope.cc),
           bcc: toAddresses(envelope.bcc),
           replyTo: toAddresses(envelope.replyTo),
+          sender: toAddresses(envelope.sender),
+          ...parseListHeaders(message.headers),
+          headersFetchedAt: new Date(),
           sentAt,
           receivedAt,
           size: message.size ?? 0,
