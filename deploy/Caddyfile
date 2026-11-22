@@ -1,6 +1,8 @@
-# 独自ドメインで HTTPS を受け、Web (静的ファイル) と API へ振り分ける。
-# 証明書は Caddy が Let's Encrypt から自動で取得・更新する (80 番と 443 番が外から届く必要がある)。
-{$DOMAIN} {
+# Web (静的ファイル) と API へ振り分ける。待ち受け方は SITE_ADDRESS で決まる。
+#   既存の Web サーバー (Apache など) の後ろに置く場合: ":80"。HTTP のまま受け、HTTPS は手前の Web サーバーに任せる
+#   Caddy が直接公開する場合: ドメイン名。証明書を Let's Encrypt から自動で取得・更新する
+#     (80 番と 443 番が外から届く必要がある)
+{$SITE_ADDRESS} {
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
