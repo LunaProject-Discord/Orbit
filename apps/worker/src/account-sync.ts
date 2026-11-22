@@ -22,6 +22,7 @@ import {
   type SpecialUse,
   syncPriority,
 } from "./mailbox-list.js";
+import { renameMailboxPaths } from "./mailbox-operations.js";
 import {
   fetchBodies,
   loadMailboxStates,
@@ -666,7 +667,17 @@ export class AccountSync {
         const outbox = await processOutbox(
           this.db,
           this.account.id,
-          (operation) => applyImapOperation(client, operation),
+          async (operation) => {
+            const result = await applyImapOperation(client, operation);
+            if (result.ok && operation.kind === "mailbox_rename") {
+              await renameMailboxPaths(
+                this.db,
+                this.account,
+                operation.payload,
+              );
+            }
+            return result;
+          },
           (message) => this.log(message),
         );
         // 移動先のフォルダなど、受信トレイ以外にも変化がある。

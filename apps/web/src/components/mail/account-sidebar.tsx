@@ -606,6 +606,7 @@ function AccountItem({
           collapsed={collapsed}
           onToggle={onToggle}
           menuActions={menuActions}
+          account={account}
           onMenuOpenChange={onMenuOpenChange}
           isSelected={(mailbox) =>
             selected &&
@@ -721,6 +722,8 @@ type FolderListProps = {
   isSelected: (mailbox: MailboxSummary) => boolean;
   onSelect: (mailbox: MailboxSummary) => void;
   menuActions: SidebarMenuActions;
+  /** フォルダの持ち主のアカウント。 */
+  account: Account;
   /** 右クリックメニューを開閉したとき (タッチの長押しでドラッグと重なるのを避ける)。 */
   onMenuOpenChange: (open: boolean) => void;
 };
@@ -802,6 +805,7 @@ function FolderItem({
         </ContextMenuTrigger>
         <ContextMenuContent className="w-60">
           <FolderMenuItems
+            account={props.account}
             mailbox={mailbox}
             unread={mailbox.unreadCount}
             siblings={props.nodes.map((sibling) => sibling.mailbox)}

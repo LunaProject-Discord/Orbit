@@ -436,6 +436,9 @@ export const outboxKind = pgEnum("outbox_kind", [
   "move",
   "delete",
   "append",
+  "mailbox_create",
+  "mailbox_rename",
+  "mailbox_delete",
 ]);
 
 export const outboxStatus = pgEnum("outbox_status", [

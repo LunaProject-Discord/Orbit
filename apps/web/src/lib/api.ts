@@ -357,9 +357,18 @@ export type OutgoingMail = {
 export type FailedOperation = {
   id: string;
   accountId: string;
-  kind: "set_flags" | "move" | "delete" | "append";
-  /** 対象のメールの数。 */
+  kind:
+    | "set_flags"
+    | "move"
+    | "delete"
+    | "append"
+    | "mailbox_create"
+    | "mailbox_rename"
+    | "mailbox_delete";
+  /** 対象のメールの数 (フォルダへの操作では 1)。 */
   count: number;
+  /** フォルダへの操作の対象 (作成と名前の変更では、付けようとした名前)。 */
+  mailboxName: string | null;
   /** set_flags で変えようとした内容。変えなかった項目は null。 */
   seen: boolean | null;
   flagged: boolean | null;
@@ -694,6 +703,37 @@ export async function saveMailboxOrder(mailboxIds: string[]): Promise<void> {
     method: "PUT",
     body: { mailboxIds },
   });
+}
+
+/**
+ * フォルダを作る。メールサーバーに作ってから取り込むので、画面に出るまで少し間がある。
+ * parentId が null なら最上位に作る。
+ */
+export async function createMailbox(
+  accountId: string,
+  parentId: string | null,
+  name: string,
+): Promise<void> {
+  await apiFetch("/v1/mailboxes", {
+    method: "POST",
+    body: { accountId, parentId, name },
+  });
+}
+
+/** フォルダの名前を変える。 */
+export async function renameMailbox(
+  mailboxId: string,
+  name: string,
+): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}`, {
+    method: "PATCH",
+    body: { name },
+  });
+}
+
+/** フォルダを、中のメールごとメールサーバーから削除する。 */
+export async function deleteMailbox(mailboxId: string): Promise<void> {
+  await apiFetch(`/v1/mailboxes/${mailboxId}`, { method: "DELETE" });
 }
 
 /** 並び替えたフォルダを、既定の順に戻す。 */
