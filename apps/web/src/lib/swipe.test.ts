@@ -11,6 +11,7 @@ import {
   refreshSwipeSettings,
   resetSwipeSettingsForTest,
   resolveSwipe,
+  SIDEWAYS_SLACK,
   shouldCommit,
   swipeAxis,
   swipeThreshold,
@@ -214,51 +215,80 @@ describe("設定の保持", () => {
 
 describe("開いているメールのスワイプを受け付ける場所", () => {
   /** 幅を決めた要素を作る (テストの環境では配置を計算しないので、値を直接与える)。 */
-  function box(overflowX: string, scrollWidth: number, clientWidth: number) {
+  function box(
+    overflowX: string,
+    scrollWidth: number,
+    clientWidth: number,
+    scrollLeft = 0,
+  ) {
     const element = document.createElement("div");
     element.style.overflowX = overflowX;
     Object.defineProperty(element, "scrollWidth", { value: scrollWidth });
     Object.defineProperty(element, "clientWidth", { value: clientWidth });
+    Object.defineProperty(element, "scrollLeft", { value: scrollLeft });
     return element;
   }
-
-  it("横にスクロールできる枠の中では、スワイプにしない", () => {
-    const root = box("hidden", 300, 300);
-    const scroller = box("auto", 800, 300);
+  /** root の中に scroller、その中に触れる要素を置く。 */
+  function nest(root: HTMLElement, scroller: HTMLElement) {
     const inner = document.createElement("span");
     const text = document.createTextNode("長い行");
     inner.append(text);
     scroller.append(inner);
     root.append(scroller);
     document.body.append(root);
-    expect(insideSidewaysScroller(inner, root)).toBe(true);
+    return { inner, text };
+  }
+
+  it("その向きへ横にスクロールできる枠の中では、スワイプにしない", () => {
+    const root = box("hidden", 300, 300);
+    const { inner, text } = nest(root, box("auto", 800, 300, 100));
+    expect(insideSidewaysScroller(inner, root, "left")).toBe(true);
+    expect(insideSidewaysScroller(inner, root, "right")).toBe(true);
     // 文字に触れたときも、その要素からたどる。
-    expect(insideSidewaysScroller(text, root)).toBe(true);
+    expect(insideSidewaysScroller(text, root, "left")).toBe(true);
+    root.remove();
+  });
+
+  it("スクロールの端では、その先への動きをスワイプにする", () => {
+    const root = box("hidden", 300, 300);
+    const start = nest(root, box("auto", 800, 300, 0));
+    expect(insideSidewaysScroller(start.inner, root, "right")).toBe(false);
+    expect(insideSidewaysScroller(start.inner, root, "left")).toBe(true);
+    root.remove();
+    const root2 = box("hidden", 300, 300);
+    const end = nest(root2, box("auto", 800, 300, 500));
+    expect(insideSidewaysScroller(end.inner, root2, "left")).toBe(false);
+    expect(insideSidewaysScroller(end.inner, root2, "right")).toBe(true);
+    root2.remove();
+  });
+
+  it("わずかにはみ出しているだけの枠は数えない", () => {
+    const root = box("hidden", 300, 300);
+    const { inner } = nest(root, box("auto", 300 + SIDEWAYS_SLACK, 300, 0));
+    expect(insideSidewaysScroller(inner, root, "left")).toBe(false);
+    expect(insideSidewaysScroller(inner, root, "right")).toBe(false);
     root.remove();
   });
 
   it("はみ出していない枠や、スクロールしない枠は数えない", () => {
     const root = box("hidden", 300, 300);
     const fits = box("auto", 300, 300);
-    const clipped = box("hidden", 800, 300);
-    const inner = document.createElement("span");
-    clipped.append(inner);
-    fits.append(clipped);
+    const { inner } = nest(fits, box("hidden", 800, 300));
     root.append(fits);
     document.body.append(root);
-    expect(insideSidewaysScroller(inner, root)).toBe(false);
-    expect(insideSidewaysScroller(null, root)).toBe(false);
+    expect(insideSidewaysScroller(inner, root, "left")).toBe(false);
+    expect(insideSidewaysScroller(null, root, "left")).toBe(false);
     root.remove();
   });
 
   it("スワイプの枠より外側は見ない", () => {
-    const outer = box("auto", 800, 300);
+    const outer = box("auto", 800, 300, 100);
     const root = box("hidden", 300, 300);
     const inner = document.createElement("span");
     root.append(inner);
     outer.append(root);
     document.body.append(outer);
-    expect(insideSidewaysScroller(inner, root)).toBe(false);
+    expect(insideSidewaysScroller(inner, root, "left")).toBe(false);
     outer.remove();
   });
 
