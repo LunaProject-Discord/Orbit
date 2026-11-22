@@ -11,6 +11,7 @@ import {
   AttachmentRequests,
   ImapAttachmentDownloader,
 } from "./attachment-fetch.js";
+import { BodyRequests, imapBodyFetcher } from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { imapDraftRemote } from "./draft-imap.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -109,6 +110,7 @@ export class AccountSync {
   private sending: Promise<void> = Promise.resolve();
   private readonly attachmentDownloader: ImapAttachmentDownloader;
   private readonly attachmentRequests: AttachmentRequests;
+  private readonly bodyRequests: BodyRequests;
   /** OAuth2 のアカウント (Gmail) のアクセストークン。最初に使うときに用意する。 */
   private tokens: GoogleAccessTokenSource | null = null;
   /** 書く手が止まるのを待っている下書きを、メールサーバーへ置きに戻るためのタイマー。 */
@@ -137,11 +139,25 @@ export class AccountSync {
       this.attachmentDownloader.download,
       (message) => this.log(message),
     );
+    this.bodyRequests = new BodyRequests(
+      db,
+      account,
+      imapBodyFetcher(db, (task) => this.attachmentDownloader.withClient(task)),
+      (message) => this.log(message),
+    );
   }
 
   /** 添付ファイルの実体を取得してほしい (利用者が開いた)。同期用とは別の接続で取得する。 */
   notifyAttachment(attachmentId: string) {
     if (!this.stopped) this.attachmentRequests.request(attachmentId);
+  }
+
+  /**
+   * 利用者が開いたメールの本文を、取り込みの順番を待たずに取得してほしい。
+   * 同期用の接続は一覧の取り込みで長く塞がることがあるので、別の接続で取得する。
+   */
+  notifyBody(messageId: string) {
+    if (!this.stopped) void this.bodyRequests.request(messageId);
   }
 
   private log(message: string, error?: unknown) {

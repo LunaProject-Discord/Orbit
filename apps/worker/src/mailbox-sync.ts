@@ -551,6 +551,18 @@ async function readText(
   return clean(Buffer.concat(chunks).toString("utf8"));
 }
 
+/** 選択中のフォルダにあるメッセージ 1 通の本文 (テキストと HTML) を読む。 */
+export async function readBody(
+  client: ImapFlow,
+  uid: number,
+  structure: Pick<ReturnType<typeof analyzeStructure>, "textPart" | "htmlPart">,
+) {
+  return {
+    bodyText: await readText(client, uid, structure.textPart),
+    bodyHtml: await readText(client, uid, structure.htmlPart),
+  };
+}
+
 /**
  * 本文をまだ取得していないメッセージを、新しい順に 1 回分だけ取得する。
  * 取得対象が残っていれば true を返す (呼び出し側が続けて呼ぶ)。
@@ -590,14 +602,11 @@ export async function fetchBodies(
   for (const row of batch) {
     const uid = Number(row.uid);
     const structure = structures.get(uid);
-    let bodyText: string | null = null;
-    let bodyHtml: string | null = null;
     // サーバーから消えていた場合は structure が無い。空のまま取得済みにする
     // (次の同期でメッセージごと消える)。
-    if (structure) {
-      bodyText = await readText(client, uid, structure.textPart);
-      bodyHtml = await readText(client, uid, structure.htmlPart);
-    }
+    const { bodyText, bodyHtml } = structure
+      ? await readBody(client, uid, structure)
+      : { bodyText: null, bodyHtml: null };
     await db
       .update(messages)
       .set({
