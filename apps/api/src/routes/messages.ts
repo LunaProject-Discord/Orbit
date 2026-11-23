@@ -10,14 +10,14 @@ import {
   MAX_BODY_FETCH_IDS,
   sanitizeContentType,
   sanitizeFilename,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   attachments,
   mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";

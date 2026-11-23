@@ -1,4 +1,4 @@
-import { MicrosoftOAuthError, type OutgoingMessage } from "@mail/core";
+import { MicrosoftOAuthError, type OutgoingMessage } from "@orbit/core";
 import { type GraphClient, GraphError } from "./graph-client.js";
 import { buildMime } from "./mime.js";
 import type { SendOutcome } from "./send.js";

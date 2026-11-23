@@ -7,7 +7,7 @@ import {
   readAttachmentMeta,
   sweepAttachments,
   writeAttachment,
-} from "@mail/core";
+} from "@orbit/core";
 import type { ImapFlow } from "imapflow";
 import { describe, expect, it } from "vitest";
 import { GraphClient } from "./graph-client.js";

@@ -14,8 +14,8 @@ import {
   type GraphPushNotification,
   MAX_BODY_FETCH_IDS,
   type MicrosoftOAuthConfig,
-} from "@mail/core";
-import { type Database, mailAccounts } from "@mail/db";
+} from "@orbit/core";
+import { type Database, mailAccounts } from "@orbit/db";
 import { inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";

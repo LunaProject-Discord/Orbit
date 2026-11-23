@@ -6,7 +6,7 @@ import {
   attachmentsDir,
   CHANNEL_ATTACHMENT_READY,
   storeReceivedAttachment,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   attachments,
   type Database,
@@ -14,7 +14,7 @@ import {
   mailboxes,
   messageMailboxes,
   messages,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { ImapFlow } from "imapflow";
 import { type GraphClient, GraphError } from "./graph-client.js";

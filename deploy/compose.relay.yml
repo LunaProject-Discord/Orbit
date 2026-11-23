@@ -3,7 +3,7 @@
 # インターネットを通るので、ここでも HTTPS で待ち受ける (メールの内容やログインの情報を平文で流さないため)。
 # 証明書は deploy/setup.sh <ドメイン> relay が deploy/certs/ に作る自己署名のもので、
 # 中継用のサーバーにはその証明書 (relay.crt) を置き、それ以外の相手には繋がないようにする
-# (設定の見本は deploy/apache/mail-relay.conf)。
+# (設定の見本は deploy/apache/orbit-relay.conf)。
 # Docker が公開したポートはサーバーのファイアウォール (firewalld など) を通らずに届くので、
 # クラウド側のファイアウォール (セキュリティ・リスト) で、中継用のサーバーからだけに絞ること。
 services:

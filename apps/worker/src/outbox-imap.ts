@@ -3,7 +3,7 @@ import type {
   MailboxOperation,
   OutboxOperation,
   OutboxTarget,
-} from "@mail/core";
+} from "@orbit/core";
 import type { ImapFlow } from "imapflow";
 import { clearRejection, firstRejection } from "./imap-rejection.js";
 import {

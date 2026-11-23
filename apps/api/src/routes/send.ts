@@ -11,8 +11,8 @@ import {
   type OutgoingMessage,
   readAttachmentMeta,
   type SendPayload,
-} from "@mail/core";
-import { drafts, mailAccounts, messages, outbox } from "@mail/db";
+} from "@orbit/core";
+import { drafts, mailAccounts, messages, outbox } from "@orbit/db";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

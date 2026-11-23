@@ -1,5 +1,5 @@
 // 絵文字を選ぶ画面で使う、全絵文字のデータ (src/lib/emoji/data.json) を作る。
-// emojibase-data を更新したら `pnpm --filter @mail/web emoji:generate` で作り直す (通信は不要)。
+// emojibase-data を更新したら `pnpm --filter @orbit/web emoji:generate` で作り直す (通信は不要)。
 //
 // emojibase-data の日本語と英語のデータから、画面で使う項目だけを取り出して小さくする。
 // 名前と検索用の語は日本語を主にし、英語でも探せるように英語の名前と語も入れる。

@@ -62,7 +62,7 @@ jobs:
           fi
 
       - name: 画面 (apps/web) をビルドして Android プロジェクトへ入れる
-        run: pnpm --filter @mail/mobile android:prepare
+        run: pnpm --filter @orbit/mobile android:prepare
 
       - name: Firebase の設定を置く (プッシュ通知用)
         if: env.HAS_FIREBASE == 'true'

@@ -3,7 +3,7 @@ import {
   type GraphLifecycleEvent,
   type GraphPushNotification,
   verifyGraphClientState,
-} from "@mail/core";
+} from "@orbit/core";
 import { Hono } from "hono";
 
 /** 通知の本文の上限。Graph の通知は小さいので、これを超えるものは受け付けない。 */

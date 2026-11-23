@@ -5,8 +5,8 @@ import {
   NOTIFICATION_ACTIONS,
   type NotificationActionId,
   verifyNotificationAction,
-} from "@mail/core";
-import { type Database, mailAccounts, messages } from "@mail/db";
+} from "@orbit/core";
+import { type Database, mailAccounts, messages } from "@orbit/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

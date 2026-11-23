@@ -10,8 +10,8 @@ import {
   loadWebPushConfig,
   notificationActionUrl,
   sweepAttachments,
-} from "@mail/core";
-import { createDb, drafts } from "@mail/db";
+} from "@orbit/core";
+import { createDb, drafts } from "@orbit/db";
 import { AccountManager } from "./account-manager.js";
 import {
   combineSenders,

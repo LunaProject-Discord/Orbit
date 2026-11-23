@@ -5,7 +5,7 @@ import {
   type ChangeNotification,
   type OutboxOperation,
   type OutboxTarget,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   changes,
   type Database,
@@ -14,7 +14,7 @@ import {
   messageMailboxes,
   messages,
   outbox,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type MailboxRole, planLabelMove } from "./label-store.js";

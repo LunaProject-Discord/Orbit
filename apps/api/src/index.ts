@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { createDb } from "@mail/db";
+import { createDb } from "@orbit/db";
 import { createApp } from "./app.js";
 import { createAuth } from "./auth.js";
 import { loadEnv } from "./env.js";

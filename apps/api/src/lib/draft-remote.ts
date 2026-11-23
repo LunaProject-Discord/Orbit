@@ -1,5 +1,9 @@
-import { accountLockKey, CHANNEL_OUTBOX, type DeletePayload } from "@mail/core";
-import { type Database, type drafts, mailboxes, outbox } from "@mail/db";
+import {
+  accountLockKey,
+  CHANNEL_OUTBOX,
+  type DeletePayload,
+} from "@orbit/core";
+import { type Database, type drafts, mailboxes, outbox } from "@orbit/db";
 import { and, eq, or, sql } from "drizzle-orm";
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];

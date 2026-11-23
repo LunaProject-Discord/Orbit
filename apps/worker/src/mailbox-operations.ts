@@ -1,5 +1,5 @@
-import type { MailboxOperation } from "@mail/core";
-import { type Database, mailboxes } from "@mail/db";
+import type { MailboxOperation } from "@orbit/core";
+import { type Database, mailboxes } from "@orbit/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { ImapFlow } from "imapflow";
 import { recordChanges } from "./changes.js";

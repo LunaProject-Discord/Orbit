@@ -1,4 +1,4 @@
-import { messages } from "@mail/db";
+import { messages } from "@orbit/db";
 import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import type { Tx } from "./changes.js";
 

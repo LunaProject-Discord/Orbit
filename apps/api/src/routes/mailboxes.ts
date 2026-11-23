@@ -7,14 +7,14 @@ import {
   type MailboxRenamePayload,
   mailboxNameError,
   resolveMailboxRoles,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
   outbox,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

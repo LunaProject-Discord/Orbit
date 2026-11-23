@@ -20,7 +20,7 @@ describe("生成したアイコンのデータ", () => {
   );
 
   it("入っている lucide-react と同じ版から作られている", () => {
-    // 失敗したら `pnpm --filter @mail/web icons:generate` で作り直す。
+    // 失敗したら `pnpm --filter @orbit/web icons:generate` で作り直す。
     const { version } = JSON.parse(
       readFileSync(join(packageDir, "package.json"), "utf8"),
     );

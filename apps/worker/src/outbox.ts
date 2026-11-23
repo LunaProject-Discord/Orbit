@@ -2,8 +2,8 @@ import {
   accountLockKey,
   type OutboxOperation,
   type OutboxTarget,
-} from "@mail/core";
-import { type Database, mailAccounts, mailboxes, outbox } from "@mail/db";
+} from "@orbit/core";
+import { type Database, mailAccounts, mailboxes, outbox } from "@orbit/db";
 import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 

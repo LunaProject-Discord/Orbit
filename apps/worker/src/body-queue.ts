@@ -1,4 +1,4 @@
-import type { BodyFetchPriority } from "@mail/core";
+import type { BodyFetchPriority } from "@orbit/core";
 
 const RANK: Record<BodyFetchPriority, number> = {
   open: 0,

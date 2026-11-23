@@ -11,7 +11,7 @@
  * (コマンド履歴に残さないため、引数では受け取らない)。
  */
 import { createInterface } from "node:readline/promises";
-import { createDb, users } from "@mail/db";
+import { createDb, users } from "@orbit/db";
 import { count, eq } from "drizzle-orm";
 import { createAuth } from "../auth.js";
 import { loadEnv } from "../env.js";

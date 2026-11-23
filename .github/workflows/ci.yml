@@ -12,18 +12,18 @@ jobs:
       postgres:
         image: postgres:19
         env:
-          POSTGRES_USER: mail
-          POSTGRES_PASSWORD: mail
-          POSTGRES_DB: mail
+          POSTGRES_USER: orbit
+          POSTGRES_PASSWORD: orbit
+          POSTGRES_DB: orbit
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U mail -d mail"
+          --health-cmd "pg_isready -U orbit -d orbit"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://mail:mail@localhost:5432/mail
+      DATABASE_URL: postgres://orbit:orbit@localhost:5432/orbit
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -59,11 +59,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: 設定ファイルを用意 (別のサーバーから逆プロキシする構成)
         run: |
-          bash setup.sh mail.example.com relay
+          bash setup.sh orbit.example.com relay
           grep -x 'LOCAL_BIND=0.0.0.0' .env
           grep -x 'COMPOSE_FILE=compose.yml:compose.relay.yml' .env
           # サーバーの間の HTTPS に使う証明書ができていて、作り直されないこと。
-          openssl x509 -in certs/relay.crt -noout -ext subjectAltName | grep -q 'DNS:mail.example.com'
+          openssl x509 -in certs/relay.crt -noout -ext subjectAltName | grep -q 'DNS:orbit.example.com'
           before="$(sha256sum certs/relay.crt)"
           bash setup.sh
           test "$before" = "$(sha256sum certs/relay.crt)"
@@ -78,8 +78,8 @@ jobs:
       - name: Web と API が HTTPS で応答することを確認
         run: |
           # 中継用のサーバーと同じく、作った証明書だけを信頼して繋ぐ。
-          fetch() { curl --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 "$@"; }
-          base=https://mail.example.com:18080
+          fetch() { curl --cacert certs/relay.crt --resolve orbit.example.com:18080:127.0.0.1 "$@"; }
+          base=https://orbit.example.com:18080
           for _ in $(seq 1 30); do
             if fetch -fsS "$base/healthz"; then
               echo
@@ -99,24 +99,24 @@ jobs:
       - name: バックアップを 1 回取る (暗号化なし)
         run: |
           docker compose run --rm backup once
-          sudo sh -c 'ls backups/mail-*.dump'
+          sudo sh -c 'ls backups/orbit-*.dump'
       - name: バックアップを暗号化して取り、戻す
         run: |
-          docker compose exec -T postgres psql -U mail -d mail -q \
+          docker compose exec -T postgres psql -U orbit -d orbit -q \
             -c "create table backup_check (v text); insert into backup_check values ('before');"
           bash backup-key.sh >"$RUNNER_TEMP/secret-key.asc"
           grep -q '^BACKUP_PUBLIC_KEY=.' .env
           docker compose run --rm backup once
-          file="$(sudo sh -c 'ls backups/mail-*.dump.gpg')"
+          file="$(sudo sh -c 'ls backups/orbit-*.dump.gpg')"
           # 中身がそのまま読める形で入っていないこと。
           if sudo grep -q PGDMP "$file"; then exit 1; fi
-          docker compose exec -T postgres psql -U mail -d mail -q -c "update backup_check set v = 'after';"
+          docker compose exec -T postgres psql -U orbit -d orbit -q -c "update backup_check set v = 'after';"
           # 別の鍵では戻せず、DB もそのまま。
           cp .env "$RUNNER_TEMP/env"
           bash backup-key.sh --renew >"$RUNNER_TEMP/other-key.asc"
           cp "$RUNNER_TEMP/env" .env
           if echo yes | sudo bash restore.sh "$file" "$RUNNER_TEMP/other-key.asc"; then exit 1; fi
-          test "$(docker compose exec -T postgres psql -U mail -d mail -Atc 'select v from backup_check')" = after
+          test "$(docker compose exec -T postgres psql -U orbit -d orbit -Atc 'select v from backup_check')" = after
           # 正しい鍵なら戻る。
           echo yes | sudo bash restore.sh "$file" "$RUNNER_TEMP/secret-key.asc"
-          test "$(docker compose exec -T postgres psql -U mail -d mail -Atc 'select v from backup_check')" = before
+          test "$(docker compose exec -T postgres psql -U orbit -d orbit -Atc 'select v from backup_check')" = before

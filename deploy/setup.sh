@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 本番用の設定ファイル deploy/.env を用意する。
-#   bash deploy/setup.sh mail.example.com relay    別のサーバー (中継用のサーバー) から直接繋ぐ場合
+#   bash deploy/setup.sh orbit.example.com relay    別のサーバー (中継用のサーバー) から直接繋ぐ場合
 #                                                  (サーバーの間を HTTPS にする証明書も deploy/certs/ に作る)
-#   bash deploy/setup.sh mail.example.com apache   同じサーバーの Web サーバー (Apache など) から繋ぐ場合 (省略時)
-#   bash deploy/setup.sh mail.example.com caddy    Caddy が 80 / 443 番で直接公開する場合
+#   bash deploy/setup.sh orbit.example.com apache   同じサーバーの Web サーバー (Apache など) から繋ぐ場合 (省略時)
+#   bash deploy/setup.sh orbit.example.com caddy    Caddy が 80 / 443 番で直接公開する場合
 # 無ければ .env.example から作り、空の秘密の値を乱数で埋める。
 # 既に値が入っている項目は変更しない (鍵を作り直すと保存済みの認証情報を復号できなくなるため)。
 set -euo pipefail

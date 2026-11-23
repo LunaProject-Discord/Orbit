@@ -1,4 +1,4 @@
-import type { mailboxes } from "@mail/db";
+import type { mailboxes } from "@orbit/db";
 import { clean, toSpecialUse } from "./message-parse.js";
 
 export type SpecialUse = NonNullable<

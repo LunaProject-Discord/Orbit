@@ -23,6 +23,14 @@ main() {
   echo "更新するコミット: $(git log -1 --format='%h %s')"
 
   cd deploy
+  # 名前を mail から orbit に変える前のデータ (ボリューム mail_postgres-data) が残っていて、新しい名前の
+  # データがまだ無いときは、このまま起動すると空の DB で動き出してしまう。先に移行を済ませてもらう。
+  if docker volume inspect mail_postgres-data >/dev/null 2>&1 &&
+    ! docker volume inspect orbit_postgres-data >/dev/null 2>&1; then
+    echo "名前を orbit に変える前のデータがあります。先に bash deploy/rename-to-orbit.sh を実行してください" >&2
+    echo "(手順は docs/deploy-oracle-cloud.md の「名前を mail から orbit に変える」)。" >&2
+    exit 1
+  fi
   docker compose build
   # 未適用のマイグレーションは、API とワーカーの起動前に migrate サービスが流す。
   docker compose up -d --remove-orphans

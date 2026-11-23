@@ -6,6 +6,7 @@ export default defineConfig({
   out: "./drizzle",
   casing: "snake_case",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgres://mail:mail@localhost:5432/mail",
+    url:
+      process.env.DATABASE_URL ?? "postgres://orbit:orbit@localhost:5432/orbit",
   },
 });

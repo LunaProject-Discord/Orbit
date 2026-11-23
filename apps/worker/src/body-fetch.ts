@@ -1,5 +1,5 @@
-import type { BodyFetchPriority } from "@mail/core";
-import { type Database, messages } from "@mail/db";
+import type { BodyFetchPriority } from "@orbit/core";
+import { type Database, messages } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import type { ImapFlow } from "imapflow";
 import {

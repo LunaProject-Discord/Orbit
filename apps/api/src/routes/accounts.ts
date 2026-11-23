@@ -18,8 +18,8 @@ import {
   openGoogleState,
   openMicrosoftState,
   providerOfImapHost,
-} from "@mail/core";
-import { changes, mailAccounts, mailboxes } from "@mail/db";
+} from "@orbit/core";
+import { changes, mailAccounts, mailboxes } from "@orbit/db";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

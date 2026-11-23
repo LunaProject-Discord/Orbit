@@ -4,7 +4,7 @@
 #   once:     今すぐ 1 回だけ取る (docker compose run --rm backup once)
 # 書き出すのは pg_dump の独自形式 (圧縮済み)。戻すときは deploy/restore.sh を使う。
 # BACKUP_PUBLIC_KEY (deploy/backup-key.sh が作る公開鍵) があれば、OpenPGP (gpg) で暗号化して
-# mail-<日時>.dump.gpg として書き出す。戻すには対になる秘密鍵が要り、それはサーバーには置かない。
+# orbit-<日時>.dump.gpg として書き出す。戻すには対になる秘密鍵が要り、それはサーバーには置かない。
 # バックアップにはメールの内容がそのまま入るので、サーバーや写したファイルを読まれても中身が分からないようにするため。
 set -euo pipefail
 # 暗号化していない場合に備えて、ほかの利用者からは読めないようにしておく。
@@ -40,7 +40,7 @@ dump() {
 }
 
 run_backup() {
-  local file="$BACKUP_DIR/mail-$(date +%Y%m%d-%H%M%S).dump"
+  local file="$BACKUP_DIR/orbit-$(date +%Y%m%d-%H%M%S).dump"
   if [ -n "$recipient" ]; then
     file="$file.gpg"
   fi
@@ -57,7 +57,9 @@ run_backup() {
     echo "$(date '+%F %T') バックアップに失敗しました。" >&2
     return 1
   fi
-  find "$BACKUP_DIR" \( -name 'mail-*.dump' -o -name 'mail-*.dump.gpg' \) \
+  # mail-* は、名前を orbit に変える前 (2026-11 まで) に取ったバックアップ。同じ日数で消す。
+  find "$BACKUP_DIR" \( -name 'orbit-*.dump' -o -name 'orbit-*.dump.gpg' \
+    -o -name 'mail-*.dump' -o -name 'mail-*.dump.gpg' \) \
     -mtime "+$BACKUP_KEEP_DAYS" -delete
 }
 

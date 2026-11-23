@@ -1,5 +1,10 @@
-import { resolveMailboxRoles } from "@mail/core";
-import { type Database, mailboxes, messageMailboxes, messages } from "@mail/db";
+import { resolveMailboxRoles } from "@orbit/core";
+import {
+  type Database,
+  mailboxes,
+  messageMailboxes,
+  messages,
+} from "@orbit/db";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import type { ListedMailbox } from "./mailbox-list.js";

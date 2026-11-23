@@ -1,5 +1,5 @@
-import { signNotificationAction } from "@mail/core";
-import type { Database } from "@mail/db";
+import { signNotificationAction } from "@orbit/core";
+import type { Database } from "@orbit/db";
 import { describe, expect, it } from "vitest";
 import type { MessageAction } from "../lib/message-actions.js";
 import {

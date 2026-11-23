@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { changes } from "@mail/db";
+import { changes } from "@orbit/db";
 import { and, asc, eq, gt, max } from "drizzle-orm";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";

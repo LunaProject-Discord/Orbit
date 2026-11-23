@@ -9,8 +9,8 @@ import {
   type MicrosoftOAuthConfig,
   MicrosoftOAuthError,
   refreshMicrosoftToken,
-} from "@mail/core";
-import { type Database, mailAccounts, mailboxes } from "@mail/db";
+} from "@orbit/core";
+import { type Database, mailAccounts, mailboxes } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import {
   AttachmentRequests,

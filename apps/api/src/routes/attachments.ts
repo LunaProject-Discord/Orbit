@@ -7,7 +7,7 @@ import {
   MAX_ATTACHMENTS_BYTES,
   type StoredAttachment,
   writeAttachment,
-} from "@mail/core";
+} from "@orbit/core";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
