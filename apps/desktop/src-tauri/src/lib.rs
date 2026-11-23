@@ -13,7 +13,10 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::webview::NewWindowResponse;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, Url, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
+};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -21,6 +24,10 @@ use tauri_plugin_opener::OpenerExt;
 use settings::Settings;
 
 pub(crate) const MAIN_WINDOW: &str = "main";
+/// 追加で開くウィンドウの名前の先頭 (後ろに番号が付く)。capabilities/default.json と合わせる。
+const EXTRA_WINDOW_PREFIX: &str = "window-";
+/// 追加で開けるウィンドウの数の上限。
+const MAX_EXTRA_WINDOWS: usize = 16;
 /// 通知が押されたときに画面へ送るイベント。
 const OPEN_MESSAGE_EVENT: &str = "desktop://open-message";
 /// アプリ専用の URL で開かれたときに画面へ送るイベント。
@@ -74,10 +81,15 @@ fn is_message_id(value: &str) -> bool {
 #[tauri::command]
 fn notify_new_mail(
     app: AppHandle,
+    window: WebviewWindow,
     title: String,
     body: String,
     message_id: Option<String>,
 ) -> Result<(), String> {
+    // どのウィンドウの画面も同じ新着メールを受け取る。通知が重ならないよう、メインウィンドウの分だけ出す。
+    if window.label() != MAIN_WINDOW {
+        return Ok(());
+    }
     let mut builder = app.notification().builder().title(title).body(body);
     if let Some(id) = message_id.filter(|id| is_message_id(id)) {
         builder = builder.extra("messageId", id);
@@ -125,8 +137,48 @@ fn platform_name() -> &'static str {
     }
 }
 
+/// 追加のウィンドウで開ける、アプリの画面のパスかどうか ("/accounts/…/messages/…?q=…" など)。
+/// 画面から受け取った値をそのまま URL にしないよう、形を確かめる。
+fn is_app_path(path: &str) -> bool {
+    path.len() <= 2048
+        && path.starts_with('/')
+        && !path.starts_with("//")
+        && !path.contains("..")
+        && !path.contains('\\')
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/-_.~?&=%+@:,".contains(c))
+}
+
+/// 追加のウィンドウに付ける、空いている名前。上限まで開いていれば None。
+fn free_window_label(app: &AppHandle) -> Option<String> {
+    (1..=MAX_EXTRA_WINDOWS)
+        .map(|index| format!("{EXTRA_WINDOW_PREFIX}{index}"))
+        .find(|label| app.get_webview_window(label).is_none())
+}
+
+/// メールや作成画面などを、新しいウィンドウで開く。path はアプリの画面のパス。
+/// ウィンドウどうしは同じ保存領域を使うので、ログインや設定はそのまま引き継がれる。
+#[tauri::command]
+async fn open_window(app: AppHandle, path: String) -> Result<bool, String> {
+    if !is_app_path(&path) {
+        return Err("開けないパスです。".into());
+    }
+    let label = free_window_label(&app).ok_or("これ以上ウィンドウを開けません。")?;
+    let window = create_window(&app, &label, Some(&path)).map_err(|error| error.to_string())?;
+    let _ = window.set_focus();
+    // 画面側は、呼べなかったとき (null) と見分けるために true を受け取る。
+    Ok(true)
+}
+
 fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
-    let config = app
+    create_window(app, MAIN_WINDOW, None).map(|_| ())
+}
+
+/// ウィンドウを作る。見た目と動きは、メインウィンドウの設定 (tauri.conf.json) にそろえる。
+/// path を渡すと、その画面を開く (追加のウィンドウ)。
+fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Result<WebviewWindow> {
+    let mut config = app
         .config()
         .app
         .windows
@@ -134,6 +186,13 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         .find(|window| window.label == MAIN_WINDOW)
         .cloned()
         .expect("tauri.conf.json に main ウィンドウの設定がありません");
+    config.label = label.to_owned();
+    if let Some(path) = path {
+        config.url = WebviewUrl::App(path.trim_start_matches('/').into());
+        // メインウィンドウより少し小さく開き、重なっても見分けやすくする。
+        config.width = 1000.0;
+        config.height = 720.0;
+    }
 
     // 画面が描かれる前に、デスクトップ版であることを html に印を付けて伝える
     // (タイトルバーの分の余白を最初から確保し、表示がずれないようにする)。
@@ -167,8 +226,7 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
             open_external(&new_window_handle, &url);
             NewWindowResponse::Deny
         })
-        .build()?;
-    Ok(())
+        .build()
 }
 
 pub fn run() {
@@ -185,6 +243,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             notify_new_mail,
             set_unread_count,
+            open_window,
             fonts::list_fonts
         ])
         .setup(|app| {
@@ -282,6 +341,22 @@ mod tests {
         assert!(!is_message_id("019aa0c2-7b3e-7c11-9d2f-0123456789a"));
         assert!(!is_message_id("019aa0c2_7b3e_7c11_9d2f_0123456789ab"));
         assert!(!is_message_id("../../etc/passwd"));
+    }
+
+    #[test]
+    fn extra_windows_open_only_app_paths() {
+        assert!(is_app_path("/"));
+        assert!(is_app_path(
+            "/accounts/019aa0c2-7b3e-7c11-9d2f-0123456789ab/messages/019aa0c2-7b3e-7c11-9d2f-0123456789ac/single"
+        ));
+        assert!(is_app_path("/compose/new"));
+        assert!(is_app_path("/?q=%E8%AB%8B%E6%B1%82%E6%9B%B8&unread=1"));
+        assert!(!is_app_path("https://example.com/"));
+        assert!(!is_app_path("//example.com/"));
+        assert!(!is_app_path("/../secret"));
+        assert!(!is_app_path("/a b"));
+        assert!(!is_app_path("/a#b"));
+        assert!(!is_app_path(""));
     }
 
     #[test]

@@ -122,6 +122,8 @@ type Props = {
   onToggleCheck: (id: string, range: boolean) => void;
   /** 右クリックメニューからの操作。 */
   onAction: (messageIds: string[], input: MessageActionInput) => void;
+  /** 右クリックメニューの「新しいウィンドウで開く」。渡さなければ、その項目を出さない。 */
+  onOpenWindow?: (message: MessageSummary) => void;
   onLoadMore: () => void;
   onRetry: () => void;
   /**
@@ -264,6 +266,7 @@ export function MessageList({
   onSelect,
   onToggleCheck,
   onAction,
+  onOpenWindow,
   onLoadMore,
   onRetry,
   onPrefetch,
@@ -689,7 +692,11 @@ export function MessageList({
                 </SwipeRow>
               </ContextMenuTrigger>
               <ContextMenuContent className="w-56">
-                <MessageMenuItems message={message} onAction={onAction} />
+                <MessageMenuItems
+                  message={message}
+                  onAction={onAction}
+                  onOpenWindow={onOpenWindow}
+                />
               </ContextMenuContent>
             </ContextMenu>
           );

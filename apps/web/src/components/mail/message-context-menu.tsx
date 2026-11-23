@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AppWindowIcon,
   ArchiveIcon,
   FolderInputIcon,
   MailCheckIcon,
@@ -31,9 +32,12 @@ import { shortcutLabels } from "@/lib/shortcuts";
 export function MessageMenuItems({
   message,
   onAction,
+  onOpenWindow,
 }: {
   message: MessageSummary;
   onAction: (messageIds: string[], input: MessageActionInput) => void;
+  /** 新しいウィンドウで開く。開けない環境 (スマホアプリ) では渡さない。 */
+  onOpenWindow?: (message: MessageSummary) => void;
 }) {
   const mailboxes = useMailboxes(message.accountId);
   const { archive, trash, inTrash, junk, notJunk, destinations } =
@@ -44,6 +48,15 @@ export function MessageMenuItems({
 
   return (
     <>
+      {onOpenWindow && (
+        <>
+          <ContextMenuItem onClick={() => onOpenWindow(message)}>
+            <AppWindowIcon />
+            新しいウィンドウで開く
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+        </>
+      )}
       <ContextMenuItem
         onClick={() => act({ action: "set_flags", seen: !message.seen })}
       >
