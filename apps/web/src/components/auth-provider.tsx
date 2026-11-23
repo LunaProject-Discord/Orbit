@@ -36,11 +36,11 @@ function rememberedUser(): User | null {
       window.localStorage.getItem(USER_KEY) ?? "null",
     );
     if (!value || typeof value !== "object") return null;
-    const { id, email, name } = value as Record<string, unknown>;
+    const { id, email, name, isAdmin } = value as Record<string, unknown>;
     return typeof id === "string" &&
       typeof email === "string" &&
       typeof name === "string"
-      ? { id, email, name }
+      ? { id, email, name, isAdmin: isAdmin === true }
       : null;
   } catch {
     return null;
@@ -210,8 +210,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const onLoginPage = pathname === "/login" || pathname === "/login/";
   /** 接続先サーバーの設定画面 (同梱アプリ用)。ログインの前後どちらでも開ける。 */
   const onServerPage = pathname === "/server" || pathname === "/server/";
-  /** パスワードの再設定の画面。ログインしていなくても、していても開ける。 */
+  /** パスワードの再設定と、招待リンクからの登録の画面。ログインしていなくても、していても開ける。 */
   const onPasswordPage =
+    pathname === "/invite" ||
+    pathname === "/invite/" ||
     pathname === "/forgot-password" ||
     pathname === "/forgot-password/" ||
     pathname === "/reset-password" ||

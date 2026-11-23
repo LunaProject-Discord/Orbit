@@ -144,7 +144,13 @@ async function apiJson<T>(path: string, options?: RequestOptions): Promise<T> {
 // 型
 // ---------------------------------------------------------------------------
 
-export type User = { id: string; email: string; name: string };
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  /** 管理者か (招待リンクを発行できる)。 */
+  isAdmin?: boolean;
+};
 
 export type Address = { name?: string; address: string };
 
@@ -565,6 +571,76 @@ export async function signOut(): Promise<void> {
 export async function fetchMe(signal?: AbortSignal): Promise<User> {
   const { user } = await apiJson<{ user: User }>("/v1/me", { signal });
   return user;
+}
+
+// ---------------------------------------------------------------------------
+// 招待 (管理者がリンクを発行し、開いた人が自分で利用者を作る)
+// ---------------------------------------------------------------------------
+
+export type Invitation = {
+  id: string;
+  /** 誰に渡したかの覚え書き。 */
+  label: string | null;
+  /** 指定されていれば、このメールアドレスでしか登録できない。 */
+  email: string | null;
+  expiresAt: string;
+  usedAt: string | null;
+  createdAt: string;
+  usedByEmail: string | null;
+  usedByName: string | null;
+};
+
+export type Member = {
+  id: string;
+  email: string;
+  name: string;
+  isAdmin: boolean;
+  createdAt: string;
+};
+
+/** 発行した招待と、このサーバーの利用者 (管理者だけが呼べる)。 */
+export async function listInvitations(
+  signal?: AbortSignal,
+): Promise<{ invitations: Invitation[]; users: Member[] }> {
+  return apiJson("/v1/invitations", { signal });
+}
+
+/** 招待を発行する。リンク (url) は、この応答でしか受け取れない。 */
+export async function createInvitation(input: {
+  label: string | null;
+  email: string | null;
+  expiresInDays: number;
+}): Promise<{ invitation: Invitation; url: string }> {
+  return apiJson("/v1/invitations", { method: "POST", body: input });
+}
+
+export async function deleteInvitation(id: string): Promise<void> {
+  await apiFetch(`/v1/invitations/${id}`, { method: "DELETE" });
+}
+
+/** 招待リンクが使えるかを確かめる。使えなければ ApiError (404)。 */
+export async function lookupInvitation(
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ email: string | null; expiresAt: string }> {
+  return apiJson(`/v1/invitations/lookup?token=${encodeURIComponent(token)}`, {
+    signal,
+    handle401: false,
+  });
+}
+
+/** 招待リンクから利用者を作る。このあと、通常の手順でログインする。 */
+export async function acceptInvitation(input: {
+  token: string;
+  name: string;
+  email: string;
+  password: string;
+}): Promise<void> {
+  await apiFetch("/v1/invitations/accept", {
+    method: "POST",
+    body: input,
+    handle401: false,
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ export const SETTINGS_CATEGORIES = [
   "notifications",
   "signatures",
   "security",
+  "users",
   "system",
 ] as const;
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];

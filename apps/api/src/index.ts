@@ -33,7 +33,7 @@ if (!mailer) {
     `利用者へのメールは SMTP で送ります (${env.systemMail.config.host}:${env.systemMail.config.port})。`,
   );
 }
-const auth = createAuth({
+const authOptions = {
   db,
   secret: env.authSecret,
   baseURL: env.publicUrl,
@@ -41,13 +41,17 @@ const auth = createAuth({
   webOrigin: env.webOrigin,
   mailer,
   passkey: env.passkey,
-});
+};
+const auth = createAuth(authOptions);
+// 招待リンクからの登録にだけ使う。/v1/auth/* には出さないので、外から新規登録はできない。
+const signUpAuth = createAuth({ ...authOptions, allowSignUp: true });
 const hub = new EventsHub(env.databaseUrl);
 await hub.start();
 
 const app = createApp({
   db,
   auth,
+  signUpAuth,
   hub,
   webOrigin: env.webOrigin,
   mailer,

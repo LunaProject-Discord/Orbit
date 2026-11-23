@@ -7,7 +7,7 @@
  * - A のデータが 1 行も変わらないこと
  * を確かめる。API を足したときは、下の一覧にも足す。
  *
- * DATABASE_URL が無い環境では実行しない。接続先に確認用の DB を作り、終わったら消す。
+ * DATABASE_URL が無い環境では実行しない (CI では必ず実行する)。接続先に確認用の DB を作り、終わったら消す。
  */
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -269,6 +269,12 @@ async function snapshot(db: Database, userId: string) {
   return result;
 }
 
+// CI では必ず実行する。DATABASE_URL が届いていなければ (turbo.json の env から外れたなど)、
+// 黙って飛ばさずに失敗させる。
+it.runIf(process.env.CI === "true")("CI では DATABASE_URL がある", () => {
+  expect(adminUrl).toBeTruthy();
+});
+
 describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
   const dbName = `mail_isolation_${randomUUID().replaceAll("-", "")}`;
   let admin: pg.Client;
@@ -342,9 +348,11 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       trustedOrigins: [ORIGIN],
     };
     const auth = createAuth(authOptions);
+    const signUp = createAuth({ ...authOptions, allowSignUp: true });
     app = createApp({
       db,
       auth,
+      signUpAuth: signUp,
       hub: new EventsHub(url.toString()),
       allowedOrigins: [ORIGIN],
       encryptionKey,
@@ -357,7 +365,6 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       mailer: null,
     });
 
-    const signUp = createAuth({ ...authOptions, allowSignUp: true });
     const login = async (mark: string) => {
       const email = `${mark}-login@example.com`;
       const { user } = await signUp.api.signUpEmail({
@@ -376,6 +383,10 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     const bob = await login("bob-private");
     tokenA = alice.token;
     tokenB = bob.token;
+    // A を管理者にする (招待リンクを発行できる)。B は管理者ではない。
+    await db.execute(
+      sql`update users set is_admin = true where id = ${alice.userId}`,
+    );
     a = await seed(db, alice.userId, "alice-private");
     b = await seed(db, bob.userId, "bob-private");
   }, 120_000);
@@ -809,5 +820,175 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       );
     }
     expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  describe("招待リンク", () => {
+    const publicPost = (path: string, body: unknown) =>
+      app.request(`/v1${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN },
+        body: JSON.stringify(body),
+      });
+    const lookup = (value: string) =>
+      app.request(`/v1/invitations/lookup?token=${encodeURIComponent(value)}`);
+    const issue = async (body: unknown = {}) => {
+      const response = await request(tokenA, "POST", "/invitations", body);
+      expect(response.status).toBe(201);
+      const data = (await response.json()) as {
+        invitation: { id: string };
+        url: string;
+      };
+      const value = new URL(data.url).searchParams.get("token") ?? "";
+      return { id: data.invitation.id, url: data.url, token: value };
+    };
+    const person = (mark: string) => ({
+      name: mark,
+      email: `${mark}@example.com`,
+      password: PASSWORD,
+    });
+
+    it("管理者でなければ、発行も一覧も取り消しもできない", async () => {
+      const { id } = await issue();
+      for (const [method, path, body] of [
+        ["GET", "/invitations", undefined],
+        ["POST", "/invitations", {}],
+        ["DELETE", `/invitations/${id}`, undefined],
+      ] as const) {
+        const response = await request(tokenB, method, path, body);
+        expect(response.status, `${method} ${path}`).toBe(403);
+      }
+      const me = async (token: string) =>
+        (
+          (await (await request(token, "GET", "/me")).json()) as {
+            user: { isAdmin: boolean };
+          }
+        ).user.isAdmin;
+      expect(await me(tokenA)).toBe(true);
+      expect(await me(tokenB)).toBe(false);
+      expect(
+        (await request(tokenA, "DELETE", `/invitations/${id}`)).status,
+      ).toBe(204);
+    });
+
+    it("招待リンクから利用者を作ってログインでき、同じリンクは 2 度使えない", async () => {
+      const invite = await issue({ label: "友人" });
+      expect(invite.url).toBe(`${ORIGIN}/invite?token=${invite.token}`);
+      // 合言葉そのものは保存しない。
+      const stored = await db.execute(
+        sql`select token_hash from invitations where id = ${invite.id}`,
+      );
+      expect(String(stored.rows[0]?.token_hash)).not.toContain(invite.token);
+
+      expect((await lookup(invite.token)).status).toBe(200);
+      const accepted = await publicPost("/invitations/accept", {
+        token: invite.token,
+        ...person("carol"),
+      });
+      expect(accepted.status).toBe(201);
+
+      const signedIn = await publicPost("/auth/sign-in/email", {
+        email: "carol@example.com",
+        password: PASSWORD,
+      });
+      const carol = signedIn.headers.get("set-auth-token") ?? "";
+      expect(carol).not.toBe("");
+      // 新しい利用者は管理者ではなく、ほかの利用者のデータも見えない。
+      expect((await request(carol, "GET", "/invitations")).status).toBe(403);
+      const accounts = await request(carol, "GET", "/accounts");
+      expect(await accounts.json()).toEqual({ accounts: [] });
+
+      expect((await lookup(invite.token)).status).toBe(404);
+      const again = await publicPost("/invitations/accept", {
+        token: invite.token,
+        ...person("dave"),
+      });
+      expect(again.status).toBe(404);
+
+      const list = (await (
+        await request(tokenA, "GET", "/invitations")
+      ).json()) as {
+        invitations: { id: string; usedByEmail: string | null }[];
+        users: { email: string }[];
+      };
+      expect(
+        list.invitations.find((row) => row.id === invite.id)?.usedByEmail,
+      ).toBe("carol@example.com");
+      expect(list.users.map((user) => user.email)).toContain(
+        "carol@example.com",
+      );
+      expect(JSON.stringify(list)).not.toContain(invite.token);
+    });
+
+    it("使えない招待 (でたらめ、期限切れ、取り消し済み) では作れない", async () => {
+      const expired = await issue();
+      await db.execute(
+        sql`update invitations set expires_at = now() - interval '1 minute' where id = ${expired.id}`,
+      );
+      const revoked = await issue();
+      await request(tokenA, "DELETE", `/invitations/${revoked.id}`);
+      for (const value of [expired.token, revoked.token, "x".repeat(43), ""]) {
+        expect((await lookup(value)).status, value).toBe(404);
+      }
+      for (const value of [expired.token, revoked.token, "x".repeat(43)]) {
+        const response = await publicPost("/invitations/accept", {
+          token: value,
+          ...person("erin"),
+        });
+        expect(response.status, value).toBe(404);
+      }
+      const { rows } = await db.execute(
+        sql`select 1 from users where email = 'erin@example.com'`,
+      );
+      expect(rows).toHaveLength(0);
+    });
+
+    it("登録できなかったときは、招待がそのまま残る", async () => {
+      const invite = await issue({ email: "Frank@Example.com" });
+      const cases: [Record<string, string>, number, string][] = [
+        [person("grace"), 400, "email_mismatch"],
+        [{ ...person("frank"), password: "short" }, 400, "password_too_short"],
+      ];
+      for (const [body, status, error] of cases) {
+        const response = await publicPost("/invitations/accept", {
+          token: invite.token,
+          ...body,
+        });
+        expect(response.status).toBe(status);
+        expect(await response.json()).toEqual({ error });
+      }
+      // すでにいる利用者のメールアドレスでは作れない。
+      const open = await issue();
+      const taken = await publicPost("/invitations/accept", {
+        token: open.token,
+        ...person("alice-private-login"),
+      });
+      expect(taken.status).toBe(409);
+      expect((await lookup(open.token)).status).toBe(200);
+
+      const ok = await publicPost("/invitations/accept", {
+        token: invite.token,
+        ...person("frank"),
+      });
+      expect(ok.status).toBe(201);
+    });
+
+    it("同じ招待を同時に使っても、作れるのは 1 人だけ", async () => {
+      const invite = await issue();
+      const results = await Promise.all(
+        ["heidi", "ivan", "judy"].map((mark) =>
+          publicPost("/invitations/accept", {
+            token: invite.token,
+            ...person(mark),
+          }),
+        ),
+      );
+      expect(
+        results.filter((response) => response.status === 201),
+      ).toHaveLength(1);
+      const { rows } = await db.execute(
+        sql`select 1 from users where email in ('heidi@example.com', 'ivan@example.com', 'judy@example.com')`,
+      );
+      expect(rows).toHaveLength(1);
+    });
   });
 });

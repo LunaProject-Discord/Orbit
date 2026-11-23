@@ -83,7 +83,7 @@ cd deploy && docker compose up -d --build
 ## ログインとメールアカウント
 
 - アプリへのログインは [Better Auth](https://www.better-auth.com/) のメールアドレス + パスワードです。
-  新規登録は API では受け付けておらず (招待制)、利用者は `pnpm user:create` で作成します。
+  新規登録は API では受け付けておらず (招待制)、最初の利用者は `pnpm user:create` で作成します (管理者になります)。ほかの人は、管理者が「設定」→「利用者と招待」で発行した招待リンクから、自分で登録します。
 - クライアントはログインで得たセッショントークンを `Authorization: Bearer` で送ります
   (Web / Tauri / Capacitor で同じ方式を使うため、Cookie には依存しません)。
 - 1 人の利用者が複数のメールアカウントを追加できます。アカウントの追加画面で、次の 4 つから選びます。
@@ -522,7 +522,7 @@ API は `GET /v1/messages/search` です。`q` のほかに `accountId`、`scope
 | `pnpm db:generate` | スキーマの変更からマイグレーションを生成 |
 | `pnpm db:migrate` | マイグレーションを適用 |
 | `pnpm --filter @mail/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
-| `pnpm user:create <メール> <表示名>` | ログイン用の利用者を作成 |
+| `pnpm user:create <メール> <表示名> [--admin]` | ログイン用の利用者を作成 (最初の 1 人と `--admin` 付きは管理者) |
 | `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
 
 ## UI
