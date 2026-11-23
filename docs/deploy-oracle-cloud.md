@@ -125,6 +125,25 @@ curl -s --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 http
 docker compose run --rm api node apps/api/dist/cli/create-user.js you@example.com "あなたの名前"
 ```
 
+### ほかの人にも使ってもらう
+
+新規登録の画面はありません (API でも受け付けません)。使ってもらう人の利用者は、同じコマンドで 1 人ずつ作ります。
+
+```sh
+docker compose run --rm api node apps/api/dist/cli/create-user.js friend@example.com "相手の名前"
+```
+
+- 入力した仮のパスワードを相手に伝え、ログイン後に「設定」→「セキュリティ」で変更してもらいます。
+- メールアカウント、メール、下書き、設定は利用者ごとに分かれていて、ほかの利用者からは見えません
+  (`apps/api/src/isolation.test.ts` が、2 人の利用者ですべての API を確かめています)。
+  ただし、サーバーの管理者は DB とバックアップを読める立場にあります。相手にはそのことを伝えてください。
+- Gmail を「Google でログイン」で追加する場合、OAuth 同意画面が「テスト中」なら、相手の Google アカウントを
+  「テストユーザー」に登録します (README の「Gmail (Google でログイン)」)。
+- Microsoft のアカウントは、Entra のアプリ登録の「サポートされているアカウントの種類」が自分の組織だけに
+  なっていると、ほかの組織や個人のアカウントを追加できません。
+- やめるときは、DB から利用者を消すと、その人の DB 上のデータもまとめて消えます (取得済みの添付ファイルは置き場に残ります)
+  (`docker compose exec postgres psql -U mail -d mail -c "delete from users where email = 'friend@example.com'"`)。
+
 ## 4. 18080 番を Linode からだけ届くようにする
 
 Oracle Cloud のコンソールでインスタンスの詳細 → サブネット → セキュリティ・リスト → 「イングレス・ルールの追加」を開き、

@@ -220,3 +220,32 @@ export async function loadUnifiedFolder(
     .where(and(eq(unifiedFolders.id, id), eq(unifiedFolders.userId, userId)));
   return row ?? null;
 }
+
+/**
+ * 集めるフォルダの指定から、その利用者のものでないフォルダを除く。
+ * 他の利用者のフォルダを指定しても中身は見えない (一覧は利用者で絞る) が、
+ * 他人の ID を保存したままにしない。
+ */
+export async function ownScope(
+  db: Database,
+  userId: string,
+  scope: UnifiedScope,
+): Promise<UnifiedScope> {
+  const normalized = normalizeScope(scope);
+  if (normalized.mailboxIds.length === 0) return normalized;
+  const rows = await db
+    .select({ id: mailboxes.id })
+    .from(mailboxes)
+    .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+    .where(
+      and(
+        eq(mailAccounts.userId, userId),
+        inArray(mailboxes.id, normalized.mailboxIds),
+      ),
+    );
+  const owned = new Set(rows.map((row) => row.id));
+  return {
+    ...normalized,
+    mailboxIds: normalized.mailboxIds.filter((id) => owned.has(id)),
+  };
+}
