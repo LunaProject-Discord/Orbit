@@ -44,7 +44,7 @@ type Props = {
   moveRequest: number;
   onAction: (rows: MessageSummary[], input: MessageActionInput) => void;
   onSelectAll: (checked: boolean) => void;
-  /** 選択をやめる。 */
+  /** 選択を解除。 */
   onClose: () => void;
 };
 
@@ -86,7 +86,14 @@ export function SelectionToolbar({
           className="min-w-0 flex-1 truncate pl-3 font-medium text-sm"
           aria-live="polite"
         >
-          {count > 0 ? `${count} 件を選択中` : "メールを選択"}
+          {count > 0 ? (
+            <>
+              {count} 件{/* スマホ幅ではボタンに場所を譲り、件数だけを出す。 */}
+              <span className="max-sm:hidden">を選択中</span>
+            </>
+          ) : (
+            "メールを選択"
+          )}
         </p>
         <ToolbarButton
           disabled={count === 0}
@@ -126,7 +133,7 @@ export function SelectionToolbar({
           junkAvailable && (
             <ToolbarButton
               disabled={count === 0}
-              label="迷惑メールとして扱う"
+              label="迷惑メールにする"
               onClick={() => act({ action: "move", destination: "junk" })}
             >
               <OctagonAlertIcon />
@@ -146,7 +153,7 @@ export function SelectionToolbar({
         >
           <Trash2Icon />
         </ToolbarButton>
-        <ToolbarButton label="選択をやめる" onClick={onClose} className="-mr-2">
+        <ToolbarButton label="選択を解除" onClick={onClose} className="-mr-2">
           <XIcon />
         </ToolbarButton>
       </header>

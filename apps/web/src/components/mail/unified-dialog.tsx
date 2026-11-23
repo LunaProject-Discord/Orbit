@@ -262,8 +262,8 @@ export function UnifiedDialog({
               </DialogTitle>
               <DialogDescription>
                 {builtin
-                  ? "サイドバーに出す名前・アイコン・色を変えられます。中に並ぶメールは変わりません。どの端末でも同じ見た目になります。"
-                  : "複数のアカウントやフォルダのメールを、1 つの一覧にまとめます。メールそのものは、元のフォルダから動きません。"}
+                  ? "サイドバーに表示する名前・アイコン・色を変えられます。表示されるメールは変わりません。この設定は、すべての端末で共通です。"
+                  : "複数のアカウントやフォルダのメールを、1 つの一覧にまとめます。メール自体は、元のフォルダから移動しません。"}
               </DialogDescription>
             </DialogHeader>
 
@@ -326,7 +326,7 @@ export function UnifiedDialog({
                 <>
                   <fieldset className="flex flex-col gap-2">
                     <legend className="mb-2 font-medium text-sm">
-                      集めるフォルダ
+                      対象のフォルダ
                     </legend>
                     <div className="flex items-center gap-1.5">
                       {(
@@ -350,7 +350,7 @@ export function UnifiedDialog({
                     </div>
                     {scope.all ? (
                       <p className="text-muted-foreground text-xs">
-                        全アカウントのすべてのフォルダから集めます
+                        すべてのアカウントの、すべてのフォルダが対象です
                         (ごみ箱と迷惑メールを除く)。下の条件と組み合わせて使います。
                       </p>
                     ) : (
@@ -414,17 +414,17 @@ export function UnifiedDialog({
                       aria-live="polite"
                     >
                       {isScopeEmpty(scope)
-                        ? "集めるフォルダを 1 つ以上選んでください。"
-                        : `いまあるフォルダのうち ${sources.length} 個が対象です。`}
+                        ? "対象のフォルダを 1 つ以上選んでください。"
+                        : `現在あるフォルダのうち ${sources.length} 個が対象です。`}
                     </p>
                   </fieldset>
 
-                  <fieldset className="flex flex-col gap-3">
+                  {/* fieldset は中身の幅より狭くならないので、min-w-0 で枠に収める。 */}
+                  <fieldset className="flex min-w-0 flex-col gap-3">
                     <legend className="mb-2 font-medium text-sm">
-                      条件
-                      <span className="ml-2 font-normal text-muted-foreground text-xs">
-                        指定したものすべてに当てはまるメールだけを並べます
-                        (任意)
+                      条件 (任意)
+                      <span className="mt-1 block font-normal text-muted-foreground text-xs">
+                        指定した条件のすべてに当てはまるメールだけを表示します。
                       </span>
                     </legend>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -460,8 +460,8 @@ export function UnifiedDialog({
                           ["subject", "件名", ""],
                           [
                             "text",
-                            "含む文字",
-                            "件名・差出人・宛先・本文から探します",
+                            "含まれる語句",
+                            "件名・差出人・宛先・本文から検索",
                           ],
                         ] as const
                       ).map(([key, label, placeholder]) => (
@@ -546,7 +546,7 @@ export function UnifiedDialog({
                   onClick={() => set({ name: "", icon: null, color: null })}
                   className="sm:mr-auto"
                 >
-                  初期の設定に戻す
+                  初期設定に戻す
                 </Button>
               )}
               {editing && (
@@ -582,7 +582,7 @@ export function UnifiedDialog({
             <AlertDialogTitle>統合フォルダを削除しますか？</AlertDialogTitle>
             <AlertDialogDescription>
               「{shown?.kind === "delete" ? shown.folder.name : ""}
-              」を削除します。中に並んでいたメールは、元のフォルダにそのまま残ります。
+              」を削除します。表示されていたメールは、元のフォルダにそのまま残ります。
             </AlertDialogDescription>
           </AlertDialogHeader>
           {error && (

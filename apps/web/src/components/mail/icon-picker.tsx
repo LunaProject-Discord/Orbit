@@ -148,7 +148,7 @@ export function IconPicker({
           )}
         </span>
         <span className="truncate">
-          {emoji ? "絵文字" : (value ?? emptyLabel)}
+          {emoji ? "絵文字" : value ? "アイコン" : emptyLabel}
         </span>
         <ChevronDownIcon className="text-muted-foreground" aria-hidden="true" />
       </PopoverTrigger>

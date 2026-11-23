@@ -377,7 +377,7 @@ export function draftSignature(
   });
 }
 
-/** 送信できなかったメールを、編集して送り直すための下書きに戻す。 */
+/** 送信できなかったメールを、編集して再送信ための下書きに戻す。 */
 export function draftFromOutgoing(mail: OutgoingMail): ComposeDraft {
   return {
     // 前回の送信とは別の依頼として扱ってもらうため、ID は作り直す。

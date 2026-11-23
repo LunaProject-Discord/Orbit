@@ -64,13 +64,13 @@ function messageOf(error: unknown): string {
   }
   if (error instanceof ApiError) {
     if (error.code === "email_taken") {
-      return "このメールアドレスの利用者は、すでにいます。";
+      return "このメールアドレスは、すでに登録されています。";
     }
     if (error.code === "too_many") {
-      return "使われていない招待が多すぎます。不要な招待を取り消してください。";
+      return "未使用の招待が多すぎます。不要な招待を取り消してください。";
     }
     if (error.status === 403) {
-      return "管理者だけが使えます。";
+      return "この機能は管理者だけが使えます。";
     }
   }
   return "処理できませんでした。時間をおいてもう一度お試しください。";
@@ -102,7 +102,7 @@ function detailOf(invitation: Invitation, state: InvitationState): string {
     return `${who} が登録 ・ ${dateTime.format(new Date(invitation.usedAt ?? invitation.createdAt))}`;
   }
   const limit = dateTime.format(new Date(invitation.expiresAt));
-  const only = invitation.email ? ` ・ ${invitation.email} だけ` : "";
+  const only = invitation.email ? ` ・ ${invitation.email} 専用` : "";
   return state === "expired"
     ? `${limit} に期限切れ${only}`
     : `${limit} まで有効${only}`;
@@ -144,7 +144,7 @@ export function InvitationSettings({ user }: { user: User }) {
   if (!user.isAdmin) {
     return (
       <p className="rounded-lg border px-3 py-2.5 text-muted-foreground text-sm">
-        このページは、管理者だけが使えます。利用者を増やしたいときは、このサーバーの管理者に頼んでください。
+        このページは、管理者だけが使えます。利用者を追加したいときは、このサーバーの管理者に依頼してください。
       </p>
     );
   }
@@ -162,7 +162,7 @@ export function InvitationSettings({ user }: { user: User }) {
           </div>
           <Button size="sm" onClick={() => setCreating(true)}>
             <UserPlusIcon />
-            招待リンクを作る
+            招待リンクを作成
           </Button>
         </div>
         {error && (
@@ -211,7 +211,7 @@ export function InvitationSettings({ user }: { user: User }) {
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`${titleOf(invitation)} を${state === "pending" ? "取り消す" : "一覧から消す"}`}
+                    aria-label={`${titleOf(invitation)} を${state === "pending" ? "取り消す" : "一覧から削除"}`}
                     onClick={() => setDeleteTarget(invitation)}
                   >
                     <Trash2Icon />
@@ -278,7 +278,7 @@ export function InvitationSettings({ user }: { user: User }) {
             <AlertDialogTitle>
               {deleteTarget && invitationState(deleteTarget, now) === "pending"
                 ? "この招待を取り消しますか？"
-                : "この招待を一覧から消しますか？"}
+                : "この招待を一覧から削除しますか？"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget && invitationState(deleteTarget, now) === "pending"
@@ -287,7 +287,7 @@ export function InvitationSettings({ user }: { user: User }) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>やめる</AlertDialogCancel>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
@@ -306,7 +306,7 @@ export function InvitationSettings({ user }: { user: User }) {
             >
               {deleteTarget && invitationState(deleteTarget, now) === "pending"
                 ? "取り消す"
-                : "消す"}
+                : "削除"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -366,13 +366,13 @@ function CreateDialog(props: {
       <DialogContent>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>招待リンクを作る</DialogTitle>
+            <DialogTitle>招待リンクを作成</DialogTitle>
             <DialogDescription>
-              作ったリンクを、使ってもらう人に渡してください。
+              作成したリンクを、招待する人に渡してください。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2">
-            <Label htmlFor={labelId}>誰に渡すか (覚え書き)</Label>
+            <Label htmlFor={labelId}>渡す相手 (メモ)</Label>
             <Input
               id={labelId}
               value={label}
@@ -383,7 +383,7 @@ function CreateDialog(props: {
             />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor={emailId}>登録できるメールアドレス (省略可)</Label>
+            <Label htmlFor={emailId}>登録できるメールアドレス (任意)</Label>
             <Input
               id={emailId}
               type="email"
@@ -393,7 +393,7 @@ function CreateDialog(props: {
               onChange={(event) => setEmail(event.target.value)}
             />
             <p className="text-muted-foreground text-xs leading-relaxed">
-              指定すると、このメールアドレスでしか登録できません。リンクがほかの人に渡っても使われにくくなります。
+              指定すると、このメールアドレスでしか登録できなくなります。リンクがほかの人に渡っても、悪用されにくくなります。
             </p>
           </div>
           <div className="flex flex-col gap-2">
@@ -424,10 +424,10 @@ function CreateDialog(props: {
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={props.onClose}>
-              やめる
+              キャンセル
             </Button>
             <Button type="submit" disabled={submitting}>
-              {submitting ? "作成中…" : "作る"}
+              {submitting ? "作成中…" : "作成"}
             </Button>
           </DialogFooter>
         </form>
@@ -457,10 +457,10 @@ function IssuedDialog(props: {
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>招待リンクを作りました</DialogTitle>
+          <DialogTitle>招待リンクを作成しました</DialogTitle>
           <DialogDescription>
-            このリンクをコピーして、使ってもらう人に渡してください。この画面を閉じると、リンクはもう表示できません
-            (作り直すことはできます)。
+            このリンクをコピーして、招待する人に渡してください。この画面を閉じると、リンクは二度と表示できません
+            (新しく作成することはできます)。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">

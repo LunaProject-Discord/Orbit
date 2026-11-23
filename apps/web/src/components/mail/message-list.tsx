@@ -108,7 +108,7 @@ type Props = {
   locationLabel?: (message: MessageSummary) => string | null;
   /**
    * 複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示すための関数。
-   * アカウントの印 (設定したアイコンか色の点) と、読み上げ用のアカウント名を返す。
+   * アカウントのマーク (設定したアイコンか色の点) と、読み上げ用のアカウント名を返す。
    */
   accountMark?: (
     message: MessageSummary,
@@ -448,7 +448,7 @@ export function MessageList({
                   <output>会話のメールを読み込み中…</output>
                 ) : (
                   <span role="alert">
-                    会話のメールを読み込めませんでした。閉じてから、もう一度広げてください。
+                    会話のメールを読み込めませんでした。一度閉じてから、もう一度開いてください。
                   </span>
                 )}
               </li>
@@ -531,7 +531,7 @@ export function MessageList({
                       aria-label={
                         expanded
                           ? "会話のメールの一覧を閉じる"
-                          : `会話のメール ${message.threadCount} 通を一覧に出す`
+                          : `会話のメール ${message.threadCount} 通を一覧に表示`
                       }
                       onClick={() => onToggleExpand(message.id)}
                       className="absolute top-0 left-0 z-10 flex h-full w-5 items-start justify-start rounded-sm pl-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset pointer-coarse:w-7"

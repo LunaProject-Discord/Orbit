@@ -94,11 +94,11 @@ function sendErrorOf(error: unknown, limit: number): string {
       return "入力内容に誤りがあります。宛先と件名を確認してください。";
     }
   }
-  return "送信を受け付けられませんでした。時間をおいてもう一度お試しください。";
+  return "送信できませんでした。時間をおいてもう一度お試しください。";
 }
 
 const titles = {
-  new: "新しいメッセージ",
+  new: "新しいメール",
   reply: "返信",
   forward: "転送",
 } as const;
@@ -429,7 +429,7 @@ export function ComposeWindow({
     if (!draft || sending) return;
     if (uploading) {
       setError(
-        "添付ファイルを送っている途中です。終わってから送信してください。",
+        "添付ファイルをアップロードしています。完了してから送信してください。",
       );
       return;
     }
@@ -438,7 +438,7 @@ export function ComposeWindow({
     const bcc = resolveRecipients(draft.bcc);
     const invalid = [...to.invalid, ...cc.invalid, ...bcc.invalid];
     if (invalid.length > 0) {
-      setError(`メールアドレスとして読み取れません: ${invalid.join("、")}`);
+      setError(`メールアドレスの形式が正しくありません: ${invalid.join("、")}`);
       return;
     }
     if (
@@ -528,7 +528,7 @@ export function ComposeWindow({
   const saved = saveProblem ? (
     <span className="truncate text-destructive text-xs">
       {saveProblem === "offline"
-        ? "下書きを保存できていません。接続が戻ると保存します"
+        ? "下書きを保存できていません。接続が戻りしだい保存します"
         : "下書きを保存できません。宛先と添付ファイルを確認してください"}
     </span>
   ) : (
@@ -555,7 +555,7 @@ export function ComposeWindow({
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label="作成画面を広げる"
+          aria-label="作成画面を展開"
           onClick={() => setMinimized(false)}
         >
           <MinusIcon className="rotate-180" />
@@ -638,7 +638,7 @@ export function ComposeWindow({
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label="作成画面を畳む"
+            aria-label="作成画面を折りたたむ"
             onClick={() => setMinimized(true)}
           >
             <MinusIcon />
@@ -935,7 +935,7 @@ export function ComposeWindow({
           {!online && (
             <p className="flex shrink-0 items-center gap-2 border-t bg-muted/50 px-4 py-2 text-muted-foreground text-xs">
               <WifiOffIcon className="size-3.5 shrink-0" aria-hidden="true" />
-              オフラインです。送信すると、接続後に自動で送られます。
+              オフラインです。送信したメールは、接続後に自動で送られます。
             </p>
           )}
           {error && (
@@ -961,7 +961,7 @@ export function ComposeWindow({
         />
         {dragging && (
           <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-t-xl border-2 border-primary border-dashed bg-background/80 font-medium text-sm">
-            ここにファイルを置くと添付します
+            ここにファイルをドロップすると添付できます
           </div>
         )}
       </form>

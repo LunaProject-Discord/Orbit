@@ -84,7 +84,7 @@ const initialForm = {
 
 const descriptions: Record<Step, string> = {
   choose:
-    "追加したアカウントはサーバーが常時同期し、すべての端末に同じ状態で届きます。",
+    "追加したアカウントはサーバーが常に同期し、すべての端末で同じ状態になります。",
   icloud:
     "iCloud メールのアドレスと、このアプリ専用に作ったアプリ用パスワードを入力してください。",
   manual:

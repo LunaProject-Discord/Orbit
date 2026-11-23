@@ -536,7 +536,7 @@ export async function signIn(
 /**
  * 2 段階認証のコードを確かめてログインを終える。
  * kind は、認証アプリの 6 桁のコード (totp) か、バックアップコード (backup)。
- * trustDevice を付けると、この端末では 30 日間コードを尋ねない。
+ * trustDevice を付けると、この端末では 30 日間コードの入力を省略する。
  */
 export async function verifyTwoFactorSignIn(
   kind: "totp" | "backup",
@@ -766,7 +766,7 @@ export async function disableTwoFactor(password: string): Promise<void> {
   adoptToken(response);
 }
 
-/** バックアップコードを作り直す (前のコードは使えなくなる)。 */
+/** バックアップコードを再発行 (前のコードは使えなくなる)。 */
 export async function regenerateBackupCodes(
   password: string,
 ): Promise<string[]> {

@@ -94,10 +94,10 @@ import {
 import type { SyncStatus } from "@/lib/sync-status";
 
 const notificationDescriptions: Record<NotificationStatus, string> = {
-  unsupported: "このブラウザーでは、新着メールの通知を出せません。",
-  off: "新着メールが届いても、通知は出しません。",
+  unsupported: "このブラウザーでは、新着メールを通知できません。",
+  off: "新着メールが届いても、通知しません。",
   blocked:
-    "ブラウザーの設定で、このサイトの通知が拒否されています。通知を出すには、ブラウザーの設定で許可してください。",
+    "ブラウザーの設定で、このサイトの通知が拒否されています。通知を受け取るには、ブラウザーの設定で許可してください。",
   page: "新着メールを通知します。この画面を開いている間だけ届きます。",
   push: "新着メールを通知します。この画面を閉じていても届きます。",
 };
@@ -108,7 +108,7 @@ const nativeNotificationDescriptions: Record<NotificationStatus, string> = {
   unsupported:
     "このサーバー、またはこのアプリでは、新着メールの通知が設定されていません。",
   blocked:
-    "端末の設定で、このアプリの通知が許可されていません。通知を出すには、端末の設定で許可してください。",
+    "端末の設定で、このアプリの通知が許可されていません。通知を受け取るには、端末の設定で許可してください。",
   push: "新着メールを通知します。アプリを閉じていても届きます。",
 };
 
@@ -132,7 +132,7 @@ const themes = [
 
 const shortcuts: [keys: string, action: string][] = [
   ["J / ↓、K / ↑", "次のメール、前のメール"],
-  ["U / Esc", "メールを閉じる、選択をやめる"],
+  ["U / Esc", "メールを閉じる、選択を解除"],
   ["C", "新規作成"],
   ["R、Shift+R、F", "返信、全員に返信、転送"],
   ["/", "検索"],
@@ -160,39 +160,43 @@ const CATEGORIES: Record<
   },
   appearance: {
     label: "外観",
-    summary: "テーマ、文字の大きさ、動き",
-    description: "この端末 (ブラウザー) だけに保存します。",
+    summary: "テーマ、文字の大きさ、アニメーション",
+    description:
+      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: PaletteIcon,
   },
   fonts: {
     label: "フォント",
     summary: "画面とメール本文のフォント",
-    description: "この端末 (ブラウザー) だけに保存します。",
+    description:
+      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: TypeIcon,
   },
   list: {
     label: "メール一覧",
-    summary: "行の間隔、プレビュー、印、日付",
-    description: "この端末 (ブラウザー) だけに保存します。",
+    summary: "行の間隔、プレビュー、マーク、日付",
+    description:
+      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: ListIcon,
   },
   reading: {
     label: "メールの表示",
     summary: "既読のタイミング、外部の画像、見出し、簡易返信欄",
-    description: "この端末 (ブラウザー) だけに保存します。",
+    description:
+      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: MailOpenIcon,
   },
   actions: {
     label: "操作",
     summary: "スワイプ、ショートカットキー",
     description:
-      "スワイプしたときの操作はすべての端末で共通で、それ以外はこの端末 (ブラウザー) だけに保存します。",
+      "スワイプしたときの操作は、すべての端末で共通です。それ以外の設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: PointerIcon,
   },
   sidebar: {
     label: "サイドバー",
     summary: "項目の並び替え、統合フォルダ",
-    description: "すべての端末で共通です。",
+    description: "このページの設定は、すべての端末で共通です。",
     icon: PanelLeftIcon,
   },
   notifications: {
@@ -205,7 +209,7 @@ const CATEGORIES: Record<
   signatures: {
     label: "署名",
     summary: "アカウント、連絡先、会話ごとの署名",
-    description: "すべての端末で共通です。",
+    description: "このページの設定は、すべての端末で共通です。",
     icon: SignatureIcon,
   },
   security: {
@@ -219,12 +223,12 @@ const CATEGORIES: Record<
     label: "利用者と招待",
     summary: "招待リンクの発行、このサーバーの利用者",
     description:
-      "このサーバーを使う人を増やします。招待リンクを開いた人は、自分で名前とパスワードを決めて登録できます。管理者だけが使えます。",
+      "招待リンクを発行して、このサーバーの利用者を追加します。このページは管理者だけが使えます。",
     icon: UserPlusIcon,
   },
   system: {
-    label: "同期とログイン",
-    summary: "同期の状況、ログアウト、設定を標準に戻す",
+    label: "同期と端末",
+    summary: "同期の状況、ログアウト、設定の初期化",
     description:
       "メールはサーバーが常に同期し、既読や移動などの操作はすべての端末に反映されます。",
     icon: RefreshCwIcon,
@@ -502,7 +506,7 @@ function AppearancePage() {
         <SettingGroup>
           <SelectRow
             label="文字の大きさ"
-            description="画面全体が同じ比率で変わります。"
+            description="画面全体の文字を、同じ比率で拡大・縮小します。"
             value={preferences.fontSize}
             onChange={(fontSize) => set({ fontSize })}
             options={FONT_SIZES.map((size) => [
@@ -511,8 +515,8 @@ function AppearancePage() {
             ])}
           />
           <SwitchRow
-            label="動きを減らす"
-            description="画面の切り替えなどの動きを止めます。オフのときは、端末の設定に従います。"
+            label="アニメーションを減らす"
+            description="画面の切り替えなどのアニメーションを止めます。オフのときは、端末の設定に従います。"
             checked={preferences.motion === "off"}
             onChange={(off) => set({ motion: off ? "off" : "system" })}
           />
@@ -535,12 +539,12 @@ function FontsPage() {
       <Section title="画面のフォント">
         <SettingGroup>
           <SelectRow
-            label="既定のフォント"
-            description="画面全体に使うフォントです。デフォルトは Gen Interface JP です。"
+            label="基本のフォント"
+            description="画面全体に使うフォントです。標準は Gen Interface JP です。"
             value={preferences.font}
             onChange={(font) => set({ font })}
             options={[
-              ["default", "デフォルト (Gen Interface JP)"],
+              ["default", "標準 (Gen Interface JP)"],
               ["system", "システム標準"],
               ["sans", "ゴシック体"],
               ["serif", "明朝体"],
@@ -560,8 +564,8 @@ function FontsPage() {
             ) : (
               <FontPickerRow
                 label="使うフォント"
-                description="この端末に入っているフォントから選びます。選ばなければデフォルトのフォントになります。"
-                emptyLabel="選んでいません"
+                description="この端末に入っているフォントから選びます。選ばなければ標準のフォントになります。"
+                emptyLabel="未選択"
                 value={preferences.customFont}
                 onChange={(customFont) => set({ customFont })}
               />
@@ -577,7 +581,7 @@ function FontsPage() {
           <SettingGroup>
             <FontPickerRow
               label="ゴシック体のフォント"
-              description="既定のフォントやメール本文の標準フォントで「ゴシック体」を選んだときに使います。"
+              description="基本のフォントや本文の標準フォントで「ゴシック体」を選んだときに使います。"
               emptyLabel="自動"
               value={preferences.sansFont}
               onChange={(sansFont) => set({ sansFont })}
@@ -603,12 +607,12 @@ function FontsPage() {
 
       <Section
         title="メール本文"
-        description="メール側でフォントや大きさを指定している場合は、そちらが使われます。"
+        description="メール側でフォントや文字の大きさが指定されている場合は、そちらが優先されます。"
       >
         <SettingGroup>
           <SelectRow
             label="本文の標準フォント"
-            description="フォントの指定が無いメールに使います。"
+            description="フォントが指定されていないメールに使います。"
             value={preferences.bodyFont}
             onChange={(bodyFont) => set({ bodyFont })}
             options={[
@@ -625,7 +629,7 @@ function FontsPage() {
             <FontPickerRow
               label="本文に使うフォント"
               description="この端末に入っているフォントから選びます。選ばなければゴシック体になります。"
-              emptyLabel="選んでいません"
+              emptyLabel="未選択"
               value={preferences.bodyCustomFont}
               onChange={(bodyCustomFont) => set({ bodyCustomFont })}
             />
@@ -666,14 +670,14 @@ function ListPage() {
             value={preferences.density}
             onChange={(density) => set({ density })}
             options={[
-              ["compact", "せまい"],
+              ["compact", "狭い"],
               ["standard", "標準"],
-              ["comfortable", "ひろい"],
+              ["comfortable", "広い"],
             ]}
           />
           <SelectRow
             label="本文のプレビュー"
-            description="件名の下に出す本文の行数です。"
+            description="件名の下に表示する本文の行数です。"
             value={preferences.previewLines}
             onChange={(previewLines) => set({ previewLines })}
             options={[
@@ -684,22 +688,22 @@ function ListPage() {
             ]}
           />
           <SwitchRow
-            label="添付・スター・返信済みの印"
+            label="添付・スター・返信済みのマーク"
             checked={preferences.showListIcons}
             onChange={(showListIcons) => set({ showListIcons })}
           />
         </SettingGroup>
       </Section>
-      <Section title="アカウントの印">
+      <Section title="アカウントのマーク">
         <SettingGroup>
           <SwitchRow
-            label="アカウントの印"
+            label="アカウントのマーク"
             description="複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示します。"
             checked={preferences.showAccountMark}
             onChange={(showAccountMark) => set({ showAccountMark })}
           />
           <SelectRow
-            label="アカウントの印の見た目"
+            label="アカウントのマークの種類"
             description="アイコンや絵文字を設定していないアカウントは、どちらでも色の点になります。"
             value={preferences.accountMarkStyle}
             onChange={(accountMarkStyle) => set({ accountMarkStyle })}
@@ -796,7 +800,7 @@ function ReadingPage() {
           />
           <SwitchRow
             label="簡易返信欄"
-            description="メールの下に、すぐ返信を書ける欄を出します。"
+            description="メールの下に、すぐに返信を書ける欄を表示します。"
             checked={preferences.quickReply}
             onChange={(quickReply) => set({ quickReply })}
           />
@@ -819,7 +823,7 @@ function ActionsPage() {
     <>
       <Section
         title="スワイプしたときの操作"
-        description="メール一覧の行を、左右にスワイプしたときの操作です。すべての端末で共通です。その行でできない操作 (アーカイブ先が無いなど) は、スワイプしても動きません。"
+        description="メール一覧の行を左右にスワイプしたときの操作です。その行でできない操作 (アーカイブ先が無い場合など) は、スワイプしても実行されません。"
       >
         <SettingGroup>
           <SelectRow
@@ -837,16 +841,16 @@ function ActionsPage() {
         </SettingGroup>
         {swipeError && (
           <p role="alert" className="text-destructive text-xs">
-            スワイプ操作を保存できませんでした。通信の状態を確かめて、もう一度選んでください。
+            スワイプ操作を保存できませんでした。通信の状態を確認して、もう一度選んでください。
           </p>
         )}
       </Section>
 
-      <Section title="スワイプの使い方">
+      <Section title="スワイプの動作">
         <SettingGroup>
           <SelectRow
             label="開いているメールのスワイプ"
-            description="メールを開いた画面を、左右にスワイプしたときの動きです。「一覧と同じ操作」では、上の「スワイプしたときの操作」で選んだ操作を行います。"
+            description="メールを開いた画面を左右にスワイプしたときの動作です。「一覧と同じ操作」を選ぶと、上の「スワイプしたときの操作」で選んだ操作を実行します。"
             value={preferences.messageSwipe}
             onChange={(messageSwipe) => set({ messageSwipe })}
             options={[
@@ -956,12 +960,13 @@ function NotificationsPage({
             <p className="text-muted-foreground text-xs leading-relaxed">
               通知から、メールを開かずに操作できます。
               {MAX_NOTIFICATION_ACTIONS} つまで選べ、選んだ順に並びます
-              (ブラウザーの通知では、先頭の 2 つまでのことがあります)。
-              この設定はすべての端末で共通で、次に届く通知から変わります。
+              (ブラウザーの通知では、先頭の 2
+              つしか表示されないことがあります)。
+              この設定はすべての端末で共通で、次に届く通知から反映されます。
             </p>
             <p className="mt-1 text-xs" data-notification-action-order>
               {notificationActions.length > 0
-                ? `いまの並び: ${notificationActions
+                ? `現在の並び: ${notificationActions
                     .map(
                       (id) =>
                         NOTIFICATION_ACTIONS.find((action) => action.id === id)
@@ -990,7 +995,7 @@ function NotificationsPage({
         </SettingGroup>
         {notificationActionsError && (
           <p role="alert" className="text-destructive text-xs">
-            通知に付けるボタンを保存できませんでした。通信の状態を確かめて、もう一度選んでください。
+            通知に付けるボタンを保存できませんでした。通信の状態を確認して、もう一度選んでください。
           </p>
         )}
       </Section>
@@ -1003,7 +1008,7 @@ function SignaturesPage({ accounts, onEditSignature, signatureRules }: Props) {
     <>
       <Section
         title="アカウントの署名"
-        description="連絡先や会話ごとの署名が無いときに使います。"
+        description="連絡先や会話ごとの署名が設定されていないときに使います。"
       >
         {accounts === null ? (
           <p className="text-muted-foreground text-sm">読み込み中…</p>
@@ -1056,8 +1061,8 @@ function SystemPage({ user, syncStatus, devices, onSignOut }: Props) {
           <SyncIndicator status={syncStatus} />
           <p className="text-muted-foreground text-xs">
             {devices > 0
-              ? `いま接続している端末: ${devices} 台 (この端末を含む)`
-              : "いま接続している端末の数は、サーバーに接続すると表示されます。"}
+              ? `現在接続している端末: ${devices} 台 (この端末を含む)`
+              : "現在接続している端末の数は、サーバーに接続すると表示されます。"}
           </p>
         </div>
       </Section>
@@ -1079,12 +1084,12 @@ function SystemPage({ user, syncStatus, devices, onSignOut }: Props) {
 
       <Section
         title="この端末の設定"
-        description="外観、フォント、メール一覧、メールの表示と、操作のうちこの端末に保存している設定を、標準に戻します。アカウントや署名など、すべての端末で共通の設定は変わりません。"
+        description="外観、フォント、メール一覧、メールの表示と、操作のうちこの端末に保存している設定を、初期設定に戻します。アカウントや署名など、すべての端末で共通の設定は変わりません。"
       >
         <div>
           <Button variant="outline" size="sm" onClick={resetPreferences}>
             <RotateCcwIcon />
-            この端末の設定を標準に戻す
+            この端末の設定を初期設定に戻す
           </Button>
         </div>
       </Section>
@@ -1206,9 +1211,7 @@ function AccountCard({
 
       <div className="grid gap-x-4 gap-y-3 sm:grid-cols-[1fr_auto]">
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${id}-name`} className="font-normal text-xs">
-            表示名
-          </Label>
+          <Label htmlFor={`${id}-name`}>表示名</Label>
           <Input
             id={`${id}-name`}
             value={name}
@@ -1226,7 +1229,7 @@ function AccountCard({
           />
         </div>
         <div className="flex flex-col gap-1.5">
-          <span id={`${id}-color`} className="text-xs">
+          <span id={`${id}-color`} className="font-medium text-sm">
             色
           </span>
           <ColorPicker
@@ -1239,7 +1242,7 @@ function AccountCard({
       </div>
 
       <div className="flex flex-col items-start gap-1.5">
-        <span id={`${id}-icon`} className="text-xs">
+        <span id={`${id}-icon`} className="font-medium text-sm">
           アイコン
         </span>
         <IconPicker
@@ -1257,12 +1260,12 @@ function AccountCard({
         (account.provider === "generic" || account.allowLegacyTls) && (
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
-              <p id={`${id}-legacy-tls`} className="text-xs">
+              <p id={`${id}-legacy-tls`} className="font-medium text-sm">
                 古い TLS のサーバーへの接続を許可する
               </p>
               <p className="text-muted-foreground text-xs leading-relaxed">
                 安全な再ネゴシエーション (RFC 5746)
-                に対応していないサーバー向けです。安全性が下がるので、接続できないときだけオンにしてください。
+                に対応していないサーバー向けです。安全性が下がるため、接続できない場合にだけオンにしてください。
               </p>
             </div>
             <Switch
@@ -1279,15 +1282,14 @@ function AccountCard({
       {account.protocol === "imap" && (
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <p id={`${id}-push-connections`} className="text-xs">
-              ほかのフォルダの変化をすぐ受け取る
+            <p id={`${id}-push-connections`} className="font-medium text-sm">
+              受信トレイ以外のフォルダの変更をすぐに受け取る
             </p>
             <p className="text-muted-foreground text-xs leading-relaxed">
-              受信トレイ以外のフォルダ用に足す接続の本数です。対応しているサーバーでは
-              1
-              本で全フォルダの変化を受け取り、それ以外では迷惑メール・送信済みなどの大事なフォルダから順に
-              1 本ずつ使います。残りのフォルダは 2
-              分ごとに確認します。ほかのメールソフトが「接続が多すぎる」と表示するときは減らしてください。
+              受信トレイ以外のフォルダ用に追加する接続の本数です。対応しているサーバーでは、1
+              本ですべてのフォルダの変更を受け取ります。対応していないサーバーでは、迷惑メールや送信済みなどの重要なフォルダから順に
+              1 本ずつ使い、残りのフォルダは 2
+              分ごとに確認します。ほかのメールソフトで「接続が多すぎる」と表示される場合は、減らしてください。
             </p>
           </div>
           <Select

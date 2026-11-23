@@ -22,7 +22,7 @@ function messageOf(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.code) {
       case "invalid_invitation":
-        return "この招待リンクは、期限が切れているか、すでに使われています。招待した人に、新しいリンクを頼んでください。";
+        return "この招待リンクは、期限が切れているか、すでに使われています。招待した人に、新しいリンクの発行を依頼してください。";
       case "email_mismatch":
         return "この招待は、別のメールアドレス用です。招待されたメールアドレスを入力してください。";
       case "email_taken":
@@ -172,7 +172,7 @@ export default function InvitePage() {
       >
         <p className="mt-8 text-sm leading-relaxed">
           {lookup.status === "invalid"
-            ? "期限が切れているか、すでに使われています。招待した人に、新しいリンクを頼んでください。"
+            ? "期限が切れているか、すでに使われています。招待した人に、新しいリンクの発行を依頼してください。"
             : "ネットワークの状態を確認して、もう一度リンクを開いてください。"}
         </p>
         <p className="mt-6 text-center text-sm">

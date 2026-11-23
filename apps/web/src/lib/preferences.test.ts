@@ -42,7 +42,7 @@ describe("parsePreferences", () => {
     expect(result).toEqual({ ...DEFAULT_PREFERENCES, bodyFontSize: 16 });
   });
 
-  it("アカウントの印は、標準では設定したアイコンを出す", () => {
+  it("アカウントのマークは、標準では設定したアイコンを出す", () => {
     expect(parsePreferences(null).accountMarkStyle).toBe("icon");
     expect(
       parsePreferences(JSON.stringify({ accountMarkStyle: "dot" }))

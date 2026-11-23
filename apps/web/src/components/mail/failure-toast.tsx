@@ -96,7 +96,7 @@ export function FailureToast({
         <DialogHeader>
           <DialogTitle>サーバーに反映できなかった操作</DialogTitle>
           <DialogDescription>
-            画面の表示は、メールサーバーの状態に戻しています。再試行すると、もう一度反映します。
+            画面の表示は、メールサーバーの状態に戻してあります。再試行すると、もう一度反映を試みます。
           </DialogDescription>
         </DialogHeader>
         <ul className="-my-2 flex max-h-[50dvh] flex-col divide-y overflow-y-auto">

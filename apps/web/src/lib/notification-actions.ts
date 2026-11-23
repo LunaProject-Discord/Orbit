@@ -17,16 +17,20 @@ export const NOTIFICATION_ACTIONS: readonly {
   label: string;
   description: string;
 }[] = [
-  { id: "read", label: "既読にする", description: "開かずに既読にします。" },
+  {
+    id: "read",
+    label: "既読にする",
+    description: "メールを開かずに既読にします。",
+  },
   {
     id: "star",
     label: "スターを付ける",
-    description: "後で見返す印を付けます。",
+    description: "後で見返せるように、スターを付けます。",
   },
   {
     id: "archive",
     label: "アーカイブ",
-    description: "受信トレイから片付けます。",
+    description: "受信トレイからアーカイブへ移します。",
   },
   { id: "delete", label: "削除", description: "ごみ箱へ移します。" },
   {

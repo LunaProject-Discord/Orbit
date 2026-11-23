@@ -251,9 +251,10 @@ const FOLDER_NOTICES: Record<FolderDialogTarget["kind"], string> = {
 };
 const SIGNATURE_RULE_DELETE_ERROR = "署名の設定を解除できませんでした。";
 const ORDER_ERROR = "並び順を保存できませんでした。元の順番に戻しました。";
-const RETRY_GONE = "対象のメールがすでに無いため、やり直せませんでした。";
+const RETRY_GONE =
+  "対象のメールがすでに存在しないため、再試行できませんでした。";
 const RETRY_ERROR =
-  "やり直せませんでした。時間をおいて、もう一度お試しください。";
+  "再試行できませんでした。時間をおいて、もう一度お試しください。";
 const NOTIFICATION_BLOCKED =
   "ブラウザーの設定で通知が拒否されています。ブラウザーの設定で、このサイトの通知を許可してください。";
 /** 短い知らせを出しておく時間。 */
@@ -2044,6 +2045,17 @@ export function MailApp({ user }: { user: User }) {
       : null;
   const noAccounts = accounts !== null && accounts.length === 0;
   const searching = search !== null;
+  /**
+   * 一覧の見出し。検索中は、ほかのフォルダのメールも並ぶので、フォルダ名ではなく
+   * 「検索結果」とし、探している範囲を添える。
+   */
+  const heading = search !== null ? "検索結果" : title;
+  const headingNote =
+    search === null
+      ? subtitle
+      : search.scope === "folder"
+        ? title
+        : (accountName ?? "すべてのアカウント");
   /** 新しいメールを書き始められる (アカウントがある)。 */
   const canCompose = accounts !== null && accounts.length > 0;
   /** 検索欄を出す一覧 (フォルダの一覧) を表示している。 */
@@ -2061,7 +2073,7 @@ export function MailApp({ user }: { user: User }) {
   });
   /**
    * 複数のアカウントのメールが並ぶ一覧 (すべての受信トレイ、スター付き、全体の検索) で、
-   * どのアカウントのメールかを、アカウントの印 (設定したアイコンか色の点) で示す。
+   * どのアカウントのメールかを、アカウントのマーク (設定したアイコンか色の点) で示す。
    */
   const accountMark =
     selectedAccountId === null && (accounts?.length ?? 0) > 1
@@ -2707,10 +2719,10 @@ export function MailApp({ user }: { user: User }) {
                 {/* 検索欄を出している間は、メニューのボタンは検索欄の横に置く。 */}
                 {!showSearch && menuButton("-ml-2 pointer-coarse:-ml-2.5")}
                 <h1 className="min-w-0 truncate font-semibold text-lg">
-                  {title}
+                  {heading}
                 </h1>
                 <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-                  {subtitle}
+                  {headingNote}
                 </p>
                 <SyncIndicator
                   status={syncStatus}
@@ -2853,7 +2865,7 @@ export function MailApp({ user }: { user: User }) {
                   {...(starred
                     ? {
                         emptyText:
-                          "スターを付けたメールはありません。スターを付けると、どのフォルダにあってもここに並びます。",
+                          "スターを付けたメールはありません。スターを付けたメールは、どのフォルダにあってもここに表示されます。",
                         locationLabel,
                       }
                     : searching
@@ -2865,7 +2877,7 @@ export function MailApp({ user }: { user: User }) {
                       : selectedUnified
                         ? {
                             emptyText:
-                              "この統合フォルダに当てはまるメールはありません。",
+                              "この統合フォルダの条件に当てはまるメールはありません。",
                             locationLabel,
                           }
                         : selectedMailbox?.lastSyncedAt

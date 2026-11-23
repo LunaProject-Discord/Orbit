@@ -281,7 +281,7 @@ export function actionTargets(
     /** ごみ箱の中にある (削除は完全な削除になる)。 */
     inTrash: current?.specialUse === "trash",
     /**
-     * 迷惑メールとして扱うときの移動先。迷惑メールのフォルダが無いか、
+     * 迷惑メールにするときの移動先。迷惑メールのフォルダが無いか、
      * すでにその中にあるなら null。
      */
     junk: junk && !inJunk ? junk : null,

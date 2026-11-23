@@ -66,9 +66,9 @@ const ROLE_HELP: Record<Exclude<MailboxRoleOverride, "none">, string> = {
   drafts: "書きかけのメールの控えを、このフォルダに保存します。",
   sent: "送信したメールの控えを、このフォルダに保存します。",
   archive: "「アーカイブ」したメールを、このフォルダへ移します。",
-  junk: "「迷惑メールにする」で、このフォルダへ移します。検索や「すべての受信トレイ」には出しません。",
+  junk: "「迷惑メールにする」を選んだメールを、このフォルダへ移します。このフォルダのメールは、検索結果や「すべての受信トレイ」には表示されません。",
   trash:
-    "削除したメールを、このフォルダへ移します。この中で削除すると、完全に削除します。",
+    "削除したメールを、このフォルダへ移します。このフォルダの中で削除すると、完全に削除されます。",
 };
 
 function roleLabel(role: MailboxRoleOverride | Mailbox["specialUse"]): string {
@@ -202,7 +202,7 @@ export function MailboxOverridesDialog({
             <DialogDescription>
               このアプリの中での役割・名前・アイコン・色を変えられます。メールサーバー上のフォルダ
               {shown ? ` (${shown.name}) ` : ""}
-              は変わりません。どの端末でも同じ内容になります。
+              は変わりません。この設定は、すべての端末で共通です。
             </DialogDescription>
           </DialogHeader>
 
@@ -250,12 +250,12 @@ export function MailboxOverridesDialog({
                     aria-live="polite"
                   >
                     {role === null
-                      ? "ふつうのフォルダとして扱います。"
+                      ? "通常のフォルダとして扱います。"
                       : role === "inbox" || role === "all" || role === "flagged"
                         ? `${roleLabel(role)}として扱います。`
                         : ROLE_HELP[role]}
                     {holder &&
-                      ` いまは「${mailboxLabel(holder)}」がこの役割です。保存すると、このフォルダに切り替わります。`}
+                      ` 現在は「${mailboxLabel(holder)}」がこの役割です。保存すると、このフォルダに切り替わります。`}
                   </p>
                 </>
               )}
@@ -322,7 +322,7 @@ export function MailboxOverridesDialog({
               onClick={() => setForm(emptyForm)}
               className="sm:mr-auto"
             >
-              初期の設定に戻す
+              初期設定に戻す
             </Button>
             <Button
               type="button"

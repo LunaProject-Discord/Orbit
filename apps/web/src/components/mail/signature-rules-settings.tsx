@@ -37,12 +37,12 @@ export function SignatureRulesSettings({
       <div className="flex flex-col gap-1">
         <h3 className="font-semibold text-base">連絡先・会話ごとの署名</h3>
         <p className="text-muted-foreground text-sm">
-          会話の署名、連絡先の署名、アカウントの署名の順に探して使います。連絡先の署名は、メールの相手の名前を押して出るカードから、会話の署名は、メールを開いたときのツールバーから設定できます。すべての端末で共通です。
+          会話の署名、連絡先の署名、アカウントの署名の順に優先して使います。連絡先の署名は、メールの相手の名前を押すと表示されるカードから、会話の署名は、メールを開いたときのツールバーから設定できます。
         </p>
       </div>
       {rules.length === 0 ? (
         <p className="rounded-lg border border-dashed p-3 text-muted-foreground text-sm">
-          まだ設定していません。
+          まだ設定されていません。
         </p>
       ) : (
         <ul className="flex flex-col divide-y rounded-lg border">

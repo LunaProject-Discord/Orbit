@@ -442,10 +442,10 @@ export function PickerGrid({
             className="h-8 w-full min-w-0 rounded-md border border-input bg-transparent pr-8 pl-8 text-base outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
           />
           {query !== "" && (
-            <Hint label="検索をやめる">
+            <Hint label="検索をクリア">
               <button
                 type="button"
-                aria-label="検索をやめる"
+                aria-label="検索をクリア"
                 onClick={() => {
                   changeQuery("");
                   inputRef.current?.focus();

@@ -166,7 +166,7 @@ export function setEntryHidden(
   return { order: all.map((entry) => entry.key), hidden: [...next] };
 }
 
-/** 統合フォルダが集めるフォルダ (いまあるフォルダのうち、場所に当てはまるもの)。 */
+/** 統合フォルダが集めるフォルダ (現在あるフォルダのうち、場所に当てはまるもの)。 */
 export function scopeMailboxes(
   scope: UnifiedScope,
   mailboxes: readonly MailboxSummary[],

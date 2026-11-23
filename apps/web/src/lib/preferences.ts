@@ -30,7 +30,7 @@ export type Preferences = {
   showAccountMark: boolean;
   /** 一覧などで、どのアカウントかを示す印。icon は設定したアイコン (無ければ色の点)、dot は常に色の点。 */
   accountMarkStyle: "icon" | "dot";
-  /** メール一覧に、添付・スター・返信済みの印を出す。 */
+  /** メール一覧に、添付・スター・返信済みのマークを出す。 */
   showListIcons: boolean;
   /** 一覧の日付。auto は今日なら時刻だけ、datetime は常に日付と時刻。 */
   listDate: "auto" | "datetime";
