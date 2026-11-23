@@ -1,6 +1,6 @@
 import { CHANNEL_GRAPH_PUSH } from "@mail/core";
-import type { Database } from "@mail/db";
-import { sql } from "drizzle-orm";
+import { type Database, users } from "@mail/db";
+import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -18,6 +18,10 @@ import { attachmentRoutes } from "./routes/attachments.js";
 import { draftRoutes } from "./routes/drafts.js";
 import { failureRoutes } from "./routes/failures.js";
 import { focusRoutes } from "./routes/focus.js";
+import {
+  invitationPublicRoutes,
+  invitationRoutes,
+} from "./routes/invitations.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageRoutes } from "./routes/messages.js";
 import { notificationActionRoutes } from "./routes/notification-actions.js";
@@ -34,6 +38,8 @@ import { webhookRoutes } from "./routes/webhooks.js";
 export type AppOptions = {
   db: Database;
   auth: Auth;
+  /** 新規登録を受け付ける設定の Better Auth。招待リンクからの登録にだけ使う。 */
+  signUpAuth: Auth;
   hub: EventsHub;
   /** CORS を許可するオリジン (Web、Tauri、Capacitor)。 */
   allowedOrigins: string[];
@@ -52,6 +58,7 @@ export type AppOptions = {
 export function createApp({
   db,
   auth,
+  signUpAuth,
   hub,
   allowedOrigins,
   encryptionKey,
@@ -119,9 +126,18 @@ export function createApp({
   // 通知のボタンから呼ばれる。ログインの代わりに、通知に付けた合言葉で確かめる。
   v1.route("/", notificationActionRoutes({ db, encryptionKey }));
 
+  // 招待リンクを開いた人 (まだ利用者ではない) が呼ぶ。リンクの合言葉で確かめる。
+  v1.route("/", invitationPublicRoutes({ db, signUpAuth }));
+
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
-  authed.get("/me", (c) => c.json({ user: c.var.user }));
+  authed.get("/me", async (c) => {
+    const [row] = await db
+      .select({ isAdmin: users.isAdmin })
+      .from(users)
+      .where(eq(users.id, c.var.user.id));
+    return c.json({ user: { ...c.var.user, isAdmin: row?.isAdmin ?? false } });
+  });
   const deps = {
     db,
     encryptionKey,
@@ -146,6 +162,7 @@ export function createApp({
     }),
   );
   authed.route("/signatures", signatureRoutes(deps));
+  authed.route("/invitations", invitationRoutes({ db, webOrigin }));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));
   authed.route("/push", pushRoutes(deps));

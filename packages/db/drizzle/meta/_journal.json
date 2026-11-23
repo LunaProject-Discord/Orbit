@@ -190,6 +190,13 @@
       "when": 1795368974145,
       "tag": "0026_account_security",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1795443527825,
+      "tag": "0027_invitations",
+      "breakpoints": true
     }
   ]
 }

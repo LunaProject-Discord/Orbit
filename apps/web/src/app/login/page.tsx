@@ -98,6 +98,11 @@ function noticeOf(search: string): { text: string; error: boolean } | null {
         text: "メールアドレスを変更しました。新しいメールアドレスでログインしてください。",
         error: false,
       };
+    case "registered":
+      return {
+        text: "登録しました。決めたメールアドレスとパスワードでログインしてください。",
+        error: false,
+      };
     case "password-reset":
       return {
         text: "パスワードを再設定しました。新しいパスワードでログインしてください。",

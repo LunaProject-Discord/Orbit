@@ -46,9 +46,41 @@ export const users = pgTable("users", {
   image: text(),
   /** 2 段階認証を有効にしているか (Better Auth の twoFactor プラグインが読み書きする)。 */
   twoFactorEnabled: boolean().notNull().default(false),
+  /**
+   * 管理者か。管理者だけが、招待リンクを発行してほかの利用者を増やせる。
+   * Better Auth は読み書きしない (自前の API とコマンドだけが扱う)。
+   */
+  isAdmin: boolean().notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
+
+/**
+ * 利用者を増やすための招待。新規登録は受け付けていないので、管理者が発行した
+ * 招待リンクを開いた人だけが、自分で利用者を作れる。1 つの招待で作れるのは 1 人。
+ */
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: id(),
+    /** リンクに付ける合言葉の SHA-256 (16 進)。合言葉そのものは保存しない。 */
+    tokenHash: text().notNull().unique(),
+    createdBy: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 誰に渡したかの覚え書き。 */
+    label: text(),
+    /** 指定すると、このメールアドレスでしか登録できない。 */
+    email: text(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    /** 使われた時刻。null なら未使用。 */
+    usedAt: timestamp({ withTimezone: true }),
+    /** この招待で作られた利用者。 */
+    usedBy: uuid().references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("invitations_created_by_idx").on(t.createdBy)],
+);
 
 /** ログインセッション。token を Bearer トークンとして各クライアントが保持する。 */
 export const sessions = pgTable(
