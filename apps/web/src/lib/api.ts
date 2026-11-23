@@ -671,6 +671,15 @@ export async function fetchSecurity(
   return apiJson<SecurityStatus>("/v1/security", { signal });
 }
 
+/** 自分の名前 (表示名) を変える。保存された名前 (前後の空白を除いたもの) が返る。 */
+export async function changeName(name: string): Promise<string> {
+  const data = await apiJson<{ name: string }>("/v1/security/name", {
+    method: "PUT",
+    body: { name },
+  });
+  return data.name;
+}
+
 /** 再設定のリンクをメールで送ってもらう。登録の無いアドレスでも、同じ応答が返る。 */
 export async function requestPasswordReset(email: string): Promise<void> {
   await apiFetch("/v1/auth/request-password-reset", {

@@ -210,9 +210,9 @@ const CATEGORIES: Record<
   },
   security: {
     label: "ログインとセキュリティ",
-    summary: "メールアドレス、パスワード、2 段階認証、パスキー",
+    summary: "名前、メールアドレス、パスワード、2 段階認証、パスキー",
     description:
-      "Orbit へのログインに使うメールアドレス、パスワード、2 段階認証、パスキーを設定します。メールアカウント (Gmail など) の設定とは別です。",
+      "Orbit での名前と、ログインに使うメールアドレス、パスワード、2 段階認証、パスキーを設定します。メールアカウント (Gmail など) の設定とは別です。",
     icon: ShieldCheckIcon,
   },
   users: {

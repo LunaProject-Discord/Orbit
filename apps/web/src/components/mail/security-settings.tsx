@@ -45,6 +45,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   ApiError,
+  changeName,
   changePassword,
   confirmTwoFactor,
   deletePasskey,
@@ -121,6 +122,7 @@ export function SecuritySettings({ user }: Props) {
   const [loadError, setLoadError] = useState(false);
   const [dialog, setDialog] = useState<
     | null
+    | "name"
     | "email"
     | "password"
     | "two-factor-setup"
@@ -178,6 +180,11 @@ export function SecuritySettings({ user }: Props) {
         </p>
       )}
       <div className="flex flex-col divide-y rounded-lg border">
+        <Row label="名前" description={user.name}>
+          <Button variant="outline" size="sm" onClick={() => setDialog("name")}>
+            変更
+          </Button>
+        </Row>
         <Row
           label="メールアドレス"
           description={
@@ -306,6 +313,11 @@ export function SecuritySettings({ user }: Props) {
         </div>
       </div>
 
+      <NameDialog
+        open={dialog === "name"}
+        currentName={user.name}
+        onClose={close}
+      />
       <EmailDialog
         open={dialog === "email"}
         currentEmail={user.email}
@@ -442,6 +454,108 @@ function FreshDialog(props: {
     >
       <DialogContent key={generation}>{props.children}</DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 名前
+// ---------------------------------------------------------------------------
+
+/** 名前の長さの上限 (サーバーと揃える)。 */
+const MAX_NAME_LENGTH = 100;
+
+function NameDialog(props: {
+  open: boolean;
+  currentName: string;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <FreshDialog open={props.open} busy={busy} onClose={props.onClose}>
+      <NameForm {...props} onBusy={setBusy} />
+    </FreshDialog>
+  );
+}
+
+function NameForm(props: {
+  currentName: string;
+  onClose: () => void;
+  onBusy: (busy: boolean) => void;
+}) {
+  const { refreshUser } = useAuth();
+  const [name, setName] = useState(props.currentName);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const next = name.trim();
+    if (next === "") {
+      setError("名前を入力してください。");
+      return;
+    }
+    if (next === props.currentName) {
+      props.onClose();
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    props.onBusy(true);
+    try {
+      await changeName(next);
+      // 画面に出している名前 (サイドバーなど) を取り直す。
+      await refreshUser().catch(() => {});
+      props.onBusy(false);
+      props.onClose();
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError && cause.status === 400
+          ? "この名前は使えません。改行などを含まない、100 文字までの名前にしてください。"
+          : (messageOf(cause) ?? "変更できませんでした。"),
+      );
+      setBusy(false);
+      props.onBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="contents">
+      <DialogHeader>
+        <DialogTitle>名前を変更</DialogTitle>
+        <DialogDescription>
+          Orbit
+          の画面に出る、あなたの名前です。ログインに使うメールアドレスや、メールの差出人の名前
+          (メールアカウントの表示名) は変わりません。
+        </DialogDescription>
+      </DialogHeader>
+      <Field label="名前">
+        {(id) => (
+          <Input
+            id={id}
+            autoComplete="name"
+            required
+            autoFocus
+            maxLength={MAX_NAME_LENGTH}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        )}
+      </Field>
+      <ErrorText>{error}</ErrorText>
+      <DialogFooter>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={props.onClose}
+        >
+          キャンセル
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? "保存中…" : "保存"}
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }
 
