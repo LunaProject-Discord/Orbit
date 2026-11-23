@@ -379,7 +379,7 @@ export function AccountSidebar({
       </div>
       {onCompose && (
         // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
-        <div className="shrink-0 pr-3 pb-2 pl-2">
+        <div className="shrink-0 px-2 pb-2">
           <Hint label="新規作成" shortcut="C">
             <Button onClick={onCompose} className="w-full justify-center gap-2">
               <PenSquareIcon />
@@ -391,8 +391,9 @@ export function AccountSidebar({
 
       <nav
         aria-label="メールアカウントとフォルダ"
-        // 右側は、重ねて表示するスクロールバーが項目に触れないよう少し広く空ける。
-        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pr-3 pl-2"
+        // 左右の余白は同じにする。スクロールバーは内容の上に重ねて描く (幅を取らない) ので、
+        // 右だけ広く空けると、新規作成のボタンや項目が左に寄って見える。
+        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1"
         onClickCapture={(event) => {
           if (!draggedRef.current) return;
           event.preventDefault();
@@ -547,9 +548,9 @@ export function AccountSidebar({
       <SyncIndicator
         status={syncStatus}
         // アイコンと文字を、上の項目のアイコンの列 (16px) と文字の列 (40px) に揃える。
-        className="shrink-0 gap-2.5 border-t py-2 pr-3 pl-4"
+        className="shrink-0 gap-2.5 border-t py-2 pr-2 pl-4"
       />
-      <div className="flex shrink-0 items-center gap-2 border-t py-3 pr-3 pl-4">
+      <div className="flex shrink-0 items-center gap-2 border-t py-3 pr-2 pl-4">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>
           <p className="truncate text-muted-foreground text-xs">{user.email}</p>
