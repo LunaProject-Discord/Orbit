@@ -895,10 +895,24 @@ function ActionsPage() {
 }
 
 function NotificationsPage({
+  accounts,
   notificationStatus,
   notificationBusy,
   onNotificationChange,
+  onAccountUpdated,
 }: Props) {
+  const [accountError, setAccountError] = useState(false);
+  const changeAccountNotify = (account: Account, notifyNewMail: boolean) => {
+    // 押してすぐ画面に反映し、保存できなければ元に戻す。
+    onAccountUpdated({ ...account, notifyNewMail });
+    setAccountError(false);
+    updateAccount(account.id, { notifyNewMail })
+      .then(onAccountUpdated)
+      .catch(() => {
+        onAccountUpdated(account);
+        setAccountError(true);
+      });
+  };
   const notificationActions = useNotificationActions();
   const [notificationActionsError, setNotificationActionsError] =
     useState(false);
@@ -954,6 +968,33 @@ function NotificationsPage({
           )}
         </div>
       </Section>
+      {accounts && accounts.length > 0 && (
+        <Section title="アカウントごとの通知">
+          <SettingGroup>
+            <div className="px-3 py-2.5">
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                新着メールを通知するアカウントを選べます。この設定はすべての端末で共通です。
+                {isNativeApp() &&
+                  "通知の音や表示のしかたは、Android の設定の「通知」から、アカウントごとに変えられます。"}
+              </p>
+            </div>
+            {accounts.map((account) => (
+              <SwitchRow
+                key={account.id}
+                label={account.displayName || account.email}
+                description={account.displayName ? account.email : undefined}
+                checked={account.notifyNewMail}
+                onChange={(on) => changeAccountNotify(account, on)}
+              />
+            ))}
+          </SettingGroup>
+          {accountError && (
+            <p role="alert" className="text-destructive text-xs">
+              変更を保存できませんでした。通信の状態を確認して、もう一度お試しください。
+            </p>
+          )}
+        </Section>
+      )}
       <Section title="通知に付けるボタン">
         <SettingGroup>
           <div className="px-3 py-2.5">

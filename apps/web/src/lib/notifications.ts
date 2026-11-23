@@ -250,18 +250,22 @@ export async function showPageNotification(
   notification: MailNotification,
   onOpen: (messageId: string | null) => void,
 ): Promise<void> {
+  // 件名の下に、本文の冒頭を出す。
+  const body = notification.preview
+    ? `${notification.body}\n${notification.preview}`
+    : notification.body;
   if (isDesktopApp()) {
     // 押されたときは、アプリ側からのイベントが onNotificationOpen に届く。
     await notifyNewMail({
       title: notification.title,
-      body: notification.body,
+      body,
       messageId: notification.messageId,
     });
     return;
   }
   if (!supported() || Notification.permission !== "granted") return;
   const options = {
-    body: notification.body,
+    body,
     tag: notification.tag,
     icon: "/icons/icon-192.png",
     data: { messageId: notification.messageId },

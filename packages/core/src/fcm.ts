@@ -76,12 +76,17 @@ export function toFcmMessage(token: string, message: PushMessage) {
       data: {
         title: message.title,
         body: message.body,
+        // 本文の冒頭。通知を広げたときに、件名の下に出す。
+        ...(message.preview ? { preview: message.preview } : {}),
         // 同じ tag の通知は置き換わる (再送で二重に出さない)。
         tag: message.tag,
         // 通知を押したときに開くメール。まとめた通知では空。
         messageId: message.messageId ?? "",
         // 通知の分類 (Android の通知チャンネル)。
         channel: FCM_CHANNEL_NEW_MAIL,
+        // 届いたアカウント。アプリは、アカウントごとの分類とまとまりに分けて出す。
+        ...(message.accountId ? { accountId: message.accountId } : {}),
+        ...(message.accountName ? { accountName: message.accountName } : {}),
         ...(actions
           ? {
               actions: JSON.stringify(actions.buttons),

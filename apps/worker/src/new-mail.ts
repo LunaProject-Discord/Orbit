@@ -14,6 +14,7 @@ import {
 import {
   type Database,
   devices,
+  mailAccounts,
   pushSubscriptions,
   userSettings,
 } from "@mail/db";
@@ -32,7 +33,24 @@ export async function announceNewMail(
   account: SyncAccount,
   candidates: NewMailCandidate[],
 ) {
-  const notification = toNewMailNotification(account, candidates);
+  if (candidates.length === 0) return;
+  // 通知するかと、通知に出すアカウントの名前は、届いた時点の設定で決める。
+  const [settings] = await tx
+    .select({
+      notify: mailAccounts.notifyNewMail,
+      displayName: mailAccounts.displayName,
+      email: mailAccounts.email,
+    })
+    .from(mailAccounts)
+    .where(eq(mailAccounts.id, account.id));
+  if (settings && !settings.notify) return;
+  const notification = toNewMailNotification(
+    {
+      ...account,
+      name: settings?.displayName?.trim() || settings?.email,
+    },
+    candidates,
+  );
   if (!notification) return;
   await tx.execute(
     sql`select pg_notify(${CHANNEL_NEW_MAIL}, ${JSON.stringify(notification)})`,

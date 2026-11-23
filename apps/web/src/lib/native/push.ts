@@ -18,6 +18,12 @@ export type NativePushStatus = "unsupported" | "off" | "blocked" | "push";
 const TOKEN_KEY = "mail.push-device-token";
 /** 通知の分類 (Android の通知チャンネル)。サーバーが送る通知の channel_id と合わせる。 */
 export const NEW_MAIL_CHANNEL = "new-mail";
+/**
+ * アカウントごとの通知の分類の ID の先頭 (後ろにアカウントの ID が付く)。
+ * アプリ側 (MailNotifications.java) と合わせる。
+ */
+export const ACCOUNT_CHANNEL_PREFIX = "new-mail-";
+const CHANNEL_DESCRIPTION = "新しいメールが届いたときに知らせます";
 const REGISTER_TIMEOUT_MS = 20_000;
 
 function storedToken(): string | null {
@@ -104,7 +110,7 @@ export async function syncNativePush(
     await push.createChannel({
       id: NEW_MAIL_CHANNEL,
       name: "新着メール",
-      description: "新しいメールが届いたときに知らせます",
+      description: CHANNEL_DESCRIPTION,
       // 4 = 音とポップアップで知らせる (利用者は Android の設定で変えられる)。
       importance: 4,
       visibility: 0,
@@ -119,6 +125,59 @@ export async function syncNativePush(
     return "push";
   } catch {
     return "off";
+  }
+}
+
+type ChannelAccount = { id: string; email: string; displayName: string | null };
+
+/** 分類の一覧をアカウントにそろえるために、作るものと消すものを決める。 */
+export function planAccountChannels(
+  accounts: ChannelAccount[],
+  existing: { id: string; name: string }[],
+): { create: { id: string; name: string }[]; remove: string[] } {
+  const wanted = new Map(
+    accounts.map((account) => [
+      `${ACCOUNT_CHANNEL_PREFIX}${account.id}`,
+      account.displayName?.trim() || account.email,
+    ]),
+  );
+  const names = new Map(existing.map((channel) => [channel.id, channel.name]));
+  return {
+    // 名前が同じものは作り直さない。
+    create: [...wanted]
+      .filter(([id, name]) => names.get(id) !== name)
+      .map(([id, name]) => ({ id, name })),
+    remove: existing
+      .map((channel) => channel.id)
+      .filter((id) => id.startsWith(ACCOUNT_CHANNEL_PREFIX) && !wanted.has(id)),
+  };
+}
+
+/**
+ * アカウントごとの通知の分類 (Android の通知チャンネル) を、いまのアカウントにそろえる。
+ * 分類があると、Android の設定でアカウントごとに音やオン / オフを変えられる。
+ * すでにある分類は名前だけが変わり、利用者が変えた設定は残る。削除したアカウントの分は消す。
+ */
+export async function syncAccountChannels(
+  accounts: ChannelAccount[],
+): Promise<void> {
+  try {
+    const { PushNotifications: push } = await import(
+      "@capacitor/push-notifications"
+    );
+    const { channels } = await push.listChannels();
+    const plan = planAccountChannels(accounts, channels);
+    for (const channel of plan.create) {
+      await push.createChannel({
+        ...channel,
+        description: CHANNEL_DESCRIPTION,
+        importance: 4,
+        visibility: 0,
+      });
+    }
+    for (const id of plan.remove) await push.deleteChannel({ id });
+  } catch {
+    // そろえられなくても、通知が届いたときにアプリが分類を作る。
   }
 }
 

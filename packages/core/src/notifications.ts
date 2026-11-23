@@ -19,6 +19,11 @@ export const NEW_MAIL_MAX_AGE_MS = 24 * 60 * 60_000;
 
 const MAX_FROM = 80;
 const MAX_SUBJECT = 150;
+/**
+ * 通知に出す本文の冒頭の長さ。NOTIFY は 8000 バイトまでなので、1 通ずつ知らせるとき
+ * (MAX_SINGLE_NOTIFICATIONS 通まで) にだけ付ける。
+ */
+export const MAX_PREVIEW = 300;
 
 function truncate(text: string, max: number): string {
   const chars = [...text];
@@ -33,6 +38,11 @@ export type PushMessage = {
   tag: string;
   /** 押したときに開くメール。まとめた通知では null (受信トレイを開く)。 */
   messageId: string | null;
+  /** 届いたアカウント。アプリは、通知をアカウントごとに分ける (通知の分類とまとまり)。 */
+  accountId?: string;
+  accountName?: string;
+  /** 本文の冒頭。件名 (body) の下に出す。分からないときと、まとめた通知では付けない。 */
+  preview?: string;
   /** 通知に付けるボタン。まとめた通知と、ボタンを使わない設定では付けない。 */
   actions?: PushActions;
 };
@@ -42,6 +52,8 @@ export type NewMailCandidate = {
   id: string;
   from: { name?: string; address: string }[];
   subject: string;
+  /** 本文の冒頭 (空白を詰めた 1 行)。分からなければ省く。 */
+  preview?: string;
   seen: boolean;
   receivedAt: Date;
 };
@@ -52,7 +64,7 @@ export type NewMailCandidate = {
  * 通知するものが無ければ null。
  */
 export function toNewMailNotification(
-  account: { id: string; userId: string },
+  account: { id: string; userId: string; name?: string | null },
   candidates: NewMailCandidate[],
   now = Date.now(),
 ): NewMailNotification | null {
@@ -63,16 +75,22 @@ export function toNewMailNotification(
     )
     .sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
   if (fresh.length === 0) return null;
+  const single = fresh.length <= MAX_SINGLE_NOTIFICATIONS;
   return {
     userId: account.userId,
     accountId: account.id,
+    ...(account.name?.trim()
+      ? { accountName: truncate(account.name.trim(), MAX_FROM) }
+      : {}),
     count: fresh.length,
     messages: fresh.slice(0, MAX_NOTIFIED_ITEMS).map((item): NewMailItem => {
       const sender = item.from[0];
+      const preview = single ? item.preview?.trim() : "";
       return {
         id: item.id,
         from: truncate(sender?.name?.trim() || sender?.address || "", MAX_FROM),
         subject: truncate(item.subject, MAX_SUBJECT),
+        ...(preview ? { preview: truncate(preview, MAX_PREVIEW) } : {}),
       };
     }),
   };
@@ -83,10 +101,19 @@ export function toNewMailNotification(
  * signer を渡すと、1 通ずつの通知にボタンを付ける。
  */
 export function toPushMessages(
-  notification: Pick<NewMailNotification, "accountId" | "messages" | "count">,
+  notification: Pick<
+    NewMailNotification,
+    "accountId" | "accountName" | "messages" | "count"
+  >,
   signer?: PushActionSigner | null,
 ): PushMessage[] {
   const { messages, count } = notification;
+  const account = {
+    accountId: notification.accountId,
+    ...(notification.accountName
+      ? { accountName: notification.accountName }
+      : {}),
+  };
   if (count <= MAX_SINGLE_NOTIFICATIONS && messages.length >= count) {
     return messages.map((message) => {
       const actions = toPushActions(signer, message.id);
@@ -95,6 +122,8 @@ export function toPushMessages(
         body: message.subject || "(件名なし)",
         tag: `mail:${message.id}`,
         messageId: message.id,
+        ...account,
+        ...(message.preview ? { preview: message.preview } : {}),
         ...(actions ? { actions } : {}),
       };
     });
@@ -113,6 +142,7 @@ export function toPushMessages(
       // まとめた通知は、届くたびに別の通知として出す。
       tag: `mail-batch:${notification.accountId}:${first?.id ?? count}`,
       messageId: null,
+      ...account,
     },
   ];
 }

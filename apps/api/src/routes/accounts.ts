@@ -113,6 +113,8 @@ const updateAccountBody = z
      * null なら自動。IMAP / SMTP のアカウントでだけ変えられる。
      */
     pushConnections: z.number().int().min(0).max(8).nullable().optional(),
+    /** このアカウントに届いた新着メールを通知する。 */
+    notifyNewMail: z.boolean().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -137,6 +139,7 @@ const publicColumns = {
   smtpSecure: mailAccounts.smtpSecure,
   allowLegacyTls: mailAccounts.allowLegacyTls,
   pushConnections: mailAccounts.pushConnections,
+  notifyNewMail: mailAccounts.notifyNewMail,
   username: mailAccounts.username,
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
@@ -646,6 +649,9 @@ export function accountRoutes({
               : {}),
             ...(body.pushConnections !== undefined
               ? { pushConnections: body.pushConnections }
+              : {}),
+            ...(body.notifyNewMail !== undefined
+              ? { notifyNewMail: body.notifyNewMail }
               : {}),
           })
           .where(

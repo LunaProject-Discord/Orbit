@@ -77,7 +77,13 @@ describe("PushSender", () => {
     expect(sent).toHaveLength(4);
     expect(sent[0]).toEqual([
       "https://fcm.googleapis.com/fcm/send/s1",
-      { title: "佐藤 美咲", body: "ご確認", tag: "mail:m1", messageId: "m1" },
+      {
+        title: "佐藤 美咲",
+        body: "ご確認",
+        tag: "mail:m1",
+        messageId: "m1",
+        accountId: "a1",
+      },
     ]);
     expect(deleted).toEqual([]);
   });

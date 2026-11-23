@@ -6,6 +6,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.service.notification.StatusBarNotification;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
@@ -21,13 +22,22 @@ final class MailNotifications {
     private static final int MAX_ACTIONS = 3;
     /** 通知は tag で見分けるので、番号はすべて同じにする。 */
     private static final int NOTIFICATION_ID = 0;
+    /** アカウントごとの通知の分類 (チャンネル) の ID の先頭。画面側 (lib/native/push.ts) と合わせる。 */
+    private static final String ACCOUNT_CHANNEL_PREFIX = "new-mail-";
+    /** アカウントごとの通知のまとまり (グループ) の名前の先頭。 */
+    private static final String GROUP_PREFIX = "orbit-account-";
+    /** まとまりの見出しになる通知の tag の先頭。 */
+    private static final String SUMMARY_TAG_PREFIX = "summary:";
 
     private MailNotifications() {}
 
     /**
      * サーバーから届いた内容で通知を出す。
-     * data: title、body、tag、messageId (まとめた通知では空)、
-     * actions (ボタンの JSON)、actionUrl、actionToken (ボタンがあるとき)。
+     * data: title、body、preview (本文の冒頭。無いこともある)、tag、messageId (まとめた通知では空)、
+     * actions (ボタンの JSON)、actionUrl、actionToken (ボタンがあるとき)、
+     * accountId、accountName (届いたアカウント。古いサーバーでは無い)。
+     * アカウントが分かるときは、アカウントごとの分類 (音やオン / オフを Android の設定で
+     * 別々に変えられる) と、アカウントごとのまとまりに分けて出す。
      */
     static void show(Context context, String fcmMessageId, Map<String, String> data) {
         String title = data.get("title");
@@ -36,9 +46,20 @@ final class MailNotifications {
         String tag = data.get("tag");
         if (tag == null || tag.isEmpty()) tag = "mail:" + messageId;
 
-        NotificationCompat.Builder builder = base(context, tag, fcmMessageId, messageId).setContentTitle(title).setContentText(body);
-        if (!body.isEmpty()) {
-            builder.setStyle(new NotificationCompat.BigTextStyle().bigText(body));
+        String preview = orEmpty(data.get("preview"));
+        String accountId = orEmpty(data.get("accountId"));
+        String accountName = orEmpty(data.get("accountName"));
+        String channel = channel(context, accountId, accountName);
+
+        // 閉じた通知には件名を出し、広げると件名の下に本文の冒頭を出す。
+        NotificationCompat.Builder builder = base(context, channel, tag, fcmMessageId, messageId)
+            .setContentTitle(title)
+            .setContentText(body);
+        if (!accountName.isEmpty()) builder.setSubText(accountName);
+        if (!accountId.isEmpty()) builder.setGroup(GROUP_PREFIX + accountId);
+        String expanded = body.isEmpty() ? preview : preview.isEmpty() ? body : body + "\n" + preview;
+        if (!expanded.isEmpty()) {
+            builder.setStyle(new NotificationCompat.BigTextStyle().bigText(expanded));
         }
 
         String url = data.get("actionUrl");
@@ -48,11 +69,28 @@ final class MailNotifications {
             addActions(context, builder, actions, tag, messageId, url, token, title);
         }
         post(context, tag, builder);
+        if (!accountId.isEmpty()) showSummary(context, channel, accountId, accountName);
+    }
+
+    /**
+     * アカウントごとのまとまりの見出し。同じアカウントの通知は、この下に束ねて表示される。
+     * 音や振動は 1 通ずつの通知が鳴らすので、見出しでは鳴らさない。
+     */
+    private static void showSummary(Context context, String channel, String accountId, String accountName) {
+        String tag = SUMMARY_TAG_PREFIX + accountId;
+        NotificationCompat.Builder builder = base(context, channel, tag, null, "")
+            .setContentTitle(accountName.isEmpty() ? context.getString(R.string.channel_new_mail_name) : accountName)
+            .setContentText(context.getString(R.string.channel_new_mail_name))
+            .setStyle(new NotificationCompat.InboxStyle().setSummaryText(accountName))
+            .setGroup(GROUP_PREFIX + accountId)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN);
+        post(context, tag, builder);
     }
 
     /** ボタンの操作をサーバーへ送れなかったことを知らせる。押すと、そのメールを開く。 */
     static void showFailure(Context context, String tag, String messageId, String title) {
-        NotificationCompat.Builder builder = base(context, tag, null, messageId)
+        NotificationCompat.Builder builder = base(context, channel(context, "", ""), tag, null, messageId)
             .setContentTitle(context.getString(R.string.notification_action_failed))
             .setContentText(orEmpty(title));
         post(context, tag, builder);
@@ -60,10 +98,43 @@ final class MailNotifications {
 
     static void cancel(Context context, String tag) {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null) manager.cancel(tag, NOTIFICATION_ID);
+        if (manager == null) return;
+        String group = groupOf(manager, tag);
+        manager.cancel(tag, NOTIFICATION_ID);
+        if (group != null) cancelEmptySummary(manager, group, tag);
     }
 
-    private static NotificationCompat.Builder base(Context context, String tag, String fcmMessageId, String messageId) {
+    /** 出ている通知が属するまとまり。属していなければ null。 */
+    private static String groupOf(NotificationManager manager, String tag) {
+        for (StatusBarNotification active : manager.getActiveNotifications()) {
+            if (tag.equals(active.getTag())) return active.getNotification().getGroup();
+        }
+        return null;
+    }
+
+    /** まとまりの中の通知が無くなったら、見出しも消す (見出しだけが残らないようにする)。 */
+    private static void cancelEmptySummary(NotificationManager manager, String group, String cancelledTag) {
+        String summaryTag = null;
+        for (StatusBarNotification active : manager.getActiveNotifications()) {
+            String tag = active.getTag();
+            if (tag == null || !group.equals(active.getNotification().getGroup())) continue;
+            if (tag.startsWith(SUMMARY_TAG_PREFIX)) {
+                summaryTag = tag;
+            } else if (!tag.equals(cancelledTag)) {
+                // まだ残っている通知がある。
+                return;
+            }
+        }
+        if (summaryTag != null) manager.cancel(summaryTag, NOTIFICATION_ID);
+    }
+
+    private static NotificationCompat.Builder base(
+        Context context,
+        String channel,
+        String tag,
+        String fcmMessageId,
+        String messageId
+    ) {
         // 通知を押したらアプリを開く。google.message_id があると、プッシュ通知のプラグインが
         // 「通知が押された」として画面へ伝え、画面が messageId のメールを開く。
         Intent open = new Intent(context, MainActivity.class);
@@ -76,7 +147,7 @@ final class MailNotifications {
             open,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
-        return new NotificationCompat.Builder(context, channel(context))
+        return new NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_mail)
             .setColor(ContextCompat.getColor(context, R.color.brand))
             .setCategory(NotificationCompat.CATEGORY_EMAIL)
@@ -152,15 +223,20 @@ final class MailNotifications {
         manager.notify(tag, NOTIFICATION_ID, builder.build());
     }
 
-    /** 新着メールの通知の分類。画面で通知を有効にしたときにも作るが、無ければここで作る。 */
-    private static String channel(Context context) {
-        String id = context.getString(R.string.channel_new_mail_id);
+    /**
+     * 新着メールの通知の分類。アカウントが分かるときは、アカウントごとの分類にする。
+     * 画面を開いたときにも作る (lib/native/push.ts) が、無ければここで作る。
+     * すでにある分類は、名前だけが新しくなる (利用者が変えた音などの設定は残る)。
+     */
+    private static String channel(Context context, String accountId, String accountName) {
+        boolean perAccount = !accountId.isEmpty();
+        String id = perAccount ? ACCOUNT_CHANNEL_PREFIX + accountId : context.getString(R.string.channel_new_mail_id);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (manager != null && manager.getNotificationChannel(id) == null) {
+            if (manager != null && (manager.getNotificationChannel(id) == null || (perAccount && !accountName.isEmpty()))) {
                 NotificationChannel created = new NotificationChannel(
                     id,
-                    context.getString(R.string.channel_new_mail_name),
+                    perAccount && !accountName.isEmpty() ? accountName : context.getString(R.string.channel_new_mail_name),
                     NotificationManager.IMPORTANCE_HIGH
                 );
                 created.setDescription(context.getString(R.string.channel_new_mail_description));

@@ -1,4 +1,9 @@
-import type { NewMailCandidate } from "@mail/core";
+import {
+  MAX_PREVIEW,
+  MAX_SINGLE_NOTIFICATIONS,
+  NEW_MAIL_MAX_AGE_MS,
+  type NewMailCandidate,
+} from "@mail/core";
 import {
   attachments,
   type Database,
@@ -364,7 +369,18 @@ export async function syncMailbox(
     )) {
       fetched.push(message);
     }
-    await insertMessages(db, account, mailbox.id, fetched, announceFromUid);
+    const bodies =
+      announceFromUid === null
+        ? new Map<number, FetchedBody>()
+        : await readNewMailBodies(client, fetched, announceFromUid);
+    await insertMessages(
+      db,
+      account,
+      mailbox.id,
+      fetched,
+      announceFromUid,
+      bodies,
+    );
   }
 
   // 既存メッセージのフラグ (既読など) の変化
@@ -495,6 +511,48 @@ async function removeMessages(
   });
 }
 
+type FetchedBody = { bodyText: string | null; bodyHtml: string | null };
+
+/**
+ * 新着として通知するメールの本文を、取り込みの前に読む (通知に本文の冒頭を出すため)。
+ * 1 通ずつ知らせる数までのときだけ読む。多いときはまとめた通知になり、本文は出さない。
+ * 読めなかったメールは、本文なしで通知する (本文は後からの取り込みで入る)。
+ */
+async function readNewMailBodies(
+  client: ImapFlow,
+  fetched: FetchMessageObject[],
+  announceFromUid: number,
+): Promise<Map<number, FetchedBody>> {
+  const bodies = new Map<number, FetchedBody>();
+  const now = Date.now();
+  const targets = fetched.filter((message) => {
+    if (message.uid < announceFromUid) return false;
+    const flags = flagsOf(message.flags);
+    if (flags.seen || flags.draft) return false;
+    const receivedAt =
+      toDate(message.internalDate) ?? toDate(message.envelope?.date);
+    return !receivedAt || now - receivedAt.getTime() <= NEW_MAIL_MAX_AGE_MS;
+  });
+  if (targets.length === 0 || targets.length > MAX_SINGLE_NOTIFICATIONS) {
+    return bodies;
+  }
+  for (const message of targets) {
+    try {
+      bodies.set(
+        message.uid,
+        await readBody(
+          client,
+          message.uid,
+          analyzeStructure(message.bodyStructure),
+        ),
+      );
+    } catch {
+      // 本文なしで通知する。
+    }
+  }
+  return bodies;
+}
+
 async function insertMessages(
   db: Database,
   account: SyncAccount,
@@ -502,6 +560,8 @@ async function insertMessages(
   fetched: FetchMessageObject[],
   /** この UID 以上のメールを新着として通知する。null なら通知しない。 */
   announceFromUid: number | null,
+  /** 先に読んでおいた本文 (UID ごと)。あるメールは、本文も一緒に取り込む。 */
+  bodies: Map<number, FetchedBody> = new Map(),
 ) {
   if (fetched.length === 0) return;
   await db.transaction(async (tx) => {
@@ -519,6 +579,7 @@ async function insertMessages(
       const sentAt = toDate(envelope.date);
       const receivedAt = toDate(message.internalDate) ?? sentAt ?? new Date();
       const flags = flagsOf(message.flags);
+      const body = bodies.get(message.uid);
       const messageIdHeader = envelope.messageId
         ? clean(envelope.messageId)
         : null;
@@ -557,6 +618,14 @@ async function insertMessages(
           size: message.size ?? 0,
           hasAttachments: structure.attachments.some((file) => !file.inline),
           ...flags,
+          ...(body
+            ? {
+                bodyText: body.bodyText,
+                bodyHtml: body.bodyHtml,
+                snippet: makeSnippet(body.bodyText, body.bodyHtml),
+                bodyFetchedAt: new Date(),
+              }
+            : {}),
         })
         // サーバーが不変の ID (OBJECTID の EMAILID など) を返す場合、複製された
         // メッセージは同じ ID になる。その場合は既存の行に所在だけを足す。
@@ -622,6 +691,11 @@ async function insertMessages(
           id: row.id,
           from: toAddresses(envelope.from),
           subject: clean(envelope.subject),
+          ...(body
+            ? {
+                preview: makeSnippet(body.bodyText, body.bodyHtml, MAX_PREVIEW),
+              }
+            : {}),
           seen: flags.seen,
           receivedAt,
         });

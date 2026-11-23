@@ -136,6 +136,7 @@ import {
   sortAccounts,
   withSortOrder,
 } from "@/lib/mailboxes";
+import { isNativeApp } from "@/lib/native/app";
 import {
   disableNotifications,
   enableNotifications,
@@ -1350,6 +1351,18 @@ export function MailApp({ user }: { user: User }) {
       setSelectedMessageId(null);
     }
   }, [unified, unifiedLoaded, unifiedId]);
+
+  // スマホアプリでは、通知の分類 (Android の通知チャンネル) をアカウントごとに用意する。
+  const channelKey = accounts
+    ?.map((account) => `${account.id}\n${account.displayName || account.email}`)
+    .join("\n");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 名前か顔ぶれが変わったときだけそろえる
+  useEffect(() => {
+    if (!accounts || !isNativeApp()) return;
+    void import("@/lib/native/push").then(({ syncAccountChannels }) =>
+      syncAccountChannels(accounts),
+    );
+  }, [channelKey]);
 
   // 表示中のアカウントが無くなったら (古い URL を開いた場合など)、全アカウントの表示に戻す。
   useEffect(() => {

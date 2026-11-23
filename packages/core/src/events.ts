@@ -48,6 +48,8 @@ export type NewMailItem = {
   /** 差出人の表示名 (無ければメールアドレス)。 */
   from: string;
   subject: string;
+  /** 本文の冒頭。まだ本文を取得していないときと、まとめて知らせるときは付けない。 */
+  preview?: string;
 };
 
 /**
@@ -57,6 +59,8 @@ export type NewMailItem = {
 export type NewMailNotification = {
   userId: string;
   accountId: string;
+  /** アカウントの名前 (表示名、無ければメールアドレス)。通知をアカウントごとに分けるのに使う。 */
+  accountName?: string;
   messages: NewMailItem[];
   count: number;
 };

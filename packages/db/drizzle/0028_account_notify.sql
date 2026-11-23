@@ -1,0 +1,1 @@
+ALTER TABLE "mail_accounts" ADD COLUMN "notify_new_mail" boolean DEFAULT true NOT NULL;

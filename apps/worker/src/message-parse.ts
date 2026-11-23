@@ -144,11 +144,15 @@ export function htmlToText(html: string): string {
 
 const SNIPPET_LENGTH = 200;
 
-export function makeSnippet(text: string | null, html: string | null): string {
+export function makeSnippet(
+  text: string | null,
+  html: string | null,
+  length = SNIPPET_LENGTH,
+): string {
   const source = text?.trim() ? text : html ? htmlToText(html) : "";
   const collapsed = source.replace(/\s+/g, " ").trim();
   // サロゲートペアの途中で切らないよう、コードポイント単位で数える。
-  return Array.from(collapsed).slice(0, SNIPPET_LENGTH).join("");
+  return Array.from(collapsed).slice(0, length).join("");
 }
 
 export function toDate(value: Date | string | undefined): Date | null {
