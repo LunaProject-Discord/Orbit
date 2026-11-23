@@ -1,11 +1,11 @@
-import type { NewMailCandidate } from "@mail/core";
+import type { NewMailCandidate } from "@orbit/core";
 import {
   attachments,
   type Database,
   mailboxes,
   messageMailboxes,
   messages,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import {

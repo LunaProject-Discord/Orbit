@@ -14,7 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NOTIFICATION_ACTION_PATH, signNotificationAction } from "@mail/core";
+import { NOTIFICATION_ACTION_PATH, signNotificationAction } from "@orbit/core";
 import {
   attachments,
   changes,
@@ -29,7 +29,7 @@ import {
   pushSubscriptions,
   signatureRules,
   unifiedFolders,
-} from "@mail/db";
+} from "@orbit/db";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";

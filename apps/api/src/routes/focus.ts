@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
-import { CHANNEL_FOCUS, type FocusNotification } from "@mail/core";
-import { mailAccounts, mailboxes } from "@mail/db";
+import { CHANNEL_FOCUS, type FocusNotification } from "@orbit/core";
+import { mailAccounts, mailboxes } from "@orbit/db";
 import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

@@ -1,5 +1,5 @@
 // アカウントのアイコン選択で使う、Lucide の全アイコンのデータを作る。
-// lucide-react を更新したら `pnpm --filter @mail/web icons:generate` で作り直す (通信が必要)。
+// lucide-react を更新したら `pnpm --filter @orbit/web icons:generate` で作り直す (通信が必要)。
 //
 // - src/lib/lucide/nodes.json: アイコンの名前 → 図形。アイコンを描くときに読み込む。
 // - src/lib/lucide/meta.json: 分類と検索用の語。アイコンを選ぶ画面を開いたときに読み込む。

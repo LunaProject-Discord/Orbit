@@ -4,7 +4,7 @@ import {
   attachmentsDir,
   type MailAddress,
   type OutgoingMessage,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   DraftRejected,
   type DraftRemote,

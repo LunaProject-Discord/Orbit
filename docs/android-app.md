@@ -73,7 +73,7 @@ Firebase のプロジェクトは無料で作れます。作業は Google アカ
 3. サーバーの `deploy/.env` の `FCM_SERVICE_ACCOUNT=` に貼り付け、サーバーを更新する。
 
    ```sh
-   bash /opt/mail/deploy/deploy.sh
+   bash /opt/orbit/deploy/deploy.sh
    ```
 
    同期ワーカーのログに「FCM_SERVICE_ACCOUNT が未設定のため…」が出なくなれば読み込めています。
@@ -140,9 +140,9 @@ Firebase の設定を入れてビルドし直したアプリを入れ、**設定
 pnpm install
 # 接続先のサーバーを決めて、画面をビルドし、Android プロジェクトへ入れる
 $env:NEXT_PUBLIC_API_URL = "https://orbit.lunaproject.jp"
-pnpm --filter @mail/mobile android:prepare
+pnpm --filter @orbit/mobile android:prepare
 # Android Studio で開く (実機かエミュレーターを選んで ▶ を押す)
-pnpm --filter @mail/mobile android:open
+pnpm --filter @orbit/mobile android:open
 ```
 
 - `NEXT_PUBLIC_API_URL` を空にしてビルドすると、最初の起動時に接続先サーバーの入力画面が出ます。
@@ -165,7 +165,7 @@ Google と Microsoft のログイン画面は、アプリの外のブラウザ�
 アイコンと起動画面の画像は `assets/brand/svg/` から作ってコミットしてあります。ロゴを変えたときは作り直します (Playwright の Chromium が必要)。
 
 ```sh
-pnpm --filter @mail/mobile icons
+pnpm --filter @orbit/mobile icons
 ```
 
 ## 通知のしくみ (ボタン)

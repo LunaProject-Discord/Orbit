@@ -30,7 +30,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 COPY . .
 
 FROM source AS server-build
-RUN pnpm exec turbo run build --filter=@mail/api --filter=@mail/worker
+RUN pnpm exec turbo run build --filter=@orbit/api --filter=@orbit/worker
 
 FROM source AS web-build
 # ブラウザから見た API の URL。ビルド時に Web へ埋め込まれる。
@@ -38,14 +38,14 @@ ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_TELEMETRY_DISABLED=1
 RUN test -n "$NEXT_PUBLIC_API_URL" || (echo "NEXT_PUBLIC_API_URL を --build-arg で渡してください。" >&2; exit 1)
-RUN pnpm --filter @mail/web build
+RUN pnpm --filter @orbit/web build
 
 FROM manifests AS server
 ENV NODE_ENV=production
 # better-auth が「あれば使う」依存 (Next.js、Vitest、drizzle-kit など) まで入ってしまうので、
 # サーバーでは読み込まれないビルド・テスト用のものを消してイメージを小さくする (約 550 MB)。
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --prod --frozen-lockfile --filter "@mail/api..." --filter "@mail/worker..." \
+    pnpm install --prod --frozen-lockfile --filter "@orbit/api..." --filter "@orbit/worker..." \
     && cd node_modules/.pnpm \
     && rm -rf next@* @next+* sharp@* @img+* happy-dom@* \
        vite@* vitest@* @vitest+* rolldown@* @rolldown+* lightningcss* \

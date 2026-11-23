@@ -7,7 +7,7 @@ import {
   twoFactors,
   users,
   verifications,
-} from "@mail/db";
+} from "@orbit/db";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, twoFactor } from "better-auth/plugins";

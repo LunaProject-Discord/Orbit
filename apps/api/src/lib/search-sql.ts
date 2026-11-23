@@ -1,4 +1,4 @@
-import { messages } from "@mail/db";
+import { messages } from "@orbit/db";
 import { not, or, type SQL, sql } from "drizzle-orm";
 import { likePattern, type SearchTerm } from "./search-query.js";
 

@@ -1,4 +1,4 @@
-import { legacyTlsOptions, type OutgoingMessage } from "@mail/core";
+import { legacyTlsOptions, type OutgoingMessage } from "@orbit/core";
 import nodemailer from "nodemailer";
 import { buildMime, envelopeOf } from "./mime.js";
 import type { SendOutcome } from "./send.js";

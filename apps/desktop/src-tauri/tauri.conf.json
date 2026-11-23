@@ -4,9 +4,9 @@
   "version": "../package.json",
   "identifier": "jp.lunaproject.orbit",
   "build": {
-    "beforeDevCommand": "pnpm --filter @mail/web dev",
+    "beforeDevCommand": "pnpm --filter @orbit/web dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "pnpm --filter @mail/web build",
+    "beforeBuildCommand": "pnpm --filter @orbit/web build",
     "frontendDist": "../../web/out"
   },
   "app": {

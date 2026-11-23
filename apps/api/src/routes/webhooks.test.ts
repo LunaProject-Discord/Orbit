@@ -1,4 +1,4 @@
-import { type GraphPushNotification, graphClientState } from "@mail/core";
+import { type GraphPushNotification, graphClientState } from "@orbit/core";
 import { describe, expect, it } from "vitest";
 import { webhookRoutes } from "./webhooks.js";
 

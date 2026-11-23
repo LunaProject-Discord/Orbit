@@ -6,7 +6,7 @@ Oracle Cloud 側の Apache には手を入れません。Web も API も同じ�
 
 ```
 ブラウザー / Microsoft Graph
-        │  https://mail.example.com
+        │  https://orbit.example.com
         ▼
 Cloudflare
         ▼
@@ -34,8 +34,8 @@ Linode の Apache      HTTPS と証明書。ドメインごとの設定で Oracl
 | `deploy/compose.relay.yml` | 別のサーバー (Linode) から逆プロキシする場合に重ねる (web は 1 つのポートで、HTTPS で待ち受け) |
 | `deploy/compose.proxy.yml` | 同じサーバーの Apache から逆プロキシする場合に重ねる (web は 127.0.0.1 の 1 つのポートで、HTTP で待ち受け) |
 | `deploy/compose.caddy.yml` | Caddy が 80 / 443 番で直接公開する場合に重ねる |
-| `deploy/apache/mail-relay.conf` | 中継用のサーバー (Linode) の Apache の設定の見本 |
-| `deploy/apache/mail.conf` | 同じサーバーの Apache から繋ぐ場合の設定の見本 |
+| `deploy/apache/orbit-relay.conf` | 中継用のサーバー (Linode) の Apache の設定の見本 |
+| `deploy/apache/orbit.conf` | 同じサーバーの Apache から繋ぐ場合の設定の見本 |
 | `deploy/Caddyfile` | コンテナ内での Web / API への振り分け |
 | `deploy/.env.example` | 設定の見本。`deploy/setup.sh` がここから `deploy/.env` を作る |
 | `deploy/setup.sh` | `deploy/.env` を作り、秘密の値と、Linode との間の HTTPS に使う証明書 (`deploy/certs/`) を生成する |
@@ -51,7 +51,7 @@ Linode の Apache      HTTPS と証明書。ドメインごとの設定で Oracl
 > AlmaLinux 上での各コマンド (dnf、firewalld)、Cloudflare と Linode を通した経路、
 > GitHub Actions からの更新は、実際のサーバーでは未確認です。うまくいかない箇所があれば、表示された内容を教えてください。
 
-以下では、ドメインを `mail.example.com` として説明します。自分のドメインに読み替えてください。
+以下では、ドメインを `orbit.example.com` として説明します。自分のドメインに読み替えてください。
 コマンドは、特に断りがなければ Oracle Cloud のサーバーに SSH で入って実行します。
 
 ## 1. 事前に確認する
@@ -83,17 +83,17 @@ sudo usermod -aG docker "$USER"
 ## 3. コードを置いて起動する
 
 ```sh
-sudo mkdir -p /opt/mail && sudo chown "$USER": /opt/mail
-git clone https://github.com/LunaProject-Discord/Mail.git /opt/mail
-cd /opt/mail
-bash deploy/setup.sh mail.example.com relay
+sudo mkdir -p /opt/orbit && sudo chown "$USER": /opt/orbit
+git clone https://github.com/LunaProject-Discord/Orbit.git /opt/orbit
+cd /opt/orbit
+bash deploy/setup.sh orbit.example.com relay
 ```
 
-リポジトリが非公開の場合は、そのままでは clone できません。サーバーで `ssh-keygen -t ed25519 -f ~/.ssh/github_mail -N ""` を実行し、
-できた `~/.ssh/github_mail.pub` を GitHub のリポジトリの「Settings」→「Deploy keys」に登録 (書き込み権限は不要) したうえで、次のように clone します。
+リポジトリが非公開の場合は、そのままでは clone できません。サーバーで `ssh-keygen -t ed25519 -f ~/.ssh/github_orbit -N ""` を実行し、
+できた `~/.ssh/github_orbit.pub` を GitHub のリポジトリの「Settings」→「Deploy keys」に登録 (書き込み権限は不要) したうえで、次のように clone します。
 
 ```sh
-git clone -c core.sshCommand="ssh -i ~/.ssh/github_mail" git@github.com:LunaProject-Discord/Mail.git /opt/mail
+git clone -c core.sshCommand="ssh -i ~/.ssh/github_orbit" git@github.com:LunaProject-Discord/Orbit.git /opt/orbit
 ```
 
 `deploy/setup.sh` は `deploy/.env` を作り、DB のパスワード、ログイン用の秘密の値、認証情報を暗号化する鍵、通知用の鍵を自動で生成します。
@@ -107,10 +107,10 @@ Microsoft アカウントや Gmail を使う場合は、ここで `deploy/.env` 
 そのうえで起動します。初回はイメージのビルドに数分かかります。
 
 ```sh
-cd /opt/mail/deploy
+cd /opt/orbit/deploy
 docker compose up -d --build
 docker compose ps
-curl -s --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 https://mail.example.com:18080/healthz
+curl -s --cacert certs/relay.crt --resolve orbit.example.com:18080:127.0.0.1 https://orbit.example.com:18080/healthz
 ```
 
 `api` が `healthy`、`migrate` が `Exited (0)`、ほかが `Up` で、最後のコマンドが `{"status":"ok"}` を返せば起動できています。
@@ -140,7 +140,7 @@ docker compose run --rm api node apps/api/dist/cli/create-user.js you@example.co
 ほかの利用者を管理者にするとき、管理者をやめさせるときは、DB を直接書き換えます。
 
 ```sh
-docker compose exec postgres psql -U mail -d mail -c "update users set is_admin = true where email = 'friend@example.com'"
+docker compose exec postgres psql -U orbit -d orbit -c "update users set is_admin = true where email = 'friend@example.com'"
 ```
 
 サーバー上のコマンドでも、これまでどおり利用者を作れます (`--admin` を付けると管理者になります)。
@@ -157,7 +157,7 @@ docker compose run --rm api node apps/api/dist/cli/create-user.js friend@example
 - Microsoft のアカウントは、Entra のアプリ登録の「サポートされているアカウントの種類」が自分の組織だけに
   なっていると、ほかの組織や個人のアカウントを追加できません。
 - やめるときは、DB から利用者を消すと、その人の DB 上のデータもまとめて消えます (取得済みの添付ファイルは置き場に残ります)
-  (`docker compose exec postgres psql -U mail -d mail -c "delete from users where email = 'friend@example.com'"`)。
+  (`docker compose exec postgres psql -U orbit -d orbit -c "delete from users where email = 'friend@example.com'"`)。
 
 ## 4. 18080 番を Linode からだけ届くようにする
 
@@ -191,7 +191,7 @@ curl -sk https://<Oracle Cloud のアドレス>:18080/healthz    # {"status":"ok
 
 ```sh
 # Oracle Cloud のサーバーで実行し、表示された内容 (BEGIN の行から END の行まで) を写す
-cat /opt/mail/deploy/certs/relay.crt
+cat /opt/orbit/deploy/certs/relay.crt
 
 # Linode のサーバーで実行し、写した内容を貼り付けて保存する
 sudo vim /etc/httpd/conf/orbit-relay.crt
@@ -204,14 +204,14 @@ sudo openssl x509 -in /etc/httpd/conf/orbit-relay.crt -noout -subject -enddate  
 ```sh
 # Linode のサーバーで実行
 cd /etc/httpd/conf.d
-DOMAIN=mail.example.com    # 自分のドメインに置き換える
+DOMAIN=orbit.example.com    # 自分のドメインに置き換える
 sudo cp natsuki-api.lunaproject.jp.conf "$DOMAIN.conf"
 sudo sed -i "s/natsuki-api\\.lunaproject\\.jp/$DOMAIN/g" "$DOMAIN.conf"
 sudo vim "$DOMAIN.conf"
 ```
 
 開いた設定を、次の表のとおりに直します。完成形の見本が
-[`deploy/apache/mail-relay.conf`](../deploy/apache/mail-relay.conf) にあります。
+[`deploy/apache/orbit-relay.conf`](../deploy/apache/orbit-relay.conf) にあります。
 
 | 指定 | 直し方 | 理由 |
 | --- | --- | --- |
@@ -246,11 +246,11 @@ curl -sk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/healthz"    # {"stat
 
 Cloudflare の DNS に新しいドメインのレコードを、既存のサイトと同じ向き先 (Linode) で追加し、プロキシを有効 (オレンジ色の雲) にします。
 
-ブラウザーで `https://mail.example.com` を開き、手順 3 で作った利用者でログインできれば完了です。
+ブラウザーで `https://orbit.example.com` を開き、手順 3 で作った利用者でログインできれば完了です。
 
 Cloudflare については次の点に注意してください。
 
-- Microsoft Graph の変更通知は、Microsoft のサーバーから `https://mail.example.com/v1/webhooks/microsoft` に届きます。
+- Microsoft Graph の変更通知は、Microsoft のサーバーから `https://orbit.example.com/v1/webhooks/microsoft` に届きます。
   Cloudflare の Bot 対策や WAF がこれを止めると、即時の通知が届かず、定期的な確認だけの同期になります (同期自体は続きます)。
   ワーカーのログに購読の失敗が出る場合は、このパスを対象外にするルールを Cloudflare に追加してください。
 - アップロードの大きさの上限 (無料プランは 100 MB のはずです) は、添付の上限 25 MB より大きいので問題ありません。
@@ -261,17 +261,17 @@ Cloudflare については次の点に注意してください。
 「認証」のリダイレクト URI (種類は「Web」) に次を追加します。開発用の `http://localhost:3000/oauth/microsoft` は残したままで構いません。
 
 ```
-https://mail.example.com/oauth/microsoft
+https://orbit.example.com/oauth/microsoft
 ```
 
-変更通知 (Webhook) は、追加の設定なしで有効になります。本番では API の公開 URL が `https://mail.example.com` になるので、
-同期ワーカーが自動で購読し、Microsoft Graph からの通知を `https://mail.example.com/v1/webhooks/microsoft` で受けます。
+変更通知 (Webhook) は、追加の設定なしで有効になります。本番では API の公開 URL が `https://orbit.example.com` になるので、
+同期ワーカーが自動で購読し、Microsoft Graph からの通知を `https://orbit.example.com/v1/webhooks/microsoft` で受けます。
 購読できたか、失敗したかは、ワーカーのログ (`docker compose logs worker`) に出ます。
 
 **Google (Gmail)**: Google Cloud コンソールの OAuth クライアントで、「承認済みのリダイレクト URI」に次を追加します。
 
 ```
-https://mail.example.com/oauth/google
+https://orbit.example.com/oauth/google
 ```
 
 開発環境で追加したメールアカウントは、本番には引き継がれません (DB が別のため)。本番の画面で追加し直してください。
@@ -356,7 +356,7 @@ SYSTEM_MAIL_FROM="Orbit <no-reply@example.com>"
 認証アプリもバックアップコードも失ったときは、`--reset-two-factor` を付けて 2 段階認証も解除します。
 
 ```sh
-cd /opt/mail/deploy
+cd /opt/orbit/deploy
 docker compose run --rm api node apps/api/dist/cli/set-password.js you@example.com
 docker compose run --rm api node apps/api/dist/cli/set-password.js you@example.com --reset-two-factor
 ```
@@ -366,7 +366,7 @@ docker compose run --rm api node apps/api/dist/cli/set-password.js you@example.c
 サーバーで次を実行すると、main の最新に更新して起動し直します。マイグレーションも自動で適用されます。
 
 ```sh
-bash /opt/mail/deploy/deploy.sh
+bash /opt/orbit/deploy/deploy.sh
 ```
 
 更新中は数秒から数十秒、画面や API に繋がらなくなります (その間、Linode の Apache は 503 を返します)。
@@ -379,14 +379,14 @@ bash /opt/mail/deploy/deploy.sh
 1. 手元の PC で、更新専用の鍵を作ります (パスフレーズは空にします)。
 
    ```sh
-   ssh-keygen -t ed25519 -f mail-deploy -N "" -C "github-actions-deploy"
+   ssh-keygen -t ed25519 -f orbit-deploy -N "" -C "github-actions-deploy"
    ```
 
-2. サーバーの `~/.ssh/authorized_keys` に、次の 1 行を追加します。末尾の `ssh-ed25519 ...` の部分は、`mail-deploy.pub` の中身に置き換えます。
+2. サーバーの `~/.ssh/authorized_keys` に、次の 1 行を追加します。末尾の `ssh-ed25519 ...` の部分は、`orbit-deploy.pub` の中身に置き換えます。
    この書き方にすると、この鍵でできるのは更新スクリプトの実行だけになります (鍵が漏れても、サーバーを自由には操作できません)。
 
    ```
-   command="bash /opt/mail/deploy/deploy.sh \"$SSH_ORIGINAL_COMMAND\"",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... github-actions-deploy
+   command="bash /opt/orbit/deploy/deploy.sh \"$SSH_ORIGINAL_COMMAND\"",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... github-actions-deploy
    ```
 
 3. 手元の PC で、サーバーの身元を確かめるための情報を取得します。
@@ -401,7 +401,7 @@ bash /opt/mail/deploy/deploy.sh
    | --- | --- | --- |
    | Secret | `DEPLOY_HOST` | Oracle Cloud のサーバーの IP アドレス (ドメインは Cloudflare を指すので、SSH には使えない) |
    | Secret | `DEPLOY_USER` | サーバーに SSH で入るときの利用者名 |
-   | Secret | `DEPLOY_SSH_KEY` | `mail-deploy` (秘密鍵) の中身すべて |
+   | Secret | `DEPLOY_SSH_KEY` | `orbit-deploy` (秘密鍵) の中身すべて |
    | Secret | `DEPLOY_KNOWN_HOSTS` | 手順 3 の出力 (`#` で始まる行は不要) |
    | Variable | `DEPLOY_ENABLED` | `true` |
 
@@ -411,7 +411,7 @@ bash /opt/mail/deploy/deploy.sh
 
 ## 9. バックアップと復元
 
-`backup` サービスが、毎日 4 時 (日本時間) に DB を `/opt/mail/deploy/backups/` へ書き出し、14 日より古いものを消します。
+`backup` サービスが、毎日 4 時 (日本時間) に DB を `/opt/orbit/deploy/backups/` へ書き出し、14 日より古いものを消します。
 時刻と日数は `deploy/.env` の `BACKUP_HOUR` と `BACKUP_KEEP_DAYS` で変えられます。
 
 ### バックアップを暗号化する
@@ -419,26 +419,26 @@ bash /opt/mail/deploy/deploy.sh
 バックアップにはメールの内容がそのまま入ります。最初に 1 度、暗号化のための鍵の組を作ってください。
 
 ```sh
-cd /opt/mail/deploy
+cd /opt/orbit/deploy
 bash backup-key.sh
 ```
 
-- 公開鍵が `deploy/.env` の `BACKUP_PUBLIC_KEY` に書き込まれ、以後のバックアップは暗号化されて `mail-<日時>.dump.gpg` になります
-  (OpenPGP 形式。作っていない間は、暗号化なしの `mail-<日時>.dump` です)。
+- 公開鍵が `deploy/.env` の `BACKUP_PUBLIC_KEY` に書き込まれ、以後のバックアップは暗号化されて `orbit-<日時>.dump.gpg` になります
+  (OpenPGP 形式。作っていない間は、暗号化なしの `orbit-<日時>.dump` です)。
 - 秘密鍵 (`-----BEGIN PGP PRIVATE KEY BLOCK-----` から `-----END PGP PRIVATE KEY BLOCK-----` まで) が、画面に 1 度だけ表示されます。
   **必ずサーバーの外 (パスワード管理ソフトなど) に控えてください。** サーバーには保存しません。サーバーやバックアップのファイルを
   読まれても、中身を開けないようにするためです。この秘密鍵を失うと、暗号化したバックアップは戻せません。
 - 鍵を作る前に取った暗号化なしのバックアップは、そのまま残ります。暗号化したバックアップが取れたことを確かめたら、
-  `sudo rm backups/mail-*.dump` で消せます (消さなくても 14 日で消えます)。
+  `sudo rm backups/orbit-*.dump` で消せます (消さなくても 14 日で消えます)。
 - 鍵を作り直すときは `bash backup-key.sh --renew` です。それまでのバックアップを戻すには、前の秘密鍵が引き続き必要です。
 
 ### 取る、戻す
 
 ```sh
-cd /opt/mail/deploy
+cd /opt/orbit/deploy
 docker compose run --rm backup once     # 今すぐ 1 回取る
 sudo ls -lh backups                     # 取れているか確認
-sudo bash restore.sh backups/mail-20261122-040000.dump.gpg   # 戻す (今の DB の中身は置き換わります)
+sudo bash restore.sh backups/orbit-20261122-040000.dump.gpg   # 戻す (今の DB の中身は置き換わります)
 ```
 
 暗号化したバックアップを戻すときは、秘密鍵を貼り付けるよう求められます。秘密鍵をファイルにしてある場合は、
@@ -455,14 +455,14 @@ sudo bash restore.sh backups/mail-20261122-040000.dump.gpg   # 戻す (今の DB
 
 ```sh
 # サーバーで: 最新のバックアップを、自分が読める場所へ写す (バックアップは root だけが読めるようにしてあります)
-sudo install -o "$USER" -m 600 "$(sudo sh -c 'ls -t /opt/mail/deploy/backups/mail-*.dump.gpg | head -1')" ~/mail-latest.dump.gpg
+sudo install -o "$USER" -m 600 "$(sudo sh -c 'ls -t /opt/orbit/deploy/backups/orbit-*.dump.gpg | head -1')" ~/orbit-latest.dump.gpg
 
 # 手元の PC で: 受け取る
-scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump.gpg .
+scp <利用者名>@<サーバーの IP アドレス>:orbit-latest.dump.gpg .
 ```
 
 暗号化したバックアップは、秘密鍵が無ければ開けないので、手元やほかの保管先に置いても中身は読まれません。
-手元の PC で中身を取り出したい場合は、GnuPG (`gpg`) に秘密鍵を取り込めば `gpg --decrypt mail-latest.dump.gpg > mail-latest.dump` で開けます。
+手元の PC で中身を取り出したい場合は、GnuPG (`gpg`) に秘密鍵を取り込めば `gpg --decrypt orbit-latest.dump.gpg > orbit-latest.dump` で開けます。
 
 サーバーを作り直すときは、手順 2 から 4 を行ったあと、控えておいた `deploy/.env` を置き、`restore.sh` で DB を戻します
 (証明書は新しく作られるので、手順 5 の証明書の置き換えも行います)。
@@ -507,7 +507,7 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump.gpg .
 
 | 名前 | 本番での値 |
 | --- | --- |
-| `DATABASE_URL` | `postgres://mail:<POSTGRES_PASSWORD>@postgres:5432/mail` |
+| `DATABASE_URL` | `postgres://orbit:<POSTGRES_PASSWORD>@postgres:5432/orbit` |
 | `API_PUBLIC_URL` | `https://<DOMAIN>` (Microsoft Graph の変更通知の受け口にもなる) |
 | `NEXT_PUBLIC_API_URL` | `https://<DOMAIN>` (Web のビルド時に埋め込む) |
 | `ALLOWED_ORIGINS` | `https://<DOMAIN>` と `EXTRA_ALLOWED_ORIGINS` |
@@ -522,7 +522,7 @@ scp <利用者名>@<サーバーの IP アドレス>:mail-latest.dump.gpg .
 ## 11. 困ったとき
 
 ```sh
-cd /opt/mail/deploy
+cd /opt/orbit/deploy
 docker compose ps                    # 各サービスの状態
 docker compose logs --tail=100 api   # web / api / worker / migrate / postgres / backup
 docker compose restart worker        # 1 つだけ再起動
@@ -548,14 +548,68 @@ Linode 側のエラーは、Linode のサーバーの `/var/log/httpd/` (設定�
 
 ```sh
 # Oracle Cloud のサーバーで
-cd /opt/mail/deploy && docker compose down          # コンテナを止める (データは残る。消すなら down -v)
+cd /opt/orbit/deploy && docker compose down          # コンテナを止める (データは残る。消すなら down -v)
 
 # Linode のサーバーで
-sudo rm /etc/httpd/conf.d/mail.example.com.conf
+sudo rm /etc/httpd/conf.d/orbit.example.com.conf
 sudo apachectl configtest && sudo systemctl reload httpd
 ```
 
 あわせて、セキュリティ・リストの 18080 番のルールと、Cloudflare の DNS のレコードを消します。
+
+### 名前を mail から orbit に変える
+
+2026-11-23 までに動かし始めたサーバーは、置き場所が `/opt/mail`、Compose のプロジェクト名・DB のユーザー名・DB 名が
+`mail` になっています。その後のコードではこれらが `orbit` なので、更新の前に 1 度だけ移行が要ります
+(移行しないまま `deploy.sh` を実行しても、何も変えずに止まります)。新しく入れるサーバーでは不要です。
+
+**移行が済むまで、`deploy.sh` は実行しないでください。** サーバーに残っている古い `deploy.sh` は、新しいコードを取ってきても
+古い中身のまま動くので、新しい名前の空の DB で起動してしまいます (古いデータは消えませんが、画面は空に見えます)。
+GitHub Actions で自動更新している場合は、移行が済むまでリポジトリの変数 `DEPLOY_ENABLED` を `false` にしておきます。
+もし先に動かしてしまっても、下の手順をそのまま行えば古いデータに戻ります。
+
+移行の間 (DB の大きさによりますが、数分) はサービスが止まります。データを新しい名前のボリュームへ写すので、
+DB と添付の合計と同じだけの空きが要ります (`docker system df -v` の「Local Volumes」で大きさを確かめられます)。
+
+```sh
+# 1. 置き場所の名前を変える (動かしたままで構いません)
+sudo mv /opt/mail /opt/orbit
+cd /opt/orbit
+
+# 2. GitHub のリポジトリ名を変えたあとなら、取得元を新しい名前にする (今の値は git remote -v で見られます)
+git remote set-url origin "$(git remote get-url origin | sed 's#/Mail\(\.git\)\{0,1\}$#/Orbit.git#')"
+
+# 3. 最新のコードにする
+git fetch --prune origin main
+git checkout --detach origin/main
+
+# 4. 移行する (バックアップ → 停止 → データを写す → DB の名前を変える → 起動、の順に進みます)
+bash deploy/rename-to-orbit.sh
+```
+
+「移行しました。」と出たら、ブラウザーで開いてメールが見えることを確かめます。あわせて、次も直します。
+
+- GitHub Actions で自動更新している場合は、`~/.ssh/authorized_keys` の `command="bash /opt/mail/deploy/deploy.sh …"` を
+  `/opt/orbit/deploy/deploy.sh` に書き換えます (直すまで、自動更新は失敗します)。
+- バックアップをサーバーの外へ写す仕組み (cron など) を自分で組んでいる場合は、`/opt/orbit/deploy/backups/` と
+  `orbit-<日時>.dump.gpg` に合わせます。古い名前の `mail-*` のバックアップは、これまでどおり 14 日で消えます。
+- 移行の直前に取った `deploy/backups/before-rename-<日時>.dump` (バックアップのコンテナが止まっていた場合はホームディレクトリ) は暗号化されていません。確かめ終わったら消します
+  (`sudo rm /opt/orbit/deploy/backups/before-rename-*.dump`)。
+- 古いデータは残してあります。問題が無いことを確かめたあと、スクリプトが最後に表示したコマンド
+  (`docker volume rm mail_postgres-data mail_attachments` など) で消せます。
+
+Linode の Apache の設定、Cloudflare、Microsoft と Google のリダイレクト URI は、ドメインとポートが変わらないので
+そのままで動きます。`deploy/.env` も書き換えは要りません。
+
+うまくいかなかったときは、古いデータが残っている間なら元に戻せます (移行のあとに届いたメールは、戻したあとに
+もう一度同期されます)。
+
+```sh
+cd /opt/orbit/deploy
+docker compose down
+git checkout --detach 957dd9e    # 名前を変える前の最後のコミット
+docker compose up -d --build
+```
 
 ### Linode との間を HTTP で動かしていた場合に、HTTPS へ切り替える
 
@@ -564,10 +618,10 @@ sudo apachectl configtest && sudo systemctl reload httpd
 
 ```sh
 # 1. Oracle Cloud のサーバーで: 証明書を作り、HTTPS で待ち受けるように切り替える
-bash /opt/mail/deploy/deploy.sh    # 最新に更新する (GitHub Actions で自動更新している場合は不要)
-cd /opt/mail && bash deploy/setup.sh mail.example.com relay
+bash /opt/orbit/deploy/deploy.sh    # 最新に更新する (GitHub Actions で自動更新している場合は不要)
+cd /opt/orbit && bash deploy/setup.sh orbit.example.com relay
 cd deploy && docker compose up -d
-curl -s --cacert certs/relay.crt --resolve mail.example.com:18080:127.0.0.1 https://mail.example.com:18080/healthz
+curl -s --cacert certs/relay.crt --resolve orbit.example.com:18080:127.0.0.1 https://orbit.example.com:18080/healthz
 cat certs/relay.crt
 
 # 2. Linode のサーバーで: 手順 5 のとおり証明書を /etc/httpd/conf/orbit-relay.crt に置き、
@@ -583,7 +637,7 @@ Linode との間の証明書の期限は 10 年です。期限が近づいたと
 
 ```sh
 # Oracle Cloud のサーバーで
-cd /opt/mail/deploy
+cd /opt/orbit/deploy
 rm -r certs && bash setup.sh
 docker compose restart web
 cat certs/relay.crt    # Linode の /etc/httpd/conf/orbit-relay.crt をこの内容で置き換え、sudo systemctl reload httpd
@@ -600,7 +654,7 @@ Oracle Cloud のサーバーの Apache (80 番) でドメインを受け、そ�
 (サーバーの中だけの通信なので、ここは HTTP のままです)。
 
 ```sh
-bash deploy/setup.sh mail.example.com apache
+bash deploy/setup.sh orbit.example.com apache
 ```
 
 **先に `sudo httpd -S` を確認してください。** `*:80` の VirtualHost が 1 つも無い場合 (`Main DocumentRoot` などしか出ない場合)、
@@ -635,33 +689,33 @@ sudo dnf -y install mod_ssl certbot python3-certbot-apache
 設定の見本をドメインに合わせて置き、文法を確かめてから読み込み直します。
 
 ```sh
-DOMAIN=mail.example.com    # 自分のドメインに置き換える
-sed "s/mail\.example\.com/$DOMAIN/g" /opt/mail/deploy/apache/mail.conf | sudo tee /etc/httpd/conf.d/mail.conf
+DOMAIN=orbit.example.com    # 自分のドメインに置き換える
+sed "s/orbit\.example\.com/$DOMAIN/g" /opt/orbit/deploy/apache/orbit.conf | sudo tee /etc/httpd/conf.d/orbit.conf
 sudo apachectl configtest
 sudo systemctl reload httpd
 sudo httpd -S
 ```
 
-- `configtest` が `Syntax OK` 以外を返したら、読み込み直さずに `sudo rm /etc/httpd/conf.d/mail.conf` で元に戻せます。
-- `httpd -S` で、既存のサイトがこれまでどおり並び、そこに `mail.example.com` が加わっていることを確認します。
+- `configtest` が `Syntax OK` 以外を返したら、読み込み直さずに `sudo rm /etc/httpd/conf.d/orbit.conf` で元に戻せます。
+- `httpd -S` で、既存のサイトがこれまでどおり並び、そこに `orbit.example.com` が加わっていることを確認します。
 - サーバーの中から、ドメイン名で振り分けられることを確認できます。
 
   ```sh
   curl -s -H "Host: $DOMAIN" http://127.0.0.1/healthz    # {"status":"ok"} が返る
   ```
 
-**A の場合**は、これで完了です。ブラウザーで `https://mail.example.com` を開き、作った利用者でログインできることを確認します。
+**A の場合**は、これで完了です。ブラウザーで `https://orbit.example.com` を開き、作った利用者でログインできることを確認します。
 Cloudflare が HTTPS を受けるので、このサーバーでは証明書を取りません。
 
-**B の場合**は、続けて証明書を取ります。certbot が HTTPS 用の設定 (`/etc/httpd/conf.d/mail-le-ssl.conf`) を作り、HTTP から HTTPS への転送も設定します。
+**B の場合**は、続けて証明書を取ります。certbot が HTTPS 用の設定 (`/etc/httpd/conf.d/orbit-le-ssl.conf`) を作り、HTTP から HTTPS への転送も設定します。
 
 ```sh
-sudo certbot --apache -d mail.example.com
+sudo certbot --apache -d orbit.example.com
 sudo systemctl enable --now certbot-renew.timer    # 証明書の自動更新
 ```
 
 途中で連絡先のメールアドレスと利用規約への同意を聞かれます。
-ブラウザーで `https://mail.example.com` を開き、ログインできれば完了です。
+ブラウザーで `https://orbit.example.com` を開き、ログインできれば完了です。
 
 
 #### B の場合の DNS とポート
@@ -685,7 +739,7 @@ sudo firewall-cmd --reload
 手順 4 から 6 は不要になり、手順 3 の `setup.sh` を次のように実行します。
 
 ```sh
-bash deploy/setup.sh mail.example.com caddy
+bash deploy/setup.sh orbit.example.com caddy
 ```
 
 - 80 番と 443 番 (TCP。HTTP/3 も使うなら 443 番の UDP も) を、セキュリティ・リストとサーバーのファイアウォールの両方で開けます。

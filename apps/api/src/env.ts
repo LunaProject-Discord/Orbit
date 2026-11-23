@@ -5,7 +5,7 @@ import {
   loadGoogleOAuthConfig,
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
-} from "@mail/core";
+} from "@orbit/core";
 import { lanOrigins } from "./lib/lan-origins.js";
 import { loadSystemMail } from "./lib/system-mail.js";
 

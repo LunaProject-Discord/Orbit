@@ -1,5 +1,5 @@
 {
-  "name": "@mail/worker",
+  "name": "@orbit/worker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mail/core": "workspace:*",
-    "@mail/db": "workspace:*",
+    "@orbit/core": "workspace:*",
+    "@orbit/db": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "imapflow": "^2.12.2",
     "nodemailer": "^10.6.1",

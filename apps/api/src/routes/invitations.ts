@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { zValidator } from "@hono/zod-validator";
-import { type Database, invitations, sessions, users } from "@mail/db";
+import { type Database, invitations, sessions, users } from "@orbit/db";
 import { isAPIError } from "better-auth/api";
 import { and, asc, count, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";

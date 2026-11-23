@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
-import { isAllowedPushEndpoint } from "@mail/core";
-import { devices, pushSubscriptions } from "@mail/db";
+import { isAllowedPushEndpoint } from "@orbit/core";
+import { devices, pushSubscriptions } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

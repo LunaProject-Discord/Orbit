@@ -4,8 +4,8 @@ import {
   deleteAttachment,
   MAX_ATTACHMENT_COUNT,
   readAttachmentMeta,
-} from "@mail/core";
-import { type DraftAttachment, drafts, mailAccounts, outbox } from "@mail/db";
+} from "@orbit/core";
+import { type DraftAttachment, drafts, mailAccounts, outbox } from "@orbit/db";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

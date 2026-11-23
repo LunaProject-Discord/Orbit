@@ -3,14 +3,14 @@ import {
   MAX_SINGLE_NOTIFICATIONS,
   NEW_MAIL_MAX_AGE_MS,
   type NewMailCandidate,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   attachments,
   type Database,
   mailboxes,
   messageMailboxes,
   messages,
-} from "@mail/db";
+} from "@orbit/db";
 import {
   and,
   desc,

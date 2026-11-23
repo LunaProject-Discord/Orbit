@@ -7,7 +7,7 @@ import {
   type UnifiedFilters,
   type UnifiedScope,
   unifiedFolders,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, eq, inArray, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseSearchQuery } from "./search-query.js";

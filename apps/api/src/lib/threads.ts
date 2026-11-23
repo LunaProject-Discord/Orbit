@@ -1,4 +1,4 @@
-import { mailboxes, messages } from "@mail/db";
+import { mailboxes, messages } from "@orbit/db";
 import { type SQL, sql } from "drizzle-orm";
 
 /**

@@ -1,4 +1,4 @@
-import type { MailboxOperation, OutboxOperation } from "@mail/core";
+import type { MailboxOperation, OutboxOperation } from "@orbit/core";
 import { type GraphClient, GraphError } from "./graph-client.js";
 import {
   applyGraphMailboxOperation,

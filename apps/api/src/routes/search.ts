@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { mailAccounts, mailboxes, messageMailboxes, messages } from "@mail/db";
+import { mailAccounts, mailboxes, messageMailboxes, messages } from "@orbit/db";
 import { and, desc, eq, type SQL, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

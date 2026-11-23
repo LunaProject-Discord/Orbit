@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # バックアップから DB を戻す。今の DB の中身は置き換わる。
-#   bash deploy/restore.sh deploy/backups/mail-20261122-040000.dump
-#   bash deploy/restore.sh deploy/backups/mail-20261122-040000.dump.gpg [秘密鍵のファイル]
+#   bash deploy/restore.sh deploy/backups/orbit-20261122-040000.dump
+#   bash deploy/restore.sh deploy/backups/orbit-20261122-040000.dump.gpg [秘密鍵のファイル]
 # 暗号化したバックアップ (.gpg) を戻すには、deploy/backup-key.sh が表示した秘密鍵が要る。
 # ファイルを指定しなければ、貼り付けるよう求める。秘密鍵は戻す間だけ一時的な場所に置き、終わったら消す。
 set -euo pipefail
@@ -83,7 +83,7 @@ docker compose stop api worker
 docker compose up -d --wait postgres
 # 途中で失敗したら全体を取り消す (--single-transaction) ので、中途半端な状態にはならない。
 if ! contents | docker compose exec -T postgres pg_restore --clean --if-exists --no-owner \
-  --single-transaction -U mail -d mail; then
+  --single-transaction -U orbit -d orbit; then
   docker compose up -d
   echo "戻せませんでした。DB の中身は元のままです。" >&2
   exit 1

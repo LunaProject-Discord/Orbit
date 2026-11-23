@@ -1,5 +1,5 @@
-import { CHANNEL_GRAPH_PUSH } from "@mail/core";
-import { type Database, users } from "@mail/db";
+import { CHANNEL_GRAPH_PUSH } from "@orbit/core";
+import { type Database, users } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";

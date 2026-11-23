@@ -1,4 +1,4 @@
-import type { OutboxTarget } from "@mail/core";
+import type { OutboxTarget } from "@orbit/core";
 import { describe, expect, it } from "vitest";
 import { matchTargets } from "./failed-operations.js";
 

@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { type Database, passkeys, users } from "@mail/db";
+import { type Database, passkeys, users } from "@orbit/db";
 import { isAPIError } from "better-auth/api";
 import { count, eq } from "drizzle-orm";
 import { Hono } from "hono";

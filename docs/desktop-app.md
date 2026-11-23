@@ -68,16 +68,16 @@ pnpm install
 
 # 開発: Web の開発サーバー (http://localhost:3000) を起動し、それをアプリのウィンドウで開く。
 # API は別に起動しておく (pnpm dev)。
-pnpm --filter @mail/desktop desktop:dev
+pnpm --filter @orbit/desktop desktop:dev
 
 # インストーラーを作る (apps/desktop/src-tauri/target/release/bundle/ にできる)。
 # 最初に接続するサーバーを決めておくなら、NEXT_PUBLIC_API_URL を渡す。
-pnpm --filter @mail/desktop desktop:build
+pnpm --filter @orbit/desktop desktop:build
 ```
 
-PowerShell で接続先を渡すときは、先に `$env:NEXT_PUBLIC_API_URL = "https://mail.example.com"` を実行します。
+PowerShell で接続先を渡すときは、先に `$env:NEXT_PUBLIC_API_URL = "https://orbit.example.com"` を実行します。
 
-Rust 側のテストは `apps/desktop/src-tauri` で `cargo test` です (先に `pnpm --filter @mail/web build` で `apps/web/out` を作っておくか、空の `apps/web/out` フォルダーを作っておきます)。
+Rust 側のテストは `apps/desktop/src-tauri` で `cargo test` です (先に `pnpm --filter @orbit/web build` で `apps/web/out` を作っておくか、空の `apps/web/out` フォルダーを作っておきます)。
 
 ## 3. 版を付けて出す
 
@@ -97,7 +97,7 @@ git push origin desktop-v0.1.0
 1. 更新ファイルに署名する鍵の組を作る (1 回だけ)。
 
    ```sh
-   pnpm --filter @mail/desktop tauri signer generate -w orbit-mail-updater.key
+   pnpm --filter @orbit/desktop tauri signer generate -w orbit-mail-updater.key
    ```
 
    パスワードを尋ねられます (空でも作れます)。`orbit-mail-updater.key` (秘密鍵) と `orbit-mail-updater.key.pub` (公開鍵) ができます。

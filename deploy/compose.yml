@@ -5,7 +5,7 @@
 #   compose.relay.yml: 別のサーバー (中継用のサーバー) から逆プロキシする (サーバーの間は HTTPS)
 #   compose.proxy.yml: 同じサーバーの Web サーバー (Apache など) から逆プロキシする
 #   compose.caddy.yml: Caddy が 80 / 443 番で直接公開し、証明書も自動で取得する
-name: mail
+name: orbit
 
 x-logging: &logging
   driver: json-file
@@ -15,7 +15,7 @@ x-logging: &logging
 
 # API サーバー、同期ワーカー、マイグレーションで共通の設定。
 x-server: &server
-  image: mail-server
+  image: orbit-server
   build:
     context: ..
     target: server
@@ -25,7 +25,7 @@ x-server: &server
   # deploy/.env に書いた値はそのまま届く。下の environment は、ドメインなどから決まる値で上書きする。
   env_file: .env
   environment: &server-env
-    DATABASE_URL: postgres://mail:${POSTGRES_PASSWORD:?deploy/.env に POSTGRES_PASSWORD がありません (deploy/setup.sh を実行してください)}@postgres:5432/mail
+    DATABASE_URL: postgres://orbit:${POSTGRES_PASSWORD:?deploy/.env に POSTGRES_PASSWORD がありません (deploy/setup.sh を実行してください)}@postgres:5432/orbit
     API_PORT: "8787"
     # 公開された HTTPS の URL なので、Microsoft Graph の変更通知 (Webhook) が自動で有効になる。
     API_PUBLIC_URL: https://${DOMAIN:?deploy/.env に DOMAIN がありません}
@@ -45,14 +45,14 @@ services:
     restart: unless-stopped
     logging: *logging
     environment:
-      POSTGRES_USER: mail
+      POSTGRES_USER: orbit
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: mail
+      POSTGRES_DB: orbit
       TZ: ${TZ:-Asia/Tokyo}
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mail -d mail"]
+      test: ["CMD-SHELL", "pg_isready -U orbit -d orbit"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -95,7 +95,7 @@ services:
       - attachments:/data/attachments
 
   web:
-    image: mail-web
+    image: orbit-web
     build:
       context: ..
       target: web
@@ -117,9 +117,9 @@ services:
     entrypoint: ["bash", "/backup.sh"]
     environment:
       PGHOST: postgres
-      PGUSER: mail
+      PGUSER: orbit
       PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: mail
+      PGDATABASE: orbit
       BACKUP_HOUR: ${BACKUP_HOUR:-4}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
       BACKUP_PUBLIC_KEY: ${BACKUP_PUBLIC_KEY:-}

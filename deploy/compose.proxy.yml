@@ -1,5 +1,5 @@
 # 同じサーバーの Web サーバー (Apache など) から逆プロキシする場合に、compose.yml に重ねる
-# (設定の見本は deploy/apache/mail.conf)。
+# (設定の見本は deploy/apache/orbit.conf)。
 # web は HTTP のまま 127.0.0.1 の 1 つのポートで待ち受け、HTTPS と証明書は手前の Web サーバーが受け持つ。
 # サーバーの中だけの通信なので、外からは直接届かない。
 # 別のサーバー (中継用のサーバー) から繋ぐ場合は、HTTP のまま外へ出さず、HTTPS で待ち受ける compose.relay.yml を使うこと。

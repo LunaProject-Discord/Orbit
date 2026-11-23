@@ -1,4 +1,4 @@
-import type { OutgoingMessage } from "@mail/core";
+import type { OutgoingMessage } from "@orbit/core";
 import type { ImapFlow } from "imapflow";
 import {
   DraftRejected,

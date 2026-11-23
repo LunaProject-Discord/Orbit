@@ -8,7 +8,7 @@ import {
   type NewMailNotification,
   type PushMessage,
   toPushMessages,
-} from "@mail/core";
+} from "@orbit/core";
 import pg from "pg";
 
 /**

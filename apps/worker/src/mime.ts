@@ -3,7 +3,7 @@ import {
   attachmentPath,
   attachmentsDir,
   type OutgoingMessage,
-} from "@mail/core";
+} from "@orbit/core";
 import MailComposer from "nodemailer/lib/mail-composer";
 
 /**

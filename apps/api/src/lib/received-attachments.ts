@@ -4,8 +4,8 @@ import {
   attachmentExists,
   attachmentKey,
   CHANNEL_ATTACHMENT_FETCH,
-} from "@mail/core";
-import { attachments, type Database, mailAccounts, messages } from "@mail/db";
+} from "@orbit/core";
+import { attachments, type Database, mailAccounts, messages } from "@orbit/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { EventsHub } from "./events-hub.js";
 
