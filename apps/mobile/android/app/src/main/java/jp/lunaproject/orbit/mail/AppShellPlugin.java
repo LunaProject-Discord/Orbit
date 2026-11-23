@@ -47,6 +47,30 @@ public class AppShellPlugin extends Plugin {
     }
 
     /**
+     * このアプリの接続先サーバーとログインを、ほかの Orbit のアプリ (Calendar、Contacts) が
+     * 引き継げるように保存する。ログアウトしたときは sessionToken を空にして呼ぶ。
+     * しくみは SharedConfig を参照。
+     */
+    @PluginMethod
+    public void publishSharedConfig(PluginCall call) {
+        SharedConfig.save(getContext(), call.getString("serverUrl", ""), call.getString("sessionToken", ""));
+        call.resolve();
+    }
+
+    /** ほかの Orbit のアプリの接続先サーバーとログインを探す。見つからなければ found は false。 */
+    @PluginMethod
+    public void findSharedConfig(PluginCall call) {
+        SharedConfig found = SharedConfig.findFromSiblings(getContext());
+        JSObject result = new JSObject();
+        result.put("found", found != null);
+        if (found != null) {
+            result.put("serverUrl", found.serverUrl);
+            result.put("sessionToken", found.sessionToken);
+        }
+        call.resolve(result);
+    }
+
+    /**
      * 端末に入っているフォントの一覧。画面側は、ここで返すファイルを @font-face で読み込んで使う。
      * フォントのファイルを順に開くので少し時間がかかる (プラグインの呼び出しは画面とは別のスレッドで動く)。
      */

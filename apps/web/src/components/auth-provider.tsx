@@ -69,6 +69,10 @@ function forgetUser(): void {
 }
 
 import { isAppOAuthReturn, usesAppOAuth } from "@/lib/native/oauth";
+import {
+  adoptSharedConfig,
+  publishSharedConfig,
+} from "@/lib/native/shared-config";
 import { safeReturnPath } from "@/lib/route";
 import { hasServerUrl, isBundledApp } from "@/lib/server-url";
 
@@ -114,6 +118,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const check = useCallback(async (signal?: AbortSignal) => {
+    // スマホアプリでは、ほかの Orbit のアプリの接続先とログインを引き継ぐ。
+    if (!getToken()) await adoptSharedConfig();
+    if (signal?.aborted) return;
     if (!hasServerUrl() || !getToken()) {
       setState({ status: "signed-out", user: null });
       return;
@@ -155,6 +162,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unsubscribe();
     };
   }, [check]);
+
+  // ログインやログアウトのたびに、ほかの Orbit のアプリが引き継げる内容を更新する。
+  const { status } = state;
+  useEffect(() => {
+    if (status === "signed-in" || status === "signed-out") {
+      void publishSharedConfig();
+    }
+  }, [status]);
 
   /** セッショントークンを受け取ったあと、利用者を確かめて画面を開く。 */
   const enter = useCallback(async () => {

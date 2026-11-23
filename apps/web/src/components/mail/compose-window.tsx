@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import {
+  AppWindowIcon,
   BoldIcon,
   FileIcon,
   FileTextIcon,
@@ -139,6 +140,8 @@ type Props = {
   contentVersion: number;
   /** 閉じても下書きは残る (下書きの一覧から続きを書ける)。 */
   onOpenChange: (open: boolean) => void;
+  /** 作成画面を新しいウィンドウへ移す。移せない環境 (スマホアプリ) では渡さない。 */
+  onPopOut?: () => void;
   onChange: (draft: ComposeDraft) => void;
   /** 送信を始める前に呼ぶ。下書きの保存を止めるのを待ってから送信する。 */
   onBeforeSend: () => Promise<void>;
@@ -184,6 +187,7 @@ export function ComposeWindow({
   saveProblem,
   contentVersion,
   onOpenChange,
+  onPopOut,
   onChange,
   onBeforeSend,
   onSendFailed,
@@ -643,6 +647,19 @@ export function ComposeWindow({
           >
             <MinusIcon />
           </Button>
+          {onPopOut && (
+            <Hint label="新しいウィンドウで開く">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="新しいウィンドウで開く"
+                onClick={onPopOut}
+              >
+                <AppWindowIcon />
+              </Button>
+            </Hint>
+          )}
           <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
             <Button
               type="button"

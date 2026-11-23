@@ -167,6 +167,7 @@ import {
 import { usePreferences } from "@/lib/preferences";
 import {
   buildRoute,
+  emptyRoute,
   historyMode,
   type MailRoute,
   NEW_COMPOSE,
@@ -219,6 +220,7 @@ import {
   storeCachedUnified,
 } from "@/lib/unified";
 import { randomUuid } from "@/lib/uuid";
+import { canOpenWindows, openWindow } from "@/lib/windows";
 
 const PAGE_SIZE = 50;
 /** 表示中のフォルダをサーバーへ知らせる間隔。 */
@@ -1629,6 +1631,48 @@ export function MailApp({ user }: { user: User }) {
     return true;
   }
 
+  /** 一覧のメールを、新しいウィンドウで開く (いまの表示と同じフォルダの中で開く)。 */
+  function openMessageWindow(message: MessageSummary) {
+    void openWindow(
+      buildRoute({
+        ...emptyRoute,
+        accountId: selectedAccountId,
+        mailboxId: selectedMailboxId,
+        unifiedId,
+        special: special === "starred" ? special : null,
+        messageId: message.id,
+      }),
+    ).then((opened) => {
+      if (!opened) showNotice("新しいウィンドウを開けませんでした。");
+    });
+  }
+
+  /**
+   * 作成画面を新しいウィンドウへ移す。書きかけの内容は下書きとしてサーバーに保存し、
+   * 新しいウィンドウがその下書きを開く。保存できなければ移さない (内容を失わないため)。
+   */
+  async function popOutCompose() {
+    const saver = saverRef.current;
+    if (!draft || !saver) return;
+    saver.schedule(draft);
+    await saver.flush();
+    const id = draft.idempotencyKey;
+    if (saver.revisionOf(id) == null) {
+      showNotice(
+        "下書きを保存できないため、新しいウィンドウへ移せませんでした。通信の状態を確認してください。",
+      );
+      return;
+    }
+    if (!(await openWindow(buildRoute({ ...emptyRoute, composeId: id })))) {
+      showNotice("新しいウィンドウを開けませんでした。");
+      return;
+    }
+    setDraft(null);
+    setDraftDirty(false);
+    setComposeNotice(null);
+    setComposeOpen(false);
+  }
+
   /** 作成画面を閉じる。内容を変えていれば、下書きとしてサーバーに残る。 */
   function closeCompose() {
     if (draft && draftDirty) void saverRef.current?.flush();
@@ -2898,6 +2942,9 @@ export function MailApp({ user }: { user: User }) {
                           : {})}
                   onSelect={handleSelectMessage}
                   onAction={performAction}
+                  onOpenWindow={
+                    canOpenWindows() ? openMessageWindow : undefined
+                  }
                   onLoadMore={() => void handleLoadMore()}
                   onRetry={() => void loadFirstPage(selectionRef.current, true)}
                 />
@@ -3002,6 +3049,7 @@ export function MailApp({ user }: { user: User }) {
           if (open) setComposeOpen(true);
           else closeCompose();
         }}
+        onPopOut={canOpenWindows() ? () => void popOutCompose() : undefined}
         onChange={(next) => {
           setDraft(next);
           setDraftDirty(true);
