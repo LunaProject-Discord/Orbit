@@ -6,6 +6,7 @@ import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useNarrowScreen } from "@/components/ui/menu-sheet";
 import {
   Popover,
   PopoverContent,
@@ -22,6 +23,8 @@ import {
 import { cleanFontName } from "@/lib/preferences";
 
 const ROW_HEIGHT = 34;
+/** スマホ幅のシートでは、指で押しやすい高さにする。 */
+const NARROW_ROW_HEIGHT = 44;
 
 type Row =
   | { kind: "empty" }
@@ -87,10 +90,11 @@ export function FontPicker({
     return result;
   }, [fonts, query, monospaceFirst, canType]);
 
+  const rowHeight = useNarrowScreen() ? NARROW_ROW_HEIGHT : ROW_HEIGHT;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollElement,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => rowHeight,
     overscan: 8,
   });
 
@@ -171,7 +175,7 @@ export function FontPicker({
         initialFocus={inputRef}
         className="w-80 max-w-[calc(100vw-1rem)]"
       >
-        <PopoverTitle className="sr-only">フォントを選ぶ</PopoverTitle>
+        <PopoverTitle className="sm:sr-only">フォントを選ぶ</PopoverTitle>
         <Input
           ref={inputRef}
           value={query}
@@ -254,12 +258,12 @@ export function FontPicker({
                   onClick={() => chooseRow(row)}
                   onPointerMove={() => setActive(item.index)}
                   className={cn(
-                    "absolute left-0 flex w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none",
+                    "absolute left-0 flex w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none max-sm:text-base",
                     item.index === active && "bg-accent text-accent-foreground",
                   )}
                   style={{
                     top: item.start,
-                    height: ROW_HEIGHT,
+                    height: rowHeight,
                   }}
                 >
                   <span

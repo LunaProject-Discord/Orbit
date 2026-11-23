@@ -7,6 +7,7 @@ import type * as React from "react";
 import { Button } from "@/components/ui/button";
 import {
   dialogSheet,
+  dialogSheetBackdrop,
   SheetCloseContext,
   useSheetClose,
   useSheetSwipe,
@@ -64,16 +65,18 @@ function DialogContent({
   showCloseButton?: boolean;
   /**
    * スマホ幅では、画面の下に貼り付くシートにする (下へ払って閉じられる)。
-   * 中身は縦に並べる (flex flex-col) こと。高さの上限は max-sm:max-h-* で決める。
+   * 見た目はメニューやピッカーのシートと共通 (globals.css の [data-menu-sheet])。
+   * 中身は縦に並べる (flex flex-col) こと。
    */
   sheet?: boolean;
 }) {
   const swipe = useSheetSwipe(undefined, sheet);
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={sheet ? dialogSheetBackdrop : undefined} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
+        data-menu-sheet={sheet ? "" : undefined}
         className={cn(
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-6 rounded-xl bg-popover p-6 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           sheet && dialogSheet,
@@ -82,14 +85,6 @@ function DialogContent({
         {...props}
         ref={swipe}
       >
-        {sheet && (
-          // つまみ。下へ払って閉じられることが分かるように上端に置く。
-          <span
-            aria-hidden="true"
-            data-slot="dialog-sheet-handle"
-            className="mx-auto mt-2 -mb-2 h-1 w-9 shrink-0 rounded-full bg-border sm:hidden"
-          />
-        )}
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close
@@ -97,7 +92,11 @@ function DialogContent({
             render={
               <Button
                 variant="ghost"
-                className="absolute top-4 right-4"
+                // シートは、下へ払うか後ろの幕を押して閉じる (ほかのシートと同じ)。
+                className={cn(
+                  "absolute top-4 right-4",
+                  sheet && "max-sm:hidden",
+                )}
                 size="icon-sm"
               />
             }
@@ -152,6 +151,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
+      data-sheet-title=""
       className={cn("font-heading leading-none font-medium", className)}
       {...props}
     />

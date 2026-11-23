@@ -122,7 +122,7 @@ export function ColorPicker({
         <ChevronDownIcon className="text-muted-foreground" aria-hidden="true" />
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[17.5rem] gap-3 p-3">
-        <PopoverTitle className="sr-only">色を選ぶ</PopoverTitle>
+        <PopoverTitle className="sm:sr-only">色を選ぶ</PopoverTitle>
 
         <Swatches
           label="色の見本"
@@ -232,7 +232,7 @@ function Swatches({
       ref={ref}
       role="radiogroup"
       aria-label={label}
-      className="grid grid-cols-10 gap-1.5"
+      className="grid grid-cols-10 gap-1.5 max-sm:grid-cols-5 max-sm:gap-2"
     >
       {colors.map((hex, index) => {
         const name = accountColorLabel(hex) ?? hex.toUpperCase();
@@ -249,12 +249,15 @@ function Swatches({
               onKeyDown={(event) => move(event, index)}
               style={{ backgroundColor: hex, color: textOn(hex) }}
               className={cn(
-                "flex aspect-square items-center justify-center rounded-full outline-none ring-offset-2 ring-offset-popover transition-shadow focus-visible:ring-2 focus-visible:ring-ring",
+                "flex aspect-square items-center justify-center rounded-full outline-none max-sm:aspect-auto max-sm:h-11 ring-offset-2 ring-offset-popover transition-shadow focus-visible:ring-2 focus-visible:ring-ring",
                 index === selected && "ring-2 ring-foreground/40",
               )}
             >
               {index === selected && (
-                <CheckIcon className="size-3" aria-hidden="true" />
+                <CheckIcon
+                  className="size-3 max-sm:size-4"
+                  aria-hidden="true"
+                />
               )}
             </button>
           </Hint>

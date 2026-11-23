@@ -31,11 +31,15 @@ export const sheetBackdrop =
   "fixed inset-0 z-50 bg-black/40 duration-200 sm:hidden data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0";
 
 /**
- * ダイアログを、スマホ幅でだけ画面の下に貼り付くシートにするクラス。
- * 高さの上限 (max-sm:max-h-*) は呼び出し側で決める。
+ * ダイアログを、スマホ幅でだけ画面の下に貼り付けるクラス (data-menu-sheet と一緒に使う)。
+ * 見た目は、ほかのシートと同じく globals.css の [data-menu-sheet] で決まる。
  */
 export const dialogSheet =
-  "max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:max-w-full max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-t-2xl max-sm:rounded-b-none max-sm:duration-200 max-sm:data-closed:zoom-out-100 max-sm:data-closed:slide-out-to-bottom max-sm:data-open:zoom-in-100 max-sm:data-open:slide-in-from-bottom";
+  "max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:translate-x-0 max-sm:translate-y-0";
+
+/** シート型のダイアログの後ろの幕を、スマホ幅ではほかのシートと同じ濃さにする。 */
+export const dialogSheetBackdrop =
+  "max-sm:bg-black/40 max-sm:backdrop-blur-none max-sm:duration-200";
 
 /** スマホの幅 (Tailwind の sm 未満) かどうか。シートで出すかを決める。 */
 export function useNarrowScreen(): boolean {

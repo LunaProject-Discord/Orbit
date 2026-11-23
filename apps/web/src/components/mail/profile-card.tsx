@@ -11,7 +11,11 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useNarrowScreen, useSheetSwipe } from "@/components/ui/menu-sheet";
+import {
+  sheetBackdrop,
+  useNarrowScreen,
+  useSheetSwipe,
+} from "@/components/ui/menu-sheet";
 import {
   Popover,
   PopoverContent,
@@ -91,7 +95,7 @@ export function ProfileName({
   );
   const body = (Title: typeof PopoverTitle | typeof DialogPrimitive.Title) => (
     <>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 max-sm:px-3.5 max-sm:pb-1">
         <span
           aria-hidden="true"
           className="flex size-11 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-base"
@@ -113,7 +117,8 @@ export function ProfileName({
       <div className="flex flex-col gap-1">
         <Button
           variant="ghost"
-          size={narrow ? "lg" : "sm"}
+          size="sm"
+          data-sheet-item=""
           className="justify-start"
           onClick={() => void copy()}
         >
@@ -123,7 +128,8 @@ export function ProfileName({
         {onSearch && (
           <Button
             variant="ghost"
-            size={narrow ? "lg" : "sm"}
+            size="sm"
+            data-sheet-item=""
             className="justify-start"
             onClick={() => run(onSearch)}
           >
@@ -134,7 +140,8 @@ export function ProfileName({
         {onCompose && (
           <Button
             variant="ghost"
-            size={narrow ? "lg" : "sm"}
+            size="sm"
+            data-sheet-item=""
             className="justify-start"
             onClick={() => run(onCompose)}
           >
@@ -145,7 +152,8 @@ export function ProfileName({
         {onSignature && (
           <Button
             variant="ghost"
-            size={narrow ? "lg" : "sm"}
+            size="sm"
+            data-sheet-item=""
             className="justify-start"
             onClick={() => run(onSignature)}
           >
@@ -167,16 +175,14 @@ export function ProfileName({
           {label}
         </DialogPrimitive.Trigger>
         <DialogPrimitive.Portal>
-          <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/30 duration-200 data-closed:animate-out data-closed:fade-out-0 data-open:animate-in data-open:fade-in-0" />
+          <DialogPrimitive.Backdrop className={sheetBackdrop} />
           <DialogPrimitive.Popup
             ref={swipe}
             data-slot="profile-sheet"
-            className="fixed inset-x-0 bottom-0 z-50 flex flex-col gap-3 rounded-t-2xl bg-popover px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] text-popover-foreground text-sm shadow-lg outline-none ring-1 ring-foreground/10 duration-200 data-closed:animate-out data-closed:slide-out-to-bottom data-open:animate-in data-open:slide-in-from-bottom"
+            // 見た目は、メニューやピッカーのシートと共通 (globals.css の [data-menu-sheet])。
+            data-menu-sheet=""
+            className="fixed inset-x-0 bottom-0 z-50 flex flex-col gap-2 text-sm outline-none"
           >
-            <span
-              aria-hidden="true"
-              className="mx-auto mb-1 h-1 w-9 shrink-0 rounded-full bg-muted-foreground/30"
-            />
             {body(DialogPrimitive.Title)}
           </DialogPrimitive.Popup>
         </DialogPrimitive.Portal>
