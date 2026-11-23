@@ -213,9 +213,13 @@ self.addEventListener("push", (event) => {
     typeof Notification.maxActions === "number"
       ? Notification.maxActions
       : 2;
+  // 件名の下に、本文の冒頭を出す。
+  const body = [data.body, data.preview]
+    .filter((line) => typeof line === "string" && line)
+    .join("\n");
   event.waitUntil(
     self.registration.showNotification(title, {
-      body: typeof data.body === "string" ? data.body : "",
+      body,
       // 同じメールの通知は置き換える (再送や複数のタブで二重に出さない)。
       tag: typeof data.tag === "string" ? data.tag : undefined,
       icon: "/icons/icon-192.png",

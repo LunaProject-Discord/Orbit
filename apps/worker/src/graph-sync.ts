@@ -212,6 +212,8 @@ async function applyPage(
             id: row.id,
             from: values.from ?? [],
             subject: values.subject ?? "",
+            // Graph は一覧と一緒に本文の冒頭 (bodyPreview) を返す。
+            preview: values.snippet ?? "",
             seen: values.seen ?? false,
             receivedAt,
           });

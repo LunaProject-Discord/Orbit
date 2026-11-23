@@ -68,6 +68,53 @@ describe("toNewMailNotification", () => {
   });
 });
 
+describe("本文の冒頭", () => {
+  it("1 通ずつ知らせるときは本文の冒頭を載せ、通知にも渡す", () => {
+    const result = toNewMailNotification(
+      account,
+      [
+        candidate({ id: "m1", preview: `  ${"あ".repeat(400)}` }),
+        candidate({ id: "m2", preview: "" }),
+      ],
+      now,
+    );
+    expect([...(result?.messages[0]?.preview ?? "")]).toHaveLength(300);
+    expect(result?.messages[0]?.preview?.endsWith("…")).toBe(true);
+    expect(result?.messages[1]).not.toHaveProperty("preview");
+    const pushes = toPushMessages(result as NonNullable<typeof result>);
+    expect(pushes[0]?.body).toBe("ご確認");
+    expect(pushes[0]?.preview).toBe(result?.messages[0]?.preview);
+    expect(pushes[1]).not.toHaveProperty("preview");
+  });
+
+  it("まとめて知らせるときは載せない (NOTIFY の上限に収める)", () => {
+    const result = toNewMailNotification(
+      account,
+      Array.from({ length: 4 }, (_, index) =>
+        candidate({ id: `m${index}`, preview: "あ".repeat(400) }),
+      ),
+      now,
+    );
+    expect(result?.messages.every((item) => !("preview" in item))).toBe(true);
+  });
+
+  it("本文の冒頭を載せても NOTIFY の上限 (8000 バイト) に収まる", () => {
+    const result = toNewMailNotification(
+      account,
+      Array.from({ length: 3 }, (_, index) =>
+        candidate({
+          id: `0193aaaa-bbbb-7ccc-8ddd-eeeeeeeeeee${index}`,
+          from: [{ name: "あ".repeat(200), address: "a@example.com" }],
+          subject: "件".repeat(500),
+          preview: "本".repeat(1000),
+        }),
+      ),
+      now,
+    );
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(8000);
+  });
+});
+
 describe("toPushMessages", () => {
   it("少なければ 1 通ずつ通知する", () => {
     expect(
@@ -85,12 +132,14 @@ describe("toPushMessages", () => {
         body: "ご確認",
         tag: "mail:m1",
         messageId: "m1",
+        accountId: "a1",
       },
       {
         title: "新着メール",
         body: "(件名なし)",
         tag: "mail:m2",
         messageId: "m2",
+        accountId: "a1",
       },
     ]);
   });
@@ -105,8 +154,33 @@ describe("toPushMessages", () => {
         body: "佐藤、田中、山本 ほか",
         tag: "mail-batch:a1:m0",
         messageId: null,
+        accountId: "a1",
       },
     ]);
+  });
+});
+
+describe("アカウントの名前", () => {
+  it("知らせに載せ、1 通ずつの通知にも、まとめた通知にも渡す", () => {
+    const named = { ...account, name: " 仕事用 " };
+    const single = toNewMailNotification(named, [candidate()], now);
+    expect(single?.accountName).toBe("仕事用");
+    expect(
+      toPushMessages(single as NonNullable<typeof single>)[0],
+    ).toMatchObject({ accountId: "a1", accountName: "仕事用" });
+    const batch = toNewMailNotification(
+      named,
+      Array.from({ length: 4 }, (_, index) => candidate({ id: `m${index}` })),
+      now,
+    );
+    expect(toPushMessages(batch as NonNullable<typeof batch>)[0]).toMatchObject(
+      { accountId: "a1", accountName: "仕事用" },
+    );
+  });
+
+  it("名前が分からなければ載せない", () => {
+    const result = toNewMailNotification(account, [candidate()], now);
+    expect(result).not.toHaveProperty("accountName");
   });
 });
 

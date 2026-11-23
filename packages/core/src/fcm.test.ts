@@ -93,6 +93,23 @@ describe("toFcmMessage", () => {
     expect(sent.android.priority).toBe("HIGH");
   });
 
+  it("本文の冒頭があれば preview に載せる", () => {
+    const { message: sent } = toFcmMessage("t", {
+      ...message,
+      preview: "お世話になっております。",
+    });
+    expect(sent.data.preview).toBe("お世話になっております。");
+  });
+
+  it("届いたアカウントが分かれば、ID と名前を載せる", () => {
+    const { message: sent } = toFcmMessage("t", {
+      ...message,
+      accountId: "a1",
+      accountName: "仕事用",
+    });
+    expect(sent.data).toMatchObject({ accountId: "a1", accountName: "仕事用" });
+  });
+
   it("まとめた通知では messageId を空にする (data は文字列のみ)", () => {
     const { message: sent } = toFcmMessage("t", {
       ...message,

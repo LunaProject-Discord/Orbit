@@ -178,6 +178,8 @@ export type Account = {
    * null は自動。IMAP のアカウントでだけ使う。
    */
   pushConnections: number | null;
+  /** このアカウントに届いた新着メールを通知する。 */
+  notifyNewMail: boolean;
   username: string;
   status: AccountStatus;
   lastError: string | null;
@@ -447,6 +449,8 @@ export type FailedOperation = {
 export type MailNotification = {
   title: string;
   body: string;
+  /** 本文の冒頭。分からないときと、まとめた通知では無い。 */
+  preview?: string;
   /** 同じ値の通知は置き換わる。 */
   tag: string;
   /** 押したときに開くメール。まとめた通知では null。 */
@@ -993,6 +997,7 @@ export async function updateAccount(
     icon?: AccountIconName | null;
     allowLegacyTls?: boolean;
     pushConnections?: number | null;
+    notifyNewMail?: boolean;
   },
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
