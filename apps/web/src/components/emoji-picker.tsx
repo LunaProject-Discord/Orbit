@@ -64,7 +64,7 @@ const EMOJI_STYLE = { fontFamily: EMOJI_FONT_FAMILY };
 
 /** ポップオーバーの中身の大きさ。アイコンを選ぶ画面と揃える。 */
 export const PICKER_POPOVER_CLASS =
-  "max-h-[min(28rem,var(--available-height))] w-[min(22rem,calc(100vw-1rem))] gap-0 p-0";
+  "max-h-[min(28rem,var(--available-height))] w-[min(22rem,calc(100vw-1rem))] gap-0 p-0 max-sm:[--sheet-pad:0.5rem] max-sm:[--sheet-title-pad:0.5rem]";
 
 /**
  * 絵文字を選ぶ画面の中身 (ポップオーバーなどの中に置く)。
@@ -174,7 +174,7 @@ export function EmojiPickerPanel({
                     onClick={() => chooseTone(item.tone)}
                     style={EMOJI_STYLE}
                     className={cn(
-                      "flex size-7 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex size-7 max-sm:size-10 max-sm:text-xl items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
                       item.tone === tone && "bg-muted",
                     )}
                   >
@@ -193,7 +193,7 @@ export function EmojiPickerPanel({
                 disabled={!catalog}
                 onClick={() => setToneOpen(true)}
                 style={EMOJI_STYLE}
-                className="flex size-7 shrink-0 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                className="flex size-7 max-sm:size-10 max-sm:text-xl shrink-0 items-center justify-center rounded-md text-base leading-none outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               >
                 {catalog
                   ? withSkinTone(catalog, TONE_SAMPLE, tone)
@@ -261,7 +261,7 @@ export function EmojiPickerButton({
         finalFocus={false}
         className={PICKER_POPOVER_CLASS}
       >
-        <PopoverTitle className="sr-only">絵文字を選ぶ</PopoverTitle>
+        <PopoverTitle className="sm:sr-only">絵文字を選ぶ</PopoverTitle>
         <EmojiPickerPanel
           inputRef={inputRef}
           onChoose={(emoji) => {

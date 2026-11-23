@@ -9,6 +9,7 @@ import { Calendar } from "@/components/ui/calendar";
 import {
   Popover,
   PopoverContent,
+  PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
 
@@ -110,6 +111,9 @@ export function DatePicker({
         }
         className="w-auto gap-0 p-0"
       >
+        <PopoverTitle className="sm:sr-only">
+          {label ? `${label}を選ぶ` : "日付を選ぶ"}
+        </PopoverTitle>
         <div ref={calendar} className="max-sm:flex max-sm:justify-center">
           <Calendar
             mode="single"
@@ -126,11 +130,12 @@ export function DatePicker({
             }}
           />
         </div>
-        <div className="flex items-center justify-between border-t p-2">
+        <div className="flex items-center justify-between border-t p-2 max-sm:px-0">
           <Button
             type="button"
             variant="ghost"
             size="xs"
+            className="max-sm:h-10 max-sm:px-4 max-sm:text-sm"
             disabled={!selected}
             onClick={() => {
               onChange("");
@@ -143,6 +148,7 @@ export function DatePicker({
             type="button"
             variant="ghost"
             size="xs"
+            className="max-sm:h-10 max-sm:px-4 max-sm:text-sm"
             onClick={() => {
               const today = new Date();
               const outside =

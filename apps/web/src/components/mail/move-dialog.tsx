@@ -36,7 +36,7 @@ export function MoveDialog({
         data-slot="move-dialog"
         // スマホ幅では、画面の下に貼り付くシートにする。
         sheet
-        className="flex max-h-[min(36rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:max-h-[80dvh] sm:max-w-sm"
+        className="flex max-h-[min(36rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:[--sheet-pad:0rem] sm:max-w-sm"
       >
         {message && (
           <MoveDialogBody message={message} onMove={onMove} onClose={onClose} />
@@ -59,13 +59,13 @@ function MoveDialogBody({
   const { destinations } = actionTargets(mailboxes, message.mailboxId);
   return (
     <>
-      <DialogHeader className="shrink-0 px-6 pt-6 pb-3 max-sm:px-4 max-sm:pt-5">
+      <DialogHeader className="shrink-0 px-6 pt-6 pb-3 max-sm:gap-0 max-sm:px-4 max-sm:pt-0">
         <DialogTitle>移動先を選ぶ</DialogTitle>
         <DialogDescription className="truncate">
           {message.subject || "(件名なし)"}
         </DialogDescription>
       </DialogHeader>
-      <ul className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-3 max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <ul className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-3 max-sm:pb-0">
         {destinations.length === 0 && (
           <li className="px-4 py-6 text-center text-muted-foreground text-sm">
             移動できるフォルダがありません。
@@ -75,6 +75,7 @@ function MoveDialogBody({
           <li key={entry.mailbox.id}>
             <button
               type="button"
+              data-sheet-item=""
               onClick={() => {
                 onMove(message, entry.mailbox.id);
                 onClose();

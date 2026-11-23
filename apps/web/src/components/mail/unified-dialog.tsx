@@ -246,13 +246,13 @@ export function UnifiedDialog({
           data-slot="unified-dialog"
           // スマホ幅では、画面の下に貼り付くシートにする。
           sheet
-          className="flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:max-h-[92dvh] sm:max-w-lg"
+          className="flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:[--sheet-max-height:92dvh] max-sm:[--sheet-pad:0rem] sm:max-w-lg"
         >
           <form
             onSubmit={handleSubmit}
             className="flex min-h-0 flex-1 flex-col"
           >
-            <DialogHeader className="shrink-0 px-6 pt-6 pb-4 max-sm:px-4 max-sm:pt-5">
+            <DialogHeader className="shrink-0 px-6 pt-6 pb-4 max-sm:gap-0 max-sm:px-4 max-sm:pt-0">
               <DialogTitle>
                 {builtin
                   ? `「${BUILTIN_LABELS[builtin]}」の見た目`
@@ -537,7 +537,7 @@ export function UnifiedDialog({
                 {error}
               </p>
             )}
-            <DialogFooter className="shrink-0 px-6 pt-4 pb-6 max-sm:px-4 max-sm:pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <DialogFooter className="shrink-0 px-6 pt-4 pb-6 max-sm:px-4 max-sm:pb-2">
               {builtin && (
                 <Button
                   type="button"

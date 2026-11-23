@@ -19,10 +19,13 @@ import {
 } from "react";
 import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
+import { useNarrowScreen } from "@/components/ui/menu-sheet";
 import { layoutPickerRows, type PickerRow } from "@/lib/picker";
 
 /** 1 個分のマスの大きさ (rem)。Tailwind の size-9 に合わせる。 */
 const CELL_REM = 2.25;
+/** スマホ幅のシートでは、指で押しやすい大きさにする。Tailwind の size-11 に合わせる。 */
+const NARROW_CELL_REM = 2.75;
 /** 見出しの行の高さ (rem)。Tailwind の h-7 に合わせる。 */
 const HEADING_REM = 1.75;
 /** 見えている範囲の上下に、余分に描いておく行数。 */
@@ -143,7 +146,8 @@ export function PickerGrid({
     return () => observer.disconnect();
   }, []);
 
-  const cell = CELL_REM * box.rem;
+  const narrow = useNarrowScreen();
+  const cell = (narrow ? NARROW_CELL_REM : CELL_REM) * box.rem;
   const heading = HEADING_REM * box.rem;
   // 左右の余白 (px-2) を除いた幅に、入るだけ並べる。
   const columns = Math.max(1, Math.floor((box.width - box.rem) / cell));
@@ -439,7 +443,7 @@ export function PickerGrid({
             value={query}
             onChange={(event) => changeQuery(event.target.value)}
             onKeyDown={onKeyDown}
-            className="h-8 w-full min-w-0 rounded-md border border-input bg-transparent pr-8 pl-8 text-base outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
+            className="h-8 w-full min-w-0 max-sm:h-10 rounded-md border border-input bg-transparent pr-8 pl-8 text-base outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
           />
           {query !== "" && (
             <Hint label="検索をクリア">
@@ -450,7 +454,7 @@ export function PickerGrid({
                   changeQuery("");
                   inputRef.current?.focus();
                 }}
-                className="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="absolute top-1/2 right-1 flex size-6 max-sm:size-8 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <XIcon className="size-3.5" aria-hidden="true" />
               </button>
@@ -464,7 +468,7 @@ export function PickerGrid({
           className="relative flex gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           <PickerTabs tabs={tabs} current={currentSection} onJump={jump} />
-          {!source && <div className="h-7" />}
+          {!source && <div className="h-7 max-sm:h-10" />}
         </div>
       </div>
 
@@ -664,7 +668,7 @@ const PickerTabs = memo(function PickerTabs({
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => onJump(tab.id)}
           className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground [&_svg]:size-4",
+            "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground max-sm:size-10 [&_svg]:size-4 max-sm:[&_svg]:size-5",
             selected && "bg-muted text-foreground",
           )}
         >
@@ -738,7 +742,7 @@ const PickerRowView = memo(function PickerRowView({
             tabIndex={-1}
             onClick={() => onChoose(name)}
             className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-md text-foreground/80 text-xl leading-none outline-none hover:bg-muted hover:text-foreground [&_svg]:size-5",
+              "flex size-9 shrink-0 items-center justify-center rounded-md text-foreground/80 text-xl leading-none outline-none hover:bg-muted hover:text-foreground max-sm:size-11 max-sm:text-2xl [&_svg]:size-5 max-sm:[&_svg]:size-6",
               current && cn("bg-muted", currentClass),
               index === active && "bg-muted ring-2 ring-ring ring-inset",
             )}

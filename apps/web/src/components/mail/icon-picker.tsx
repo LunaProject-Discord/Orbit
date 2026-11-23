@@ -89,6 +89,7 @@ export function IconPicker({
     <Button
       variant="ghost"
       size="xs"
+      className="max-sm:h-10 max-sm:px-3 max-sm:text-sm"
       disabled={value === null}
       onClick={() => choose(null)}
     >
@@ -158,7 +159,7 @@ export function IconPicker({
         style={colorStyle}
         className={PICKER_POPOVER_CLASS}
       >
-        <PopoverTitle className="sr-only">アイコンを選ぶ</PopoverTitle>
+        <PopoverTitle className="sm:sr-only">アイコンを選ぶ</PopoverTitle>
         <div
           role="tablist"
           aria-label="選ぶものの種類"
@@ -176,7 +177,7 @@ export function IconPicker({
                 requestAnimationFrame(() => inputRef.current?.focus());
               }}
               className={cn(
-                "h-7 flex-1 rounded-md font-medium text-muted-foreground text-xs outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+                "h-7 flex-1 rounded-md font-medium text-muted-foreground text-xs max-sm:h-10 max-sm:text-sm outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
                 mode === item.mode && "bg-muted text-foreground",
               )}
             >
