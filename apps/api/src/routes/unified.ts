@@ -18,7 +18,7 @@ import {
   BUILTIN_VIEWS,
   loadUnifiedFolder,
   normalizeFilters,
-  normalizeScope,
+  ownScope,
   sidebarLayout,
   unifiedFilters,
   unifiedHeads,
@@ -146,7 +146,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
         name: body.name,
         icon: body.icon,
         color: body.color,
-        scope: normalizeScope(body.scope),
+        scope: await ownScope(db, userId, body.scope),
         filters: normalizeFilters(body.filters),
       })
       .returning(publicColumns);
@@ -224,7 +224,9 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
           ...(body.name !== undefined ? { name: body.name } : {}),
           ...(body.icon !== undefined ? { icon: body.icon } : {}),
           ...(body.color !== undefined ? { color: body.color } : {}),
-          ...(body.scope ? { scope: normalizeScope(body.scope) } : {}),
+          ...(body.scope
+            ? { scope: await ownScope(db, userId, body.scope) }
+            : {}),
           ...(body.filters ? { filters: normalizeFilters(body.filters) } : {}),
         })
         .where(

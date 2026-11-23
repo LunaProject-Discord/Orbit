@@ -1,0 +1,813 @@
+/**
+ * 利用者どうしのデータの分離を、実際の PostgreSQL で確かめる。
+ *
+ * 2 人の利用者 (A と B) にそれぞれメールアカウント・メール・下書きなどを用意し、
+ * B がログインした状態で、A の ID を指定してすべての API を呼ぶ。
+ * - 応答に A のデータ (ID と目印の文字列) が含まれないこと
+ * - A のデータが 1 行も変わらないこと
+ * を確かめる。API を足したときは、下の一覧にも足す。
+ *
+ * DATABASE_URL が無い環境では実行しない。接続先に確認用の DB を作り、終わったら消す。
+ */
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { NOTIFICATION_ACTION_PATH, signNotificationAction } from "@mail/core";
+import {
+  attachments,
+  changes,
+  createDb,
+  type Database,
+  drafts,
+  mailAccounts,
+  mailboxes,
+  messageMailboxes,
+  messages,
+  outbox,
+  pushSubscriptions,
+  signatureRules,
+  unifiedFolders,
+} from "@mail/db";
+import { sql } from "drizzle-orm";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createApp } from "./app.js";
+import { createAuth } from "./auth.js";
+import { EventsHub } from "./lib/events-hub.js";
+
+const adminUrl = process.env.DATABASE_URL;
+const ORIGIN = "http://localhost:3000";
+const PASSWORD = "correct horse battery staple";
+const encryptionKey = Buffer.alloc(32, 7);
+
+type Seeded = Awaited<ReturnType<typeof seed>>;
+
+const emptyRecipients = { list: [], text: "" };
+const filters = {
+  unread: false,
+  flagged: false,
+  hasAttachment: false,
+  from: "",
+  to: "",
+  subject: "",
+  text: "",
+  withinDays: null,
+};
+
+/** 利用者 1 人分のデータを用意する。mark は、応答に漏れていないかを探す目印。 */
+async function seed(db: Database, userId: string, mark: string) {
+  const one = <T>(rows: T[]): T => {
+    const [row] = rows;
+    if (!row) throw new Error("行を作れませんでした。");
+    return row;
+  };
+  const account = one(
+    await db
+      .insert(mailAccounts)
+      .values({
+        userId,
+        email: `${mark}@example.com`,
+        displayName: `${mark}-name`,
+        provider: "generic",
+        authType: "password",
+        imapHost: "imap.example.com",
+        imapPort: 993,
+        smtpHost: "smtp.example.com",
+        smtpPort: 465,
+        username: `${mark}@example.com`,
+        credentialsEncrypted: `${mark}-credentials`,
+        // 同期ワーカーは動かさない。
+        status: "disabled",
+        signatureHtml: `<p>${mark}-signature</p>`,
+      })
+      .returning({ id: mailAccounts.id }),
+  ).id;
+  const [inbox, folder] = (
+    await db
+      .insert(mailboxes)
+      .values([
+        {
+          accountId: account,
+          path: "INBOX",
+          name: "INBOX",
+          delimiter: "/",
+          specialUse: "inbox",
+          detectedSpecialUse: "inbox",
+          uidValidity: 1n,
+        },
+        {
+          accountId: account,
+          path: `${mark}-folder`,
+          name: `${mark}-folder`,
+          delimiter: "/",
+          uidValidity: 2n,
+        },
+      ])
+      .returning({ id: mailboxes.id })
+  ).map((row) => row.id) as [string, string];
+  const message = one(
+    await db
+      .insert(messages)
+      .values({
+        accountId: account,
+        threadKey: `${mark}-thread`,
+        messageIdHeader: `<${mark}-message@example.com>`,
+        subject: `${mark}-subject`,
+        from: [{ name: `${mark}-sender`, address: "sender@example.com" }],
+        to: [{ address: `${mark}@example.com` }],
+        receivedAt: new Date(),
+        snippet: `${mark}-snippet`,
+        hasAttachments: true,
+        bodyText: `${mark}-body shared-word`,
+        bodyHtml: `<p>${mark}-body shared-word</p>`,
+        bodyFetchedAt: new Date(),
+      })
+      .returning({ id: messages.id }),
+  ).id;
+  await db
+    .insert(messageMailboxes)
+    .values({ mailboxId: inbox, messageId: message, uid: 1n });
+  const attachment = one(
+    await db
+      .insert(attachments)
+      .values({
+        messageId: message,
+        filename: `${mark}-file.txt`,
+        contentType: "text/plain",
+        size: 3,
+        partId: "2",
+      })
+      .returning({ id: attachments.id }),
+  ).id;
+  const draft = randomUUID();
+  await db.insert(drafts).values({
+    id: draft,
+    userId,
+    accountId: account,
+    to: emptyRecipients,
+    cc: emptyRecipients,
+    bcc: emptyRecipients,
+    subject: `${mark}-draft`,
+    text: `${mark}-draft-body`,
+  });
+  const target = {
+    messageId: message,
+    providerMessageId: null,
+    mailboxId: inbox,
+    mailboxPath: "INBOX",
+    uid: "1",
+    uidValidity: "1",
+  };
+  const [outgoing, failure] = (
+    await db
+      .insert(outbox)
+      .values([
+        {
+          accountId: account,
+          kind: "send",
+          idempotencyKey: randomUUID(),
+          payload: {
+            mode: "new",
+            sourceMessageId: null,
+            message: {
+              to: [{ address: "someone@example.com" }],
+              cc: [],
+              bcc: [],
+              subject: `${mark}-outgoing`,
+              text: `${mark}-outgoing-body`,
+              html: null,
+              attachments: [],
+            },
+          },
+        },
+        {
+          accountId: account,
+          kind: "set_flags",
+          idempotencyKey: randomUUID(),
+          status: "failed",
+          lastError: `${mark}-error`,
+          payload: { targets: [target], seen: true },
+        },
+      ])
+      .returning({ id: outbox.id })
+  ).map((row) => row.id) as [string, string];
+  const unified = one(
+    await db
+      .insert(unifiedFolders)
+      .values({
+        userId,
+        name: `${mark}-unified`,
+        scope: { all: true, roles: [], mailboxIds: [] },
+        filters,
+      })
+      .returning({ id: unifiedFolders.id }),
+  ).id;
+  const signature = one(
+    await db
+      .insert(signatureRules)
+      .values({
+        userId,
+        kind: "contact",
+        key: `${mark}-contact@example.com`,
+        signatureHtml: `<p>${mark}-rule</p>`,
+      })
+      .returning({ id: signatureRules.id }),
+  ).id;
+  const endpoint = `https://fcm.googleapis.com/fcm/send/${mark}-endpoint`;
+  await db
+    .insert(pushSubscriptions)
+    .values({ userId, endpoint, p256dh: "key", auth: "auth" });
+  await db
+    .insert(changes)
+    .values({ userId, entity: "message", entityId: message, op: "upsert" });
+  return {
+    userId,
+    mark,
+    account,
+    inbox,
+    folder,
+    message,
+    attachment,
+    draft,
+    outgoing,
+    failure,
+    unified,
+    signature,
+    endpoint,
+  };
+}
+
+/** その利用者に属する行を、すべての表から集める (変わっていないことの比較用)。 */
+async function snapshot(db: Database, userId: string) {
+  const own = sql`select id from mail_accounts where user_id = ${userId}`;
+  const queries = {
+    mail_accounts: sql`select * from mail_accounts where user_id = ${userId}`,
+    mailboxes: sql`select * from mailboxes where account_id in (${own})`,
+    messages: sql`select * from messages where account_id in (${own})`,
+    message_mailboxes: sql`select mm.* from message_mailboxes mm join mailboxes b on b.id = mm.mailbox_id where b.account_id in (${own})`,
+    attachments: sql`select a.* from attachments a join messages m on m.id = a.message_id where m.account_id in (${own})`,
+    outbox: sql`select * from outbox where account_id in (${own})`,
+    drafts: sql`select * from drafts where user_id = ${userId}`,
+    unified_folders: sql`select * from unified_folders where user_id = ${userId}`,
+    sidebar_layouts: sql`select * from sidebar_layouts where user_id = ${userId}`,
+    signature_rules: sql`select * from signature_rules where user_id = ${userId}`,
+    push_subscriptions: sql`select * from push_subscriptions where user_id = ${userId}`,
+    devices: sql`select * from devices where user_id = ${userId}`,
+    user_settings: sql`select * from user_settings where user_id = ${userId}`,
+    changes: sql`select * from changes where user_id = ${userId}`,
+  };
+  const result: Record<string, unknown[]> = {};
+  for (const [table, query] of Object.entries(queries)) {
+    const { rows } = await db.execute(
+      sql`select to_jsonb(t) as row from (${query}) t order by to_jsonb(t)::text`,
+    );
+    result[table] = rows.map((row) => row.row);
+  }
+  return result;
+}
+
+describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
+  const dbName = `mail_isolation_${randomUUID().replaceAll("-", "")}`;
+  let admin: pg.Client;
+  let pool: pg.Pool;
+  let db: Database;
+  let app: ReturnType<typeof createApp>;
+  let dir: string;
+  let a: Seeded;
+  let b: Seeded;
+  let tokenA: string;
+  let tokenB: string;
+
+  const request = (
+    token: string,
+    method: string,
+    path: string,
+    body?: unknown,
+  ) =>
+    app.request(`/v1${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        origin: ORIGIN,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  /** A のデータを指す文字列 (ID と目印)。B への応答に含まれてはいけない。 */
+  const secretsOfA = () => [
+    a.mark,
+    a.userId,
+    a.account,
+    a.inbox,
+    a.folder,
+    a.message,
+    a.attachment,
+    a.draft,
+    a.outgoing,
+    a.failure,
+    a.unified,
+    a.signature,
+  ];
+
+  beforeAll(async () => {
+    admin = new pg.Client({ connectionString: adminUrl });
+    await admin.connect();
+    await admin.query(`create database ${dbName}`);
+    const url = new URL(adminUrl as string);
+    url.pathname = `/${dbName}`;
+    ({ db, pool } = createDb(url.toString()));
+    // uuidv7() は PostgreSQL 18 から。古い版で確かめるときだけ、代わりの関数を置く。
+    await db.execute(sql`do $$ begin
+      if to_regproc('uuidv7') is null then
+        create function uuidv7() returns uuid language sql volatile
+          as 'select gen_random_uuid()';
+      end if;
+    end $$`);
+    await migrate(db, {
+      migrationsFolder: fileURLToPath(
+        new URL("../../../packages/db/drizzle", import.meta.url),
+      ),
+    });
+
+    dir = await mkdtemp(join(tmpdir(), "mail-isolation-"));
+    process.env.ATTACHMENTS_DIR = dir;
+    const authOptions = {
+      db,
+      secret: "isolation-test-secret-isolation-test-secret",
+      baseURL: "http://localhost:8787",
+      trustedOrigins: [ORIGIN],
+    };
+    const auth = createAuth(authOptions);
+    app = createApp({
+      db,
+      auth,
+      hub: new EventsHub(url.toString()),
+      allowedOrigins: [ORIGIN],
+      encryptionKey,
+      allowPrivateMailHosts: false,
+      microsoft: null,
+      google: null,
+      webPushPublicKey: "test-public-key",
+      fcmEnabled: true,
+      webOrigin: ORIGIN,
+      mailer: null,
+    });
+
+    const signUp = createAuth({ ...authOptions, allowSignUp: true });
+    const login = async (mark: string) => {
+      const email = `${mark}-login@example.com`;
+      const { user } = await signUp.api.signUpEmail({
+        body: { email, name: mark, password: PASSWORD },
+      });
+      const response = await app.request("/v1/auth/sign-in/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN },
+        body: JSON.stringify({ email, password: PASSWORD }),
+      });
+      const token = response.headers.get("set-auth-token");
+      if (!token) throw new Error(`ログインできませんでした (${mark})。`);
+      return { userId: user.id, token };
+    };
+    const alice = await login("alice-private");
+    const bob = await login("bob-private");
+    tokenA = alice.token;
+    tokenB = bob.token;
+    a = await seed(db, alice.userId, "alice-private");
+    b = await seed(db, bob.userId, "bob-private");
+  }, 120_000);
+
+  afterAll(async () => {
+    await pool?.end();
+    // 接続が閉じ終わるまで少しかかることがあるので、消せるまで繰り返す。
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        await admin?.query(`drop database if exists ${dbName}`);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    await admin?.end();
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("新規登録は API から受け付けない", async () => {
+    const response = await app.request("/v1/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      body: JSON.stringify({
+        email: "mallory@example.com",
+        name: "mallory",
+        password: PASSWORD,
+      }),
+    });
+    expect(response.ok).toBe(false);
+    const { rows } = await db.execute(
+      sql`select 1 from users where email = 'mallory@example.com'`,
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("ログインしていなければ、どの API も使えない", async () => {
+    for (const path of ["/accounts", "/messages", "/drafts", "/sync", "/me"]) {
+      const response = await app.request(`/v1${path}`);
+      expect(response.status, path).toBe(401);
+    }
+  });
+
+  it("自分のデータは見える (確かめ方が空振りしていないこと)", async () => {
+    for (const [token, own] of [
+      [tokenA, a],
+      [tokenB, b],
+    ] as const) {
+      const list = await (await request(token, "GET", "/messages")).text();
+      expect(list).toContain(own.message);
+      const detail = await request(token, "GET", `/messages/${own.message}`);
+      expect(detail.status).toBe(200);
+      expect(await detail.text()).toContain(`${own.mark}-body`);
+      const search = await request(
+        token,
+        "GET",
+        "/messages/search?q=shared-word",
+      );
+      expect(await search.text()).toContain(own.message);
+      const unified = await request(
+        token,
+        "GET",
+        `/unified/${own.unified}/messages`,
+      );
+      expect(await unified.text()).toContain(own.message);
+    }
+  });
+
+  it("一覧や検索の応答に、他の利用者のデータが混ざらない", async () => {
+    // B が、A のフォルダを集める統合フォルダを作ってみる。
+    const created = await request(tokenB, "POST", "/unified", {
+      name: "collect",
+      scope: { all: false, roles: [], mailboxIds: [a.inbox, a.folder] },
+      filters,
+    });
+    expect(created.status).toBe(201);
+    const collected = (
+      (await created.json()) as {
+        folder: { id: string; scope: { mailboxIds: string[] } };
+      }
+    ).folder;
+    // 他の利用者のフォルダは、保存の時点で除かれる。
+    expect(collected.scope.mailboxIds).toEqual([]);
+    const collect = collected.id;
+    const updated = await request(tokenB, "PATCH", `/unified/${collect}`, {
+      scope: { all: false, roles: [], mailboxIds: [a.inbox, b.inbox] },
+    });
+    expect(
+      (
+        (await updated.json()) as {
+          folder: { scope: { mailboxIds: string[] } };
+        }
+      ).folder.scope.mailboxIds,
+    ).toEqual([b.inbox]);
+
+    const paths = [
+      "/me",
+      "/accounts",
+      `/accounts/${a.account}/mailboxes`,
+      "/mailboxes",
+      "/messages",
+      `/messages?accountId=${a.account}`,
+      `/messages?mailboxId=${a.inbox}`,
+      `/messages?accountId=${b.account}&mailboxId=${a.inbox}`,
+      "/messages/search?q=shared-word",
+      "/messages/search?q=snippet",
+      `/messages/search?q=shared-word&accountId=${a.account}`,
+      `/messages/search?q=shared-word&scope=folder&mailboxId=${a.inbox}`,
+      `/messages/search?q=shared-word&scope=folder&unifiedId=${collect}`,
+      "/messages/outgoing",
+      "/messages/failures",
+      "/drafts",
+      "/unified",
+      `/unified/${collect}/messages`,
+      "/signatures",
+      "/settings",
+      "/security",
+      "/sync?since=0",
+      "/push/config",
+    ];
+    for (const path of paths) {
+      const response = await request(tokenB, "GET", path);
+      expect(response.status, path).toBe(200);
+      const text = await response.text();
+      for (const secret of secretsOfA()) {
+        expect(text, `${path} に ${secret} が含まれている`).not.toContain(
+          secret,
+        );
+      }
+    }
+    await request(tokenB, "DELETE", `/unified/${collect}`);
+  });
+
+  it("他の利用者の ID を指定した操作は、見つからない扱いになり、何も変えない", async () => {
+    const before = await snapshot(db, a.userId);
+    const id = () => randomUUID();
+    const draftBody = (accountId: string) => ({
+      accountId,
+      to: emptyRecipients,
+      cc: emptyRecipients,
+      bcc: emptyRecipients,
+      subject: "overwritten",
+      baseRevision: 1,
+    });
+    const action = (extra: Record<string, unknown>) => ({
+      idempotencyKey: id(),
+      messageIds: [a.message],
+      ...extra,
+    });
+    const overrides = { role: null, displayName: "x", icon: null, color: null };
+
+    /** [メソッド, パス, 本文, 期待する状態コード] */
+    const calls: [string, string, unknown, number][] = [
+      // メールアカウント
+      ["PATCH", `/accounts/${a.account}`, { displayName: "x" }, 404],
+      ["PATCH", `/accounts/${a.account}`, { signatureHtml: "<p>x</p>" }, 404],
+      ["DELETE", `/accounts/${a.account}`, undefined, 404],
+      ["POST", `/accounts/${a.account}/sync`, undefined, 404],
+      ["PUT", "/accounts/order", { accountIds: [a.account] }, 404],
+      ["PUT", "/accounts/order", { accountIds: [b.account, a.account] }, 404],
+      // フォルダ
+      [
+        "POST",
+        "/mailboxes",
+        { accountId: a.account, parentId: null, name: "x" },
+        404,
+      ],
+      [
+        "POST",
+        "/mailboxes",
+        { accountId: b.account, parentId: a.folder, name: "x" },
+        404,
+      ],
+      ["PATCH", `/mailboxes/${a.folder}`, { name: "x" }, 404],
+      ["DELETE", `/mailboxes/${a.folder}`, undefined, 404],
+      ["PUT", `/mailboxes/${a.folder}/overrides`, overrides, 404],
+      ["PUT", "/mailboxes/order", { mailboxIds: [a.inbox, a.folder] }, 404],
+      ["PUT", "/mailboxes/order", { mailboxIds: [b.inbox, a.inbox] }, 404],
+      ["POST", "/mailboxes/order/reset", { mailboxIds: [a.inbox] }, 204],
+      ["POST", `/mailboxes/${a.inbox}/read`, undefined, 404],
+      // メール
+      ["GET", `/messages/${a.message}`, undefined, 404],
+      ["GET", `/messages/${a.message}/thread`, undefined, 404],
+      [
+        "GET",
+        `/messages/${a.message}/attachments/${a.attachment}`,
+        undefined,
+        404,
+      ],
+      [
+        "GET",
+        `/messages/${b.message}/attachments/${a.attachment}`,
+        undefined,
+        404,
+      ],
+      [
+        "POST",
+        "/messages/actions",
+        action({ action: "set_flags", seen: true }),
+        200,
+      ],
+      [
+        "POST",
+        "/messages/actions",
+        action({ action: "set_flags", flagged: true }),
+        200,
+      ],
+      [
+        "POST",
+        "/messages/actions",
+        action({ action: "move", destination: "trash" }),
+        200,
+      ],
+      [
+        "POST",
+        "/messages/actions",
+        action({ action: "move", mailboxId: a.folder }),
+        200,
+      ],
+      ["POST", "/messages/actions", action({ action: "delete" }), 200],
+      [
+        "POST",
+        "/messages/prefetch",
+        { ids: [a.message], reason: "hover" },
+        204,
+      ],
+      // 自分のメールを、他の利用者のフォルダへは移せない。
+      [
+        "POST",
+        "/messages/actions",
+        {
+          idempotencyKey: id(),
+          messageIds: [b.message],
+          action: "move",
+          mailboxId: a.folder,
+        },
+        400,
+      ],
+      // 添付ファイル
+      [
+        "POST",
+        "/attachments/forward",
+        { messageId: a.message, attachmentIds: [a.attachment] },
+        404,
+      ],
+      // 送信
+      [
+        "POST",
+        "/messages/send",
+        {
+          idempotencyKey: id(),
+          accountId: a.account,
+          to: [{ address: "someone@example.com" }],
+          text: "x",
+        },
+        404,
+      ],
+      ["DELETE", `/messages/outgoing/${a.outgoing}`, undefined, 404],
+      // 反映に失敗した操作
+      ["POST", `/messages/failures/${a.failure}/retry`, undefined, 404],
+      ["DELETE", `/messages/failures/${a.failure}`, undefined, 404],
+      // 下書き
+      ["PUT", `/drafts/${a.draft}`, draftBody(b.account), 404],
+      ["PUT", `/drafts/${a.draft}`, draftBody(a.account), 404],
+      [
+        "PUT",
+        `/drafts/${id()}`,
+        { ...draftBody(a.account), baseRevision: null },
+        404,
+      ],
+      ["DELETE", `/drafts/${a.draft}`, undefined, 204],
+      // 統合フォルダ
+      ["GET", `/unified/${a.unified}/messages`, undefined, 404],
+      ["PATCH", `/unified/${a.unified}`, { name: "x" }, 404],
+      ["DELETE", `/unified/${a.unified}`, undefined, 404],
+      [
+        "GET",
+        `/messages/search?q=shared-word&scope=folder&unifiedId=${a.unified}`,
+        undefined,
+        404,
+      ],
+      // 署名
+      [
+        "PUT",
+        "/signatures/thread",
+        {
+          accountId: a.account,
+          threadKey: "alice-private-thread",
+          signatureHtml: "x",
+        },
+        404,
+      ],
+      ["DELETE", `/signatures/${a.signature}`, undefined, 404],
+      // 通知の送り先、表示中のフォルダ
+      ["DELETE", "/push/subscriptions", { endpoint: a.endpoint }, 204],
+      ["POST", "/focus", { accountId: a.account, mailboxId: a.inbox }, 204],
+    ];
+    for (const [method, path, body, status] of calls) {
+      const response = await request(tokenB, method, path, body);
+      const text = await response.text();
+      const label = `${method} ${path} ${JSON.stringify(body ?? null)}`;
+      expect(response.status, `${label}: ${text}`).toBe(status);
+      for (const secret of [a.mark, a.userId]) {
+        expect(text, label).not.toContain(secret);
+      }
+      if (path === "/messages/actions" && status === 200) {
+        expect(JSON.parse(text), label).toEqual({ messageIds: [] });
+      }
+    }
+    expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  it("返信元に他の利用者のメールを指定しても、その内容は使われない", async () => {
+    const key = randomUUID();
+    const response = await request(tokenB, "POST", "/messages/send", {
+      idempotencyKey: key,
+      accountId: b.account,
+      to: [{ address: "someone@example.com" }],
+      text: "x",
+      mode: "reply",
+      sourceMessageId: a.message,
+    });
+    expect(response.status).toBe(202);
+    const { rows } = await db.execute(
+      sql`select payload::text as payload from outbox where idempotency_key = ${key}`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]?.payload)).not.toContain(a.mark);
+    await db.execute(sql`delete from outbox where idempotency_key = ${key}`);
+  });
+
+  it("他の利用者が置いた添付ファイルは、送信にも下書きにも使えない", async () => {
+    const before = await snapshot(db, a.userId);
+    const uploaded = await app.request("/v1/attachments", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${tokenA}`,
+        origin: ORIGIN,
+        "content-type": "text/plain",
+        "x-filename": "alice-private.txt",
+      },
+      body: "alice-private-file",
+    });
+    expect(uploaded.status).toBe(201);
+    const fileId = ((await uploaded.json()) as { attachment: { id: string } })
+      .attachment.id;
+
+    const send = await request(tokenB, "POST", "/messages/send", {
+      idempotencyKey: randomUUID(),
+      accountId: b.account,
+      to: [{ address: "someone@example.com" }],
+      text: "x",
+      attachmentIds: [fileId],
+    });
+    expect(send.status).toBe(400);
+    const draft = await request(tokenB, "PUT", `/drafts/${randomUUID()}`, {
+      accountId: b.account,
+      to: emptyRecipients,
+      cc: emptyRecipients,
+      bcc: emptyRecipients,
+      attachmentIds: [fileId],
+      baseRevision: null,
+    });
+    expect(draft.status).toBe(400);
+    // B が消そうとしても、A のファイルは残る。
+    expect(
+      (await request(tokenB, "DELETE", `/attachments/${fileId}`)).status,
+    ).toBe(204);
+    const own = await request(tokenA, "PUT", `/drafts/${randomUUID()}`, {
+      accountId: a.account,
+      to: emptyRecipients,
+      cc: emptyRecipients,
+      bcc: emptyRecipients,
+      attachmentIds: [fileId],
+      baseRevision: null,
+    });
+    expect(own.status).toBe(201);
+    const ownDraft = ((await own.json()) as { draft: { id: string } }).draft.id;
+    expect(
+      (await request(tokenA, "DELETE", `/drafts/${ownDraft}`)).status,
+    ).toBe(204);
+    await db.execute(
+      sql`delete from changes where user_id = ${a.userId} and entity = 'account'`,
+    );
+    expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  it("通知のボタンの合言葉は、他の利用者のメールには通用しない", async () => {
+    const before = await snapshot(db, a.userId);
+    const response = await app.request(`/v1${NOTIFICATION_ACTION_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messageId: a.message,
+        action: "delete",
+        token: signNotificationAction(encryptionKey, b.userId, a.message),
+      }),
+    });
+    expect(response.status).toBe(403);
+    expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  it("設定や並び順の保存は、自分の分だけに反映される", async () => {
+    const before = await snapshot(db, a.userId);
+    const calls: [string, string, unknown][] = [
+      ["PUT", "/unified/layout", { order: [a.unified, "inbox"], hidden: [] }],
+      [
+        "PUT",
+        "/unified/builtins/inbox",
+        { name: "x", icon: null, color: null },
+      ],
+      [
+        "PUT",
+        "/signatures/contact",
+        { address: "alice-private-contact@example.com", signatureHtml: "x" },
+      ],
+      [
+        "POST",
+        "/push/subscriptions",
+        {
+          endpoint: "https://fcm.googleapis.com/fcm/send/bob-second",
+          keys: { p256dh: "key", auth: "auth" },
+        },
+      ],
+      ["POST", `/mailboxes/${b.inbox}/read`, undefined],
+    ];
+    for (const [method, path, body] of calls) {
+      const response = await request(tokenB, method, path, body);
+      expect(response.ok, `${method} ${path}: ${await response.text()}`).toBe(
+        true,
+      );
+    }
+    expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+});
