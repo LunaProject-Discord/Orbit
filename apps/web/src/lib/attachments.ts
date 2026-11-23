@@ -186,6 +186,41 @@ export function replaceCidReferences(
   });
 }
 
+const CID_VALUE = /cid:([^"'\s)>]+)/gi;
+
+/**
+ * 表示中の文書に残っている cid: の参照を、取得済みの画像の URL (data:) に置き換える。
+ * 文書を読み込み直さずに、後から取得できた画像を差し込むために使う。置き換えたら true。
+ */
+export function patchCidReferences(
+  doc: Document,
+  urls: ReadonlyMap<string, string>,
+): boolean {
+  if (urls.size === 0) return false;
+  const replace = (value: string) =>
+    value.replace(CID_VALUE, (match, id: string) => {
+      return urls.get(decodeCid(id)) ?? match;
+    });
+  let changed = false;
+  for (const element of doc.querySelectorAll("*")) {
+    for (const attribute of element.attributes) {
+      if (!/cid:/i.test(attribute.value)) continue;
+      const next = replace(attribute.value);
+      if (next === attribute.value) continue;
+      attribute.value = next;
+      changed = true;
+    }
+    if (element.localName === "style" && element.textContent) {
+      const next = replace(element.textContent);
+      if (next !== element.textContent) {
+        element.textContent = next;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 /** 添付ファイルを取得できなかった理由の説明。code は API が返すエラーコード。 */
 export function attachmentErrorMessage(code: string | null): string {
   switch (code) {
