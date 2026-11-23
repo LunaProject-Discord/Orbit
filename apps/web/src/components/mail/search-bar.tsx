@@ -19,7 +19,7 @@ type Props = {
   onChange: (value: SearchParams) => void;
   /** 検索欄に出す案内 (「すべてのアカウントから検索」など)。 */
   placeholder: string;
-  /** 表示中の一覧の名前。探す範囲の切り替えに使う。 */
+  /** 表示中の一覧の名前。検索する範囲の切り替えに使う。 */
   folderLabel: string;
   className?: string;
 };
@@ -76,7 +76,7 @@ export function SearchBar({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="入力を消す"
+              aria-label="入力をクリア"
               onClick={() => {
                 onChange({ ...value, text: "" });
                 document.getElementById(SEARCH_INPUT_ID)?.focus();
@@ -194,7 +194,7 @@ export function SearchBar({
               onClick={() => onChange({ ...value, filters: emptyFilters })}
               className="ml-auto"
             >
-              条件を消す
+              条件をクリア
             </Button>
           </div>
         </div>
@@ -202,7 +202,7 @@ export function SearchBar({
 
       {active && (
         <fieldset className="flex items-center gap-1.5">
-          <legend className="sr-only">探す範囲</legend>
+          <legend className="sr-only">検索する範囲</legend>
           {(
             [
               ["all", "すべてのフォルダ"],

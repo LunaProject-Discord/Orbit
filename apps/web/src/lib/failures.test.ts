@@ -56,7 +56,7 @@ describe("failureLabel", () => {
     expect(flags({ seen: false })).toBe("未読への変更");
     expect(flags({ flagged: true })).toBe("スター");
     expect(flags({ flagged: false })).toBe("スターの解除");
-    expect(flags({ answered: true })).toBe("返信済みの印");
+    expect(flags({ answered: true })).toBe("返信済みのマーク");
     expect(flags({ seen: true, flagged: true })).toBe("既読やスターの変更");
   });
 

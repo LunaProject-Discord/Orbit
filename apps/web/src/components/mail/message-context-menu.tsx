@@ -97,7 +97,7 @@ export function MessageMenuItems({
           onClick={() => act({ action: "move", mailboxId: junk.id })}
         >
           <OctagonAlertIcon />
-          迷惑メールとして扱う
+          迷惑メールにする
           <ContextMenuShortcut>{shortcutLabels.junk}</ContextMenuShortcut>
         </ContextMenuItem>
       )}

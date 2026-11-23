@@ -39,7 +39,7 @@ export function failureLabel(
       if (failure.flagged !== null && failure.seen === null) {
         return failure.flagged ? "スター" : "スターの解除";
       }
-      if (failure.answered !== null) return "返信済みの印";
+      if (failure.answered !== null) return "返信済みのマーク";
       return "既読やスターの変更";
   }
 }

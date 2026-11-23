@@ -22,7 +22,7 @@ export const SWIPE_ACTIONS: readonly (readonly [SwipeAction, string])[] = [
   ["star", "スターを付ける / 外す"],
   ["archive", "アーカイブ"],
   ["delete", "削除"],
-  ["junk", "迷惑メールとして扱う"],
+  ["junk", "迷惑メールにする"],
   ["move", "フォルダを選んで移動"],
 ];
 

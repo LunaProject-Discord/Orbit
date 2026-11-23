@@ -52,7 +52,7 @@ function twoFactorMessageOf(error: unknown): {
       case "INVALID_TWO_FACTOR_COOKIE":
         return {
           message:
-            "時間が経ったか、間違いが続いたため、最初からやり直してください。",
+            "時間が経過したか、入力の間違いが続きました。最初からやり直してください。",
           restart: true,
         };
     }
@@ -82,13 +82,13 @@ function noticeOf(search: string): { text: string; error: boolean } | null {
   const error = params.get("error");
   if (error === "TOKEN_EXPIRED") {
     return {
-      text: "リンクの有効期限が切れています。もう一度申し込んでください。",
+      text: "リンクの有効期限が切れています。もう一度やり直してください。",
       error: true,
     };
   }
   if (error) {
     return {
-      text: "リンクが正しくないか、すでに使われています。もう一度申し込んでください。",
+      text: "リンクが正しくないか、すでに使われています。もう一度やり直してください。",
       error: true,
     };
   }
@@ -100,7 +100,7 @@ function noticeOf(search: string): { text: string; error: boolean } | null {
       };
     case "registered":
       return {
-        text: "登録しました。決めたメールアドレスとパスワードでログインしてください。",
+        text: "登録が完了しました。登録したメールアドレスとパスワードでログインしてください。",
         error: false,
       };
     case "password-reset":
@@ -244,7 +244,7 @@ export default function LoginPage() {
               onCheckedChange={(checked) => setTrustDevice(checked === true)}
             />
             <Label htmlFor={trustId} className="font-normal">
-              この端末では 30 日間コードを尋ねない
+              この端末では 30 日間コードの入力を省略する
             </Label>
           </div>
           {error && (

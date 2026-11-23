@@ -137,7 +137,7 @@ export function DatePicker({
               setOpen(false);
             }}
           >
-            消す
+            クリア
           </Button>
           <Button
             type="button"

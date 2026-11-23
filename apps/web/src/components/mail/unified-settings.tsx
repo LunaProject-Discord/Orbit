@@ -74,7 +74,7 @@ export function UnifiedSettings({
         <p className="text-muted-foreground text-sm">
           サイドバーの上部に並ぶ項目の順番と、表示するかどうかを選べます。統合フォルダは、複数のアカウントやフォルダのメールを
           1
-          つの一覧にまとめたものです。初めからある項目も、名前・アイコン・色を変えられます。どの端末でも同じ内容になります。
+          つの一覧にまとめたものです。最初からある項目も、名前・アイコン・色を変えられます。
         </p>
       </div>
       <ul className="flex flex-col divide-y rounded-lg border">

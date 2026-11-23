@@ -53,7 +53,7 @@ export default function ServerPage() {
     const url = normalizeServerUrl(value);
     if (!url) {
       setError(
-        "アドレスの形が正しくありません。mail.example.com のように入力してください。",
+        "アドレスの形式が正しくありません。mail.example.com のように入力してください。",
       );
       return;
     }
@@ -64,7 +64,7 @@ export default function ServerPage() {
       setError(
         result.reason === "unreachable"
           ? "サーバーに接続できませんでした。アドレスとネットワークの状態を確認してください。"
-          : "このアドレスでは Mail のサーバーが動いていません。アドレスを確認してください。",
+          : "このアドレスでは Orbit のサーバーが動いていません。アドレスを確認してください。",
       );
       return;
     }

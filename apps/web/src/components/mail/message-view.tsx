@@ -1082,7 +1082,8 @@ function MessageToolbar({
                   variant="ghost"
                   size="icon-sm"
                   aria-label="その他の操作"
-                  className="sm:hidden"
+                  // スマホ幅では、迷惑メールと削除の後ろ (右端) に置く。
+                  className="order-last sm:hidden"
                 />
               }
             >
@@ -1132,7 +1133,7 @@ function MessageToolbar({
         {(junk || notJunk || trash || inTrash) && <ToolbarSeparator />}
         {junk && (
           <ToolbarButton
-            label="迷惑メールとして扱う"
+            label="迷惑メールにする"
             shortcut={shortcutLabels.junk}
             onClick={() => act({ action: "move", mailboxId: junk.id })}
           >
@@ -1305,9 +1306,13 @@ function BodyFrame({
       root.style.zoom = "";
       const natural = root.scrollWidth;
       const available = root.clientWidth;
+      // はみ出した幅には右側の余白 (body の margin) が含まれないので、縮めるときは足して測る。
+      // 足さないと、縮めた本文の右端が枠の端に貼り付く。
+      const gutter = Number.parseFloat(view.getComputedStyle(body).marginRight);
+      const wanted = natural + (Number.isFinite(gutter) ? gutter : 0);
       const zoom =
         natural > available + 1 && available > 0
-          ? Math.max(MIN_BODY_ZOOM, available / natural)
+          ? Math.max(MIN_BODY_ZOOM, available / wanted)
           : 1;
       const next = zoom < 1 ? String(Math.floor(zoom * 1000) / 1000) : "";
       root.style.zoom = next;
@@ -1628,12 +1633,12 @@ function MessageContent({
     </dl>
   );
   const toggle = (
-    <Hint label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}>
+    <Hint label={collapsed ? "見出しを展開" : "見出しを折りたたむ"}>
       <Button
         variant="ghost"
         size="icon-xs"
         aria-expanded={!collapsed}
-        aria-label={collapsed ? "見出しを広げる" : "見出しを折りたたむ"}
+        aria-label={collapsed ? "見出しを展開" : "見出しを折りたたむ"}
         onClick={() =>
           updatePreferences({
             messageHeader: collapsed ? "expanded" : "collapsed",

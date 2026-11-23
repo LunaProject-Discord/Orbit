@@ -16,7 +16,7 @@ type Props = {
   onEditQueued?: (item: QueuedSend) => void;
   /** 預かっているメールの送信を取り消す。 */
   onRemoveQueued?: (item: QueuedSend) => void;
-  /** 送信できなかったメールを、編集して送り直す。 */
+  /** 送信できなかったメールを、編集して再送信。 */
   onEdit: (mail: OutgoingMail) => void;
   /** 送信待ちなら取り消し、失敗していれば一覧から消す。 */
   onRemove: (mail: OutgoingMail) => void;
@@ -46,7 +46,7 @@ function queuedErrorLabel(code: string | null): string {
     case "too_many_recipients":
       return "宛先を確認してください。";
     default:
-      return "サーバーに受け付けられませんでした。内容を確認して、送り直してください。";
+      return "サーバーに拒否されました。内容を確認して、もう一度送信してください。";
   }
 }
 
@@ -132,7 +132,7 @@ export function OutgoingList({
                 size="xs"
                 onClick={() => onEditQueued?.(item)}
               >
-                {rejected ? "編集して送り直す" : "編集する"}
+                {rejected ? "編集して再送信" : "編集する"}
               </Button>
               <Button
                 variant="ghost"
@@ -178,7 +178,7 @@ export function OutgoingList({
                   {failed
                     ? "送信できませんでした"
                     : waiting
-                      ? "送信をやり直しています"
+                      ? "再送信しています"
                       : "送信中…"}
                 </p>
                 <p className="truncate text-muted-foreground">
@@ -199,7 +199,7 @@ export function OutgoingList({
                     size="xs"
                     onClick={() => onEdit(mail)}
                   >
-                    編集して送り直す
+                    編集して再送信
                   </Button>
                 )}
                 <Button

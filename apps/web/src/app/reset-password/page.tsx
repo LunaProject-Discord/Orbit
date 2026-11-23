@@ -21,7 +21,7 @@ function messageOf(error: unknown): string {
   }
   if (error instanceof ApiError) {
     if (error.code === "INVALID_TOKEN") {
-      return "リンクの有効期限が切れているか、すでに使われています。もう一度、再設定を申し込んでください。";
+      return "リンクの有効期限が切れているか、すでに使われています。もう一度、再設定をやり直してください。";
     }
     if (error.code === "PASSWORD_TOO_SHORT") {
       return `パスワードは ${MIN_PASSWORD_LENGTH} 文字以上にしてください。`;
@@ -94,14 +94,14 @@ export default function ResetPasswordPage() {
     return (
       <AuthShell lead="このリンクは使えません。">
         <p className="mt-8 text-sm leading-relaxed">
-          メールに書かれたリンクを、もう一度開いてください。うまくいかないときは、再設定を申し込み直してください。
+          メールに書かれたリンクを、もう一度開いてください。うまくいかないときは、再設定をやり直してください。
         </p>
         <p className="mt-6 text-center text-sm">
           <Link
             href="/forgot-password"
             className="font-medium underline underline-offset-4"
           >
-            再設定を申し込む
+            再設定をやり直す
           </Link>
         </p>
       </AuthShell>
@@ -110,7 +110,7 @@ export default function ResetPasswordPage() {
 
   return (
     <AuthShell
-      lead={`新しいパスワードを設定してください (${MIN_PASSWORD_LENGTH} 文字以上)。設定すると、ログイン中のすべての端末がログアウトになります。`}
+      lead={`新しいパスワードを設定してください (${MIN_PASSWORD_LENGTH} 文字以上)。設定すると、ログイン中のすべての端末からログアウトされます。`}
     >
       <form
         onSubmit={handleSubmit}

@@ -27,9 +27,13 @@ function formatsFor(hour12: boolean) {
       minute: "2-digit",
       hour12,
     }),
+    // 時刻の桁は、一覧 (time) と揃える (24 時間制では 00:31 のように 2 桁)。
     full: new Intl.DateTimeFormat("ja-JP", {
-      dateStyle: "long",
-      timeStyle: "short",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: hour12 ? "numeric" : "2-digit",
+      minute: "2-digit",
       hour12,
     }),
   };

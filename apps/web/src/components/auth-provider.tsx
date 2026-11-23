@@ -263,7 +263,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         showNotice("メールアドレスを変更しました。", "info");
       } else if (params.get("error")) {
         showNotice(
-          "リンクの有効期限が切れているか、すでに使われています。もう一度申し込んでください。",
+          "リンクの有効期限が切れているか、すでに使われています。もう一度やり直してください。",
         );
       }
       // Next.js のページは "/" だけなので、それ以外のパスへはブラウザーに移らせる

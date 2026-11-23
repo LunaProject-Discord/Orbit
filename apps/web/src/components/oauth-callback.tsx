@@ -127,7 +127,7 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
           のログインが済みました。自動で戻らないときは、下のボタンを押してください。
         </p>
         <a href={appUrl} className={buttonVariants()}>
-          Orbit Mail に戻る
+          Orbit に戻る
         </a>
       </main>
     );

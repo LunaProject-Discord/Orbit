@@ -74,7 +74,7 @@ import { isBundledApp } from "@/lib/server-url";
 function messageOf(error: unknown): string | null {
   if (error instanceof PasskeyCancelled) return null;
   if (error instanceof PasskeyAlreadyRegistered) {
-    return "この端末 (または鍵) には、もうこのアカウントのパスキーがあります。";
+    return "この端末 (またはセキュリティキー) には、すでにこのアカウントのパスキーが登録されています。";
   }
   if (error instanceof NetworkError) {
     return "サーバーに接続できませんでした。ネットワークの状態を確認してください。";
@@ -89,13 +89,13 @@ function messageOf(error: unknown): string | null {
       case "PASSWORD_TOO_LONG":
         return "パスワードが長すぎます。";
       case "INVALID_CODE":
-        return "コードが正しくありません。認証アプリに表示されている、いまのコードを入力してください。";
+        return "コードが正しくありません。認証アプリに表示されている、現在のコードを入力してください。";
       case "same_email":
-        return "いまのメールアドレスと同じです。";
+        return "現在のメールアドレスと同じです。";
       case "mail_disabled":
-        return "このサーバーはメールを送れないため、変更できません。";
+        return "このサーバーはメールを送信できないため、変更できません。";
       case "SESSION_NOT_FRESH":
-        return "安全のため、ログインしてから 1 日以上経った端末では登録できません。いちどログアウトして、ログインし直してからお試しください。";
+        return "安全のため、ログインしてから 1 日以上経った端末では登録できません。一度ログアウトし、ログインし直してからお試しください。";
       case "SESSION_EXPIRED":
       case "UNAUTHORIZED":
         return "ログインの有効期限が切れました。ログインし直してください。";
@@ -104,7 +104,7 @@ function messageOf(error: unknown): string | null {
       return "試行回数が多すぎます。しばらく待ってからもう一度お試しください。";
     }
   }
-  return "うまくいきませんでした。時間をおいてもう一度お試しください。";
+  return "処理できませんでした。時間をおいてもう一度お試しください。";
 }
 
 type Props = {
@@ -169,7 +169,7 @@ export function SecuritySettings({ user }: Props) {
     <section className="flex flex-col gap-3">
       {loadError && (
         <p role="alert" className="text-destructive text-sm">
-          いまの設定を読み込めませんでした。{" "}
+          現在の設定を読み込めませんでした。{" "}
           <button
             type="button"
             className="underline underline-offset-4"
@@ -189,7 +189,7 @@ export function SecuritySettings({ user }: Props) {
           label="メールアドレス"
           description={
             status && !mail
-              ? `${user.email} (このサーバーはメールを送れないため、変更できません)`
+              ? `${user.email} (このサーバーはメールを送信できないため、変更できません)`
               : user.email
           }
         >
@@ -232,7 +232,7 @@ export function SecuritySettings({ user }: Props) {
                 size="sm"
                 onClick={() => setDialog("backup-codes")}
               >
-                バックアップコードを作り直す
+                バックアップコードを再発行
               </Button>
               <Button
                 variant="outline"
@@ -262,7 +262,7 @@ export function SecuritySettings({ user }: Props) {
                   ? bundled
                     ? "指紋・顔・PIN などでログインできます。このアプリからは登録もログインもできません。ブラウザーで Orbit を開いて使ってください。"
                     : "このブラウザーはパスキーに対応していません。"
-                  : "パスワードの代わりに、端末の指紋・顔・PIN やセキュリティキーでログインします。パスキーでのログインでは、2 段階認証のコードは尋ねません。"}
+                  : "パスワードの代わりに、端末の指紋・顔・PIN やセキュリティキーでログインします。パスキーでログインするときは、2 段階認証のコードは求められません。"}
               </p>
             </div>
             <Button
@@ -376,7 +376,7 @@ function passkeyDetail(passkey: Passkey): string {
   parts.push(
     passkey.deviceType === "multiDevice"
       ? "端末の間で同期されるパスキー"
-      : "この端末 (または鍵) だけのパスキー",
+      : "この端末 (またはセキュリティキー) だけのパスキー",
   );
   return parts.join(" ・ ");
 }
@@ -524,7 +524,7 @@ function NameForm(props: {
         <DialogTitle>名前を変更</DialogTitle>
         <DialogDescription>
           Orbit
-          の画面に出る、あなたの名前です。ログインに使うメールアドレスや、メールの差出人の名前
+          の画面に表示される、あなたの名前です。ログインに使うメールアドレスや、メールの差出人の名前
           (メールアカウントの表示名) は変わりません。
         </DialogDescription>
       </DialogHeader>
@@ -613,7 +613,7 @@ function EmailForm(props: {
               {sentTo}
             </span>{" "}
             に届いたメールのリンクを開くと、変更が完了します (有効期限は 1
-            時間)。リンクを開くまでは、いまのメールアドレス でログインします。
+            時間)。リンクを開くまでは、現在のメールアドレス でログインします。
           </DialogDescription>
         </DialogHeader>
         <p className="text-muted-foreground text-sm">
@@ -635,7 +635,7 @@ function EmailForm(props: {
         </DialogDescription>
       </DialogHeader>
       <p className="text-sm">
-        いまのメールアドレス:{" "}
+        現在のメールアドレス:{" "}
         <span className="break-all font-medium">{props.currentEmail}</span>
       </p>
       <Field label="新しいメールアドレス">
@@ -651,7 +651,7 @@ function EmailForm(props: {
           />
         )}
       </Field>
-      <Field label="いまのパスワード">
+      <Field label="現在のパスワード">
         {(id) => (
           <Input
             id={id}
@@ -719,7 +719,7 @@ function PasswordForm(props: {
       await changePassword(current, next, revoke);
       showNotice(
         revoke
-          ? "パスワードを変更し、ほかの端末をログアウトしました。"
+          ? "パスワードを変更し、ほかの端末からログアウトしました。"
           : "パスワードを変更しました。",
         "info",
       );
@@ -728,7 +728,7 @@ function PasswordForm(props: {
     } catch (cause) {
       setError(
         cause instanceof ApiError && cause.code === "INVALID_PASSWORD"
-          ? "いまのパスワードが正しくありません。"
+          ? "現在のパスワードが正しくありません。"
           : messageOf(cause),
       );
       setBusy(false);
@@ -741,10 +741,10 @@ function PasswordForm(props: {
       <DialogHeader>
         <DialogTitle>パスワードを変更</DialogTitle>
         <DialogDescription>
-          いまのパスワードを確かめてから、新しいパスワードに変更します。
+          現在のパスワードを確認したうえで、新しいパスワードに変更します。
         </DialogDescription>
       </DialogHeader>
-      <Field label="いまのパスワード">
+      <Field label="現在のパスワード">
         {(id) => (
           <Input
             id={id}
@@ -793,7 +793,7 @@ function PasswordForm(props: {
           onCheckedChange={(checked) => setRevoke(checked === true)}
         />
         <Label htmlFor={revokeId} className="font-normal">
-          ほかの端末をログアウトする
+          ほかの端末からログアウトする
         </Label>
       </div>
       <ErrorText>{error}</ErrorText>
@@ -851,7 +851,7 @@ function BackupCodes({ codes }: { codes: string[] }) {
 }
 
 const BACKUP_CODES_NOTE =
-  "認証アプリを使えないとき (スマホの紛失や機種変更など) に、コードの代わりに使えます。1 つにつき 1 回だけ使えます。パスワード管理アプリなど、安全な場所に保存してください。この画面を閉じると、もう表示できません。";
+  "認証アプリを使えないとき (スマホの紛失や機種変更など) に、コードの代わりに使えます。1 つにつき 1 回だけ使えます。パスワード管理アプリなど、安全な場所に保存してください。この画面を閉じると、二度と表示できません。";
 
 function TwoFactorSetupDialog(props: {
   open: boolean;
@@ -928,10 +928,10 @@ function TwoFactorSetupForm(props: {
           <DialogTitle>2 段階認証を設定</DialogTitle>
           <DialogDescription>
             認証アプリ (Google Authenticator、Microsoft Authenticator、1Password
-            など) を用意してください。まず、いまのパスワードを確かめます。
+            など) を用意してください。まず、現在のパスワードを確認します。
           </DialogDescription>
         </DialogHeader>
-        <Field label="いまのパスワード">
+        <Field label="現在のパスワード">
           {(id) => (
             <Input
               id={id}
@@ -979,7 +979,7 @@ function TwoFactorSetupForm(props: {
           <DialogTitle>認証アプリに登録</DialogTitle>
           <DialogDescription>
             認証アプリで下の QR コードを読み取り、アプリに表示された 6
-            桁のコードを入力してください。コードを確かめるまで、2
+            桁のコードを入力してください。コードを確認するまで、2
             段階認証は有効になりません。
           </DialogDescription>
         </DialogHeader>
@@ -993,7 +993,7 @@ function TwoFactorSetupForm(props: {
         )}
         {secret && (
           <p className="text-muted-foreground text-xs">
-            読み取れないときは、この鍵を認証アプリに入力してください:{" "}
+            読み取れないときは、このキーを認証アプリに入力してください:{" "}
             <span className="select-all break-all font-mono text-foreground">
               {secret}
             </span>
@@ -1101,7 +1101,7 @@ function PasswordConfirmForm(props: {
         <DialogTitle>{props.title}</DialogTitle>
         <DialogDescription>{props.description}</DialogDescription>
       </DialogHeader>
-      <Field label="いまのパスワード">
+      <Field label="現在のパスワード">
         {(id) => (
           <Input
             id={id}
@@ -1156,7 +1156,7 @@ function BackupCodesForm(props: {
         <DialogHeader>
           <DialogTitle>新しいバックアップコード</DialogTitle>
           <DialogDescription>
-            前のコードは使えなくなりました。{BACKUP_CODES_NOTE}
+            以前のコードは使えなくなりました。{BACKUP_CODES_NOTE}
           </DialogDescription>
         </DialogHeader>
         <BackupCodes codes={codes} />
@@ -1168,9 +1168,9 @@ function BackupCodesForm(props: {
   }
   return (
     <PasswordConfirmForm
-      title="バックアップコードを作り直しますか？"
-      description="新しいコードを 10 個作ります。前のコードは、すべて使えなくなります。"
-      actionLabel="作り直す"
+      title="バックアップコードを再発行しますか？"
+      description="新しいコードを 10 個発行します。以前のコードは、すべて使えなくなります。"
+      actionLabel="再発行する"
       // 作り直したコードを見せるので、確認のあとも閉じない。
       onClose={() => {}}
       onConfirm={async (password) => {
@@ -1249,9 +1249,9 @@ function PasskeyAddForm(props: {
       <DialogHeader>
         <DialogTitle>パスキーを追加</DialogTitle>
         <DialogDescription>
-          「追加」を押すと、ブラウザーや端末の画面が出ます。指紋・顔・PIN
-          などで確かめると、この端末 (またはセキュリティキー)
-          にパスキーが作られます。
+          「追加」を押すと、ブラウザーや端末の確認画面が表示されます。指紋・顔・PIN
+          などで本人確認をすると、この端末 (またはセキュリティキー)
+          にパスキーが作成されます。
         </DialogDescription>
       </DialogHeader>
       <Field
@@ -1280,7 +1280,7 @@ function PasskeyAddForm(props: {
           キャンセル
         </Button>
         <Button type="submit" disabled={busy}>
-          {busy ? "端末の画面で確かめてください…" : "追加"}
+          {busy ? "端末の画面で確認してください…" : "追加"}
         </Button>
       </DialogFooter>
     </form>
@@ -1347,7 +1347,7 @@ function PasskeyRenameForm(props: {
       <DialogHeader>
         <DialogTitle>パスキーの名前を変更</DialogTitle>
         <DialogDescription>
-          この画面での呼び名だけが変わります。端末に保存されたパスキーは変わりません。
+          この画面に表示される名前だけが変わります。端末に保存されたパスキーは変わりません。
         </DialogDescription>
       </DialogHeader>
       <Field label="名前">
