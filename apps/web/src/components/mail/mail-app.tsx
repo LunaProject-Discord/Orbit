@@ -128,6 +128,7 @@ import {
 } from "@/lib/compose";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
+import { keepRows } from "@/lib/kept-rows";
 import {
   mailboxLabel,
   refreshMailboxes,
@@ -442,6 +443,11 @@ export function MailApp({ user }: { user: User }) {
 
   /** 一覧の取得ごとに増やし、古い応答で新しい表示を上書きしないようにする。 */
   const listRequest = useRef(0);
+  /**
+   * 条件で絞り込んだ一覧で既読やスターを変えた行。条件から外れてサーバーの一覧に出なくなっても、
+   * フォルダを切り替える・検索を変える・引っ張って更新するまでは一覧に残す。
+   */
+  const keptRowsRef = useRef(new Set<string>());
   /** 表示している統合フォルダ。null なら通常のフォルダ (または下書きなど)。 */
   const [unifiedId, setUnifiedId] = useState<string | null>(
     initialRoute.unifiedId,
@@ -726,6 +732,7 @@ export function MailApp({ user }: { user: User }) {
     async (selection: Selection, reset: boolean) => {
       const request = ++listRequest.current;
       if (reset) {
+        keptRowsRef.current = new Set();
         setMessages(null);
         setNextCursor(null);
         setListError(null);
@@ -752,9 +759,15 @@ export function MailApp({ user }: { user: User }) {
           page.messages,
           queueRef.current?.pending() ?? [],
         );
+        const kept = keptRowsRef.current;
         setMessages((current) =>
           current && !reset
-            ? mergeFirstPage(current, fetched, page.nextCursor !== null)
+            ? keepRows(
+                current,
+                mergeFirstPage(current, fetched, page.nextCursor !== null),
+                kept,
+                compareMessages,
+              )
             : fetched,
         );
         // 2 ページ目以降を読み込み済みなら、続きの位置はそのまま使う。
@@ -1013,6 +1026,20 @@ export function MailApp({ user }: { user: User }) {
   /** 知らせの「元に戻す」から呼ぶ処理 (下で定義する handleUndo)。 */
   const handleUndoRef = useRef<() => void>(() => {});
 
+  /**
+   * 既読やスターを変えた行を、一覧に残す行として覚える。条件で絞り込んだ一覧
+   * (検索結果、スター付き、統合フォルダ) でだけ覚える。通常のフォルダの一覧から
+   * 無くなった行は、ほかの端末で移動や削除をされたものなので、残さない。
+   */
+  const keepAffectedRows = useCallback((rows: readonly MessageSummary[]) => {
+    const filtered =
+      searchRef.current !== null ||
+      starredRef.current ||
+      selectionRef.current.unifiedId !== null;
+    if (!filtered) return;
+    for (const row of rows) keptRowsRef.current.add(row.id);
+  }, []);
+
   /** 操作を画面にすぐ反映し、サーバーへは待ち行列から送る。 */
   const performAction = useCallback(
     (messageIds: string[], input: MessageActionInput) => {
@@ -1062,6 +1089,9 @@ export function MailApp({ user }: { user: User }) {
           () => commitUndo(id),
         );
       }
+      if (input.action === "set_flags") {
+        keepAffectedRows(affectedRows(messagesRef.current ?? [], messageIds));
+      }
       setMessages((current) => current && applyActions(current, [action]));
       setThreadRows((current) => applyActionToThreads(current, action));
       if (input.action !== "set_flags") {
@@ -1074,7 +1104,7 @@ export function MailApp({ user }: { user: User }) {
       // 元に戻せる操作は、確定したとき (commitUndo) に反映する。
       if (!undoable) applyActionLocally(action);
     },
-    [commitUndo],
+    [commitUndo, keepAffectedRows],
   );
 
   /** 直前の削除や移動を元に戻す。まだサーバーへ送っていないので、送らずに取り消す。 */
@@ -1119,6 +1149,8 @@ export function MailApp({ user }: { user: User }) {
   accountsRef.current = accounts;
   const handlePullRefresh = useCallback(async () => {
     const selection = selectionRef.current;
+    // 利用者が自分で更新したので、条件から外れた行はここで一覧から外す。
+    keptRowsRef.current = new Set();
     const ids = selection.accountId
       ? [selection.accountId]
       : (accountsRef.current ?? []).map((account) => account.id);
@@ -1957,6 +1989,11 @@ export function MailApp({ user }: { user: User }) {
         current?.map((mailbox) =>
           mailbox.id === target.id ? { ...mailbox, unreadCount: 0 } : mailbox,
         ) ?? null,
+    );
+    keepAffectedRows(
+      (messagesRef.current ?? []).filter(
+        (message) => message.mailboxId === target.id && !message.seen,
+      ),
     );
     setMessages(
       (current) =>
