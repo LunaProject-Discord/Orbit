@@ -53,6 +53,9 @@ fi
 
 echo "== 2/5 古い名前のコンテナを止める (データは残る)"
 docker compose -p "$OLD" down --remove-orphans
+# 移行より先に古い deploy.sh で更新してしまい、新しい名前で (空の DB のまま) 動いている場合も止める。
+# ボリュームは消さない (-v は付けない)。中身は次の手順で古いデータに置き換わる。
+docker compose down --remove-orphans
 
 echo "== 3/5 データを新しい名前のボリュームへ写す"
 for v in "${VOLUMES[@]}"; do
