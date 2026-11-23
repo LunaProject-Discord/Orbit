@@ -25,7 +25,14 @@ import {
   Trash2Icon,
   UserRoundIcon,
 } from "lucide-react";
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Hint } from "@/components/hint";
 import { MailboxMark, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
@@ -74,6 +81,7 @@ import {
 } from "@/lib/api";
 import {
   normalizeContentId,
+  patchCidReferences,
   replaceCidReferences,
   splitAttachments,
 } from "@/lib/attachments";
@@ -1226,13 +1234,27 @@ const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
 /** 横に長い本文を枠に収めるときの、いちばん小さい倍率。 */
 const MIN_BODY_ZOOM = 0.5;
 
-function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
+function BodyFrame({
+  srcDoc,
+  fill,
+  embeddedUrls,
+}: {
+  srcDoc: string;
+  fill: boolean;
+  /** 本文に埋め込む画像 (cid:) の URL。後から届いた分は、読み込み直さずに差し込む。 */
+  embeddedUrls: ReadonlyMap<string, string>;
+}) {
   const frame = useRef<HTMLIFrameElement>(null);
   const observer = useRef<ResizeObserver | null>(null);
   const [height, setHeight] = useState(120);
   // 本文の上でのスワイプ (前後のメールへ移るなど) を、iframe の中でも受け取る。
   const bindSwipe = useContext(SwipeSurfaceContext);
   const unbindSwipe = useRef<(() => void) | null>(null);
+  /** 大きさを合わせ終えた文書と、その文書の大きさを合わせ直す処理。 */
+  const measured = useRef<Document | null>(null);
+  const refit = useRef<(() => void) | null>(null);
+  const urls = useRef(embeddedUrls);
+  urls.current = embeddedUrls;
   useEffect(
     () => () => {
       observer.current?.disconnect();
@@ -1241,11 +1263,13 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
     [],
   );
 
-  const measure = () => {
-    const doc = frame.current?.contentDocument;
-    const view = doc?.defaultView;
-    const body = doc?.body;
-    if (!doc || !view || !body) return;
+  const measure = (doc: Document) => {
+    const element = frame.current;
+    const view = doc.defaultView;
+    const body = doc.body;
+    if (!element || !view || !body) return;
+    measured.current = doc;
+    patchCidReferences(doc, urls.current);
     unbindSwipe.current?.();
     unbindSwipe.current = bindSwipe?.(doc) ?? null;
     const root = doc.documentElement;
@@ -1265,9 +1289,11 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
     /**
      * 枠より横に長い本文 (幅を固定したメールなど) は、枠の幅に収まるよう全体を縮める。
      * 縮めすぎると読めないので MIN_BODY_ZOOM までにとどめ、残りは横にスクロールする。
-     * 縮める前の幅を測り直すのは、幅が変わったときと画像を読み込んだときだけにする
-     * (測るたびに大きさが変わり、大きさの監視が回り続けるのを避ける)。
+     * 縮める前の幅を測り直すのは、幅が変わったとき、中身の幅が変わったとき、
+     * 画像を読み込んだときだけにする (測るたびに大きさが変わり、大きさの監視が回り続けるのを避ける)。
      */
+    /** 最後に倍率を決めた直後の、中身の幅。変わっていたら倍率を決め直す。 */
+    let fitted = 0;
     const fit = () => {
       const before = root.style.zoom;
       root.style.zoom = "";
@@ -1279,6 +1305,7 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
           : 1;
       const next = zoom < 1 ? String(Math.floor(zoom * 1000) / 1000) : "";
       root.style.zoom = next;
+      fitted = root.scrollWidth;
       if (next !== before) {
         floor = 0;
         chased = 0;
@@ -1292,6 +1319,8 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
         chased = 0;
         lastShort = 0;
         root.style.overflowY = "";
+        fit();
+      } else if (root.scrollWidth !== fitted) {
         fit();
       }
       if (chased >= 3) return;
@@ -1316,10 +1345,19 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
       }
       // 横に長い本文では、横のスクロールバーの分だけ見える高さが減る。
       const next = content + (view.innerHeight - root.clientHeight);
+      // 描画の前に高さを合わせる (state の反映を待つと、古い高さのまま 1 回描かれる)。
+      if (Math.abs(Number.parseFloat(element.style.height) - next) >= 1) {
+        element.style.height = `${next}px`;
+      }
       setHeight((current) => (Math.abs(current - next) < 1 ? current : next));
+    };
+    refit.current = () => {
+      fit();
+      update();
     };
     fit();
     update();
+    element.style.visibility = "";
     // 画像の読み込みや幅の変化で高さが変わったら、合わせ直す。
     observer.current?.disconnect();
     observer.current = new ResizeObserver(update);
@@ -1335,6 +1373,52 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
       true,
     );
   };
+  const measureLatest = useRef(measure);
+  measureLatest.current = measure;
+
+  /**
+   * 本文は、倍率と高さを決め終えるまで見せない。
+   * 読み込みの完了 (load) は画像を待つので、そこで初めて縮めると、
+   * 元の大きさで一度表示されてから縮んで見える。文書を読み終えた時点で、描画の前に決める。
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 本文が変わるたびに、新しい文書を待ち直す。
+  useLayoutEffect(() => {
+    const element = frame.current;
+    if (!element) return;
+    element.style.visibility = "hidden";
+    let request = 0;
+    const tick = () => {
+      const doc = element.contentDocument;
+      if (
+        doc &&
+        doc !== measured.current &&
+        doc.URL === "about:srcdoc" &&
+        doc.body &&
+        doc.readyState !== "loading"
+      ) {
+        measureLatest.current(doc);
+        return;
+      }
+      request = requestAnimationFrame(tick);
+    };
+    tick();
+    return () => cancelAnimationFrame(request);
+  }, [srcDoc]);
+
+  // 後から取得できた埋め込み画像は、表示中の文書に差し込む (読み込み直すと、本文が一度消える)。
+  useEffect(() => {
+    const doc = measured.current;
+    if (doc && patchCidReferences(doc, embeddedUrls)) refit.current?.();
+  }, [embeddedUrls]);
+
+  const onLoad = () => {
+    const element = frame.current;
+    const doc = element?.contentDocument;
+    if (!element || !doc) return;
+    if (doc === measured.current) refit.current?.();
+    else measure(doc);
+    element.style.visibility = "";
+  };
 
   return (
     <iframe
@@ -1343,7 +1427,7 @@ function BodyFrame({ srcDoc, fill }: { srcDoc: string; fill: boolean }) {
       sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
       srcDoc={srcDoc}
       referrerPolicy="no-referrer"
-      onLoad={measure}
+      onLoad={onLoad}
       style={{ height }}
       className={cn(
         "w-full shrink-0 border-0 bg-white",
@@ -1394,18 +1478,22 @@ function MessageContent({
     [message.bodyHtml, message.attachments],
   );
   const embeddedUrls = useEmbeddedImages(message.id, embedded);
+  // 埋め込み画像が届くたびに本文を読み込み直すと、そのたびに本文が消えて大きさも決め直しになる。
+  // 組み立てた時点で届いている分だけを入れ、後から届いた分は BodyFrame が差し込む。
+  const embeddedUrlsRef = useRef(embeddedUrls);
+  embeddedUrlsRef.current = embeddedUrls;
   const srcDoc = useMemo(
     () =>
       message.bodyHtml
         ? buildSrcDoc(
-            replaceCidReferences(message.bodyHtml, embeddedUrls),
+            replaceCidReferences(message.bodyHtml, embeddedUrlsRef.current),
             showImages,
             frameStyle,
             frameCss,
             fontSrc,
           )
         : null,
-    [message.bodyHtml, embeddedUrls, showImages, frameStyle, frameCss, fontSrc],
+    [message.bodyHtml, showImages, frameStyle, frameCss, fontSrc],
   );
   const imagesBlocked =
     !showImages &&
@@ -1673,7 +1761,11 @@ function MessageContent({
           )}
           {/* スクリプトの実行もこのアプリのデータへのアクセスも禁止する。
               許可するのは、本文内のリンクを新しいタブで開くことだけ。 */}
-          <BodyFrame srcDoc={srcDoc} fill={!inThread} />
+          <BodyFrame
+            srcDoc={srcDoc}
+            fill={!inThread}
+            embeddedUrls={embeddedUrls}
+          />
         </>
       ) : message.bodyText ? (
         <div className={inThread ? "px-4 pb-4 sm:px-6" : "flex-1 p-4 sm:p-6"}>
