@@ -87,6 +87,10 @@ import {
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
 import {
+  handlesExternalLinks,
+  interceptExternalLinks,
+} from "@/lib/external-links";
+import {
   addressLabel,
   formatCompactDate,
   formatFullDate,
@@ -1252,6 +1256,8 @@ function BodyFrame({
   const unbindSwipe = useRef<(() => void) | null>(null);
   /** 大きさを合わせ終えた文書と、その文書の大きさを合わせ直す処理。 */
   const measured = useRef<Document | null>(null);
+  /** リンクのクリックを受け取るようにした文書 (読み込み直すと別の文書になる)。 */
+  const linked = useRef<Document | null>(null);
   const refit = useRef<(() => void) | null>(null);
   const urls = useRef(embeddedUrls);
   urls.current = embeddedUrls;
@@ -1415,6 +1421,11 @@ function BodyFrame({
     const element = frame.current;
     const doc = element?.contentDocument;
     if (!element || !doc) return;
+    // アプリの中では、本文のリンクを既定のブラウザーで開く (枠の中からは新しいウィンドウを開けない)。
+    if (handlesExternalLinks() && linked.current !== doc) {
+      linked.current = doc;
+      interceptExternalLinks(doc);
+    }
     if (doc === measured.current) refit.current?.();
     else measure(doc);
     element.style.visibility = "";
