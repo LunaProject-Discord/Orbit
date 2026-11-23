@@ -4,7 +4,7 @@ import type {
   OutgoingMessage,
   SendPayload,
   SetFlagsPayload,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   type Database,
   type mailAccounts,
@@ -12,7 +12,7 @@ import {
   messageMailboxes,
   messages,
   outbox,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import { missingAttachments } from "./mime.js";

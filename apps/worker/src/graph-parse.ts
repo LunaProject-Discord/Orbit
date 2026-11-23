@@ -1,4 +1,4 @@
-import type { Address, messages } from "@mail/db";
+import type { Address, messages } from "@orbit/db";
 import {
   type AttachmentInfo,
   clean,

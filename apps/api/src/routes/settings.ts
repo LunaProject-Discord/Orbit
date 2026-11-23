@@ -3,8 +3,8 @@ import {
   CHANNEL_CHANGES,
   type ChangeNotification,
   readNotificationActions,
-} from "@mail/core";
-import { type Database, userSettings } from "@mail/db";
+} from "@orbit/core";
+import { type Database, userSettings } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv, RouteDeps } from "../context.js";

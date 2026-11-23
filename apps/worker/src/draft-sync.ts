@@ -3,8 +3,8 @@ import {
   attachmentKey,
   attachmentsDir,
   type OutgoingMessage,
-} from "@mail/core";
-import { type Database, drafts, type mailAccounts } from "@mail/db";
+} from "@orbit/core";
+import { type Database, drafts, type mailAccounts } from "@orbit/db";
 import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import { lockAccount } from "./outbox.js";

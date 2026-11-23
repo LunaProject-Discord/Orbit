@@ -1,5 +1,5 @@
-import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from "@mail/core";
-import type { Database } from "@mail/db";
+import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from "@orbit/core";
+import type { Database } from "@orbit/db";
 import { createMiddleware } from "hono/factory";
 import type { Auth } from "./auth.js";
 

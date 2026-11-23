@@ -17,7 +17,7 @@ import {
   twoFactors,
   users,
   verifications,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, eq, like } from "drizzle-orm";
 import { createAuth } from "../auth.js";
 import { loadEnv } from "../env.js";

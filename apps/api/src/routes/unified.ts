@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { CHANNEL_CHANGES, type ChangeNotification } from "@mail/core";
+import { CHANNEL_CHANGES, type ChangeNotification } from "@orbit/core";
 import {
   type Database,
   mailAccounts,
@@ -7,7 +7,7 @@ import {
   messages,
   sidebarLayouts,
   unifiedFolders,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";

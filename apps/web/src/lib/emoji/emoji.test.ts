@@ -14,7 +14,7 @@ const catalog = buildEmojiCatalog(data as unknown as EmojiData);
 
 describe("生成した絵文字のデータ", () => {
   it("入っている emojibase-data と同じ版から作られている", () => {
-    // 失敗したら `pnpm --filter @mail/web emoji:generate` で作り直す。
+    // 失敗したら `pnpm --filter @orbit/web emoji:generate` で作り直す。
     const { version } = JSON.parse(
       readFileSync(
         createRequire(import.meta.url).resolve("emojibase-data/package.json"),

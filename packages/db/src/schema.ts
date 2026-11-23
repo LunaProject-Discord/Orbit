@@ -357,7 +357,7 @@ export const mailboxes = pgTable(
     /**
      * 実際に使う役割。メールサーバーが知らせてきた役割 (detectedSpecialUse) に、
      * 利用者の上書き (roleOverride) を当てはめた結果で、どちらかが変わるたびに計算し直す
-     * (@mail/core の resolveMailboxRoles)。移動先を探す処理などは、すべてこの列を見る。
+     * (@orbit/core の resolveMailboxRoles)。移動先を探す処理などは、すべてこの列を見る。
      */
     specialUse: mailboxSpecialUse(),
     /** メールサーバーが知らせてきた役割 (IMAP の SPECIAL-USE、Graph の既定のフォルダ)。 */

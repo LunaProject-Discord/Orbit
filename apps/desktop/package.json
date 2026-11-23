@@ -1,5 +1,5 @@
 {
-  "name": "@mail/desktop",
+  "name": "@orbit/desktop",
   "version": "0.1.0",
   "private": true,
   "scripts": {

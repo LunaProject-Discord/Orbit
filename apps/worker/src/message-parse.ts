@@ -1,4 +1,4 @@
-import type { Address } from "@mail/db";
+import type { Address } from "@orbit/db";
 import type { MessageAddressObject, MessageStructureObject } from "imapflow";
 
 /** PostgreSQL の text は NUL 文字を保存できないので取り除く。 */

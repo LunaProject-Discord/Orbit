@@ -1,5 +1,5 @@
-import { MAX_NOTIFICATION_ACTIONS, NOTIFICATION_ACTIONS } from "@mail/core";
-import type { SwipeSettings } from "@mail/db";
+import { MAX_NOTIFICATION_ACTIONS, NOTIFICATION_ACTIONS } from "@orbit/core";
+import type { SwipeSettings } from "@orbit/db";
 import { z } from "zod";
 
 /** 一覧の行をスワイプしたときに選べる操作。 */

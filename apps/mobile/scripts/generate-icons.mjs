@@ -1,5 +1,5 @@
 // Android アプリのアイコンと起動画面の画像を、assets/brand/ の SVG から作る。
-//   pnpm --filter @mail/mobile icons
+//   pnpm --filter @orbit/mobile icons
 // 描画にはヘッドレスブラウザー (Playwright の Chromium) を使う (assets/brand/export-png.mjs と同じ)。
 // リポジトリの依存には入れていないので、Playwright が入っている環境で実行する。
 // 書き出した画像はコミットしてあるので、ロゴを変えたときだけ実行すればよい。

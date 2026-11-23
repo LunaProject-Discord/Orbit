@@ -1,4 +1,4 @@
-import { isLegacyTlsError, legacyTlsOptions } from "@mail/core";
+import { isLegacyTlsError, legacyTlsOptions } from "@orbit/core";
 import { ImapFlow } from "imapflow";
 
 export type ImapSettings = {

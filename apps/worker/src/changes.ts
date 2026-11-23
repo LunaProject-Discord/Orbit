@@ -1,5 +1,5 @@
-import { CHANNEL_CHANGES, type ChangeNotification } from "@mail/core";
-import { changes, type Database } from "@mail/db";
+import { CHANNEL_CHANGES, type ChangeNotification } from "@orbit/core";
+import { changes, type Database } from "@orbit/db";
 import { sql } from "drizzle-orm";
 
 export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];

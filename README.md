@@ -62,9 +62,9 @@ Docker の導入から、中継の設定、更新、バックアップ、環境�
 [docs/deploy-oracle-cloud.md](docs/deploy-oracle-cloud.md) にまとめています。
 
 ```sh
-bash deploy/setup.sh mail.example.com relay    # 別のサーバーから中継する構成 (deploy/.env を作り、秘密の値を生成)
-bash deploy/setup.sh mail.example.com apache   # 同じサーバーの Apache から繋ぐ構成
-bash deploy/setup.sh mail.example.com caddy    # Caddy が 80 / 443 番で直接公開する構成
+bash deploy/setup.sh orbit.example.com relay    # 別のサーバーから中継する構成 (deploy/.env を作り、秘密の値を生成)
+bash deploy/setup.sh orbit.example.com apache   # 同じサーバーの Apache から繋ぐ構成
+bash deploy/setup.sh orbit.example.com caddy    # Caddy が 80 / 443 番で直接公開する構成
 cd deploy && docker compose up -d --build
 ```
 
@@ -521,7 +521,7 @@ API は `GET /v1/messages/search` です。`q` のほかに `accountId`、`scope
 | `pnpm lint` / `pnpm format` | Biome による検査 / 整形 |
 | `pnpm db:generate` | スキーマの変更からマイグレーションを生成 |
 | `pnpm db:migrate` | マイグレーションを適用 |
-| `pnpm --filter @mail/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
+| `pnpm --filter @orbit/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
 | `pnpm user:create <メール> <表示名> [--admin]` | ログイン用の利用者を作成 (最初の 1 人と `--admin` 付きは管理者) |
 | `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
 

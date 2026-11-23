@@ -2,8 +2,8 @@ import {
   FcmError,
   type NewMailNotification,
   verifyNotificationAction,
-} from "@mail/core";
-import type { Database } from "@mail/db";
+} from "@orbit/core";
+import type { Database } from "@orbit/db";
 import { describe, expect, it } from "vitest";
 import {
   combineSenders,

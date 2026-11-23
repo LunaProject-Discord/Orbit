@@ -5,8 +5,8 @@ import {
   type GoogleOAuthConfig,
   GoogleOAuthError,
   legacyTlsOptions,
-} from "@mail/core";
-import { type Database, mailAccounts, mailboxes } from "@mail/db";
+} from "@orbit/core";
+import { type Database, mailAccounts, mailboxes } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
 import {

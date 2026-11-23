@@ -6,7 +6,7 @@ import {
   type MovePayload,
   type OutboxTarget,
   type SetFlagsPayload,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   changes,
   type Database,
@@ -15,7 +15,7 @@ import {
   messageMailboxes,
   messages,
   outbox,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { recordChanges, removePlacements, type Tx } from "./message-actions.js";
 

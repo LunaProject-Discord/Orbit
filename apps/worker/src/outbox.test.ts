@@ -1,4 +1,4 @@
-import type { OutboxOperation, OutboxTarget } from "@mail/core";
+import type { OutboxOperation, OutboxTarget } from "@orbit/core";
 import type { ImapFlow } from "imapflow";
 import { describe, expect, it } from "vitest";
 import { GraphClient } from "./graph-client.js";

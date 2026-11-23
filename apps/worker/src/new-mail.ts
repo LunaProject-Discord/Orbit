@@ -10,14 +10,14 @@ import {
   toNewMailNotification,
   toPushMessages,
   type WebPushConfig,
-} from "@mail/core";
+} from "@orbit/core";
 import {
   type Database,
   devices,
   mailAccounts,
   pushSubscriptions,
   userSettings,
-} from "@mail/db";
+} from "@orbit/db";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { sendNotification, WebPushError } from "web-push";
 import type { Tx } from "./changes.js";
