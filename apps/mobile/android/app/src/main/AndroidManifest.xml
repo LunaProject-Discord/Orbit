@@ -2,6 +2,21 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+        Orbit のアプリどうし (Mail、Calendar、Contacts) で、接続先サーバーとログインを共有する。
+        signature なので、同じ鍵で署名したアプリだけがこの権限を持てる。しくみは SharedConfig.java。
+    -->
+    <permission
+        android:name="jp.lunaproject.orbit.permission.SHARED_CONFIG"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="jp.lunaproject.orbit.permission.SHARED_CONFIG" />
+
+    <!-- ほかの Orbit のアプリの設定を読むために、相手が見えるようにする (Android 11 以降)。 -->
+    <queries>
+        <package android:name="jp.lunaproject.orbit.calendar" />
+        <package android:name="jp.lunaproject.orbit.contacts" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -66,6 +81,13 @@
         <receiver
             android:name=".NotificationActionReceiver"
             android:exported="false" />
+
+        <!-- 接続先サーバーとログインを、同じ鍵で署名した Orbit のアプリへ公開する (読み取り専用)。 -->
+        <provider
+            android:name=".SharedConfigProvider"
+            android:authorities="${applicationId}.shared"
+            android:exported="true"
+            android:permission="jp.lunaproject.orbit.permission.SHARED_CONFIG" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

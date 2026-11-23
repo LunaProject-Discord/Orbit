@@ -34,6 +34,14 @@ function setToken(token: string | null) {
   }
 }
 
+/**
+ * ほかの Orbit のアプリから引き継いだログインを使う (スマホアプリのみ、lib/native/shared-config.ts)。
+ * 有効かどうかは、このあとの利用者の確認 (fetchMe) で決まる。
+ */
+export function adoptSessionToken(token: string) {
+  setToken(token);
+}
+
 /** この端末のログイン情報を消す (接続先サーバーを替えたときなど)。サーバーには知らせない。 */
 export function forgetSession() {
   setToken(null);

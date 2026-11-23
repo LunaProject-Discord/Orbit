@@ -51,6 +51,17 @@ type AppShell = {
   isPushConfigured(): Promise<{ configured: boolean }>;
   /** 端末に入っているフォント (apps/mobile の FontCatalog)。形は lib/local-fonts.ts で確かめる。 */
   listFonts(): Promise<{ fonts: unknown }>;
+  /** 接続先とログインを、ほかの Orbit のアプリが引き継げるように保存する (lib/native/shared-config.ts)。 */
+  publishSharedConfig(options: {
+    serverUrl: string;
+    sessionToken: string;
+  }): Promise<void>;
+  /** ほかの Orbit のアプリの接続先とログインを探す。 */
+  findSharedConfig(): Promise<{
+    found: boolean;
+    serverUrl?: unknown;
+    sessionToken?: unknown;
+  }>;
 };
 
 // Capacitor のプラグインは、どんな名前のメソッドも端末側へ取り次ぐ Proxy になっている。
