@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Orbit Mail",
   "version": "../package.json",
-  "identifier": "jp.lunaproject.orbit.mail",
+  "identifier": "jp.lunaproject.orbit",
   "build": {
     "beforeDevCommand": "pnpm --filter @mail/web dev",
     "devUrl": "http://localhost:3000",

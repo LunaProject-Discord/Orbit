@@ -7,7 +7,7 @@ Orbit Mail のデスクトップ版 (`apps/desktop`、Windows / macOS / Linux) �
 - [Tauri 2](https://tauri.app/) で、Web 版の画面 (`apps/web` の静的出力) をそのままアプリに入れています。画面のコードは Web 版と共通です。
 - アプリの中にあるのは画面だけで、メールは自分のサーバー (API) から取得します。最初に接続するサーバーはビルド時に決め (既定は `https://orbit.lunaproject.jp`)、ログイン画面の「接続先 … 変更」から後で変えられます。API は、デスクトップ版の画面のオリジン (`tauri://localhost`、`http://tauri.localhost`) を最初から許可しています。
 - ログインの状態は、アプリのデータ (WebView の保存領域) に残ります。アプリを終了しても、次に開いたときはログインしたままです。
-- アプリの ID は `jp.lunaproject.orbit.mail` です (Android アプリと同じ)。
+- アプリの ID は `jp.lunaproject.orbit` です。デスクトップ版は、メール・カレンダー・連絡先を 1 つのアプリにまとめる方針です (スマホは `jp.lunaproject.orbit.mail` のように、機能ごとに別のアプリにします)。2026-11-23 までにビルドしたもの (`jp.lunaproject.orbit.mail`) とはデータの保存場所が変わるので、入れ替えたあとはログインし直してください。ログインの戻り先の URL (`jp.lunaproject.orbit.mail://`) は Android のメールアプリと共通のままです。
 
 | 場所 | 中身 |
 | --- | --- |
