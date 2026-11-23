@@ -5,9 +5,13 @@ import { cn } from "cn";
 /**
  * タッチ操作 (pointer: coarse) では、押しやすいよう一回り大きくする。
  * 小さいボタンは見た目を保ったまま、押せる範囲 (after) だけを 44px 前後まで広げる。
+ *
+ * 塗りつぶしのボタンは、背景を透明な枠線の下まで塗る (bg-clip-padding にしない)。
+ * padding-box までだと塗りが四辺 1px ずつ内側に入り、同じ幅の入力欄や
+ * サイドバーの項目、枠線付きのボタンより細く見える。
  */
 const buttonVariants = cva(
-  "group/button relative inline-flex shrink-0 items-center justify-center rounded-md border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button relative inline-flex shrink-0 items-center justify-center rounded-md border border-transparent text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
