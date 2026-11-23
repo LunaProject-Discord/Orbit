@@ -5,9 +5,25 @@ import { cn } from "cn";
 import { XIcon } from "lucide-react";
 import type * as React from "react";
 import { Button } from "@/components/ui/button";
+import {
+  dialogSheet,
+  SheetCloseContext,
+  useSheetClose,
+  useSheetSwipe,
+} from "@/components/ui/menu-sheet";
 
-function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />;
+function Dialog({ actionsRef, ...props }: DialogPrimitive.Root.Props) {
+  // スマホ幅のシートを下へ払ったときに、閉じられるようにする。
+  const sheet = useSheetClose(actionsRef);
+  return (
+    <SheetCloseContext.Provider value={sheet.value}>
+      <DialogPrimitive.Root
+        data-slot="dialog"
+        actionsRef={sheet.actionsRef}
+        {...props}
+      />
+    </SheetCloseContext.Provider>
+  );
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
@@ -42,10 +58,17 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  sheet = false,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean;
+  /**
+   * スマホ幅では、画面の下に貼り付くシートにする (下へ払って閉じられる)。
+   * 中身は縦に並べる (flex flex-col) こと。高さの上限は max-sm:max-h-* で決める。
+   */
+  sheet?: boolean;
 }) {
+  const swipe = useSheetSwipe(undefined, sheet);
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -53,10 +76,20 @@ function DialogContent({
         data-slot="dialog-content"
         className={cn(
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-6 rounded-xl bg-popover p-6 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          sheet && dialogSheet,
           className,
         )}
         {...props}
+        ref={swipe}
       >
+        {sheet && (
+          // つまみ。下へ払って閉じられることが分かるように上端に置く。
+          <span
+            aria-hidden="true"
+            data-slot="dialog-sheet-handle"
+            className="mx-auto mt-2 -mb-2 h-1 w-9 shrink-0 rounded-full bg-border sm:hidden"
+          />
+        )}
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close

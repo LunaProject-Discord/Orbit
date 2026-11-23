@@ -1,6 +1,5 @@
 "use client";
 
-import { cn } from "cn";
 import { MoveTarget } from "@/components/mail/mailbox-icon";
 import {
   Dialog,
@@ -35,11 +34,9 @@ export function MoveDialog({
     >
       <DialogContent
         data-slot="move-dialog"
-        className={cn(
-          "flex max-h-[min(36rem,calc(100dvh-2rem))] flex-col gap-0 p-0 sm:max-w-sm",
-          // スマホ幅では、画面の下に貼り付くシートにする。
-          "max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:max-h-[80dvh] max-sm:max-w-full max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-t-2xl max-sm:rounded-b-none max-sm:duration-200 max-sm:data-closed:zoom-out-100 max-sm:data-closed:slide-out-to-bottom max-sm:data-open:zoom-in-100 max-sm:data-open:slide-in-from-bottom",
-        )}
+        // スマホ幅では、画面の下に貼り付くシートにする。
+        sheet
+        className="flex max-h-[min(36rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:max-h-[80dvh] sm:max-w-sm"
       >
         {message && (
           <MoveDialogBody message={message} onMove={onMove} onClose={onClose} />

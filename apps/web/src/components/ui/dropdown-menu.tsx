@@ -6,15 +6,28 @@ import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import type * as React from "react";
 import { useMemo, useState } from "react";
 import {
+  SheetCloseContext,
   SubSheetBackLabel,
   SubSheetContext,
   sheetBackdrop,
   sheetPositioner,
+  useSheetClose,
+  useSheetSwipe,
   useSubSheet,
 } from "@/components/ui/menu-sheet";
 
-function DropdownMenu({ ...props }: MenuPrimitive.Root.Props) {
-  return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
+function DropdownMenu({ actionsRef, ...props }: MenuPrimitive.Root.Props) {
+  // スマホ幅のシートを下へ払ったときに、メニュー全体を閉じられるようにする。
+  const sheet = useSheetClose(actionsRef);
+  return (
+    <SheetCloseContext.Provider value={sheet.value}>
+      <MenuPrimitive.Root
+        data-slot="dropdown-menu"
+        actionsRef={sheet.actionsRef}
+        {...props}
+      />
+    </SheetCloseContext.Provider>
+  );
 }
 
 function DropdownMenuPortal({ ...props }: MenuPrimitive.Portal.Props) {
@@ -41,6 +54,7 @@ function DropdownMenuContent({
     /** スマホ幅のシートの後ろに幕を出す。入れ子のメニューでは出さない。 */
     backdrop?: boolean;
   }) {
+  const swipe = useSheetSwipe();
   return (
     <MenuPrimitive.Portal>
       {backdrop && <MenuPrimitive.Backdrop className={sheetBackdrop} />}
@@ -59,6 +73,7 @@ function DropdownMenuContent({
             className,
           )}
           {...props}
+          ref={swipe}
         />
       </MenuPrimitive.Positioner>
     </MenuPrimitive.Portal>

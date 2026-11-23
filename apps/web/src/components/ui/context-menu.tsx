@@ -6,15 +6,31 @@ import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import type * as React from "react";
 import { useMemo, useState } from "react";
 import {
+  SheetCloseContext,
   SubSheetBackLabel,
   SubSheetContext,
   sheetBackdrop,
   sheetPositioner,
+  useSheetClose,
+  useSheetSwipe,
   useSubSheet,
 } from "@/components/ui/menu-sheet";
 
-function ContextMenu({ ...props }: ContextMenuPrimitive.Root.Props) {
-  return <ContextMenuPrimitive.Root data-slot="context-menu" {...props} />;
+function ContextMenu({
+  actionsRef,
+  ...props
+}: ContextMenuPrimitive.Root.Props) {
+  // スマホ幅のシートを下へ払ったときに、メニュー全体を閉じられるようにする。
+  const sheet = useSheetClose(actionsRef);
+  return (
+    <SheetCloseContext.Provider value={sheet.value}>
+      <ContextMenuPrimitive.Root
+        data-slot="context-menu"
+        actionsRef={sheet.actionsRef}
+        {...props}
+      />
+    </SheetCloseContext.Provider>
+  );
 }
 
 function ContextMenuPortal({ ...props }: ContextMenuPrimitive.Portal.Props) {
@@ -52,6 +68,7 @@ function ContextMenuContent({
     /** スマホ幅のシートの後ろに幕を出す。入れ子のメニューでは出さない。 */
     backdrop?: boolean;
   }) {
+  const swipe = useSheetSwipe();
   return (
     <ContextMenuPrimitive.Portal>
       {backdrop && <ContextMenuPrimitive.Backdrop className={sheetBackdrop} />}
@@ -70,6 +87,7 @@ function ContextMenuContent({
             className,
           )}
           {...props}
+          ref={swipe}
         />
       </ContextMenuPrimitive.Positioner>
     </ContextMenuPrimitive.Portal>

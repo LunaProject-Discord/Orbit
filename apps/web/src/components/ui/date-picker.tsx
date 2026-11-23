@@ -110,7 +110,7 @@ export function DatePicker({
         }
         className="w-auto gap-0 p-0"
       >
-        <div ref={calendar}>
+        <div ref={calendar} className="max-sm:flex max-sm:justify-center">
           <Calendar
             mode="single"
             locale={ja}
