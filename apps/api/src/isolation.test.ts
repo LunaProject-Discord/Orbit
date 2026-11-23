@@ -789,6 +789,29 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     expect(await snapshot(db, a.userId)).toEqual(before);
   });
 
+  it("名前の変更は、自分の名前だけを変える", async () => {
+    const nameOf = async (userId: string) =>
+      (await db.execute(sql`select name from users where id = ${userId}`))
+        .rows[0]?.name;
+    const before = await nameOf(a.userId);
+    const saved = await request(tokenB, "PUT", "/security/name", {
+      name: "  新しい名前  ",
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ name: "新しい名前" });
+    expect(await nameOf(b.userId)).toBe("新しい名前");
+    expect(await nameOf(a.userId)).toBe(before);
+    const me = (await (await request(tokenB, "GET", "/me")).json()) as {
+      user: { name: string };
+    };
+    expect(me.user.name).toBe("新しい名前");
+    for (const name of ["", "   ", "x".repeat(101), "a\nb"]) {
+      const response = await request(tokenB, "PUT", "/security/name", { name });
+      expect(response.status, JSON.stringify(name)).toBe(400);
+    }
+    expect(await nameOf(b.userId)).toBe("新しい名前");
+  });
+
   it("設定や並び順の保存は、自分の分だけに反映される", async () => {
     const before = await snapshot(db, a.userId);
     const calls: [string, string, unknown][] = [

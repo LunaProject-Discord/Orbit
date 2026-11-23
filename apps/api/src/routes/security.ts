@@ -13,6 +13,14 @@ export function emailChangedUrl(webOrigin: string): string {
   return `${webOrigin}/login?notice=email-changed`;
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を弾くための正規表現
+const noControl = /^[^\u0000-\u001f\u007f]*$/;
+
+/** 表示名。前後の空白は除き、改行などの制御文字は受け付けない。 */
+const nameBody = z.object({
+  name: z.string().trim().min(1).max(100).regex(noControl),
+});
+
 const emailBody = z.object({
   newEmail: z.email().max(320),
   password: z.string().min(1).max(1024),
@@ -77,6 +85,13 @@ export function securityRoutes({
    * いまのパスワードを確かめてから、新しいアドレスへ確認のメールを送る。
    * そのメールのリンクを開くまで、アドレスは変わらない。
    */
+  /** 自分の名前 (表示名) を変える。ログインには使わないので、パスワードは尋ねない。 */
+  app.put("/name", zValidator("json", nameBody), async (c) => {
+    const { name } = c.req.valid("json");
+    await db.update(users).set({ name }).where(eq(users.id, c.var.user.id));
+    return c.json({ name });
+  });
+
   app.post("/email", zValidator("json", emailBody), async (c) => {
     if (!mailEnabled) return c.json({ error: "mail_disabled" }, 400);
     const { password } = c.req.valid("json");
