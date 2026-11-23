@@ -1,6 +1,5 @@
 "use client";
 
-import { cn } from "cn";
 import { type FormEvent, useId, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
@@ -191,11 +190,9 @@ export function MailboxOverridesDialog({
     <Dialog open={mailbox !== null} onOpenChange={close}>
       <DialogContent
         data-slot="mailbox-overrides-dialog"
-        className={cn(
-          "flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 sm:max-w-md",
-          // スマホ幅では、画面の下に貼り付くシートにする。
-          "max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:max-h-[92dvh] max-sm:max-w-full max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-b-none max-sm:rounded-t-2xl max-sm:data-closed:zoom-out-100 max-sm:data-closed:slide-out-to-bottom max-sm:data-open:zoom-in-100 max-sm:data-open:slide-in-from-bottom max-sm:duration-200",
-        )}
+        // スマホ幅では、画面の下に貼り付くシートにする。
+        sheet
+        className="flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:max-h-[92dvh] sm:max-w-md"
       >
         <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
           <DialogHeader className="shrink-0 px-6 pt-6 pb-4 max-sm:px-4 max-sm:pt-5">

@@ -3,7 +3,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "cn";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -52,6 +52,7 @@ export function FontPicker({
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const { status, fonts } = useLocalFonts();
@@ -165,10 +166,14 @@ export function FontPicker({
           className="size-4 shrink-0 text-muted-foreground"
         />
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 max-w-[calc(100vw-1rem)]">
+      <PopoverContent
+        align="end"
+        initialFocus={inputRef}
+        className="w-80 max-w-[calc(100vw-1rem)]"
+      >
         <PopoverTitle className="sr-only">フォントを選ぶ</PopoverTitle>
         <Input
-          autoFocus
+          ref={inputRef}
           value={query}
           role="combobox"
           aria-expanded="true"

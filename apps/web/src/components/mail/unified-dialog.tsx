@@ -244,11 +244,9 @@ export function UnifiedDialog({
       >
         <DialogContent
           data-slot="unified-dialog"
-          className={cn(
-            "flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 sm:max-w-lg",
-            // スマホ幅では、画面の下に貼り付くシートにする。
-            "max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:max-h-[92dvh] max-sm:max-w-full max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-b-none max-sm:rounded-t-2xl max-sm:data-closed:zoom-out-100 max-sm:data-closed:slide-out-to-bottom max-sm:data-open:zoom-in-100 max-sm:data-open:slide-in-from-bottom max-sm:duration-200",
-          )}
+          // スマホ幅では、画面の下に貼り付くシートにする。
+          sheet
+          className="flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:max-h-[92dvh] sm:max-w-lg"
         >
           <form
             onSubmit={handleSubmit}

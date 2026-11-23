@@ -405,8 +405,17 @@ html[data-motion="off"] *::after {
     pointer-events: none;
     animation: none;
   }
+  /* 指で引き下ろしている間は、開く動きをやり直さない。 */
+  [data-menu-sheet][data-sheet-dragging] {
+    animation: none;
+  }
   [data-menu-sheet]
-    :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]) {
+    :is(
+      [role="menuitem"],
+      [role="menuitemcheckbox"],
+      [role="menuitemradio"],
+      [role="option"][data-slot="select-item"]
+    ) {
     min-height: 3rem;
     gap: 0.875rem;
     padding: 0.5rem 0.875rem;
@@ -414,7 +423,12 @@ html[data-motion="off"] *::after {
     font-size: 1rem;
   }
   [data-menu-sheet]
-    :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"])
+    :is(
+      [role="menuitem"],
+      [role="menuitemcheckbox"],
+      [role="menuitemradio"],
+      [role="option"][data-slot="select-item"]
+    )
     svg {
     width: 1.25rem;
     height: 1.25rem;

@@ -9,8 +9,9 @@ import {
   SignatureIcon,
   SquarePenIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useNarrowScreen, useSheetSwipe } from "@/components/ui/menu-sheet";
 import {
   Popover,
   PopoverContent,
@@ -31,21 +32,6 @@ export type ProfileActions = {
   /** このアドレスに署名を決めてあるか (ボタンの文言に使う)。 */
   hasSignature?: (address: Address) => boolean;
 };
-
-/** スマホの幅 (Tailwind の sm 未満) かどうか。カードをシートで出すかを決める。 */
-const NARROW_QUERY = "(max-width: 639px)";
-
-function useNarrowScreen(): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      const query = window.matchMedia(NARROW_QUERY);
-      query.addEventListener("change", listener);
-      return () => query.removeEventListener("change", listener);
-    },
-    () => window.matchMedia(NARROW_QUERY).matches,
-    () => false,
-  );
-}
 
 /** アバターに出す 1 文字 (名前の先頭。名前が無ければアドレスの先頭)。 */
 export function profileInitial(address: Address): string {
@@ -75,6 +61,7 @@ export function ProfileName({
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const narrow = useNarrowScreen();
+  const swipe = useSheetSwipe(() => setOpen(false));
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -182,6 +169,7 @@ export function ProfileName({
         <DialogPrimitive.Portal>
           <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/30 duration-200 data-closed:animate-out data-closed:fade-out-0 data-open:animate-in data-open:fade-in-0" />
           <DialogPrimitive.Popup
+            ref={swipe}
             data-slot="profile-sheet"
             className="fixed inset-x-0 bottom-0 z-50 flex flex-col gap-3 rounded-t-2xl bg-popover px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] text-popover-foreground text-sm shadow-lg outline-none ring-1 ring-foreground/10 duration-200 data-closed:animate-out data-closed:slide-out-to-bottom data-open:animate-in data-open:slide-in-from-bottom"
           >
