@@ -62,6 +62,41 @@ export const sidebarLayout = z.object({
   hidden: z.array(layoutKey).max(300).refine(distinct),
 });
 
+const lower = (key: string) => key.toLowerCase();
+
+/** 1 人が作れるカテゴリの数。 */
+export const MAX_CATEGORIES = 50;
+
+/**
+ * サイドバーのカテゴリ (上から順)。items は中に入れた項目 (初めからある項目の名前、
+ * 統合フォルダの ID、アカウントの ID)。1 つの項目は 1 つのカテゴリにだけ入れられる。
+ * ID は端末が決める (作ってすぐに、保存を待たずに項目を入れられるように)。
+ */
+export const sidebarCategories = z
+  .array(
+    z.object({
+      id: z.uuid(),
+      name: z.string().trim().min(1).max(50),
+      items: z.array(layoutKey).max(300),
+    }),
+  )
+  .max(MAX_CATEGORIES)
+  .refine((list) => distinct(list.map((category) => category.id.toLowerCase())))
+  .refine((list) =>
+    distinct(list.flatMap((category) => category.items.map(lower))),
+  );
+
+/** ID を小文字に揃える (同じ項目は同じ形で保存する)。 */
+export function normalizeCategories(
+  list: z.infer<typeof sidebarCategories>,
+): z.infer<typeof sidebarCategories> {
+  return list.map((category) => ({
+    id: lower(category.id),
+    name: category.name,
+    items: category.items.map(lower),
+  }));
+}
+
 /** 重複を除き、順番を揃える (同じ内容は同じ形で保存する)。 */
 export function normalizeScope(scope: UnifiedScope): UnifiedScope {
   return {

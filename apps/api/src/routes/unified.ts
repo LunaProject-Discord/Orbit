@@ -17,8 +17,10 @@ import { threadCount } from "../lib/threads.js";
 import {
   BUILTIN_VIEWS,
   loadUnifiedFolder,
+  normalizeCategories,
   normalizeFilters,
   ownScope,
+  sidebarCategories,
   sidebarLayout,
   unifiedFilters,
   unifiedHeads,
@@ -112,6 +114,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
           order: sidebarLayouts.order,
           hidden: sidebarLayouts.hidden,
           builtins: sidebarLayouts.builtins,
+          categories: sidebarLayouts.categories,
         })
         .from(sidebarLayouts)
         .where(eq(sidebarLayouts.userId, userId)),
@@ -126,6 +129,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
       folders,
       layout: { order: layout?.order ?? [], hidden: layout?.hidden ?? [] },
       builtins: layout?.builtins ?? {},
+      categories: layout?.categories ?? [],
     });
   });
 
@@ -165,6 +169,28 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
     await notifyChanged(db, userId);
     return c.body(null, 204);
   });
+
+  /**
+   * サイドバーのカテゴリ (名前、上からの順、中に入れた項目) をまとめて保存する。
+   * 無くなったアカウントや統合フォルダの ID が残っていても、画面の側で無視する。
+   */
+  app.put(
+    "/categories",
+    zValidator("json", z.object({ categories: sidebarCategories })),
+    async (c) => {
+      const categories = normalizeCategories(c.req.valid("json").categories);
+      const userId = c.var.user.id;
+      await db
+        .insert(sidebarLayouts)
+        .values({ userId, categories })
+        .onConflictDoUpdate({
+          target: sidebarLayouts.userId,
+          set: { categories },
+        });
+      await notifyChanged(db, userId);
+      return c.body(null, 204);
+    },
+  );
 
   /**
    * 初めからある項目 (すべての受信トレイ、スター付き、下書き、送信待ち) の

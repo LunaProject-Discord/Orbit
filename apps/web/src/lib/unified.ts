@@ -70,6 +70,7 @@ export const emptyUnifiedState: UnifiedState = {
   folders: [],
   layout: { order: [], hidden: [] },
   builtins: {},
+  categories: [],
 };
 
 const NO_STYLE: BuiltinStyle = { name: null, icon: null, color: null };
@@ -262,8 +263,12 @@ export function loadCachedUnified(): UnifiedState | null {
       Array.isArray(state.layout?.order) &&
       Array.isArray(state.layout?.hidden)
     ) {
-      // 以前の版が保存した内容には、初めからある項目の見た目が無い。
-      return { ...(state as UnifiedState), builtins: state.builtins ?? {} };
+      // 以前の版が保存した内容には、初めからある項目の見た目やカテゴリが無い。
+      return {
+        ...(state as UnifiedState),
+        builtins: state.builtins ?? {},
+        categories: Array.isArray(state.categories) ? state.categories : [],
+      };
     }
   } catch {
     // 読めなければ、サーバーから取得するまで初めからある項目だけを出す。
@@ -271,7 +276,7 @@ export function loadCachedUnified(): UnifiedState | null {
   return null;
 }
 
-export function storeCachedUnified(state: LayoutState): void {
+export function storeCachedUnified(state: UnifiedState): void {
   try {
     window.localStorage.setItem(CACHE_KEY, JSON.stringify(state));
   } catch {
