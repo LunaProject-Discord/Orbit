@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import {
+  ChevronRightIcon,
   CircleAlertIcon,
   LayersPlusIcon,
   PanelLeftCloseIcon,
@@ -22,11 +23,16 @@ import {
 } from "@/lib/overlay-scrollbars";
 import type { SpecialView } from "@/lib/route";
 import {
+  groupSidebar,
+  toggleCategoryFolded,
+  useFoldedCategories,
+} from "@/lib/sidebar-categories";
+import {
   PEEK_CLOSE_DELAY,
   PEEK_OPEN_DELAY,
   SIDEBAR_FOLD_KEY_LABEL,
 } from "@/lib/sidebar-fold";
-import { builtinLabel, builtinStyle, sidebarEntries } from "@/lib/unified";
+import { builtinLabel, builtinStyle, type SidebarEntry } from "@/lib/unified";
 
 /** サイドバーを折りたたむ / 広げたままにするボタン。帯とサイドバーの同じ位置に置く。 */
 export function SidebarFoldButton({
@@ -123,6 +129,110 @@ export function SidebarRail({
     (sum, count) => sum + count,
     0,
   );
+  const groups = groupSidebar(unified, accounts ?? []);
+  const folded = useFoldedCategories();
+  const renderView = (entry: SidebarEntry) => {
+    if (entry.folder) {
+      const { folder } = entry;
+      return (
+        <RailItem
+          key={entry.key}
+          label={folder.name}
+          badge={
+            folder.unreadCount > 0 ? `未読 ${folder.unreadCount} 件` : null
+          }
+          selected={selectedUnifiedId === folder.id}
+          onClick={() => onSelectUnified(folder.id)}
+        >
+          <UnifiedMark folder={folder} />
+        </RailItem>
+      );
+    }
+    const view = entry.builtin;
+    const count =
+      view === "inbox"
+        ? inboxUnread
+        : view === "drafts"
+          ? draftCount
+          : view === "outgoing"
+            ? outgoingCount
+            : 0;
+    const problem = view === "outgoing" && outgoingFailed;
+    return (
+      <RailItem
+        key={entry.key}
+        label={builtinLabel(unified, view)}
+        badge={
+          count > 0
+            ? view === "inbox"
+              ? `未読 ${count} 件`
+              : problem
+                ? `送信できなかったメールあり、${count} 件`
+                : `${count} 件`
+            : null
+        }
+        badgeTone={view === "inbox" ? "unread" : problem ? "problem" : "muted"}
+        selected={
+          view === "inbox"
+            ? folderView && selectedAccountId === null
+            : view === "drafts"
+              ? draftsSelected
+              : special === view
+        }
+        onClick={() => {
+          if (view === "inbox") onSelect(null, null);
+          else if (view === "drafts") onSelectDrafts();
+          else onSelectSpecial(view);
+        }}
+      >
+        {problem ? (
+          <CircleAlertIcon className="text-destructive" />
+        ) : (
+          <BuiltinMark view={view} style={builtinStyle(unified, view)} />
+        )}
+      </RailItem>
+    );
+  };
+  const renderAccount = (account: Account) => {
+    const unread = unreadByAccount.get(account.id) ?? 0;
+    const name = account.displayName || account.email;
+    const problem =
+      account.status === "auth_required" ||
+      account.status === "error" ||
+      account.status === "disabled";
+    return (
+      <RailItem
+        key={account.id}
+        label={name}
+        badge={
+          problem
+            ? "同期に問題があります"
+            : unread > 0
+              ? `未読 ${unread} 件`
+              : null
+        }
+        badgeTone={problem ? "problem" : "unread"}
+        selected={folderView && selectedAccountId === account.id}
+        onClick={() => onSelect(account.id, null)}
+      >
+        {account.icon ? (
+          // アイコンや絵文字を選んでいるアカウントは、サイドバーと同じ印を出す。
+          <AccountMark accounts={accounts ?? []} account={account} />
+        ) : (
+          <AccountDot
+            accounts={accounts ?? []}
+            accountId={account.id}
+            className={cn(
+              "flex size-5 items-center justify-center font-semibold text-[10px] uppercase leading-none",
+              ACCOUNT_ON_CLASS,
+            )}
+          >
+            {[...name][0] ?? ""}
+          </AccountDot>
+        )}
+      </RailItem>
+    );
+  };
   return (
     <div
       inert={inert}
@@ -148,72 +258,7 @@ export function SidebarRail({
         aria-label="メールアカウントとフォルダ (折りたたみ中)"
         className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden py-1 [scrollbar-width:none]"
       >
-        {sidebarEntries(unified).visible.map((entry) => {
-          if (entry.folder) {
-            const { folder } = entry;
-            return (
-              <RailItem
-                key={entry.key}
-                label={folder.name}
-                badge={
-                  folder.unreadCount > 0
-                    ? `未読 ${folder.unreadCount} 件`
-                    : null
-                }
-                selected={selectedUnifiedId === folder.id}
-                onClick={() => onSelectUnified(folder.id)}
-              >
-                <UnifiedMark folder={folder} />
-              </RailItem>
-            );
-          }
-          const view = entry.builtin;
-          const count =
-            view === "inbox"
-              ? inboxUnread
-              : view === "drafts"
-                ? draftCount
-                : view === "outgoing"
-                  ? outgoingCount
-                  : 0;
-          const problem = view === "outgoing" && outgoingFailed;
-          return (
-            <RailItem
-              key={entry.key}
-              label={builtinLabel(unified, view)}
-              badge={
-                count > 0
-                  ? view === "inbox"
-                    ? `未読 ${count} 件`
-                    : problem
-                      ? `送信できなかったメールあり、${count} 件`
-                      : `${count} 件`
-                  : null
-              }
-              badgeTone={
-                view === "inbox" ? "unread" : problem ? "problem" : "muted"
-              }
-              selected={
-                view === "inbox"
-                  ? folderView && selectedAccountId === null
-                  : view === "drafts"
-                    ? draftsSelected
-                    : special === view
-              }
-              onClick={() => {
-                if (view === "inbox") onSelect(null, null);
-                else if (view === "drafts") onSelectDrafts();
-                else onSelectSpecial(view);
-              }}
-            >
-              {problem ? (
-                <CircleAlertIcon className="text-destructive" />
-              ) : (
-                <BuiltinMark view={view} style={builtinStyle(unified, view)} />
-              )}
-            </RailItem>
-          );
-        })}
+        {groups.views.map(renderView)}
         <RailItem
           label="統合フォルダを作成"
           selected={false}
@@ -222,44 +267,48 @@ export function SidebarRail({
           <LayersPlusIcon className="text-muted-foreground" />
         </RailItem>
         <span className="h-2 shrink-0" aria-hidden="true" />
-        {(accounts ?? []).map((account) => {
-          const unread = unreadByAccount.get(account.id) ?? 0;
-          const name = account.displayName || account.email;
-          const problem =
-            account.status === "auth_required" ||
-            account.status === "error" ||
-            account.status === "disabled";
+        {groups.accounts.map(renderAccount)}
+        {groups.categories.map(({ category, views, accounts: members }) => {
+          const isFolded = folded.has(category.id);
+          const unread = members.reduce(
+            (sum, account) => sum + (unreadByAccount.get(account.id) ?? 0),
+            0,
+          );
           return (
-            <RailItem
-              key={account.id}
-              label={name}
-              badge={
-                problem
-                  ? "同期に問題があります"
-                  : unread > 0
-                    ? `未読 ${unread} 件`
-                    : null
-              }
-              badgeTone={problem ? "problem" : "unread"}
-              selected={folderView && selectedAccountId === account.id}
-              onClick={() => onSelect(account.id, null)}
+            <div
+              key={category.id}
+              className="flex shrink-0 flex-col items-center gap-0.5"
             >
-              {account.icon ? (
-                // アイコンや絵文字を選んでいるアカウントは、サイドバーと同じ印を出す。
-                <AccountMark accounts={accounts ?? []} account={account} />
-              ) : (
-                <AccountDot
-                  accounts={accounts ?? []}
-                  accountId={account.id}
-                  className={cn(
-                    "flex size-5 items-center justify-center font-semibold text-[10px] uppercase leading-none",
-                    ACCOUNT_ON_CLASS,
-                  )}
+              {/* カテゴリの区切り。押すと、カテゴリを折りたたむ / 開く。 */}
+              <RailItem
+                label={`${category.name} (${isFolded ? "折りたたみ中" : "カテゴリ"})`}
+                badge={isFolded && unread > 0 ? `未読 ${unread} 件` : null}
+                selected={false}
+                expanded={!isFolded}
+                onClick={() => toggleCategoryFolded(category.id)}
+                className="mt-2 h-5"
+              >
+                <span
+                  aria-hidden="true"
+                  className="flex w-6 items-center gap-0.5 text-muted-foreground"
                 >
-                  {[...name][0] ?? ""}
-                </AccountDot>
+                  <span className="h-px flex-1 bg-border" />
+                  <ChevronRightIcon
+                    className={cn(
+                      "size-3! transition-transform",
+                      !isFolded && "rotate-90",
+                    )}
+                  />
+                  <span className="h-px flex-1 bg-border" />
+                </span>
+              </RailItem>
+              {!isFolded && (
+                <>
+                  {views.map(renderView)}
+                  {members.map(renderAccount)}
+                </>
               )}
-            </RailItem>
+            </div>
           );
         })}
       </nav>
@@ -287,7 +336,9 @@ function RailItem({
   badge = null,
   badgeTone = "unread",
   selected,
+  expanded,
   onClick,
+  className,
   children,
 }: {
   label: string;
@@ -295,7 +346,10 @@ function RailItem({
   badge?: string | null;
   badgeTone?: keyof typeof badgeTones;
   selected: boolean;
+  /** 開閉を切り替える項目なら、開いているか。 */
+  expanded?: boolean;
   onClick: () => void;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -305,9 +359,11 @@ function RailItem({
         onClick={onClick}
         aria-label={badge ? `${label} (${badge})` : label}
         aria-current={selected ? "page" : undefined}
+        aria-expanded={expanded}
         className={cn(
           "relative flex size-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
           selected && "bg-sidebar-accent text-sidebar-accent-foreground",
+          className,
         )}
       >
         {children}

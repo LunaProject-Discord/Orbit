@@ -19,8 +19,16 @@ import {
 } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { Hint } from "@/components/hint";
-import { AccountSidebar } from "@/components/mail/account-sidebar";
+import {
+  AccountSidebar,
+  type CategoryActions,
+} from "@/components/mail/account-sidebar";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
+import {
+  CategoryDialog,
+  type CategoryDialogTarget,
+} from "@/components/mail/category-dialog";
+import { CategorySettings } from "@/components/mail/category-settings";
 import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { DraftList } from "@/components/mail/draft-list";
@@ -99,11 +107,13 @@ import {
   retryFailure,
   type SearchParams,
   type ServerDraft,
+  type SidebarCategory,
   type SidebarLayout,
   type SignatureRule,
   saveAccountOrder,
   saveDraft,
   saveMailboxOrder,
+  saveSidebarCategories,
   saveSidebarLayout,
   sendFocus,
   startOAuthLogin,
@@ -187,7 +197,22 @@ import {
 } from "@/lib/route";
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
-import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
+import {
+  isSelectAllKey,
+  isTypingTarget,
+  resolveShortcut,
+  SELECT_ALL_SCOPE_ATTRIBUTE,
+  selectAllTargetsList,
+} from "@/lib/shortcuts";
+import {
+  addCategory,
+  assignCategory,
+  MAX_CATEGORIES,
+  pruneCategories,
+  removeCategory,
+  renameCategory,
+  reorderCategories,
+} from "@/lib/sidebar-categories";
 import {
   loadSidebarFolded,
   SIDEBAR_FOLD_KEY_LABEL,
@@ -221,6 +246,7 @@ import {
   undoMessage,
 } from "@/lib/undo";
 import {
+  BUILTIN_VIEWS,
   type BuiltinView,
   builtinLabel,
   builtinStyle,
@@ -535,6 +561,15 @@ export function MailApp({ user }: { user: User }) {
   const [selectMode, setSelectMode] = useState(false);
   /** Shift を押しながらの範囲選択の起点 (最後にチェックを操作した行)。 */
   const anchorRef = useRef<string | null>(null);
+  // 最後にマウスや指で押した要素。すべて選択のキーを一覧に使うかどうかの判断に使う。
+  const lastPointerRef = useRef<EventTarget | null>(null);
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      lastPointerRef.current = event.target;
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
   /** 増やすと、選択したメールの移動先メニューが開く (ショートカットキー用)。 */
   const [bulkMoveRequest, setBulkMoveRequest] = useState(0);
   /** サーバーに保存してある下書き (どの端末で書いたものも含む)。読み込み前は null。 */
@@ -557,6 +592,8 @@ export function MailApp({ user }: { user: User }) {
   const [unifiedLoaded, setUnifiedLoaded] = useState(false);
   const [unifiedDialog, setUnifiedDialog] =
     useState<UnifiedDialogTarget | null>(null);
+  const [categoryDialog, setCategoryDialog] =
+    useState<CategoryDialogTarget | null>(null);
   /** サーバーからの変更通知の接続。null は、まだ一度も繋がっていない。 */
   const [connected, setConnected] = useState<boolean | null>(null);
   /** いまサーバーに接続している端末の数 (この端末を含む)。 */
@@ -680,6 +717,31 @@ export function MailApp({ user }: { user: User }) {
       return next;
     });
     saveOrder(() => saveSidebarLayout(layout));
+  };
+  /**
+   * サイドバーのカテゴリを変える。画面にはすぐ反映する。
+   * 無くなったアカウントや統合フォルダの ID は、このときに取り除く。
+   */
+  const changeCategories = (
+    change: (categories: SidebarCategory[]) => SidebarCategory[],
+  ) => {
+    let categories = change(unified.categories);
+    if (accounts && unifiedLoaded) {
+      categories = pruneCategories(
+        categories,
+        new Set([
+          ...BUILTIN_VIEWS,
+          ...unified.folders.map((folder) => folder.id),
+          ...accounts.map((account) => account.id),
+        ]),
+      );
+    }
+    setUnified((current) => {
+      const next = { ...current, categories };
+      storeCachedUnified(next);
+      return next;
+    });
+    saveOrder(() => saveSidebarCategories(categories));
   };
 
   const loadOutgoing = useCallback(async () => {
@@ -1319,9 +1381,21 @@ export function MailApp({ user }: { user: User }) {
     anchorRef.current = id;
   }
 
+  /** ドラッグで範囲を選んだとき。 */
+  function handleBandSelect(next: Set<string>, anchor: string | null) {
+    setCheckedIds(next);
+    if (anchor !== null) anchorRef.current = anchor;
+  }
+
   /** 選択した行 (会話) にまとめて操作する。 */
   function performBulk(rows: MessageSummary[], input: MessageActionInput) {
-    for (const ids of actionBatches(rows)) performAction(ids, input);
+    // スターは 1 通表示と同じく、付けるときは会話の最新の 1 通にだけ付ける
+    // (外すときは会話のすべてから外す)。
+    const targets =
+      input.action === "set_flags" && input.flagged === true
+        ? rows.map((row) => ({ ...row, threadMessageIds: [row.id] }))
+        : rows;
+    for (const ids of actionBatches(targets)) performAction(ids, input);
     // 移動や削除で一覧から無くなるので、選択も終える。
     if (input.action !== "set_flags") clearSelection();
   }
@@ -2212,6 +2286,51 @@ export function MailApp({ user }: { user: User }) {
     setSidebarOpen(false);
     setUnifiedDialog(target);
   };
+  /** サイドバーの項目 (初めからある項目、統合フォルダ、アカウント) の表示名。 */
+  const sidebarItemLabel = (key: string): string | undefined => {
+    if ((BUILTIN_VIEWS as readonly string[]).includes(key)) {
+      return builtinLabel(unified, key as BuiltinView);
+    }
+    const folder = unified.folders.find((item) => item.id === key);
+    if (folder) return folder.name;
+    const account = accounts?.find((item) => item.id === key);
+    return account ? account.displayName || account.email : undefined;
+  };
+  const openCategoryDialog = (target: CategoryDialogTarget) => {
+    if (
+      target.kind === "create" &&
+      unified.categories.length >= MAX_CATEGORIES
+    ) {
+      setNotice({
+        message: `カテゴリは ${MAX_CATEGORIES} 個まで作れます。`,
+        tone: "error",
+      });
+      return;
+    }
+    setSidebarOpen(false);
+    setCategoryDialog(target);
+  };
+  /** サイドバーのカテゴリの操作 (サイドバーと設定画面から呼ぶ)。 */
+  const categoryActions: CategoryActions = {
+    onCreate: (key) =>
+      openCategoryDialog(
+        key === undefined
+          ? { kind: "create" }
+          : { kind: "create", key, label: sidebarItemLabel(key) },
+      ),
+    onRename: (category) => openCategoryDialog({ kind: "rename", category }),
+    onDelete: (category) => {
+      changeCategories((list) => removeCategory(list, category.id));
+      setNotice({
+        message: `カテゴリ「${category.name}」を削除しました。中の項目はカテゴリなしに戻ります。`,
+        tone: "info",
+      });
+    },
+    onAssign: (key, categoryId) =>
+      changeCategories((list) => assignCategory(list, key, categoryId)),
+    onReorder: (ids) =>
+      changeCategories((list) => reorderCategories(list, ids)),
+  };
   const openBuiltinDialog = (view: BuiltinView) =>
     openUnifiedDialog({
       kind: "builtin",
@@ -2389,6 +2508,20 @@ export function MailApp({ user }: { user: User }) {
   shortcutRef.current = (event) => {
     // 作成専用のウィンドウでは、一覧の操作のキーは使わない (一覧を出していない)。
     if (standaloneCompose || standaloneMessage) return;
+    // Ctrl+A (⌘+A) で、一覧に読み込んだメールをすべて選ぶ。ブラウザーや OS と同じキーなので、
+    // ショートカットキーの設定を止めていても効かせる。入力欄やメールの本文では文字の全選択のまま。
+    if (isSelectAllKey(event)) {
+      if (!selectAllTargetsList(event.target, lastPointerRef.current)) return;
+      if (document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (draftsSelected || special === "outgoing" || special === "settings") {
+        return;
+      }
+      const list = messages ?? [];
+      if (list.length === 0) return;
+      event.preventDefault();
+      setCheckedIds(new Set(list.map((message) => message.id)));
+      return;
+    }
     // 設定でショートカットキーを止めていても、Esc で閉じる操作は残す。
     if (!preferences.shortcuts && event.key !== "Escape") return;
     const command = resolveShortcut(event);
@@ -2808,6 +2941,7 @@ export function MailApp({ user }: { user: User }) {
               onHide: (key) => changeLayout(setEntryHidden(unified, key, true)),
               onManage: openUnifiedSettings,
             }}
+            categoryActions={categoryActions}
             outgoingCount={outgoing.length + queuedSends.length}
             outgoingFailed={
               outgoing.some((mail) => mail.status === "failed") ||
@@ -2906,22 +3040,35 @@ export function MailApp({ user }: { user: User }) {
               />
             }
             sidebarItems={
-              <UnifiedSettings
-                unified={unified}
-                mailboxes={mailboxes ?? []}
-                onLayoutChange={changeLayout}
-                onCreate={() => openUnifiedDialog({ kind: "create" })}
-                onEdit={(folder) => openUnifiedDialog({ kind: "edit", folder })}
-                onEditBuiltin={openBuiltinDialog}
-                onDelete={(folder) =>
-                  openUnifiedDialog({ kind: "delete", folder })
-                }
-              />
+              <>
+                <UnifiedSettings
+                  unified={unified}
+                  mailboxes={mailboxes ?? []}
+                  onLayoutChange={changeLayout}
+                  onCreate={() => openUnifiedDialog({ kind: "create" })}
+                  onEdit={(folder) =>
+                    openUnifiedDialog({ kind: "edit", folder })
+                  }
+                  onEditBuiltin={openBuiltinDialog}
+                  onDelete={(folder) =>
+                    openUnifiedDialog({ kind: "delete", folder })
+                  }
+                />
+                <CategorySettings
+                  unified={unified}
+                  accounts={accounts ?? []}
+                  onCreate={categoryActions.onCreate}
+                  onRename={categoryActions.onRename}
+                  onDelete={categoryActions.onDelete}
+                  onReorder={categoryActions.onReorder}
+                />
+              </>
             }
           />
         )}
         <section
           aria-label="メール一覧"
+          {...{ [SELECT_ALL_SCOPE_ATTRIBUTE]: "" }}
           className={cn(
             "relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
             selectedMessageId ? "hidden" : "flex",
@@ -3091,6 +3238,7 @@ export function MailApp({ user }: { user: User }) {
                   checkedIds={checkedIds}
                   selecting={selecting}
                   onToggleCheck={handleToggleCheck}
+                  onBandSelect={handleBandSelect}
                   swipeFor={swipeFor}
                   onSwipeMove={setMoveTarget}
                   hasMore={nextCursor !== null}
@@ -3313,6 +3461,22 @@ export function MailApp({ user }: { user: User }) {
               ) ?? null,
           )
         }
+      />
+      <CategoryDialog
+        target={categoryDialog}
+        onClose={() => setCategoryDialog(null)}
+        onSubmit={(target, name) => {
+          if (target.kind === "rename") {
+            changeCategories((list) =>
+              renameCategory(list, target.category.id, name),
+            );
+          } else {
+            const id = randomUuid();
+            changeCategories((list) =>
+              addCategory(list, { id, name }, target.key),
+            );
+          }
+        }}
       />
       <FolderDialogs
         target={folderDialog}

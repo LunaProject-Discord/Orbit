@@ -1,0 +1,1 @@
+ALTER TABLE "sidebar_layouts" ADD COLUMN "categories" jsonb DEFAULT '[]'::jsonb NOT NULL;
