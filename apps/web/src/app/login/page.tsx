@@ -2,9 +2,14 @@
 
 import { KeyRoundIcon } from "lucide-react";
 import Link from "next/link";
-import { type FormEvent, useEffect, useId, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AuthShell } from "@/components/auth-shell";
+import {
+  BackupCodeInput,
+  formatBackupCode,
+  TotpInput,
+} from "@/components/one-time-code-input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -125,6 +130,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [codeKind, setCodeKind] = useState<"totp" | "backup">("totp");
   const [code, setCode] = useState("");
+  const codeFormRef = useRef<HTMLFormElement>(null);
   const [trustDevice, setTrustDevice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -173,6 +179,11 @@ export default function LoginPage() {
     setError(message);
   }
 
+  // すべての桁が埋まったら、ボタンを押さなくても確認する。
+  function submitWhenComplete() {
+    if (!submitting) codeFormRef.current?.requestSubmit();
+  }
+
   async function handleCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -180,13 +191,17 @@ export default function LoginPage() {
     try {
       await verifyTwoFactor(
         codeKind,
-        codeKind === "totp" ? code.replace(/\s/g, "") : code.trim(),
+        codeKind === "totp" ? code : formatBackupCode(code),
         trustDevice,
       );
     } catch (cause) {
       const { message, restart } = twoFactorMessageOf(cause);
       if (restart) backToPassword(message);
-      else setError(message);
+      else {
+        // 間違えたコードは消して、すぐに入れ直せるようにする。
+        setCode("");
+        setError(message);
+      }
       setSubmitting(false);
     }
   }
@@ -212,6 +227,7 @@ export default function LoginPage() {
         }
       >
         <form
+          ref={codeFormRef}
           onSubmit={handleCode}
           className="mt-8 flex flex-col gap-5"
           aria-describedby={error ? errorId : undefined}
@@ -220,22 +236,30 @@ export default function LoginPage() {
             <Label htmlFor={codeId}>
               {codeKind === "totp" ? "コード" : "バックアップコード"}
             </Label>
-            <Input
-              // 種類を切り替えたら、入力欄を作り直してフォーカスを移す。
-              key={codeKind}
-              id={codeId}
-              autoFocus
-              required
-              autoComplete={codeKind === "totp" ? "one-time-code" : "off"}
-              inputMode={codeKind === "totp" ? "numeric" : "text"}
-              autoCapitalize="none"
-              spellCheck={false}
-              maxLength={codeKind === "totp" ? 12 : 64}
-              className="font-mono tracking-widest"
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              aria-invalid={error ? true : undefined}
-            />
+            {codeKind === "totp" ? (
+              <TotpInput
+                // 種類を切り替えたら、入力欄を作り直してフォーカスを移す。
+                key="totp"
+                id={codeId}
+                autoFocus
+                value={code}
+                onChange={setCode}
+                onComplete={submitWhenComplete}
+                invalid={error !== null}
+                aria-describedby={error ? errorId : undefined}
+              />
+            ) : (
+              <BackupCodeInput
+                key="backup"
+                id={codeId}
+                autoFocus
+                value={code}
+                onChange={setCode}
+                onComplete={submitWhenComplete}
+                invalid={error !== null}
+                aria-describedby={error ? errorId : undefined}
+              />
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Checkbox
