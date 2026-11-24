@@ -612,15 +612,17 @@ export function ComposeWindow({
       >
         {/* 狭い画面: 閉じる、題名、添付、送信を上に並べる。 */}
         <header className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:hidden">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="閉じる (下書きは残ります)"
-            onClick={() => onOpenChange(false)}
-          >
-            <XIcon />
-          </Button>
+          {!standalone && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="閉じる (下書きは残ります)"
+              onClick={() => onOpenChange(false)}
+            >
+              <XIcon />
+            </Button>
+          )}
           <h2 className="min-w-0 flex-1 truncate font-semibold text-base">
             {titles[draft.mode]}
           </h2>
@@ -684,15 +686,17 @@ export function ComposeWindow({
               </Button>
             </Hint>
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="閉じる (下書きは残ります)"
-            onClick={() => onOpenChange(false)}
-          >
-            <XIcon />
-          </Button>
+          {!standalone && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="閉じる (下書きは残ります)"
+              onClick={() => onOpenChange(false)}
+            >
+              <XIcon />
+            </Button>
+          )}
         </header>
 
         {notice && (

@@ -131,11 +131,12 @@ export function SidebarRail({
         className,
       )}
     >
-      <div className="flex h-14 shrink-0 items-center">
+      {/* サイドバーと同じく、デスクトップ版ではタイトルバーのハンバーガーを使う。 */}
+      <div className="flex h-14 shrink-0 items-center in-[[data-desktop]]:hidden">
         <SidebarFoldButton folded onToggle={onToggleFold} />
       </div>
       {onCompose && (
-        <div className="shrink-0 pb-2">
+        <div className="shrink-0 pb-2 in-[[data-desktop]]:pt-2">
           <Hint label="新規作成" shortcut="C" side="right">
             <Button size="icon" onClick={onCompose} aria-label="新規作成">
               <PenSquareIcon />

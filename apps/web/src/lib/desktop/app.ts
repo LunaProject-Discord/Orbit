@@ -128,6 +128,31 @@ export const desktopWindow = {
       return false;
     }
   },
+  /**
+   * ウィンドウが閉じられる直前に呼ぶ (タイトルバーの閉じる、システムメニュー、Alt+F4 など)。
+   * handler が終わるのを待ってから閉じる。戻り値の関数で解除する。
+   */
+  onCloseRequested(handler: () => Promise<void>): () => void {
+    let cancelled = false;
+    let remove: (() => void) | null = null;
+    void (async () => {
+      try {
+        const unlisten = await (await currentWindow()).onCloseRequested(
+          async () => {
+            await handler().catch(() => {});
+          },
+        );
+        if (cancelled) unlisten();
+        else remove = unlisten;
+      } catch {
+        // 受け取れなければ、閉じる前の後始末をせずに閉じるだけ。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
+  },
   /** ウィンドウの大きさが変わるたびに呼ぶ。戻り値の関数で解除する。 */
   onResized(listener: () => void): () => void {
     let cancelled = false;

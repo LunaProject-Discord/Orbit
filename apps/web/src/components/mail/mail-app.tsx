@@ -1624,6 +1624,23 @@ export function MailApp({ user }: { user: User }) {
     else window.close();
   }
 
+  // 作成専用のウィンドウを閉じるとき (タイトルバーの閉じるボタン、Alt+F4 など) の後始末。
+  // 書きかけは保存し終えてから、移すためだけに保存した下書きは消してから閉じる。
+  const beforeWindowCloseRef = useRef<() => Promise<void>>(async () => {});
+  beforeWindowCloseRef.current = async () => {
+    const current = draftRef.current;
+    if (!current) return;
+    if (composeWindow.fresh && !draftDirty) {
+      await handleDiscardDraft(current.idempotencyKey);
+      return;
+    }
+    await closeCompose();
+  };
+  useEffect(() => {
+    if (!standaloneCompose || !isDesktopApp()) return;
+    return desktopWindow.onCloseRequested(() => beforeWindowCloseRef.current());
+  }, [standaloneCompose]);
+
   function handleNewMail() {
     const accountId = selectedAccountId ?? accounts?.[0]?.id;
     if (!accountId) return;
