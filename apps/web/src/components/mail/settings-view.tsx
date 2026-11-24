@@ -1528,18 +1528,17 @@ const DATE_FORMAT_FIELDS: readonly DateFormatField[] = [
   {
     key: "monthDayFormat",
     label: "月日 (今年の日付)",
-    presets: ["M/d", "MM/dd", "M月d日", "M/d(ddd)"],
+    presets: ["M/d", "MM/dd", "M月d日", "M/d (ddd)"],
   },
   {
     key: "longDateFormat",
     label: "長い日付",
     presets: [
       "yyyy年M月d日 (ddd)",
-      "yyyy年M月d日(ddd)",
       "yyyy年M月d日",
       "yyyy年MM月dd日",
       "yyyy年M月d日 dddd",
-      "yyyy/M/d(ddd)",
+      "yyyy/M/d (ddd)",
     ],
   },
   {
