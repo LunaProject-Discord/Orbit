@@ -5,6 +5,7 @@
 mod badge;
 mod fonts;
 mod settings;
+mod system_menu;
 #[cfg(windows)]
 mod toast;
 mod toast_xml;
@@ -272,7 +273,8 @@ pub fn run() {
             notify_new_mail,
             set_unread_count,
             open_window,
-            fonts::list_fonts
+            fonts::list_fonts,
+            system_menu::show_system_menu
         ])
         .setup(|app| {
             let handle = app.handle().clone();

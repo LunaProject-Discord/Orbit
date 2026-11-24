@@ -69,6 +69,7 @@ import {
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
+import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
 import { insertIntoField } from "@/lib/emoji/insert";
 import { formatSize } from "@/lib/format";
 import { sendMailOrQueue, useOnline } from "@/lib/offline";
@@ -142,6 +143,11 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   /** 作成画面を新しいウィンドウへ移す。移せない環境 (スマホアプリ) では渡さない。 */
   onPopOut?: () => void;
+  /**
+   * 作成画面だけを出すウィンドウ (デスクトップ版の新規作成など)。ウィンドウいっぱいに広げ、
+   * 折りたたみ・最大化・新しいウィンドウで開くボタンは出さない。閉じるとウィンドウも閉じる。
+   */
+  standalone?: boolean;
   onChange: (draft: ComposeDraft) => void;
   /** 送信を始める前に呼ぶ。下書きの保存を止めるのを待ってから送信する。 */
   onBeforeSend: () => Promise<void>;
@@ -188,6 +194,7 @@ export function ComposeWindow({
   contentVersion,
   onOpenChange,
   onPopOut,
+  standalone = false,
   onChange,
   onBeforeSend,
   onSendFailed,
@@ -383,6 +390,17 @@ export function ComposeWindow({
     [accounts, commit],
   );
 
+  // 作成専用のウィンドウでは、件名をタイトルバーに出す (「件名 ― Orbit Mail」)。
+  const windowName = draft ? draft.subject.trim() || titles[draft.mode] : null;
+  useEffect(() => {
+    if (!standalone) return;
+    setTitleBarTitle(windowName);
+  }, [standalone, windowName]);
+  useEffect(() => {
+    if (!standalone) return;
+    return () => setTitleBarTitle(null);
+  }, [standalone]);
+
   if (!draft || !open) return null;
 
   // ほかの欄で選び済みの宛先は、候補に出さない。
@@ -549,7 +567,7 @@ export function ComposeWindow({
     )
   );
 
-  if (minimized) {
+  if (minimized && !standalone) {
     return (
       <section
         aria-label="作成中のメール"
@@ -588,9 +606,11 @@ export function ComposeWindow({
       data-maximized={maximized || undefined}
       className={cn(
         "fixed inset-0 top-(--titlebar-height) z-40 flex flex-col bg-popover text-popover-foreground sm:shadow-2xl",
-        maximized
-          ? "sm:inset-4 sm:top-[calc(var(--titlebar-height)+1rem)] sm:rounded-xl sm:border"
-          : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
+        standalone
+          ? "sm:shadow-none"
+          : maximized
+            ? "sm:inset-4 sm:top-[calc(var(--titlebar-height)+1rem)] sm:rounded-xl sm:border"
+            : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
       )}
     >
       <form
@@ -610,18 +630,27 @@ export function ComposeWindow({
       >
         {/* 狭い画面: 閉じる、題名、添付、送信を上に並べる。 */}
         <header className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:hidden">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="閉じる (下書きは残ります)"
-            onClick={() => onOpenChange(false)}
+          {!standalone && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="閉じる (下書きは残ります)"
+              onClick={() => onOpenChange(false)}
+            >
+              <XIcon />
+            </Button>
+          )}
+          {/* 作成専用のウィンドウでは、題名はタイトルバーに出している。 */}
+          <h2
+            className={cn(
+              "min-w-0 flex-1 truncate font-semibold text-base",
+              standalone && "sr-only",
+            )}
           >
-            <XIcon />
-          </Button>
-          <h2 className="min-w-0 flex-1 truncate font-semibold text-base">
             {titles[draft.mode]}
           </h2>
+          {standalone && <span className="flex-1" />}
           <Button
             type="button"
             variant="ghost"
@@ -638,21 +667,28 @@ export function ComposeWindow({
           </Button>
         </header>
 
-        {/* 広い画面: 窓の見出し。 */}
-        <header className="hidden h-12 shrink-0 items-center gap-2 border-b pr-2 pl-4 sm:flex">
+        {/* 広い画面: 窓の見出し。作成専用のウィンドウでは、題名はタイトルバーに出すので置かない。 */}
+        <header
+          className={cn(
+            "hidden h-12 shrink-0 items-center gap-2 border-b pr-2 pl-4",
+            !standalone && "sm:flex",
+          )}
+        >
           <h2 className="shrink-0 font-semibold text-sm">
             {titles[draft.mode]}
           </h2>
           <span className="min-w-0 flex-1 truncate">{saved}</span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="作成画面を折りたたむ"
-            onClick={() => setMinimized(true)}
-          >
-            <MinusIcon />
-          </Button>
+          {!standalone && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="作成画面を折りたたむ"
+              onClick={() => setMinimized(true)}
+            >
+              <MinusIcon />
+            </Button>
+          )}
           {onPopOut && (
             <Hint label="新しいウィンドウで開く">
               <Button
@@ -666,27 +702,31 @@ export function ComposeWindow({
               </Button>
             </Hint>
           )}
-          <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
+          {!standalone && (
+            <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={maximized ? "元の大きさに戻す" : "最大化"}
+                aria-pressed={maximized}
+                onClick={toggleMaximized}
+              >
+                {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+              </Button>
+            </Hint>
+          )}
+          {!standalone && (
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={maximized ? "元の大きさに戻す" : "最大化"}
-              aria-pressed={maximized}
-              onClick={toggleMaximized}
+              aria-label="閉じる (下書きは残ります)"
+              onClick={() => onOpenChange(false)}
             >
-              {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+              <XIcon />
             </Button>
-          </Hint>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="閉じる (下書きは残ります)"
-            onClick={() => onOpenChange(false)}
-          >
-            <XIcon />
-          </Button>
+          )}
         </header>
 
         {notice && (
@@ -955,7 +995,13 @@ export function ComposeWindow({
               })}
             </ul>
           )}
-          <p className="shrink-0 px-4 pb-2 text-muted-foreground text-xs sm:hidden">
+          <p
+            className={cn(
+              "shrink-0 px-4 pb-2 text-muted-foreground text-xs",
+              // 広い画面では見出しに出す (見出しの無い作成専用のウィンドウを除く)。
+              !standalone && "sm:hidden",
+            )}
+          >
             {saved}
           </p>
           {!online && (
