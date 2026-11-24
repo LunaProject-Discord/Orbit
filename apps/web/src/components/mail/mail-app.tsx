@@ -7,6 +7,7 @@ import {
   MenuIcon,
   PenSquareIcon,
   PlusIcon,
+  SearchIcon,
 } from "lucide-react";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
@@ -39,7 +40,12 @@ import { MessageView } from "@/components/mail/message-view";
 import { MoveDialog } from "@/components/mail/move-dialog";
 import { OutgoingList } from "@/components/mail/outgoing-list";
 import { PullToRefresh } from "@/components/mail/pull-to-refresh";
-import { SEARCH_INPUT_ID, SearchBar } from "@/components/mail/search-bar";
+import {
+  rememberSearch,
+  SEARCH_INPUT_ID,
+  SearchBox,
+  SearchScope,
+} from "@/components/mail/search-bar";
 import { SelectionToolbar } from "@/components/mail/selection-toolbar";
 import { SettingsView } from "@/components/mail/settings-view";
 import {
@@ -185,6 +191,7 @@ import {
   sameSearch,
 } from "@/lib/route";
 import { emptyFilters, isSearchActive } from "@/lib/search";
+import { completeQuery } from "@/lib/search-input";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
 import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
@@ -227,6 +234,7 @@ import {
   setEntryHidden,
   storeCachedUnified,
 } from "@/lib/unified";
+import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
 import { canOpenWindows, openWindow } from "@/lib/windows";
 
@@ -450,6 +458,19 @@ export function MailApp({ user }: { user: User }) {
   );
   const searchRef = useRef<SearchParams | null>(null);
   searchRef.current = search;
+  /**
+   * スマホの検索画面を開いている (検索中は開いていなくても検索画面として出す)。
+   * 開いたときに履歴へ積み (mailSearch)、「戻る」で閉じられるようにする。
+   */
+  const [searchScreen, setSearchScreen] = useState(false);
+  /** 開いているメールの中の検索を開く要求 (検索欄の候補やショートカットキーから)。 */
+  const [findRequest, setFindRequest] = useState<{
+    text: string;
+    nonce: number;
+  } | null>(null);
+  /** 検索欄を置く場所を決める画面の幅。 */
+  const wide = useMediaQuery("(min-width: 1024px)");
+  const medium = useMediaQuery("(min-width: 768px)");
   /** 検索結果で目立たせる語 (サーバーが検索欄の入力から求める)。 */
   const [searchTerms, setSearchTerms] = useState<string[]>([]);
 
@@ -834,6 +855,7 @@ export function MailApp({ user }: { user: User }) {
     setSpecial(null);
     setUnifiedId(null);
     setSearchInput(emptySearch);
+    setSearchScreen(false);
     setSearch(null);
     setSelectedAccountId(null);
     setSelectedMailboxId(null);
@@ -1222,6 +1244,8 @@ export function MailApp({ user }: { user: User }) {
     setSelectedMessageId(id);
     setSingle(null);
     anchorRef.current = id;
+    // 検索結果から開いたら、その検索を「最近の検索」に残す。
+    if (search) rememberSearch(search.text);
   }
 
   /** 一覧で広げた会話の中の 1 通だけを開く。 */
@@ -1291,11 +1315,17 @@ export function MailApp({ user }: { user: User }) {
 
   // 検索欄の入力が止まったら検索する。入力も条件も無くなったら、すぐに通常の一覧へ戻す。
   useEffect(() => {
-    if (!isSearchActive(searchInput)) {
+    const next = { ...searchInput, text: completeQuery(searchInput.text) };
+    if (!isSearchActive(next)) {
       setSearch(null);
       return;
     }
-    const timer = setTimeout(() => setSearch(searchInput), SEARCH_DELAY_MS);
+    // 入力の途中で語が変わらなければ (演算子を入れただけなど)、検索し直さない。
+    const timer = setTimeout(
+      () =>
+        setSearch((current) => (sameSearch(current, next) ? current : next)),
+      SEARCH_DELAY_MS,
+    );
     return () => clearTimeout(timer);
   }, [searchInput]);
 
@@ -1557,6 +1587,26 @@ export function MailApp({ user }: { user: User }) {
       // 宛先を入れてあるので、下書きとして保存する。
       true,
     );
+  }
+
+  /** スマホの検索画面を開く。「戻る」で閉じられるよう、履歴に積む。 */
+  function openSearchScreen() {
+    setSelectedMessageId(null);
+    setSearchScreen(true);
+    const url = `${window.location.pathname}${window.location.search}`;
+    window.history.pushState({ mailFrom: url, mailSearch: true }, "", url);
+  }
+
+  /** スマホの検索画面を閉じて、検索を終える。 */
+  function closeSearchScreen() {
+    if (window.history.state?.mailSearch === true) {
+      // 開く前の表示が 1 つ前の履歴にある。戻ると、検索も終わる (popstate で反映)。
+      window.history.back();
+      return;
+    }
+    setSearchScreen(false);
+    setSearchInput(emptySearch);
+    setSearch(null);
   }
 
   /** プロフィールカードから、そのアドレスとやり取りしたメールをすべてのフォルダから検索する。 */
@@ -1872,6 +1922,7 @@ export function MailApp({ user }: { user: User }) {
     setUnifiedId(null);
     // フォルダを選んだら検索を終えて、そのフォルダの一覧を表示する。
     setSearchInput(emptySearch);
+    setSearchScreen(false);
     setSearch(null);
     clearSelection();
     anchorRef.current = null;
@@ -1886,6 +1937,7 @@ export function MailApp({ user }: { user: User }) {
     setDraftsSelected(false);
     setSpecial(null);
     setSearchInput(emptySearch);
+    setSearchScreen(false);
     setSearch(null);
     clearSelection();
     anchorRef.current = null;
@@ -1899,6 +1951,7 @@ export function MailApp({ user }: { user: User }) {
     setSelectedMessageId(null);
     // 下書きの一覧は検索の対象ではないので、検索は終える。
     setSearchInput(emptySearch);
+    setSearchScreen(false);
     setSearch(null);
     clearSelection();
     anchorRef.current = null;
@@ -1912,6 +1965,7 @@ export function MailApp({ user }: { user: User }) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
     setSearchInput(emptySearch);
+    setSearchScreen(false);
     setSearch(null);
     clearSelection();
     anchorRef.current = null;
@@ -1976,7 +2030,12 @@ export function MailApp({ user }: { user: User }) {
     if (mode === "push") {
       window.history.pushState({ mailFrom: currentUrl }, "", routeUrl);
     } else {
-      window.history.replaceState({ mailFrom: from }, "", routeUrl);
+      // 検索画面を開いた履歴は、検索の語が変わっても検索画面の履歴のままにする。
+      window.history.replaceState(
+        { mailFrom: from, mailSearch: window.history.state?.mailSearch },
+        "",
+        routeUrl,
+      );
     }
   }, [routeUrl, routeSync]);
 
@@ -1984,6 +2043,7 @@ export function MailApp({ user }: { user: User }) {
   const applyRouteRef = useRef<(route: MailRoute) => void>(() => {});
   applyRouteRef.current = (route) => {
     setSidebarOpen(false);
+    setSearchScreen(window.history.state?.mailSearch === true);
     if (
       route.accountId !== selectedAccountId ||
       route.mailboxId !== selectedMailboxId ||
@@ -2217,6 +2277,39 @@ export function MailApp({ user }: { user: User }) {
       <MenuIcon />
     </Button>
   );
+  /** 検索欄。広い画面では右上 (メールの表示の上) に、スマホでは検索画面のアプリバーに置く。 */
+  const searchBox = (variant: "popup" | "screen") => (
+    <SearchBox
+      key={variant}
+      variant={variant}
+      value={searchInput}
+      onChange={setSearchInput}
+      onSubmit={(text) => {
+        setSearchInput({ ...searchInput, text });
+        const next = { ...searchInput, text: completeQuery(text) };
+        setSearch(isSearchActive(next) ? next : null);
+      }}
+      placeholder={
+        variant === "popup"
+          ? "検索"
+          : accountName
+            ? `${accountName} から検索`
+            : "すべてのアカウントから検索"
+      }
+      onFindInMessage={
+        selectedMessageId
+          ? (text) =>
+              setFindRequest((current) => ({
+                text,
+                nonce: (current?.nonce ?? 0) + 1,
+              }))
+          : undefined
+      }
+      onClose={closeSearchScreen}
+      autoFocus={variant === "screen" && searchScreen && !searching}
+      className={variant === "screen" ? "h-full flex-1" : undefined}
+    />
+  );
   /** 検索結果の各行に出す、メールのある場所。アカウントを選んでいなければアカウント名も添える。 */
   const locationLabel = (message: MessageSummary): string | null => {
     const mailbox = mailboxes?.find((item) => item.id === message.mailboxId);
@@ -2259,6 +2352,23 @@ export function MailApp({ user }: { user: User }) {
   // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (event) => {
+    // デスクトップ版にはブラウザーのページ内検索が無いので、Ctrl+F でメールの中を探す。
+    if (
+      isDesktopApp() &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "f" &&
+      selectedMessageId &&
+      !settingsOpen
+    ) {
+      event.preventDefault();
+      setFindRequest((current) => ({
+        text: "",
+        nonce: (current?.nonce ?? 0) + 1,
+      }));
+      return;
+    }
     // 設定でショートカットキーを止めていても、Esc で閉じる操作は残す。
     if (!preferences.shortcuts && event.key !== "Escape") return;
     const command = resolveShortcut(event);
@@ -2283,7 +2393,14 @@ export function MailApp({ user }: { user: User }) {
     }
     if (command === "search") {
       const input = document.getElementById(SEARCH_INPUT_ID);
-      if (!(input instanceof HTMLInputElement)) return;
+      if (!(input instanceof HTMLInputElement)) {
+        // スマホ幅では、検索画面を開く。
+        if (showSearch && !medium) {
+          event.preventDefault();
+          openSearchScreen();
+        }
+        return;
+      }
       event.preventDefault();
       const focus = () => {
         input.focus();
@@ -2791,13 +2908,12 @@ export function MailApp({ user }: { user: User }) {
         <section
           aria-label="メール一覧"
           className={cn(
-            "relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
+            "@container/pane relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
             selectedMessageId ? "hidden" : "flex",
             settingsOpen && "hidden!",
           )}
         >
-          {/* 狭い画面では、検索欄を上、見出しを下に置く。 */}
-          <div className="flex shrink-0 flex-col-reverse md:flex-col">
+          <div className="flex shrink-0 flex-col">
             {selecting ? (
               <SelectionToolbar
                 rows={checkedRows}
@@ -2817,16 +2933,15 @@ export function MailApp({ user }: { user: User }) {
                 }
                 onClose={clearSelection}
               />
+            ) : showSearch && !medium && (searchScreen || searching) ? (
+              // スマホの検索画面。アプリバーを検索欄にする。
+              <header className="flex h-14 shrink-0 items-center border-b px-4">
+                {searchBox("screen")}
+              </header>
             ) : (
-              <header
-                className={cn(
-                  "flex h-14 shrink-0 items-center gap-2 border-b px-4",
-                  showSearch && "max-md:h-11",
-                )}
-              >
-                {/* 検索欄を出している間は、メニューのボタンは検索欄の横に置く。 */}
-                {!showSearch && menuButton("-ml-2 pointer-coarse:-ml-2.5")}
-                <h1 className="min-w-0 truncate font-semibold text-lg">
+              <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+                {menuButton("-ml-2 pointer-coarse:-ml-2.5")}
+                <h1 className="min-w-0 shrink truncate font-semibold text-lg">
                   {heading}
                 </h1>
                 <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
@@ -2837,6 +2952,12 @@ export function MailApp({ user }: { user: User }) {
                   short
                   className="shrink-0 md:hidden"
                 />
+                {/* 一覧だけを出す幅では、検索欄を一覧の見出しの右に置く。 */}
+                {showSearch &&
+                  medium &&
+                  !wide &&
+                  !selectedMessageId &&
+                  searchBox("popup")}
                 {!draftsSelected &&
                   special !== "outgoing" &&
                   (messages?.length ?? 0) > 0 && (
@@ -2847,31 +2968,43 @@ export function MailApp({ user }: { user: User }) {
                         aria-label="メールを選択"
                         onClick={() => setSelectMode(true)}
                         // タッチ操作ではボタンが大きくなるので、アイコンの右端が一覧の右端に揃うよう寄せる。
-                        className="-mr-2 pointer-coarse:-mr-2.5"
+                        className={cn(
+                          !(showSearch && !medium) &&
+                            "-mr-2 pointer-coarse:-mr-2.5",
+                        )}
                       >
                         <ListChecksIcon />
                       </Button>
                     </Hint>
                   )}
+                {/* スマホでは、検索は別の画面で行う。 */}
+                {showSearch && !medium && (
+                  <Hint label="検索" shortcut="/">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="検索"
+                      onClick={openSearchScreen}
+                      className="-mr-2 pointer-coarse:-mr-2.5"
+                    >
+                      <SearchIcon />
+                    </Button>
+                  </Hint>
+                )}
               </header>
             )}
-            {showSearch && (
-              <div className="flex items-start md:block">
-                {menuButton("mt-3 ml-2 pointer-coarse:ml-1.5")}
-                <SearchBar
-                  value={searchInput}
-                  onChange={setSearchInput}
-                  placeholder={
-                    accountName
-                      ? `${accountName} から検索`
-                      : "すべてのアカウントから検索"
-                  }
-                  folderLabel={
-                    selectedMailbox || selectedUnified ? title : "受信トレイ"
-                  }
-                  className="min-w-0 flex-1 max-md:border-b-0 max-md:pb-1 max-md:pl-2 max-md:[&_input]:rounded-full"
-                />
-              </div>
+            {showSearch && searching && search && (
+              <SearchScope
+                value={search}
+                onChange={(next) => {
+                  setSearchInput(next);
+                  setSearch(next);
+                }}
+                folderLabel={
+                  selectedMailbox || selectedUnified ? title : "受信トレイ"
+                }
+                className="border-b px-4 py-2"
+              />
             )}
           </div>
           {/* 送信できなかったメールは、どの一覧を見ていても知らせる。送信中のものは「送信待ち」に出す。 */}
@@ -3016,7 +3149,7 @@ export function MailApp({ user }: { user: User }) {
         <section
           aria-label="メールの内容"
           className={cn(
-            "relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
+            "@container/pane relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
             selectedMessageId ? "flex" : "hidden",
             settingsOpen && "hidden!",
           )}
@@ -3064,13 +3197,22 @@ export function MailApp({ user }: { user: User }) {
               onStep={handleStep}
               canStep={canStep}
               onMissing={handleMissing}
+              toolbarEnd={showSearch && medium ? searchBox("popup") : undefined}
+              findRequest={findRequest}
             />
           ) : (
-            <div className="flex flex-1 items-center justify-center p-8">
-              <p className="text-muted-foreground text-sm">
-                メールを選ぶと、ここに内容が表示されます。
-              </p>
-            </div>
+            <>
+              {showSearch && wide && (
+                <div className="flex h-14 shrink-0 items-center justify-end border-b px-4">
+                  {searchBox("popup")}
+                </div>
+              )}
+              <div className="flex flex-1 items-center justify-center p-8">
+                <p className="text-muted-foreground text-sm">
+                  メールを選ぶと、ここに内容が表示されます。
+                </p>
+              </div>
+            </>
           )}
         </section>
       </main>

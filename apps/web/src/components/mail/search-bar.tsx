@@ -1,227 +1,728 @@
 "use client";
 
 import { cn } from "cn";
-import { SearchIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
-import { useId, useState } from "react";
+import {
+  ArrowLeftIcon,
+  AtSignIcon,
+  CalendarIcon,
+  ClockIcon,
+  FileSearchIcon,
+  PaperclipIcon,
+  SearchIcon,
+  TagIcon,
+  TextIcon,
+  UserIcon,
+  XIcon,
+} from "lucide-react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { ja } from "react-day-picker/locale";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { DatePicker } from "@/components/ui/date-picker";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import type { SearchFilters, SearchParams } from "@/lib/api";
-import { countFilters, emptyFilters, isSearchActive } from "@/lib/search";
+import { Calendar } from "@/components/ui/calendar";
+import { formatDateValue, parseDateValue } from "@/components/ui/date-picker";
+import type { SearchParams } from "@/lib/api";
+import {
+  type ContactSuggestion,
+  useSearchContacts,
+} from "@/lib/search-contacts";
+import {
+  ADDRESS_OPERATORS,
+  addSearchHistory,
+  completeQuery,
+  DATE_OPERATORS,
+  type InputToken,
+  normalizeQuery,
+  OPERATOR_VALUES,
+  readSearchHistory,
+  replaceToken,
+  SEARCH_OPERATORS,
+  type SearchOperator,
+  tokenAt,
+  writeSearchHistory,
+} from "@/lib/search-input";
 
 /** 検索欄の id。ショートカットキー (/) でここへ移動する。 */
 export const SEARCH_INPUT_ID = "mail-search-input";
 
+/** 候補の 1 行。 */
+type Suggestion = {
+  id: string;
+  icon: ReactNode;
+  label: ReactNode;
+  /** 行の右に添える説明。 */
+  detail?: ReactNode;
+  apply: () => void;
+};
+
+type Section = { title: string; items: Suggestion[]; action?: ReactNode };
+
+const operatorIcons: Record<SearchOperator["key"], ReactNode> = {
+  from: <UserIcon />,
+  to: <AtSignIcon />,
+  subject: <TagIcon />,
+  body: <TextIcon />,
+  has: <PaperclipIcon />,
+  is: <SearchIcon />,
+  after: <CalendarIcon />,
+  before: <CalendarIcon />,
+};
+
+/** 検索した語を、この端末の「最近の検索」に残す。 */
+export function rememberSearch(text: string) {
+  if (normalizeQuery(text) === "") return;
+  writeSearchHistory(addSearchHistory(readSearchHistory(), text));
+}
+
 type Props = {
   value: SearchParams;
   onChange: (value: SearchParams) => void;
+  /** Enter などで検索を確定した (入力が止まるのを待たずに、この語で検索する)。 */
+  onSubmit: (text: string) => void;
   /** 検索欄に出す案内 (「すべてのアカウントから検索」など)。 */
   placeholder: string;
-  /** 表示中の一覧の名前。検索する範囲の切り替えに使う。 */
-  folderLabel: string;
+  /**
+   * popup: 一覧の右上などに置く小さな検索欄。候補は欄の下に浮かべて出す (Web・デスクトップ)。
+   * screen: スマホの検索画面。欄はアプリバーいっぱいに広げ、候補は欄の下の画面全体に出す。
+   */
+  variant: "popup" | "screen";
+  /** 開いているメールの中を探す。メールを開いていなければ undefined。 */
+  onFindInMessage?: (text: string) => void;
+  /** screen のとき、戻るボタンで検索画面を閉じる。 */
+  onClose?: () => void;
+  /** screen のとき、検索画面を開いた直後に欄へ入力できるようにする。 */
+  autoFocus?: boolean;
   className?: string;
 };
 
-/** 一覧の上の検索欄。語の入力と、差出人・件名・期間などの絞り込み条件を受け付ける。 */
-export function SearchBar({
+/**
+ * 検索欄。入力中の語に合わせて、演算子 (from: など)、相手のアドレス、日付、最近の検索、
+ * 開いているメールの中の検索を候補に出す (Discord の検索欄のような動き)。
+ */
+export function SearchBox({
   value,
   onChange,
+  onSubmit,
   placeholder,
-  folderLabel,
+  variant,
+  onFindInMessage,
+  onClose,
+  autoFocus,
   className,
 }: Props) {
   const id = useId();
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const { filters } = value;
-  const filterCount = countFilters(filters);
-  const active = isSearchActive(value);
-  const setFilters = (patch: Partial<SearchFilters>) =>
-    onChange({ ...value, filters: { ...filters, ...patch } });
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [caret, setCaret] = useState(value.text.length);
+  const [active, setActive] = useState(-1);
+  const [history, setHistory] = useState<string[]>([]);
+  const [position, setPosition] = useState<{
+    top: number;
+    left: number;
+    right: number;
+  } | null>(null);
+  const text = value.text;
+  const token = tokenAt(text, Math.min(caret, text.length));
+  const screen = variant === "screen";
+
+  const contactQuery = ADDRESS_OPERATORS.includes(
+    token.key as (typeof ADDRESS_OPERATORS)[number],
+  )
+    ? token.value
+    : token.key === "" && token.value.length >= 1
+      ? token.value
+      : null;
+  const contacts = useSearchContacts(
+    contactQuery ?? "",
+    contactQuery === null ? 0 : token.key ? 8 : 4,
+  );
+
+  const setText = (next: string, nextCaret?: number) => {
+    onChange({ ...value, text: next });
+    if (nextCaret === undefined) return;
+    setCaret(nextCaret);
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+  const replace = (target: InputToken, replacement: string) => {
+    const result = replaceToken(text, target, replacement);
+    setText(result.text, result.caret);
+  };
+  const submit = (query = text) => {
+    rememberSearch(query);
+    setHistory(readSearchHistory());
+    setOpen(false);
+    onSubmit(query);
+    // スマホでは、画面のキーボードを閉じて結果を見せる。
+    if (screen) inputRef.current?.blur();
+  };
+
+  const sections = buildSections({
+    text,
+    token,
+    contacts: contactQuery === null ? [] : contacts,
+    history,
+    onFindInMessage: onFindInMessage
+      ? (query) => {
+          setOpen(false);
+          onFindInMessage(query);
+        }
+      : undefined,
+    replace,
+    runHistory: (query) => {
+      setText(query, query.length);
+      submit(query);
+    },
+  });
+  const items = sections.flatMap((section) => section.items);
+  const dateKey = DATE_OPERATORS.includes(
+    token.key as (typeof DATE_OPERATORS)[number],
+  )
+    ? token.key
+    : null;
+  const showPanel = open && (items.length > 0 || dateKey !== null);
+
+  // 入力中の語が変わったら、候補の選択を戻す。演算子の値の候補は、最初の行を選んでおく。
+  const tokenKey = `${token.start}:${token.key}:${token.value}`;
+  const prefersFirst =
+    token.key !== "" &&
+    (ADDRESS_OPERATORS.includes(
+      token.key as (typeof ADDRESS_OPERATORS)[number],
+    ) ||
+      token.key in OPERATOR_VALUES);
+  const [shownToken, setShownToken] = useState(tokenKey);
+  if (shownToken !== tokenKey) {
+    setShownToken(tokenKey);
+    setActive(prefersFirst ? 0 : -1);
+  }
+  const activeIndex = active >= items.length ? -1 : active;
+
+  // 候補を欄の下に置く。欄の幅が変わる (フォーカスで広がる) ときも追いかける。
+  useLayoutEffect(() => {
+    if (!open) return;
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const update = () => {
+      const rect = wrapper.getBoundingClientRect();
+      setPosition({
+        top: rect.bottom,
+        left: rect.left,
+        right: window.innerWidth - rect.right,
+      });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(wrapper);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [open]);
+
+  // 欄と候補の外を押したら閉じる。
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        wrapperRef.current?.contains(target) ||
+        panelRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
+
+  // 選んでいる候補が見えるようにする。
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    document
+      .getElementById(`${id}-option-${activeIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, id]);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [autoFocus]);
+
+  const openPanel = () => {
+    setHistory(readSearchHistory());
+    setOpen(true);
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp": {
+        event.preventDefault();
+        if (!open) {
+          openPanel();
+          return;
+        }
+        if (items.length === 0) return;
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setActive((current) => {
+          const from = current >= items.length ? -1 : current;
+          const next = from + step;
+          return next < -1
+            ? items.length - 1
+            : next >= items.length
+              ? -1
+              : next;
+        });
+        return;
+      }
+      case "Enter": {
+        event.preventDefault();
+        const item = showPanel ? items[activeIndex] : undefined;
+        if (item) item.apply();
+        else submit();
+        return;
+      }
+      case "Tab": {
+        const item = showPanel ? items[activeIndex] : undefined;
+        if (!item) return;
+        event.preventDefault();
+        item.apply();
+        return;
+      }
+      case "Escape": {
+        if (showPanel && !screen) {
+          event.preventDefault();
+          setOpen(false);
+          return;
+        }
+        // 入力があれば消し、無ければ検索欄から抜ける。
+        if (text) setText("", 0);
+        else if (screen) onClose?.();
+        else event.currentTarget.blur();
+        return;
+      }
+    }
+  };
+
+  const panel =
+    showPanel && position
+      ? createPortal(
+          // biome-ignore lint/a11y/noStaticElementInteractions: 押してもフォーカスを欄に残すためだけの処理
+          <div
+            ref={panelRef}
+            id={`${id}-panel`}
+            // 押しても欄からフォーカスを外さない (入力を続けられるように)。カレンダーは除く。
+            onMouseDown={(event) => {
+              if (
+                !(event.target as HTMLElement).closest("[data-search-calendar]")
+              ) {
+                event.preventDefault();
+              }
+            }}
+            style={
+              screen
+                ? { top: position.top }
+                : {
+                    top: position.top + 6,
+                    right: Math.max(8, position.right),
+                  }
+            }
+            className={cn(
+              "fixed z-50 flex flex-col overflow-y-auto overscroll-contain bg-popover text-popover-foreground",
+              screen
+                ? "inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)]"
+                : "max-h-[min(32rem,calc(100dvh-var(--titlebar-height)-6rem))] w-[min(26rem,calc(100vw-1rem))] rounded-lg border shadow-lg",
+            )}
+          >
+            {dateKey && (
+              <div className="flex flex-col border-b" data-search-calendar="">
+                <p className="px-3 pt-3 font-medium text-muted-foreground text-xs">
+                  {dateKey === "after" || dateKey === "since"
+                    ? "この日以降のメールを探す"
+                    : "この日より前のメールを探す"}
+                </p>
+                <Calendar
+                  mode="single"
+                  locale={ja}
+                  selected={parseDateValue(token.value)}
+                  defaultMonth={parseDateValue(token.value)}
+                  onSelect={(date) => {
+                    if (!date) return;
+                    replace(
+                      token,
+                      `${token.negated ? "-" : ""}${token.key}:${formatDateValue(date)}`,
+                    );
+                  }}
+                  className="mx-auto bg-transparent"
+                />
+              </div>
+            )}
+            <div role="listbox" id={`${id}-listbox`} aria-label="検索の候補">
+              {(() => {
+                let index = 0;
+                return sections.map((section) => (
+                  // biome-ignore lint/a11y/useSemanticElements: listbox の中のまとまり
+                  <div
+                    key={section.title}
+                    role="group"
+                    aria-label={section.title}
+                    className="flex flex-col py-1.5"
+                  >
+                    <div className="flex items-center justify-between px-3 py-1">
+                      <span className="font-medium text-muted-foreground text-xs">
+                        {section.title}
+                      </span>
+                      {section.action}
+                    </div>
+                    {section.items.map((item) => {
+                      const itemIndex = index++;
+                      return (
+                        // biome-ignore lint/a11y/useFocusableInteractive: フォーカスは欄に置いたまま、aria-activedescendant で選ぶ
+                        // biome-ignore lint/a11y/useKeyWithClickEvents: キーボードでは欄の矢印キーと Enter で選ぶ
+                        <div
+                          key={item.id}
+                          id={`${id}-option-${itemIndex}`}
+                          role="option"
+                          aria-selected={itemIndex === activeIndex}
+                          onClick={item.apply}
+                          onPointerMove={() => setActive(itemIndex)}
+                          className={cn(
+                            "mx-1.5 flex min-h-9 cursor-default items-center gap-2.5 rounded-md px-2 py-1.5 text-sm pointer-coarse:min-h-11 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                            itemIndex === activeIndex &&
+                              "bg-accent text-accent-foreground",
+                          )}
+                        >
+                          {item.icon}
+                          <span className="min-w-0 flex-1 truncate">
+                            {item.label}
+                          </span>
+                          {item.detail && (
+                            <span className="shrink-0 truncate text-muted-foreground text-xs">
+                              {item.detail}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
     <search
       className={cn(
-        "flex shrink-0 flex-col gap-3 border-b px-4 py-3",
+        "min-w-0",
+        // 狭い枠では虫めがねだけを出し、押したら左へ広げてツールバーに重ねる (Discord と同じ動き)。
+        !screen && "relative h-8 w-8 shrink-0 @3xl/pane:w-44",
         className,
       )}
     >
-      <div className="relative">
-        <SearchIcon
-          className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <Input
-          id={SEARCH_INPUT_ID}
-          type="text"
-          role="searchbox"
-          enterKeyHint="search"
-          autoComplete="off"
-          spellCheck={false}
-          aria-label="メールを検索"
-          placeholder={placeholder}
-          value={value.text}
-          onChange={(event) => onChange({ ...value, text: event.target.value })}
-          onKeyDown={(event) => {
-            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-            // 入力があれば消し、無ければ検索欄から抜ける。
-            if (value.text) onChange({ ...value, text: "" });
-            else event.currentTarget.blur();
-          }}
-          className="pr-[4.5rem] pl-8"
-        />
-        <div className="absolute top-1/2 right-0.5 flex -translate-y-1/2 items-center">
-          {value.text && (
+      <div
+        ref={wrapperRef}
+        className={cn(
+          "group/search flex min-w-0 items-center",
+          screen
+            ? "h-full gap-1"
+            : "absolute inset-y-0 right-0 z-10 w-full transition-[width] duration-200 focus-within:w-[min(18rem,calc(100cqw-2rem))]",
+        )}
+      >
+        {screen && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="検索を閉じる"
+            onClick={onClose}
+            className="-ml-2 shrink-0 pointer-coarse:-ml-2.5"
+          >
+            <ArrowLeftIcon />
+          </Button>
+        )}
+        <div className="relative min-w-0 flex-1">
+          {!screen && (
+            <SearchIcon
+              className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+          )}
+          <input
+            ref={inputRef}
+            id={SEARCH_INPUT_ID}
+            type="text"
+            role="combobox"
+            aria-expanded={showPanel}
+            aria-controls={`${id}-listbox`}
+            aria-autocomplete="list"
+            aria-activedescendant={
+              showPanel && activeIndex >= 0
+                ? `${id}-option-${activeIndex}`
+                : undefined
+            }
+            enterKeyHint="search"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="メールを検索"
+            placeholder={placeholder}
+            value={text}
+            onChange={(event) => {
+              onChange({ ...value, text: event.target.value });
+              setCaret(
+                event.target.selectionStart ?? event.target.value.length,
+              );
+              if (!open) openPanel();
+            }}
+            onSelect={(event) =>
+              setCaret(event.currentTarget.selectionStart ?? text.length)
+            }
+            onFocus={openPanel}
+            onClick={() => {
+              if (!open) openPanel();
+            }}
+            onBlur={(event) => {
+              // 候補 (カレンダーなど) へ移ったときは閉じない。
+              if (panelRef.current?.contains(event.relatedTarget as Node))
+                return;
+              setOpen(false);
+            }}
+            onKeyDown={onKeyDown}
+            className={cn(
+              "flex w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground",
+              screen
+                ? "h-10 text-base"
+                : "h-8 rounded-md border border-input bg-muted/40 pr-0 pl-7.5 focus:pr-8 @3xl/pane:pr-8 transition-colors focus:border-ring focus:bg-background focus:ring-3 focus:ring-ring/50 dark:bg-input/30",
+            )}
+          />
+          {text && (
             <Button
               variant="ghost"
-              size="icon-sm"
+              size="icon-xs"
               aria-label="入力をクリア"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
-                onChange({ ...value, text: "" });
-                document.getElementById(SEARCH_INPUT_ID)?.focus();
+                setText("", 0);
+                openPanel();
               }}
+              className={cn(
+                "absolute top-1/2 right-1 -translate-y-1/2",
+                // 虫めがねだけの狭い表示では、広げている間だけ出す。
+                !screen &&
+                  "hidden group-focus-within/search:inline-flex @3xl/pane:inline-flex",
+              )}
             >
               <XIcon />
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={
-              filterCount > 0
-                ? `絞り込み条件 (${filterCount} 件を指定中)`
-                : "絞り込み条件"
-            }
-            aria-expanded={filtersOpen}
-            aria-controls={`${id}-filters`}
-            onClick={() => setFiltersOpen((open) => !open)}
-            className={cn("relative", filtersOpen && "bg-muted")}
-          >
-            <SlidersHorizontalIcon />
-            {filterCount > 0 && (
-              <span
-                className="absolute top-1 right-1 size-1.5 rounded-full bg-primary"
-                aria-hidden="true"
-              />
-            )}
-          </Button>
         </div>
       </div>
-
-      {filtersOpen && (
-        <div id={`${id}-filters`} className="flex flex-col gap-3">
-          <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
-            <Label htmlFor={`${id}-from`} className="font-normal">
-              差出人
-            </Label>
-            <Input
-              id={`${id}-from`}
-              value={filters.from}
-              placeholder="名前またはアドレス"
-              autoComplete="off"
-              onChange={(event) => setFilters({ from: event.target.value })}
-              className="h-8"
-            />
-            <Label htmlFor={`${id}-to`} className="font-normal">
-              宛先
-            </Label>
-            <Input
-              id={`${id}-to`}
-              value={filters.to}
-              placeholder="名前またはアドレス"
-              autoComplete="off"
-              onChange={(event) => setFilters({ to: event.target.value })}
-              className="h-8"
-            />
-            <Label htmlFor={`${id}-subject`} className="font-normal">
-              件名
-            </Label>
-            <Input
-              id={`${id}-subject`}
-              value={filters.subject}
-              autoComplete="off"
-              onChange={(event) => setFilters({ subject: event.target.value })}
-              className="h-8"
-            />
-            <Label htmlFor={`${id}-since`} className="font-normal">
-              期間
-            </Label>
-            <div className="flex min-w-0 items-center gap-1.5">
-              <DatePicker
-                id={`${id}-since`}
-                aria-label="期間の始まり"
-                value={filters.since}
-                max={filters.until || undefined}
-                onChange={(since) => setFilters({ since })}
-                className="h-8 min-w-0 flex-1"
-              />
-              <span className="text-muted-foreground text-xs">〜</span>
-              <DatePicker
-                aria-label="期間の終わり"
-                value={filters.until}
-                min={filters.since || undefined}
-                onChange={(until) => setFilters({ until })}
-                className="h-8 min-w-0 flex-1"
-              />
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            {(
-              [
-                ["hasAttachment", "添付あり"],
-                ["unread", "未読のみ"],
-                ["flagged", "スター付き"],
-              ] as const
-            ).map(([key, label]) => (
-              <div key={key} className="flex items-center gap-2">
-                <Checkbox
-                  id={`${id}-${key}`}
-                  checked={filters[key]}
-                  onCheckedChange={(checked) =>
-                    setFilters({ [key]: checked === true })
-                  }
-                />
-                <Label htmlFor={`${id}-${key}`} className="font-normal">
-                  {label}
-                </Label>
-              </div>
-            ))}
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={filterCount === 0}
-              onClick={() => onChange({ ...value, filters: emptyFilters })}
-              className="ml-auto"
-            >
-              条件をクリア
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {active && (
-        <fieldset className="flex items-center gap-1.5">
-          <legend className="sr-only">検索する範囲</legend>
-          {(
-            [
-              ["all", "すべてのフォルダ"],
-              ["folder", `${folderLabel}のみ`],
-            ] as const
-          ).map(([scope, label]) => (
-            <Button
-              key={scope}
-              variant={value.scope === scope ? "secondary" : "ghost"}
-              size="xs"
-              aria-pressed={value.scope === scope}
-              onClick={() => onChange({ ...value, scope })}
-              className="min-w-0 rounded-full"
-            >
-              <span className="truncate">{label}</span>
-            </Button>
-          ))}
-        </fieldset>
-      )}
+      {panel}
     </search>
+  );
+}
+
+function buildSections({
+  text,
+  token,
+  contacts,
+  history,
+  onFindInMessage,
+  replace,
+  runHistory,
+}: {
+  text: string;
+  token: InputToken;
+  contacts: ContactSuggestion[];
+  history: string[];
+  onFindInMessage: ((query: string) => void) | undefined;
+  replace: (token: InputToken, replacement: string) => void;
+  runHistory: (query: string) => void;
+}): Section[] {
+  const sections: Section[] = [];
+  const query = normalizeQuery(completeQuery(text));
+  const sign = token.negated ? "-" : "";
+
+  // 演算子の値を入力している間は、その候補を優先する (メールの中の検索は出さない)。
+  // メールの中では、演算子 (from: など) と除外の語 (-語) を除いた語をそのまま探す。
+  const findText = query
+    .split(" ")
+    .filter((word) => !/^-|^[a-z]+[:：]/iu.test(word))
+    .join(" ")
+    .replace(/["“”]/gu, "");
+  if (onFindInMessage && findText !== "" && token.key === "") {
+    sections.push({
+      title: "開いているメール",
+      items: [
+        {
+          id: "find",
+          icon: <FileSearchIcon />,
+          label: (
+            <>
+              このメールの中で「
+              <strong className="font-semibold">{findText}</strong>」を探す
+            </>
+          ),
+          apply: () => onFindInMessage(findText),
+        },
+      ],
+    });
+  }
+
+  const contactItem = (
+    contact: ContactSuggestion,
+    key: string,
+    prefix: string,
+  ): Suggestion => ({
+    id: `contact-${key}-${contact.address}`,
+    icon: key === "from" ? <UserIcon /> : <AtSignIcon />,
+    label: (
+      <>
+        <span className="text-muted-foreground">{prefix}</span>
+        {contact.name ? (
+          <>
+            {contact.name}{" "}
+            <span className="text-muted-foreground">{contact.address}</span>
+          </>
+        ) : (
+          contact.address
+        )}
+      </>
+    ),
+    apply: () => replace(token, `${sign}${key}:${contact.address}`),
+  });
+
+  if (
+    ADDRESS_OPERATORS.includes(token.key as (typeof ADDRESS_OPERATORS)[number])
+  ) {
+    if (contacts.length > 0) {
+      sections.push({
+        title: token.key === "from" ? "差出人" : "宛先",
+        items: contacts.map((contact) => contactItem(contact, token.key, "")),
+      });
+    }
+    return sections;
+  }
+
+  const values = OPERATOR_VALUES[token.key as SearchOperator["key"]];
+  if (values) {
+    const items = values
+      .filter((item) => item.value.startsWith(token.value.toLowerCase()))
+      .map((item) => ({
+        id: `value-${item.value}`,
+        icon: operatorIcons[token.key as SearchOperator["key"]],
+        label: (
+          <>
+            <span className="text-muted-foreground">{token.key}:</span>
+            {item.value}
+          </>
+        ),
+        detail: item.label,
+        apply: () => replace(token, `${sign}${token.key}:${item.value}`),
+      }));
+    if (items.length > 0) sections.push({ title: "条件", items });
+    return sections;
+  }
+  if (DATE_OPERATORS.includes(token.key as (typeof DATE_OPERATORS)[number])) {
+    return sections;
+  }
+  if (token.key !== "") return sections;
+
+  // 演算子を入れていない語: 当てはまる演算子と、相手のアドレスを出す。
+  const word = token.value.toLowerCase();
+  const operators = SEARCH_OPERATORS.filter(
+    (operator) => word === "" || operator.key.startsWith(word),
+  );
+  if (operators.length > 0) {
+    sections.push({
+      title: "検索オプション",
+      items: operators.map((operator) => ({
+        id: `operator-${operator.key}`,
+        icon: operatorIcons[operator.key],
+        label: (
+          <>
+            <span className="font-medium">{operator.key}:</span>{" "}
+            <span className="text-muted-foreground">{operator.label}</span>
+          </>
+        ),
+        detail: operator.example,
+        apply: () => replace(token, `${sign}${operator.key}:`),
+      })),
+    });
+  }
+  if (word !== "" && contacts.length > 0) {
+    sections.push({
+      title: "差出人",
+      items: contacts.map((contact) => contactItem(contact, "from", "from: ")),
+    });
+  }
+  if (query === "" && history.length > 0) {
+    sections.push({
+      title: "最近の検索",
+      items: history.map((item) => ({
+        id: `history-${item}`,
+        icon: <ClockIcon />,
+        label: item,
+        apply: () => runHistory(item),
+      })),
+    });
+  }
+  return sections;
+}
+
+/** 検索結果で、探す範囲 (すべてのフォルダ / 表示中のフォルダ) を切り替える。 */
+export function SearchScope({
+  value,
+  onChange,
+  folderLabel,
+  className,
+}: {
+  value: SearchParams;
+  onChange: (value: SearchParams) => void;
+  folderLabel: string;
+  className?: string;
+}) {
+  return (
+    <fieldset className={cn("flex min-w-0 items-center gap-1.5", className)}>
+      <legend className="sr-only">検索する範囲</legend>
+      {(
+        [
+          ["all", "すべてのフォルダ"],
+          ["folder", `${folderLabel}のみ`],
+        ] as const
+      ).map(([scope, label]) => (
+        <Button
+          key={scope}
+          variant={value.scope === scope ? "secondary" : "ghost"}
+          size="xs"
+          aria-pressed={value.scope === scope}
+          onClick={() => onChange({ ...value, scope })}
+          className="min-w-0 rounded-full"
+        >
+          <span className="truncate">{label}</span>
+        </Button>
+      ))}
+    </fieldset>
   );
 }
