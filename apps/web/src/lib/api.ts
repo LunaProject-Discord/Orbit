@@ -1203,11 +1203,20 @@ export type BuiltinStyle = {
   color: string | null;
 };
 
+/**
+ * サイドバーのカテゴリ (利用者が作る、アカウントや統合フォルダのまとまり)。
+ * items は中に入れた項目 (初めからある項目の名前、統合フォルダの ID、アカウントの ID)。
+ * 中での順番は、項目そのものの並び順に従う。
+ */
+export type SidebarCategory = { id: string; name: string; items: string[] };
+
 export type UnifiedState = {
   folders: UnifiedFolder[];
   layout: SidebarLayout;
   /** 初めからある項目 (inbox など) に付けた名前・アイコン・色。変えていない項目は載らない。 */
   builtins: Record<string, BuiltinStyle>;
+  /** サイドバーのカテゴリ (上から順)。 */
+  categories: SidebarCategory[];
 };
 
 /** 初めからある項目の名前・アイコン・色を保存する。すべて null なら初期の設定に戻る。 */
@@ -1295,6 +1304,16 @@ export async function deleteUnifiedFolder(id: string): Promise<void> {
 
 export async function saveSidebarLayout(layout: SidebarLayout): Promise<void> {
   await apiFetch("/v1/unified/layout", { method: "PUT", body: layout });
+}
+
+/** サイドバーのカテゴリをまとめて保存する。 */
+export async function saveSidebarCategories(
+  categories: SidebarCategory[],
+): Promise<void> {
+  await apiFetch("/v1/unified/categories", {
+    method: "PUT",
+    body: { categories },
+  });
 }
 
 /** 統合フォルダのメールの一覧。フォルダの一覧と同じ形で、会話ごとに 1 行。 */

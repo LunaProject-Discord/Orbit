@@ -17,7 +17,12 @@ import {
   outbox,
 } from "@orbit/db";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import { recordChanges, removePlacements, type Tx } from "./message-actions.js";
+import {
+  placeAtDestination,
+  recordChanges,
+  removePlacements,
+  type Tx,
+} from "./message-actions.js";
 
 /**
  * メールサーバーへ反映できなかった操作 (既読、スター、移動、削除、控えの保存)。
@@ -335,6 +340,12 @@ export async function retryFailedOperation(
         // 移動と削除。同期が取り込み直したメールは、もう一度フォルダから外す。
         // まだ取り込み直されていないものは、DB では外れたままなので、そのまま実行する。
         targets = [...present, ...absent];
+        if (row.kind === "move" && present.length > 0) {
+          const { destination } = row.payload as MovePayload;
+          await placeAtDestination(tx, destination.mailboxId, [
+            ...new Set(present.map((target) => target.messageId)),
+          ]);
+        }
         if (present.length > 0) await removePlacements(tx, userId, present);
       }
       if (targets.length === 0) {

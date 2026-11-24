@@ -311,6 +311,11 @@ export async function enqueueMessageAction(
           .where(inArray(messages.id, ids));
         await recordChanges(tx, userId, "upsert", ids);
       } else {
+        if (destination) {
+          // 移動先に先に置いておく。メールサーバーでの移動と移動先の同期が済むまでの間も、
+          // メールが移動先に見える (どこにも無い状態にならない)。本文や添付もそのまま使える。
+          await placeAtDestination(tx, destination.mailboxId, ids);
+        }
         await removePlacements(
           tx,
           userId,
@@ -322,6 +327,36 @@ export async function enqueueMessageAction(
     }
     return { ok: true, messageIds: [...accepted] };
   });
+}
+
+/**
+ * 移動するメッセージを、移動先のフォルダに「移動中」の所在として置く。
+ * すでに移動先にあるものはそのまま。同期ワーカーが移動先を同期したときに、
+ * 同じメールをこの所在へ結び付け直す (IMAP では UID を入れる)。
+ */
+export async function placeAtDestination(
+  tx: Tx,
+  mailboxId: string,
+  messageIds: string[],
+) {
+  if (messageIds.length === 0) return;
+  // やり直しのときは、移動先のフォルダが消えていることがある。
+  const [exists] = await tx
+    .select({ id: mailboxes.id })
+    .from(mailboxes)
+    .where(eq(mailboxes.id, mailboxId));
+  if (!exists) return;
+  const now = new Date();
+  await tx
+    .insert(messageMailboxes)
+    .values(
+      messageIds.map((messageId) => ({
+        mailboxId,
+        messageId,
+        pendingSince: now,
+      })),
+    )
+    .onConflictDoNothing();
 }
 
 /**

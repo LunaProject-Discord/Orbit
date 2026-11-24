@@ -22,9 +22,13 @@ import {
   sql,
 } from "drizzle-orm";
 import type { FetchMessageObject, ImapFlow } from "imapflow";
-import { recordChanges } from "./changes.js";
+import { recordChanges, type Tx } from "./changes.js";
 import { toListedMailboxes } from "./mailbox-list.js";
-import { applyMailboxList, type SyncAccount } from "./mailbox-store.js";
+import {
+  applyMailboxList,
+  dropStalePending,
+  type SyncAccount,
+} from "./mailbox-store.js";
 import {
   FETCH_HEADERS,
   LIST_HEADERS,
@@ -452,6 +456,8 @@ export async function syncMailbox(
       lastSyncedAt: new Date(),
     })
     .where(eq(mailboxes.id, mailbox.id));
+  // 移動中として置いたまま結び付かなかった所在を片付ける。
+  await dropStalePending(db, account, mailbox.id);
 
   return {
     mailboxId: mailbox.id,
@@ -459,6 +465,69 @@ export async function syncMailbox(
     removed: removedUids.length,
     complete: true,
   };
+}
+
+/**
+ * 移動先のフォルダに「移動中」として先に置いた所在のうち、同じメール (Message-ID が同じ) を
+ * 探して、取り込んだ UID を入れる。見つかればそのメッセージの ID を返す。
+ */
+async function claimPendingPlacement(
+  tx: Tx,
+  accountId: string,
+  mailboxId: string,
+  found: {
+    messageIdHeader: string | null;
+    subject: string;
+    receivedAt: Date;
+    uid: number;
+    modseq: bigint | null;
+    flags: ReturnType<typeof flagsOf>;
+    /** 既読などを変更中のメッセージ。反映し終えるまでフラグを上書きしない。 */
+    guardedFlags: ReadonlySet<string>;
+  },
+): Promise<string | null> {
+  const [pending] = await tx
+    .select({ messageId: messageMailboxes.messageId })
+    .from(messageMailboxes)
+    .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
+    .where(
+      and(
+        eq(messageMailboxes.mailboxId, mailboxId),
+        isNotNull(messageMailboxes.pendingSince),
+        eq(messages.accountId, accountId),
+        found.messageIdHeader
+          ? eq(messages.messageIdHeader, found.messageIdHeader)
+          : // Message-ID の無いメールは、件名と受信日時 (移動しても変わらない) で見分ける。
+            and(
+              isNull(messages.messageIdHeader),
+              eq(messages.subject, found.subject),
+              eq(messages.receivedAt, found.receivedAt),
+            ),
+      ),
+    )
+    .limit(1);
+  if (!pending) return null;
+  await tx
+    .update(messageMailboxes)
+    .set({
+      uid: BigInt(found.uid),
+      modseq: found.modseq,
+      pendingSince: null,
+    })
+    .where(
+      and(
+        eq(messageMailboxes.mailboxId, mailboxId),
+        eq(messageMailboxes.messageId, pending.messageId),
+      ),
+    );
+  // 移動のあいだにほかのメールソフトで変えられたかもしれないので、フラグは移動先の値にする。
+  if (!found.guardedFlags.has(pending.messageId)) {
+    await tx
+      .update(messages)
+      .set(found.flags)
+      .where(eq(messages.id, pending.messageId));
+  }
+  return pending.messageId;
 }
 
 /** uids が null ならフォルダ内の全メッセージを消す。 */
@@ -553,7 +622,7 @@ async function readNewMailBodies(
   return bodies;
 }
 
-async function insertMessages(
+export async function insertMessages(
   db: Database,
   account: SyncAccount,
   mailboxId: string,
@@ -595,6 +664,21 @@ async function insertMessages(
         parents: [...references, ...(inReplyTo ? [inReplyTo] : [])],
       });
       inserted.push(...moved);
+      // このアプリで移動したメールは、移動先に「移動中」の所在が先にある。
+      // 同じメールなら新しく取り込まずに、その所在へ UID を入れて結び付ける。
+      const claimed = await claimPendingPlacement(tx, account.id, mailboxId, {
+        messageIdHeader,
+        subject: clean(envelope.subject),
+        receivedAt,
+        uid: message.uid,
+        modseq: message.modseq ?? null,
+        flags,
+        guardedFlags: guard.flagMessageIds,
+      });
+      if (claimed) {
+        inserted.push(claimed);
+        continue;
+      }
       const [row] = await tx
         .insert(messages)
         .values({
@@ -653,7 +737,16 @@ async function insertMessages(
             messageId: existing.id,
             modseq: message.modseq ?? null,
           })
-          .onConflictDoNothing();
+          // 移動中として先に置いた所在なら、UID を入れて確定させる。
+          .onConflictDoUpdate({
+            target: [messageMailboxes.mailboxId, messageMailboxes.messageId],
+            set: {
+              uid: BigInt(message.uid),
+              modseq: message.modseq ?? null,
+              pendingSince: null,
+            },
+            setWhere: isNotNull(messageMailboxes.pendingSince),
+          });
         inserted.push(existing.id);
         continue;
       }

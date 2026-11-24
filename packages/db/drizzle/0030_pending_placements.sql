@@ -1,0 +1,1 @@
+ALTER TABLE "message_mailboxes" ADD COLUMN "pending_since" timestamp with time zone;

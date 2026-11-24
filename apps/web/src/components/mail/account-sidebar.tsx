@@ -8,6 +8,7 @@ import {
   type DragEndEvent,
   MouseSensor,
   TouchSensor,
+  useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
@@ -21,11 +22,15 @@ import { CSS } from "@dnd-kit/utilities";
 import { cn } from "cn";
 import {
   ChevronRightIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   CircleAlertIcon,
   EyeOffIcon,
   FolderOpenIcon,
   LayersPlusIcon,
   ListChecksIcon,
+  ListPlusIcon,
+  ListXIcon,
   PencilIcon,
   PenSquareIcon,
   PlusIcon,
@@ -38,6 +43,7 @@ import { Hint } from "@/components/hint";
 import { MailboxMark } from "@/components/mail/mailbox-icon";
 import {
   AccountMenuItems,
+  CategoryMenu,
   FolderMenuItems,
   MoveItems,
   type SidebarMenuActions,
@@ -58,6 +64,7 @@ import {
   type Account,
   type MailboxSummary,
   oauthProviderOf,
+  type SidebarCategory,
   type UnifiedFolder,
   type UnifiedState,
   type User,
@@ -70,6 +77,12 @@ import {
   moveTo,
 } from "@/lib/mailboxes";
 import type { SpecialView } from "@/lib/route";
+import {
+  groupSidebar,
+  mergeSubsetOrder,
+  toggleCategoryFolded,
+  useFoldedCategories,
+} from "@/lib/sidebar-categories";
 import type { SyncStatus } from "@/lib/sync-status";
 import {
   type BuiltinView,
@@ -117,18 +130,41 @@ function useCollapsed() {
   return { collapsed, toggle };
 }
 
-/** 並び替えられる項目に持たせる情報。同じ group の中でだけ順番を入れ替えられる。 */
+/**
+ * 並び替えられる項目に持たせる情報。同じ group の中で順番を入れ替えられる。
+ * アカウントと上部の項目は、別のカテゴリの同じ種類の項目や、カテゴリの見出しの上にも落とせる。
+ */
 type SortData = {
   group: string;
   /** 同じ group の項目の ID (いまの表示順)。 */
   ids: string[];
-  kind: "account" | "mailbox" | "view";
+  kind: "account" | "mailbox" | "view" | "category";
   /** 読み上げに使う名前。 */
   label: string;
+  /** 項目が入っているカテゴリの ID (カテゴリの見出しなら、そのカテゴリ)。入っていなければ null。 */
+  category?: string | null;
 };
 
-const ACCOUNT_GROUP = "accounts";
-const VIEW_GROUP = "views";
+/** カテゴリの見出しの、項目を落とせる場所に持たせる情報。 */
+/** カテゴリの見出し (category が null なら「カテゴリから外す」の場所) に持たせる情報。 */
+type CategoryDropData = { kind: "category-drop"; category: string | null };
+
+const CATEGORY_GROUP = "categories";
+/** 並び替えの単位。カテゴリごとに分ける (カテゴリなしは空の文字列)。 */
+const accountGroup = (category: string | null) => `accounts:${category ?? ""}`;
+const viewGroup = (category: string | null) => `views:${category ?? ""}`;
+
+/** カテゴリの見出しの右クリックメニューなどから呼ぶ操作。 */
+export type CategoryActions = {
+  /** 新しいカテゴリを作る。key を渡すと、その項目を作ったカテゴリへ入れる。 */
+  onCreate: (key?: string) => void;
+  onRename: (category: SidebarCategory) => void;
+  onDelete: (category: SidebarCategory) => void;
+  /** 項目を別のカテゴリへ移す。categoryId が null ならカテゴリから外す。 */
+  onAssign: (key: string, categoryId: string | null) => void;
+  /** カテゴリを並び替えた。ids は新しい表示順。 */
+  onReorder: (ids: string[]) => void;
+};
 
 /** サイドバー上部の項目 (初めからある項目と統合フォルダ) の右クリックメニューから呼ぶ操作。 */
 export type ViewMenuActions = {
@@ -143,15 +179,26 @@ export type ViewMenuActions = {
   onManage: () => void;
 };
 
-/** ドラッグ中の項目と同じ並びの項目だけを、入れ替え先の候補にする。 */
+/**
+ * ドラッグ中の項目と同じ並びの項目だけを、入れ替え先の候補にする。
+ * アカウントと上部の項目は、別のカテゴリの同じ種類の項目と、カテゴリの見出しも候補にする。
+ */
 const sameGroup: CollisionDetection = (args) => {
-  const group = (args.active.data.current as SortData | undefined)?.group;
+  const active = args.active.data.current as SortData | undefined;
+  const crossCategory = active?.kind === "account" || active?.kind === "view";
   return closestCenter({
     ...args,
-    droppableContainers: args.droppableContainers.filter(
-      (container) =>
-        (container.data.current as SortData | undefined)?.group === group,
-    ),
+    droppableContainers: args.droppableContainers.filter((container) => {
+      const data = container.data.current as
+        | SortData
+        | CategoryDropData
+        | undefined;
+      if (!data || !active) return false;
+      if (data.kind === "category-drop") return crossCategory;
+      return crossCategory
+        ? data.kind === active.kind
+        : "group" in data && data.group === active.group;
+    }),
   });
 };
 
@@ -227,6 +274,7 @@ type Props = {
   /** サイドバー上部の項目を並び替えた。keys は、見えている項目の新しい表示順。 */
   onReorderViews: (keys: string[]) => void;
   viewActions: ViewMenuActions;
+  categoryActions: CategoryActions;
   /** まだ送り終えていないメールの数と、その中に送信できなかったものがあるか。 */
   outgoingCount: number;
   outgoingFailed: boolean;
@@ -261,6 +309,7 @@ export function AccountSidebar({
   onSelectUnified,
   onReorderViews,
   viewActions,
+  categoryActions,
   outgoingCount,
   outgoingFailed,
   onCompose,
@@ -274,8 +323,16 @@ export function AccountSidebar({
   const folderView =
     !draftsSelected && special === null && selectedUnifiedId === null;
   const { collapsed, toggle } = useCollapsed();
-  const views = useMemo(() => sidebarEntries(unified).visible, [unified]);
-  const viewKeys = views.map((entry) => entry.key);
+  const foldedCategories = useFoldedCategories();
+  const viewKeys = useMemo(
+    () => sidebarEntries(unified).visible.map((entry) => entry.key),
+    [unified],
+  );
+  const groups = useMemo(
+    () => groupSidebar(unified, accounts ?? []),
+    [unified, accounts],
+  );
+  const categoryIds = unified.categories.map((category) => category.id);
   const byAccount = useMemo(() => {
     const result = new Map<string, MailboxSummary[]>();
     for (const mailbox of mailboxes ?? []) {
@@ -300,6 +357,12 @@ export function AccountSidebar({
       mailbox.specialUse === "inbox" ? sum + mailbox.unreadCount : sum,
     0,
   );
+  const inboxUnreadOf = (accountId: string) =>
+    (byAccount.get(accountId) ?? []).reduce(
+      (sum, mailbox) =>
+        mailbox.specialUse === "inbox" ? sum + mailbox.unreadCount : sum,
+      0,
+    );
 
   const sensors = useSensors(
     // クリックや画面のスクロールと区別するため、少し動かすか長押しでドラッグを始める。
@@ -309,6 +372,8 @@ export function AccountSidebar({
     }),
   );
   const [announcement, setAnnouncement] = useState("");
+  /** カテゴリに入っている項目をドラッグしている (「カテゴリから外す」の場所を出す)。 */
+  const [draggingCategorized, setDraggingCategorized] = useState(false);
   /** ドラッグの直後に起きるクリックで、フォルダが開かないようにする。 */
   const draggedRef = useRef(false);
   /** キーボードで動かした項目。並び替えの後もフォーカスを保つ。 */
@@ -346,12 +411,29 @@ export function AccountSidebar({
     window.addEventListener("touchcancel", release, true);
   };
 
+  const accountIds = (accounts ?? []).map((account) => account.id);
+  /** ids は同じ group (カテゴリの中など) の新しい順。全体の並びに戻して保存する。 */
   const move = (data: SortData, ids: string[], id: string) => {
-    if (data.kind === "account") onReorderAccounts(ids);
-    else if (data.kind === "view") onReorderViews(ids);
+    if (data.kind === "account") {
+      onReorderAccounts(mergeSubsetOrder(accountIds, ids));
+    } else if (data.kind === "view") {
+      onReorderViews(mergeSubsetOrder(viewKeys, ids));
+    } else if (data.kind === "category") categoryActions.onReorder(ids);
     else onReorderMailboxes(ids);
     setAnnouncement(
       `${data.label} を ${ids.length} 件中 ${ids.indexOf(id) + 1} 番目に移動しました`,
+    );
+  };
+  const categoryName = (id: string | null) =>
+    unified.categories.find((category) => category.id === id)?.name;
+  /** 項目を別のカテゴリへ移した (ドラッグで)。 */
+  const assign = (data: SortData, key: string, category: string | null) => {
+    categoryActions.onAssign(key, category);
+    const name = categoryName(category);
+    setAnnouncement(
+      name
+        ? `${data.label} をカテゴリ「${name}」に移動しました`
+        : `${data.label} をカテゴリから外しました`,
     );
   };
   const moveByKeyboard: typeof move = (data, ids, id) => {
@@ -359,19 +441,158 @@ export function AccountSidebar({
     move(data, ids, id);
   };
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    setDraggingCategorized(false);
     setTimeout(() => {
       draggedRef.current = false;
     }, 0);
     const data = active.data.current as SortData | undefined;
-    if (!data || !over) return;
-    const ids = moveTo(data.ids, String(active.id), String(over.id));
-    if (ids) move(data, ids, String(active.id));
+    const target = over?.data.current as
+      | SortData
+      | CategoryDropData
+      | undefined;
+    if (!data || !over || !target) return;
+    const key = String(active.id);
+    const from = data.category ?? null;
+    // カテゴリの見出しに落とした: そのカテゴリの最後に入れる (「カテゴリから外す」なら外す)。
+    if (target.kind === "category-drop") {
+      if (target.category !== from) assign(data, key, target.category);
+      return;
+    }
+    // 別のカテゴリの項目に落とした: そのカテゴリへ移し、落とした項目の位置に並べる。
+    const to = target.category ?? null;
+    if (
+      (data.kind === "account" || data.kind === "view") &&
+      target.group !== data.group
+    ) {
+      const all = data.kind === "account" ? accountIds : viewKeys;
+      const ids = moveTo(all, key, String(over.id));
+      assign(data, key, to);
+      if (ids) {
+        if (data.kind === "account") onReorderAccounts(ids);
+        else onReorderViews(ids);
+      }
+      return;
+    }
+    const ids = moveTo(data.ids, key, String(over.id));
+    if (ids) move(data, ids, key);
   };
-  const accountIds = (accounts ?? []).map((account) => account.id);
+
+  /** サイドバー上部の項目 (カテゴリなし、または 1 つのカテゴリの中)。 */
+  const renderViews = (entries: SidebarEntry[], category: string | null) => {
+    const keys = entries.map((entry) => entry.key);
+    return (
+      <SortableContext items={keys} strategy={verticalListSortingStrategy}>
+        {entries.map((entry) => {
+          const view = entry.builtin;
+          const outgoingProblem = view === "outgoing" && outgoingFailed;
+          return (
+            <ViewItem
+              key={entry.key}
+              entry={entry}
+              label={
+                entry.folder
+                  ? entry.folder.name
+                  : builtinLabel(unified, entry.builtin)
+              }
+              keys={keys}
+              category={category}
+              categories={unified.categories}
+              categoryActions={categoryActions}
+              icon={
+                entry.folder ? (
+                  <UnifiedMark folder={entry.folder} className="mt-0.5" />
+                ) : outgoingProblem ? (
+                  <CircleAlertIcon className="text-destructive" />
+                ) : (
+                  <BuiltinMark
+                    view={entry.builtin}
+                    style={builtinStyle(unified, entry.builtin)}
+                    className="mt-0.5"
+                  />
+                )
+              }
+              count={
+                entry.folder
+                  ? entry.folder.unreadCount
+                  : view === "inbox"
+                    ? inboxUnread
+                    : view === "drafts"
+                      ? draftCount
+                      : view === "outgoing"
+                        ? outgoingCount
+                        : undefined
+              }
+              countLabel={
+                view === "drafts"
+                  ? "件数"
+                  : view === "outgoing"
+                    ? outgoingFailed
+                      ? "送信できなかったメールあり、件数"
+                      : "件数"
+                    : undefined
+              }
+              selected={
+                entry.folder
+                  ? selectedUnifiedId === entry.folder.id
+                  : view === "inbox"
+                    ? folderView && selectedAccountId === null
+                    : view === "drafts"
+                      ? draftsSelected
+                      : special === view
+              }
+              onOpen={() => {
+                if (entry.folder) onSelectUnified(entry.folder.id);
+                else if (view === "inbox") onSelect(null, null);
+                else if (view === "drafts") onSelectDrafts();
+                else if (view === "starred" || view === "outgoing") {
+                  onSelectSpecial(view);
+                }
+              }}
+              onKeyboardMove={moveByKeyboard}
+              actions={viewActions}
+              onMenuOpenChange={handleMenuOpenChange}
+            />
+          );
+        })}
+      </SortableContext>
+    );
+  };
+  /** アカウント (カテゴリなし、または 1 つのカテゴリの中)。 */
+  const renderAccounts = (list: Account[], category: string | null) => {
+    const ids = list.map((account) => account.id);
+    return (
+      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+        {list.map((account) => (
+          <AccountItem
+            key={account.id}
+            account={account}
+            accountIds={ids}
+            category={category}
+            categories={unified.categories}
+            categoryActions={categoryActions}
+            tree={trees.get(account.id) ?? []}
+            collapsed={collapsed}
+            onToggle={toggle}
+            accounts={accounts ?? []}
+            selected={folderView && selectedAccountId === account.id}
+            selectedMailboxId={selectedMailboxId}
+            onSelect={onSelect}
+            onMove={move}
+            onKeyboardMove={moveByKeyboard}
+            onReauth={onReauth}
+            mailboxes={byAccount.get(account.id) ?? NO_MAILBOXES}
+            menuActions={menuActions}
+            onMenuOpenChange={handleMenuOpenChange}
+          />
+        ))}
+      </SortableContext>
+    );
+  };
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 shrink-0 items-center gap-2 px-4">
+      {/* デスクトップ版では、タイトルバーにハンバーガーとアプリ名があるので出さない。 */}
+      <div className="flex h-14 shrink-0 items-center gap-2 px-4 in-[[data-desktop]]:hidden">
         {headerStart}
         <span className="flex flex-1 items-center">
           <OrbitLogo className="h-7" />
@@ -379,7 +600,7 @@ export function AccountSidebar({
       </div>
       {onCompose && (
         // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
-        <div className="shrink-0 px-2 pb-2">
+        <div className="shrink-0 px-2 pb-2 in-[[data-desktop]]:pt-2">
           <Hint label="新規作成" shortcut="C">
             <Button onClick={onCompose} className="w-full justify-center gap-2">
               <PenSquareIcon />
@@ -405,89 +626,23 @@ export function AccountSidebar({
           collisionDetection={sameGroup}
           modifiers={[restrictToVerticalAxis]}
           accessibility={{ announcements: dragAnnouncements }}
-          onDragStart={() => {
+          onDragStart={({ active }) => {
             draggedRef.current = true;
+            const data = active.data.current as SortData | undefined;
+            setDraggingCategorized(
+              (data?.kind === "account" || data?.kind === "view") &&
+                (data.category ?? null) !== null,
+            );
           }}
           onDragEnd={handleDragEnd}
           onDragCancel={() => {
+            setDraggingCategorized(false);
             // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
             if (!menuPressRef.current) draggedRef.current = false;
           }}
         >
-          <SortableContext
-            items={viewKeys}
-            strategy={verticalListSortingStrategy}
-          >
-            {views.map((entry) => {
-              const view = entry.builtin;
-              const outgoingProblem = view === "outgoing" && outgoingFailed;
-              return (
-                <ViewItem
-                  key={entry.key}
-                  entry={entry}
-                  label={
-                    entry.folder
-                      ? entry.folder.name
-                      : builtinLabel(unified, entry.builtin)
-                  }
-                  keys={viewKeys}
-                  icon={
-                    entry.folder ? (
-                      <UnifiedMark folder={entry.folder} className="mt-0.5" />
-                    ) : outgoingProblem ? (
-                      <CircleAlertIcon className="text-destructive" />
-                    ) : (
-                      <BuiltinMark
-                        view={entry.builtin}
-                        style={builtinStyle(unified, entry.builtin)}
-                        className="mt-0.5"
-                      />
-                    )
-                  }
-                  count={
-                    entry.folder
-                      ? entry.folder.unreadCount
-                      : view === "inbox"
-                        ? inboxUnread
-                        : view === "drafts"
-                          ? draftCount
-                          : view === "outgoing"
-                            ? outgoingCount
-                            : undefined
-                  }
-                  countLabel={
-                    view === "drafts"
-                      ? "件数"
-                      : view === "outgoing"
-                        ? outgoingFailed
-                          ? "送信できなかったメールあり、件数"
-                          : "件数"
-                        : undefined
-                  }
-                  selected={
-                    entry.folder
-                      ? selectedUnifiedId === entry.folder.id
-                      : view === "inbox"
-                        ? folderView && selectedAccountId === null
-                        : view === "drafts"
-                          ? draftsSelected
-                          : special === view
-                  }
-                  onOpen={() => {
-                    if (entry.folder) onSelectUnified(entry.folder.id);
-                    else if (view === "inbox") onSelect(null, null);
-                    else if (view === "drafts") onSelectDrafts();
-                    else if (view === "starred" || view === "outgoing") {
-                      onSelectSpecial(view);
-                    }
-                  }}
-                  onKeyboardMove={moveByKeyboard}
-                  actions={viewActions}
-                  onMenuOpenChange={handleMenuOpenChange}
-                />
-              );
-            })}
-          </SortableContext>
+          {draggingCategorized && <UncategorizeDrop />}
+          {renderViews(groups.views, null)}
           <button
             type="button"
             onClick={viewActions.onCreate}
@@ -503,32 +658,37 @@ export function AccountSidebar({
               <Skeleton className="h-5 w-32" />
             </div>
           ) : (
-            <SortableContext
-              items={accountIds}
-              strategy={verticalListSortingStrategy}
-            >
-              {accounts.map((account) => (
-                <AccountItem
-                  key={account.id}
-                  account={account}
-                  accountIds={accountIds}
-                  tree={trees.get(account.id) ?? []}
-                  collapsed={collapsed}
-                  onToggle={toggle}
-                  accounts={accounts}
-                  selected={folderView && selectedAccountId === account.id}
-                  selectedMailboxId={selectedMailboxId}
-                  onSelect={onSelect}
-                  onMove={move}
-                  onKeyboardMove={moveByKeyboard}
-                  onReauth={onReauth}
-                  mailboxes={byAccount.get(account.id) ?? NO_MAILBOXES}
-                  menuActions={menuActions}
-                  onMenuOpenChange={handleMenuOpenChange}
-                />
-              ))}
-            </SortableContext>
+            renderAccounts(groups.accounts, null)
           )}
+          <SortableContext
+            items={categoryIds}
+            strategy={verticalListSortingStrategy}
+          >
+            {groups.categories.map((group) => {
+              const { category } = group;
+              const empty =
+                group.views.length === 0 && group.accounts.length === 0;
+              return (
+                <CategorySection
+                  key={category.id}
+                  category={category}
+                  ids={categoryIds}
+                  folded={foldedCategories.has(category.id)}
+                  unread={group.accounts.reduce(
+                    (sum, account) => sum + inboxUnreadOf(account.id),
+                    0,
+                  )}
+                  empty={empty}
+                  onKeyboardMove={moveByKeyboard}
+                  actions={categoryActions}
+                  onMenuOpenChange={handleMenuOpenChange}
+                >
+                  {renderViews(group.views, category.id)}
+                  {renderAccounts(group.accounts, category.id)}
+                </CategorySection>
+              );
+            })}
+          </SortableContext>
         </DndContext>
         <Button
           variant="ghost"
@@ -539,6 +699,14 @@ export function AccountSidebar({
         >
           <PlusIcon />
           アカウントを追加
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={() => categoryActions.onCreate()}
+          className="justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
+        >
+          <ListPlusIcon />
+          カテゴリを作成
         </Button>
         <span className="sr-only" aria-live="polite">
           {announcement}
@@ -582,6 +750,9 @@ function ViewItem({
   entry,
   label,
   keys,
+  category,
+  categories,
+  categoryActions,
   icon,
   count,
   countLabel,
@@ -593,8 +764,12 @@ function ViewItem({
 }: {
   entry: SidebarEntry;
   label: string;
-  /** 見えている項目 (いまの表示順)。 */
+  /** 同じ並び (カテゴリなし、または同じカテゴリ) の見えている項目 (いまの表示順)。 */
   keys: string[];
+  /** 入っているカテゴリの ID。入っていなければ null。 */
+  category: string | null;
+  categories: SidebarCategory[];
+  categoryActions: CategoryActions;
   icon: React.ReactNode;
   count: number | undefined;
   countLabel: string | undefined;
@@ -605,10 +780,11 @@ function ViewItem({
   onMenuOpenChange: (open: boolean) => void;
 }) {
   const sortData: SortData = {
-    group: VIEW_GROUP,
+    group: viewGroup(category),
     ids: keys,
     kind: "view",
     label,
+    category,
   };
   const item = useSortableItem(entry.key, sortData, onKeyboardMove);
   const { folder } = entry;
@@ -654,6 +830,12 @@ function ViewItem({
             ids={keys}
             onReorder={(ids) => onKeyboardMove(sortData, ids, entry.key)}
           />
+          <CategoryMenu
+            categories={categories}
+            current={category}
+            onAssign={(next) => categoryActions.onAssign(entry.key, next)}
+            onCreate={() => categoryActions.onCreate(entry.key)}
+          />
           <ContextMenuItem onClick={() => actions.onHide(entry.key)}>
             <EyeOffIcon />
             サイドバーから隠す
@@ -685,12 +867,162 @@ function ViewItem({
   );
 }
 
+/**
+ * カテゴリの見出しと、その中の項目。見出しを押すと折りたたみ、ドラッグや Alt+↑↓ で
+ * カテゴリごと並び替えられる。見出しの上には、アカウントや上部の項目をドラッグして入れられる。
+ */
+function CategorySection({
+  category,
+  ids,
+  folded,
+  unread,
+  empty,
+  onKeyboardMove,
+  actions,
+  onMenuOpenChange,
+  children,
+}: {
+  category: SidebarCategory;
+  /** すべてのカテゴリの ID (いまの表示順)。 */
+  ids: string[];
+  folded: boolean;
+  /** 中のアカウントの受信トレイの未読数 (折りたたんでいる間に出す)。 */
+  unread: number;
+  /** 中に見えている項目が 1 つも無い。 */
+  empty: boolean;
+  onKeyboardMove: MoveHandler;
+  actions: CategoryActions;
+  onMenuOpenChange: (open: boolean) => void;
+  children: React.ReactNode;
+}) {
+  const sortData: SortData = {
+    group: CATEGORY_GROUP,
+    ids,
+    kind: "category",
+    label: category.name,
+    category: category.id,
+  };
+  const item = useSortableItem(category.id, sortData, onKeyboardMove);
+  const drop = useDroppable({
+    id: `category-drop:${category.id}`,
+    data: {
+      kind: "category-drop",
+      category: category.id,
+    } satisfies CategoryDropData,
+  });
+  const toggle = () => toggleCategoryFolded(category.id);
+  return (
+    <section
+      ref={item.setNodeRef}
+      style={item.style}
+      aria-label={category.name}
+      className={cn("relative mt-3", item.isDragging && "z-10 opacity-70")}
+    >
+      <ContextMenu onOpenChange={onMenuOpenChange}>
+        <ContextMenuTrigger render={<div ref={drop.setNodeRef} />}>
+          <Hint label={category.name} side="right" whenClipped>
+            <button
+              type="button"
+              aria-expanded={!folded}
+              onClick={toggle}
+              {...item.handle}
+              className={cn(
+                "flex w-full touch-manipulation select-none items-center gap-2 rounded-md px-2 py-1 text-left font-medium text-muted-foreground text-xs pointer-coarse:min-h-11 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+                (item.isDragging || drop.isOver) &&
+                  "bg-sidebar-accent text-sidebar-foreground",
+              )}
+            >
+              {/* 矢印は上の項目のアイコンの列 (中心 24px) に、名前は文字の列 (40px) に揃える。 */}
+              <span className="flex size-4 shrink-0 items-center justify-center">
+                <ChevronRightIcon
+                  aria-hidden="true"
+                  className={cn(
+                    "size-3.5 transition-transform",
+                    !folded && "rotate-90",
+                  )}
+                />
+              </span>
+              <span className="min-w-0 flex-1 truncate">{category.name}</span>
+              {folded && <UnreadCount count={unread} />}
+            </button>
+          </Hint>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-60">
+          <ContextMenuItem onClick={toggle}>
+            {folded ? <ChevronsUpDownIcon /> : <ChevronsDownUpIcon />}
+            {folded ? "開く" : "折りたたむ"}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => actions.onRename(category)}>
+            <PencilIcon />
+            名前を変更…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <MoveItems
+            id={category.id}
+            ids={ids}
+            onReorder={(next) => onKeyboardMove(sortData, next, category.id)}
+          />
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => actions.onCreate()}>
+            <ListPlusIcon />
+            新しいカテゴリ…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            variant="destructive"
+            onClick={() => actions.onDelete(category)}
+          >
+            <Trash2Icon />
+            カテゴリを削除
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      {!folded &&
+        (empty ? (
+          <p className="py-1.5 pr-2 pl-10 text-muted-foreground text-xs">
+            アカウントや統合フォルダをここへドラッグするか、右クリックメニューの「カテゴリ」から入れられます。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-0.5">{children}</div>
+        ))}
+    </section>
+  );
+}
+
+/**
+ * カテゴリに入っている項目をドラッグしている間だけ、一覧の上端に出す「カテゴリから外す」の場所。
+ * 下の項目を押し下げないよう (ドラッグ中の項目の位置がずれないよう)、上の項目に重ねて出す。
+ */
+function UncategorizeDrop() {
+  const drop = useDroppable({
+    id: "category-drop:none",
+    data: { kind: "category-drop", category: null } satisfies CategoryDropData,
+  });
+  return (
+    <div
+      ref={drop.setNodeRef}
+      className={cn(
+        "sticky top-0 z-20 -mb-11 flex h-11 shrink-0 items-center justify-center gap-2 rounded-md border-2 border-dashed bg-sidebar text-muted-foreground text-xs shadow-sm transition-colors",
+        drop.isOver
+          ? "border-primary bg-sidebar-accent text-sidebar-foreground"
+          : "border-border",
+      )}
+    >
+      <ListXIcon className="size-4" aria-hidden="true" />
+      ここに落とすとカテゴリから外します
+    </div>
+  );
+}
+
 const NO_MAILBOXES: MailboxSummary[] = [];
 
 function AccountItem({
   account,
   accounts,
   accountIds,
+  category,
+  categories,
+  categoryActions,
   tree,
   collapsed,
   onToggle,
@@ -707,7 +1039,12 @@ function AccountItem({
   account: Account;
   /** 色を決めるのに使う、すべてのアカウント。 */
   accounts: Account[];
+  /** 同じ並び (カテゴリなし、または同じカテゴリ) のアカウント (いまの表示順)。 */
   accountIds: string[];
+  /** 入っているカテゴリの ID。入っていなければ null。 */
+  category: string | null;
+  categories: SidebarCategory[];
+  categoryActions: CategoryActions;
   tree: MailboxNode[];
   collapsed: ReadonlySet<string>;
   onToggle: (id: string) => void;
@@ -726,10 +1063,11 @@ function AccountItem({
   const open = !collapsed.has(account.id);
   const name = account.displayName || account.email;
   const sortData: SortData = {
-    group: ACCOUNT_GROUP,
+    group: accountGroup(category),
     ids: accountIds,
     kind: "account",
     label: name,
+    category,
   };
   const item = useSortableItem(account.id, sortData, onKeyboardMove);
   return (
@@ -790,6 +1128,14 @@ function AccountItem({
             onToggle={() => onToggle(account.id)}
             onReorder={(ids) => onKeyboardMove(sortData, ids, account.id)}
             actions={menuActions}
+            categoryMenu={
+              <CategoryMenu
+                categories={categories}
+                current={category}
+                onAssign={(next) => categoryActions.onAssign(account.id, next)}
+                onCreate={() => categoryActions.onCreate(account.id)}
+              />
+            }
           />
         </ContextMenuContent>
       </ContextMenu>

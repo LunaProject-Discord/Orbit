@@ -4,8 +4,9 @@ import {
   mailboxes,
   messageMailboxes,
   messages,
+  outbox,
 } from "@orbit/db";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt, notInArray } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import type { ListedMailbox } from "./mailbox-list.js";
 
@@ -184,4 +185,78 @@ export async function applyMailboxList(
     await recordChanges(tx, account.userId, "mailbox", "upsert", [...changed]);
     await recordChanges(tx, account.userId, "mailbox", "delete", removed);
   });
+}
+
+/** 移動中として置いた所在を、移動先の同期で結び付かないまま残しておく時間。 */
+export const STALE_PENDING_MS = 10 * 60_000;
+
+/**
+ * 移動中として先に置いた所在のうち、移動先を同期しても同じメールが見つからないまま
+ * 時間が経ったものを外す (メールサーバー側で別の場所へ移されたなど)。
+ * まだメールサーバーへ反映していない移動があるアカウントでは何もしない。
+ */
+export async function dropStalePending(
+  db: Database,
+  account: SyncAccount,
+  mailboxId: string,
+  now = Date.now(),
+): Promise<number> {
+  return db.transaction(async (tx) => {
+    const [waiting] = await tx
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.accountId, account.id),
+          eq(outbox.kind, "move"),
+          inArray(outbox.status, ["pending", "processing"]),
+        ),
+      )
+      .limit(1);
+    if (waiting) return 0;
+    const stale = await tx
+      .select({ messageId: messageMailboxes.messageId })
+      .from(messageMailboxes)
+      .where(
+        and(
+          eq(messageMailboxes.mailboxId, mailboxId),
+          lt(messageMailboxes.pendingSince, new Date(now - STALE_PENDING_MS)),
+        ),
+      );
+    return removePlacements(
+      tx,
+      account,
+      [mailboxId],
+      stale.map((row) => row.messageId),
+    );
+  });
+}
+
+/**
+ * メールサーバーで移動できなかったとき、移動先に先に置いた所在を外す
+ * (移動元は、同期で全件を突き合わせ直して戻る)。
+ */
+export async function dropPendingPlacements(
+  tx: Tx,
+  account: SyncAccount,
+  mailboxId: string,
+  messageIds: string[],
+): Promise<number> {
+  if (messageIds.length === 0) return 0;
+  const pending = await tx
+    .select({ messageId: messageMailboxes.messageId })
+    .from(messageMailboxes)
+    .where(
+      and(
+        eq(messageMailboxes.mailboxId, mailboxId),
+        inArray(messageMailboxes.messageId, messageIds),
+        isNotNull(messageMailboxes.pendingSince),
+      ),
+    );
+  return removePlacements(
+    tx,
+    account,
+    [mailboxId],
+    pending.map((row) => row.messageId),
+  );
 }
