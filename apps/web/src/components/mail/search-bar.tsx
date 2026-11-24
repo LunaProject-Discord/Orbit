@@ -825,7 +825,11 @@ export function SearchBox({
                 screen ? "text-base" : editing ? "text-xs" : "text-sm",
                 editing
                   ? // 入力中の条件のチップの中の欄。中身の幅に合わせる (対応していないブラウザーでは広がる)。
-                    "field-sizing-content h-full min-w-[2ch] max-w-48 flex-none font-semibold text-inherit placeholder:font-normal placeholder:text-current/45"
+                    cn(
+                      "field-sizing-content min-w-[2ch] max-w-48 flex-none rounded-sm bg-background/85 font-semibold text-inherit shadow-xs ring-1 ring-current/10 placeholder:font-normal placeholder:text-current/45 dark:bg-background/60",
+                      // 値を入れる部分は、チップの中で背景を変えて欄だとわかるようにする。
+                      screen ? "h-6 px-1.5" : "h-4.5 px-1",
+                    )
                   : cn(
                       "h-full w-full flex-1",
                       screen ? "min-w-24" : "min-w-20",
@@ -876,7 +880,7 @@ function chipClass(negated: boolean, screen: boolean, editing: boolean) {
   return cn(
     "flex shrink-0 items-center gap-1 rounded-md pl-1.5 ring-1 ring-inset transition-colors",
     screen ? "h-8 pr-1 text-sm" : "h-6 pr-0.5 text-xs",
-    editing && (screen ? "pr-2" : "pr-1.5"),
+    editing && (screen ? "pr-1" : "pr-0.5"),
     negated
       ? cn(
           "bg-rose-500/10 text-rose-950 ring-rose-500/20 dark:bg-rose-400/15 dark:text-rose-50 dark:ring-rose-400/25",
