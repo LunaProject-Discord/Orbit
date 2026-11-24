@@ -68,6 +68,15 @@ export function readNotificationActions(
 /** 通知の操作を受け付ける API のパス (/v1 より後ろ)。 */
 export const NOTIFICATION_ACTION_PATH = "/notification-actions";
 
+/**
+ * 通知の返信欄から返信を受け付ける API のパス (/v1 より後ろ)。
+ * アプリは、ボタンの送り先 (PushActions.url) の後ろに "/reply" を付けて送る。
+ */
+export const NOTIFICATION_REPLY_PATH = `${NOTIFICATION_ACTION_PATH}/reply`;
+
+/** 通知の返信欄に書ける文字数の上限。 */
+export const MAX_NOTIFICATION_REPLY_LENGTH = 10_000;
+
 /** 通知の操作を受け付ける URL。API の公開 URL が分からなければ null (ボタンを付けない)。 */
 export function notificationActionUrl(
   publicUrl: string | undefined,
@@ -135,11 +144,15 @@ export type PushActions = {
   url: string;
   /** このメールを操作してよいことを示す合言葉。 */
   token: string;
+  /** 返信欄を出すか。送り先は url の後ろに "/reply" を付けたもの。 */
+  reply: boolean;
 };
 
 /** 通知にボタンを付けるための材料。 */
 export type PushActionSigner = {
   actions: readonly NotificationActionId[];
+  /** 返信欄を出すか (ボタンを 1 つも選んでいなくても出す)。 */
+  reply?: boolean;
   url: string;
   sign: (messageId: string) => string;
 };
@@ -148,7 +161,9 @@ export function toPushActions(
   signer: PushActionSigner | null | undefined,
   messageId: string,
 ): PushActions | undefined {
-  if (!signer || signer.actions.length === 0) return undefined;
+  if (!signer) return undefined;
+  const reply = signer.reply === true;
+  if (signer.actions.length === 0 && !reply) return undefined;
   return {
     buttons: signer.actions.map((id) => ({
       id,
@@ -156,5 +171,6 @@ export function toPushActions(
     })),
     url: signer.url,
     token: signer.sign(messageId),
+    reply,
   };
 }

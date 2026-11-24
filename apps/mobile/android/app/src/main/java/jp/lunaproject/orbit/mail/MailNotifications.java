@@ -9,13 +9,14 @@ import android.os.Build;
 import android.service.notification.StatusBarNotification;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.app.RemoteInput;
 import androidx.core.content.ContextCompat;
 import java.util.Map;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** 新着メールの通知を組み立てて出す。ボタン (既読にする、アーカイブなど) もここで付ける。 */
+/** 新着メールの通知を組み立てて出す。返信欄とボタン (既読にする、アーカイブなど) もここで付ける。 */
 final class MailNotifications {
 
     /** 通知に並べるボタンの数の上限 (Android が表示できる数)。 */
@@ -34,7 +35,8 @@ final class MailNotifications {
     /**
      * サーバーから届いた内容で通知を出す。
      * data: title、body、preview (本文の冒頭。無いこともある)、tag、messageId (まとめた通知では空)、
-     * actions (ボタンの JSON)、actionUrl、actionToken (ボタンがあるとき)、
+     * actions (ボタンの JSON)、actionUrl、actionToken (ボタンか返信欄があるとき)、
+     * actionReply ("1" なら返信欄を出す)、
      * accountId、accountName (届いたアカウント。古いサーバーでは無い)。
      * アカウントが分かるときは、アカウントごとの分類 (音やオン / オフを Android の設定で
      * 別々に変えられる) と、アカウントごとのまとまりに分けて出す。
@@ -65,8 +67,14 @@ final class MailNotifications {
         String url = data.get("actionUrl");
         String token = data.get("actionToken");
         String actions = data.get("actions");
-        if (!messageId.isEmpty() && url != null && token != null && actions != null) {
-            addActions(context, builder, actions, tag, messageId, url, token, title);
+        boolean reply = "1".equals(data.get("actionReply"));
+        if (!messageId.isEmpty() && url != null && token != null) {
+            int buttons = MAX_ACTIONS;
+            if (reply) {
+                addReply(context, builder, tag, messageId, url, token, title);
+                buttons -= 1;
+            }
+            if (actions != null) addActions(context, builder, actions, tag, messageId, url, token, title, buttons);
         }
         post(context, tag, builder);
         if (!accountId.isEmpty()) showSummary(context, channel, accountId, accountName);
@@ -93,6 +101,18 @@ final class MailNotifications {
         NotificationCompat.Builder builder = base(context, channel(context, "", ""), tag, null, messageId)
             .setContentTitle(context.getString(R.string.notification_action_failed))
             .setContentText(orEmpty(title));
+        post(context, tag, builder);
+    }
+
+    /**
+     * 返信を送れなかったことを知らせる。書いた文章は失わないよう本文に出す (長押しでコピーできる)。
+     * 押すと、そのメールを開く (アプリの返信欄から送り直せる)。
+     */
+    static void showReplyFailure(Context context, String tag, String messageId, String title, String text) {
+        NotificationCompat.Builder builder = base(context, channel(context, "", ""), tag, null, messageId)
+            .setContentTitle(context.getString(R.string.notification_reply_failed))
+            .setContentText(orEmpty(title))
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(orEmpty(title) + "\n\n" + orEmpty(text)));
         post(context, tag, builder);
     }
 
@@ -156,6 +176,43 @@ final class MailNotifications {
             .setContentIntent(content);
     }
 
+    /**
+     * 返信欄。押すと通知の中に入力欄が開き、送るとアプリを開かずにサーバーへ届ける。
+     * 入力した文章を受け取るため、この PendingIntent だけは書き換えできる (MUTABLE) にする
+     * (送り先は明示した自分のアプリの受け口なので、ほかのアプリには渡らない)。
+     */
+    private static void addReply(
+        Context context,
+        NotificationCompat.Builder builder,
+        String tag,
+        String messageId,
+        String url,
+        String token,
+        String title
+    ) {
+        Intent intent = new Intent(context, NotificationActionReceiver.class);
+        intent.setAction(NotificationActionReceiver.ACTION_REPLY);
+        intent.putExtra(NotificationActionReceiver.EXTRA_TAG, tag);
+        intent.putExtra(NotificationActionReceiver.EXTRA_MESSAGE_ID, messageId);
+        intent.putExtra(NotificationActionReceiver.EXTRA_URL, url);
+        intent.putExtra(NotificationActionReceiver.EXTRA_TOKEN, token);
+        intent.putExtra(NotificationActionReceiver.EXTRA_TITLE, title);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_MUTABLE;
+        PendingIntent pending = PendingIntent.getBroadcast(context, (tag + ":reply").hashCode(), intent, flags);
+        RemoteInput input = new RemoteInput.Builder(NotificationActionReceiver.KEY_REPLY_TEXT)
+            .setLabel(context.getString(R.string.notification_reply_hint))
+            .build();
+        builder.addAction(
+            new NotificationCompat.Action.Builder(0, context.getString(R.string.notification_reply), pending)
+                .addRemoteInput(input)
+                .setAllowGeneratedReplies(true)
+                .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+                .setShowsUserInterface(false)
+                .build()
+        );
+    }
+
     private static void addActions(
         Context context,
         NotificationCompat.Builder builder,
@@ -164,11 +221,12 @@ final class MailNotifications {
         String messageId,
         String url,
         String token,
-        String title
+        String title,
+        int max
     ) {
         try {
             JSONArray buttons = new JSONArray(json);
-            int count = Math.min(buttons.length(), MAX_ACTIONS);
+            int count = Math.min(buttons.length(), max);
             for (int index = 0; index < count; index++) {
                 JSONObject button = buttons.getJSONObject(index);
                 String id = button.getString("id");

@@ -125,6 +125,7 @@ describe("toFcmMessage", () => {
         buttons: [{ id: "read", title: "既読にする" }],
         url: "https://x/v1/notification-actions",
         token: "1.abc",
+        reply: false,
       },
     });
     expect(sent.data).toMatchObject({
@@ -132,6 +133,20 @@ describe("toFcmMessage", () => {
       actionUrl: "https://x/v1/notification-actions",
       actionToken: "1.abc",
     });
+    expect(sent.data).not.toHaveProperty("actionReply");
+  });
+
+  it("返信欄を出すときは actionReply を付ける", () => {
+    const { message: sent } = toFcmMessage("t", {
+      ...message,
+      actions: {
+        buttons: [],
+        url: "https://x/v1/notification-actions",
+        token: "1.abc",
+        reply: true,
+      },
+    });
+    expect(sent.data).toMatchObject({ actions: "[]", actionReply: "1" });
   });
 });
 

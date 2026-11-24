@@ -81,6 +81,7 @@ import {
   deleteSignatureRule,
   dismissFailure,
   type FailedOperation,
+  getMessage,
   listFailures,
   listOutgoing,
   listSignatureRules,
@@ -126,6 +127,7 @@ import {
   storeUnsavedDraft,
   withReplyText,
 } from "@/lib/compose";
+import { isDesktopApp, notifyNewMail } from "@/lib/desktop/app";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import { keepRows } from "@/lib/kept-rows";
@@ -138,10 +140,16 @@ import {
 } from "@/lib/mailboxes";
 import { isNativeApp } from "@/lib/native/app";
 import {
+  notificationActionInput,
+  refreshNotificationActions,
+} from "@/lib/notification-actions";
+import {
   disableNotifications,
   enableNotifications,
   inboxUnreadCount,
+  type NotificationActionRequest,
   type NotificationStatus,
+  onNotificationAction,
   onNotificationOpen,
   parseMailEvent,
   showPageNotification,
@@ -1630,6 +1638,48 @@ export function MailApp({ user }: { user: User }) {
     void loadOutgoing();
     return true;
   }
+
+  /**
+   * 通知の返信欄から返信する (デスクトップ版の Windows)。ウィンドウを出さずに、
+   * 本文の下の返信欄と同じ内容 (署名と引用付き) で送る。送れなければ OS の通知で知らせる
+   * (ウィンドウが隠れていると、画面の知らせには気付けないため)。
+   */
+  async function replyFromNotification(messageId: string, text: string) {
+    let sent = false;
+    try {
+      sent = await handleQuickReply(await getMessage(messageId), text);
+    } catch {
+      sent = false;
+    }
+    if (!sent) {
+      void notifyNewMail({
+        title: "返信を送れませんでした",
+        body: text,
+        messageId,
+      });
+    }
+  }
+
+  // 通知のボタンと返信欄 (デスクトップ版の Windows) からの操作。最新の状態で処理するため、
+  // 受け口は 1 度だけ登録し、処理そのものは描画のたびに差し替える。
+  const notificationActionRef = useRef<
+    (request: NotificationActionRequest) => void
+  >(() => {});
+  notificationActionRef.current = (request) => {
+    if (request.action === "reply") {
+      void replyFromNotification(request.messageId, request.text);
+      return;
+    }
+    performAction([request.messageId], notificationActionInput(request.action));
+  };
+  useEffect(() => {
+    if (!isDesktopApp()) return;
+    // 通知に付けるボタンは設定画面で選ぶ。ほかの端末で変えた分も取り込んでおく。
+    void refreshNotificationActions();
+    return onNotificationAction((request) =>
+      notificationActionRef.current(request),
+    );
+  }, []);
 
   /** 一覧のメールを、新しいウィンドウで開く (いまの表示と同じフォルダの中で開く)。 */
   function openMessageWindow(message: MessageSummary) {

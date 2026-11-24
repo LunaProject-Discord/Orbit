@@ -10,6 +10,7 @@ Orbit Mail の Android アプリ (`apps/mobile`) のビルド、プッシュ通�
 - 通知には差出人、件名、本文の冒頭が出ます (本文は、通知を広げると件名の下に出ます。一度に 4 通以上届いてまとめた通知には出ません)。
 - 通知はメールアカウントごとに分かれます。Android の設定 → アプリ → Orbit Mail → 通知 に、アカウントの名前の分類が並び、音や表示のしかた、オン / オフを別々に変えられます。通知の一覧でも、アカウントごとにまとまって表示されます。通知するアカウントは **設定 → 通知 → アカウントごとの通知** でも選べます (すべての端末で共通)。
 - 通知にはボタン (既読にする、スターを付ける、アーカイブ、削除、迷惑メールから 3 つまで) が付き、アプリを開かずに操作できます。どれを出すかは **設定 → 通知 → 通知に付けるボタン** で選びます (すべての端末で共通)。
+- 通知の **返信** を押すと通知の中に入力欄が開き、アプリを開かずに差出人へ返信できます。返信には署名と元のメールの引用 (テキスト) が付き、返信したメールは既読になります。Android の通知に並ぶのは 3 つまでなので、返信欄があるときはボタンは選んだうちの最初の 2 つまでになります。送れなかったときは「返信を送れませんでした」の通知に書いた文章が残ります。
 - アプリの ID (パッケージ名) は `jp.lunaproject.orbit.mail` です。スマホでは機能ごとに別のアプリにし (将来の Calendar、Contacts)、接続先サーバーとログインはアプリどうしで共有します。しくみは [mobile-shared-config.md](./mobile-shared-config.md) を参照してください。
 
 | 場所 | 中身 |
@@ -18,7 +19,7 @@ Orbit Mail の Android アプリ (`apps/mobile`) のビルド、プッシュ通�
 | `apps/mobile/android/` | Android Studio で開くプロジェクト (コミットしてある) |
 | `apps/mobile/scripts/generate-icons.mjs` | `assets/brand/` からアイコンと起動画面の画像を作る |
 | `apps/web/src/lib/native/` | アプリの中でだけ動く処理 (起動画面、戻るボタン、テーマ、通知) |
-| `apps/mobile/android/app/src/main/java/…/OrbitMessagingService.java` ほか | 通知の組み立て (`MailNotifications`) と、通知のボタンの処理 (`NotificationActionReceiver`) |
+| `apps/mobile/android/app/src/main/java/…/OrbitMessagingService.java` ほか | 通知の組み立て (`MailNotifications`) と、通知のボタン・返信欄の処理 (`NotificationActionReceiver`) |
 | `.github/workflows/android.yml` | GitHub Actions でのビルド |
 
 ## 1. GitHub Actions でビルドする (いちばん手軽)

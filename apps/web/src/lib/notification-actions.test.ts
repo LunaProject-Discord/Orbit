@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   changeNotificationActions,
+  currentNotificationActions,
+  notificationActionInput,
   parseNotificationActions,
   refreshNotificationActions,
   resetNotificationActionsForTest,
@@ -94,5 +96,47 @@ describe("設定の保持", () => {
     finish();
     expect(await saving).toBe(true);
     expect(cached()).toEqual(["junk"]);
+  });
+});
+
+describe("notificationActionInput", () => {
+  it("ボタンごとの操作 (サーバーと同じ)", () => {
+    expect(notificationActionInput("read")).toEqual({
+      action: "set_flags",
+      seen: true,
+    });
+    expect(notificationActionInput("star")).toEqual({
+      action: "set_flags",
+      flagged: true,
+    });
+    expect(notificationActionInput("archive")).toEqual({
+      action: "move",
+      destination: "archive",
+    });
+    expect(notificationActionInput("delete")).toEqual({
+      action: "move",
+      destination: "trash",
+    });
+    expect(notificationActionInput("junk")).toEqual({
+      action: "move",
+      destination: "junk",
+    });
+  });
+});
+
+describe("currentNotificationActions", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetNotificationActionsForTest();
+  });
+
+  it("保存してあった設定を読む (無ければ標準のボタン)", () => {
+    expect(currentNotificationActions()).toEqual(["read", "archive", "delete"]);
+    window.localStorage.setItem(
+      "mail.notification-actions.v1",
+      JSON.stringify(["star"]),
+    );
+    resetNotificationActionsForTest();
+    expect(currentNotificationActions()).toEqual(["star"]);
   });
 });
