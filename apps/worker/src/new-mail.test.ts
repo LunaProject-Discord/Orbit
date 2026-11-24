@@ -1,6 +1,7 @@
 import {
   FcmError,
   type NewMailNotification,
+  type PushMessage,
   verifyNotificationAction,
 } from "@orbit/core";
 import type { Database } from "@orbit/db";
@@ -152,12 +153,44 @@ describe("通知のボタン", () => {
           { id: "delete", title: "削除" },
         ],
         url: "https://x/v1/notification-actions",
+        // Web Push の通知には返信欄を出せない。
+        reply: false,
       });
       expect(
         verifyNotificationAction(
           key,
           "u1",
           message.messageId,
+          message.actions?.token,
+        ),
+      ).toBe(true);
+    }
+  });
+});
+
+describe("スマホアプリの通知の返信欄", () => {
+  it("スマホアプリへの通知には、返信欄と合言葉を付ける", async () => {
+    const { db } = fakeDb([{ id: "d1", pushToken: "token-d1" }]);
+    const sent: PushMessage[] = [];
+    const key = Buffer.alloc(32, 4);
+    await new DevicePushSender(
+      db,
+      {
+        send: async (_token, message) => {
+          sent.push(message);
+        },
+      },
+      undefined,
+      { key, url: "https://x/v1/notification-actions" },
+    ).deliver(notification);
+    expect(sent).toHaveLength(2);
+    for (const message of sent) {
+      expect(message.actions?.reply).toBe(true);
+      expect(
+        verifyNotificationAction(
+          key,
+          "u1",
+          message.messageId ?? "",
           message.actions?.token,
         ),
       ).toBe(true);

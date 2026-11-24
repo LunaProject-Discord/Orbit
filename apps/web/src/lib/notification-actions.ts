@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { MessageActionInput } from "@/lib/actions";
 import {
   getSettings,
   type NotificationAction,
@@ -39,6 +40,32 @@ export const NOTIFICATION_ACTIONS: readonly {
     description: "迷惑メールのフォルダへ移します。",
   },
 ];
+
+/** 通知のボタンを、メールへの操作に直す (サーバーの routes/notification-actions.ts と同じ)。 */
+export function notificationActionInput(
+  id: NotificationAction,
+): MessageActionInput {
+  switch (id) {
+    case "read":
+      return { action: "set_flags", seen: true };
+    case "star":
+      return { action: "set_flags", flagged: true };
+    case "archive":
+      return { action: "move", destination: "archive" };
+    case "delete":
+      // 画面の「削除」と同じく、ごみ箱へ移す。
+      return { action: "move", destination: "trash" };
+    case "junk":
+      return { action: "move", destination: "junk" };
+  }
+}
+
+/** ボタンの ID かどうか (アプリ側から受け取った値を確かめる)。 */
+export function isNotificationAction(
+  value: unknown,
+): value is NotificationAction {
+  return typeof value === "string" && ids.has(value);
+}
 
 /** 通知に付けられるボタンの数の上限。 */
 export const MAX_NOTIFICATION_ACTIONS = 3;
@@ -129,6 +156,12 @@ function subscribe(listener: () => void) {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** いま通知に付けるボタン (部品の外から読むとき。デスクトップ版の通知を出すときなど)。 */
+export function currentNotificationActions(): NotificationAction[] {
+  if (typeof window === "undefined") return INITIAL;
+  return read();
 }
 
 /** いま通知に付けるボタン。変わると、使っている部品を描き直す。 */

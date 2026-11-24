@@ -5,6 +5,9 @@
 mod badge;
 mod fonts;
 mod settings;
+#[cfg(windows)]
+mod toast;
+mod toast_xml;
 mod tray;
 mod updater;
 
@@ -29,7 +32,7 @@ const EXTRA_WINDOW_PREFIX: &str = "window-";
 /// 追加で開けるウィンドウの数の上限。
 const MAX_EXTRA_WINDOWS: usize = 16;
 /// 通知が押されたときに画面へ送るイベント。
-const OPEN_MESSAGE_EVENT: &str = "desktop://open-message";
+pub(crate) const OPEN_MESSAGE_EVENT: &str = "desktop://open-message";
 /// アプリ専用の URL で開かれたときに画面へ送るイベント。
 const APP_URL_EVENT: &str = "desktop://app-url";
 /// アプリ専用の URL のスキーム。外のブラウザーでの Google / Microsoft のログインから戻るときに使う
@@ -47,8 +50,8 @@ pub(crate) struct AppState {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenMessage {
-    message_id: Option<String>,
+pub(crate) struct OpenMessage {
+    pub message_id: Option<String>,
 }
 
 /// メインウィンドウを前面に出す (トレイに入っていれば戻す)。
@@ -78,6 +81,8 @@ fn is_message_id(value: &str) -> bool {
 }
 
 /// 新着メールを OS の通知で知らせる。押されたら、そのメールを開くよう画面へ伝える。
+/// Windows では、ボタン (buttons) と返信欄 (reply) も付ける。押されたボタンと書いた文章は
+/// 画面へイベント (desktop://notification-action) で渡し、画面が操作と送信を行う。
 #[tauri::command]
 fn notify_new_mail(
     app: AppHandle,
@@ -85,16 +90,36 @@ fn notify_new_mail(
     title: String,
     body: String,
     message_id: Option<String>,
+    buttons: Option<Vec<toast_xml::ToastButton>>,
+    reply: Option<bool>,
 ) -> Result<(), String> {
     // どのウィンドウの画面も同じ新着メールを受け取る。通知が重ならないよう、メインウィンドウの分だけ出す。
     if window.label() != MAIN_WINDOW {
         return Ok(());
     }
-    let mut builder = app.notification().builder().title(title).body(body);
-    if let Some(id) = message_id.filter(|id| is_message_id(id)) {
-        builder = builder.extra("messageId", id);
+    let message_id = message_id.filter(|id| is_message_id(id));
+    #[cfg(windows)]
+    {
+        return toast::show(
+            &app,
+            &title,
+            &body,
+            message_id,
+            &buttons.unwrap_or_default(),
+            reply.unwrap_or(false),
+        )
+        .map_err(|error| error.to_string());
     }
-    builder.show().map_err(|error| error.to_string())
+    #[cfg(not(windows))]
+    {
+        // macOS と Linux は、通知そのものを押したときだけ (ボタンと返信欄は Windows のみ)。
+        let _ = (buttons, reply);
+        let mut builder = app.notification().builder().title(title).body(body);
+        if let Some(id) = message_id {
+            builder = builder.extra("messageId", id);
+        }
+        builder.show().map_err(|error| error.to_string())
+    }
 }
 
 /// 受信トレイの未読数を、トレイとタスクバー (Dock) のアイコンに出す。

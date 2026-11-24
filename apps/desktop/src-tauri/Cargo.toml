@@ -26,6 +26,16 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
 
+# Windows の通知 (トースト) に返信欄を付けるため、WinRT の通知 API を直接使う (src/toast.rs)。
+# 版は、通知のプラグインが使っているもの (Cargo.lock) と合わせる。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Data_Xml_Dom",
+  "UI_Notifications",
+] }
+
 [profile.release]
 codegen-units = 1
 lto = true

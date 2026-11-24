@@ -14,7 +14,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NOTIFICATION_ACTION_PATH, signNotificationAction } from "@orbit/core";
+import {
+  NOTIFICATION_ACTION_PATH,
+  NOTIFICATION_REPLY_PATH,
+  type SendPayload,
+  signNotificationAction,
+} from "@orbit/core";
 import {
   attachments,
   changes,
@@ -786,6 +791,62 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       }),
     });
     expect(response.status).toBe(403);
+    expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  it("通知の返信欄の合言葉は、他の利用者のメールには通用しない", async () => {
+    const before = await snapshot(db, a.userId);
+    const response = await app.request(`/v1${NOTIFICATION_REPLY_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messageId: a.message,
+        token: signNotificationAction(encryptionKey, b.userId, a.message),
+        text: "なりすまし",
+      }),
+    });
+    expect(response.status).toBe(403);
+    expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  it("通知の返信欄からの返信は、自分のアカウントから元の差出人へ積まれる", async () => {
+    const before = await snapshot(db, a.userId);
+    const idempotencyKey = randomUUID();
+    const send = () =>
+      app.request(`/v1${NOTIFICATION_REPLY_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messageId: b.message,
+          token: signNotificationAction(encryptionKey, b.userId, b.message),
+          text: "了解です",
+          idempotencyKey,
+        }),
+      });
+    const response = await send();
+    expect(response.status).toBe(202);
+    const { id } = (await response.json()) as { id: string };
+    // 同じ返信をもう一度送っても、二重には積まない。
+    expect(((await (await send()).json()) as { id: string }).id).toBe(id);
+    const rows = await db
+      .select({ accountId: outbox.accountId, payload: outbox.payload })
+      .from(outbox)
+      .where(sql`${outbox.id} = ${id}`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.accountId).toBe(b.account);
+    const payload = rows[0]?.payload as unknown as SendPayload;
+    expect(payload.mode).toBe("reply");
+    expect(payload.sourceMessageId).toBe(b.message);
+    expect(payload.message.to).toEqual([
+      { name: `${b.mark}-sender`, address: "sender@example.com" },
+    ]);
+    expect(payload.message.subject).toBe(`Re: ${b.mark}-subject`);
+    expect(payload.message.inReplyTo).toBe(`<${b.mark}-message@example.com>`);
+    expect(payload.message.text).toContain("了解です");
+    expect(payload.message.text).toContain(`> ${b.mark}-body shared-word`);
+    await db.execute(
+      sql`delete from outbox where account_id = ${b.account} and idempotency_key = ${idempotencyKey}`,
+    );
     expect(await snapshot(db, a.userId)).toEqual(before);
   });
 

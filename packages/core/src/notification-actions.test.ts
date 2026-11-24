@@ -103,11 +103,23 @@ describe("toPushActions", () => {
       ],
       url: "https://x/v1/notification-actions",
       token: "t-m1",
+      reply: false,
     });
   });
 
-  it("ボタンが無ければ何も付けない", () => {
+  it("ボタンも返信欄も無ければ何も付けない", () => {
     expect(toPushActions(null, "m1")).toBeUndefined();
     expect(toPushActions({ ...signer, actions: [] }, "m1")).toBeUndefined();
+  });
+
+  it("返信欄を出すときは、ボタンが無くても合言葉を付ける", () => {
+    expect(
+      toPushActions({ ...signer, actions: [], reply: true }, "m1"),
+    ).toEqual({
+      buttons: [],
+      url: "https://x/v1/notification-actions",
+      token: "t-m1",
+      reply: true,
+    });
   });
 });

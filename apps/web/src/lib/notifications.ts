@@ -3,16 +3,23 @@ import {
   getPushPublicKey,
   type MailboxSummary,
   type MailNotification,
+  type NotificationAction,
   savePushSubscription,
 } from "@/lib/api";
 import {
   isDesktopApp,
   listenDesktop,
+  NOTIFICATION_ACTION_EVENT,
   notifyNewMail,
   OPEN_MESSAGE_EVENT,
   setDesktopUnreadCount,
 } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
+import {
+  currentNotificationActions,
+  isNotificationAction,
+  NOTIFICATION_ACTIONS,
+} from "@/lib/notification-actions";
 
 /**
  * 新着メールの通知。
@@ -256,10 +263,14 @@ export async function showPageNotification(
     : notification.body;
   if (isDesktopApp()) {
     // 押されたときは、アプリ側からのイベントが onNotificationOpen に届く。
+    // ボタンと返信欄 (Windows のみ) の操作は onNotificationAction に届く。
     await notifyNewMail({
       title: notification.title,
       body,
       messageId: notification.messageId,
+      ...(notification.messageId
+        ? { buttons: desktopNotificationButtons(), reply: true }
+        : {}),
     });
     return;
   }
@@ -285,6 +296,50 @@ export async function showPageNotification(
   } catch {
     // 通知を出せなくても、一覧には新着が表示される。
   }
+}
+
+/** デスクトップ版の通知に付けるボタン。利用者が設定で選んだもの (Web Push の通知と同じ)。 */
+export function desktopNotificationButtons(): { id: string; title: string }[] {
+  return currentNotificationActions().map((id) => ({
+    id,
+    title: NOTIFICATION_ACTIONS.find((action) => action.id === id)?.label ?? id,
+  }));
+}
+
+/** 通知のボタン、または返信欄からの操作。 */
+export type NotificationActionRequest =
+  | { messageId: string; action: "reply"; text: string }
+  | { messageId: string; action: NotificationAction };
+
+/** アプリ側から届いた値を確かめる。形が違えば null。 */
+export function parseNotificationAction(
+  payload: unknown,
+): NotificationActionRequest | null {
+  if (!payload || typeof payload !== "object") return null;
+  const { messageId, action, text } = payload as Record<string, unknown>;
+  if (typeof messageId !== "string" || !MESSAGE_ID.test(messageId)) {
+    return null;
+  }
+  if (action === "reply") {
+    return typeof text === "string" && text.trim() !== ""
+      ? { messageId, action, text }
+      : null;
+  }
+  return isNotificationAction(action) ? { messageId, action } : null;
+}
+
+/**
+ * 通知のボタンが押された、または返信欄から送られたときに受け取る (デスクトップ版の Windows)。
+ * 戻り値の関数で解除する。
+ */
+export function onNotificationAction(
+  listener: (request: NotificationActionRequest) => void,
+): () => void {
+  if (!isDesktopApp()) return () => {};
+  return listenDesktop<unknown>(NOTIFICATION_ACTION_EVENT, (payload) => {
+    const request = parseNotificationAction(payload);
+    if (request) listener(request);
+  });
 }
 
 /**

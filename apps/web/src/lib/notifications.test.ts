@@ -4,6 +4,7 @@ import {
   enabledFrom,
   inboxUnreadCount,
   parseMailEvent,
+  parseNotificationAction,
   unreadTitle,
 } from "@/lib/notifications";
 
@@ -69,5 +70,32 @@ describe("enabledFrom", () => {
     expect(enabledFrom(null, true)).toBe(true);
     expect(enabledFrom("on", true)).toBe(true);
     expect(enabledFrom("off", true)).toBe(false);
+  });
+});
+
+describe("parseNotificationAction", () => {
+  const messageId = "01a1fcb1-b4bb-71cc-9452-cd6f31df8724";
+
+  it("返信と、知っているボタンを受け付ける", () => {
+    expect(
+      parseNotificationAction({ messageId, action: "reply", text: "了解" }),
+    ).toEqual({ messageId, action: "reply", text: "了解" });
+    expect(parseNotificationAction({ messageId, action: "archive" })).toEqual({
+      messageId,
+      action: "archive",
+    });
+  });
+
+  it("形の違うものは受け付けない", () => {
+    for (const payload of [
+      null,
+      "reply",
+      { messageId: "x", action: "read" },
+      { messageId, action: "unknown" },
+      { messageId, action: "reply" },
+      { messageId, action: "reply", text: "  " },
+    ]) {
+      expect(parseNotificationAction(payload)).toBeNull();
+    }
   });
 });

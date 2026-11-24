@@ -77,11 +77,22 @@ export const OPEN_MESSAGE_EVENT = "desktop://open-message";
 /** アプリ専用の URL (外のブラウザーでのログインからの戻り) で開かれたときに届く。 */
 export const APP_URL_EVENT = "desktop://app-url";
 
-/** 新着メールを OS の通知で知らせる。 */
+/**
+ * 通知のボタンが押された、または返信欄から送られたときに届く (Windows のみ)。
+ * action は "reply" かボタンの ID。text は返信欄に書いた文章。
+ */
+export const NOTIFICATION_ACTION_EVENT = "desktop://notification-action";
+
+/**
+ * 新着メールを OS の通知で知らせる。
+ * Windows では、buttons (既読にする、アーカイブなど) と返信欄 (reply) も付ける。
+ */
 export function notifyNewMail(notification: {
   title: string;
   body: string;
   messageId: string | null;
+  buttons?: { id: string; title: string }[];
+  reply?: boolean;
 }): Promise<null> {
   return invokeDesktop<null>("notify_new_mail", notification);
 }

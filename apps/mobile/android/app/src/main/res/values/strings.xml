@@ -10,4 +10,8 @@
     <string name="channel_new_mail_description">新しいメールが届いたときに知らせます</string>
     <!-- 通知のボタンの操作を、サーバーへ送れなかったときの知らせ。 -->
     <string name="notification_action_failed">操作を反映できませんでした</string>
+    <!-- 通知の返信欄。 -->
+    <string name="notification_reply">返信</string>
+    <string name="notification_reply_hint">返信を入力</string>
+    <string name="notification_reply_failed">返信を送れませんでした</string>
 </resources>

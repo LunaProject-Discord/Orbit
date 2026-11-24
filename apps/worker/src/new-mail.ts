@@ -118,11 +118,16 @@ export type PushActionConfig = {
   url: string;
 } | null;
 
-/** 利用者が選んだボタンを読み、通知に付けるための材料を作る。 */
+/**
+ * 利用者が選んだボタンを読み、通知に付けるための材料を作る。
+ * reply が true なら返信欄も出す (ボタンを選んでいなくても合言葉を付ける)。
+ * Web Push の通知には返信欄を出せないので、返信欄はスマホアプリの通知だけ。
+ */
 async function actionSigner(
   db: Database,
   config: PushActionConfig | undefined,
   userId: string,
+  reply = false,
 ): Promise<PushActionSigner | null> {
   if (!config) return null;
   const [row] = await db
@@ -130,9 +135,10 @@ async function actionSigner(
     .from(userSettings)
     .where(eq(userSettings.userId, userId));
   const actions = readNotificationActions(row?.actions);
-  if (actions.length === 0) return null;
+  if (actions.length === 0 && !reply) return null;
   return {
     actions,
+    reply,
     url: config.url,
     sign: (messageId) => signNotificationAction(config.key, userId, messageId),
   };
@@ -219,6 +225,7 @@ export class DevicePushSender {
       this.db,
       this.actions,
       notification.userId,
+      true,
     );
     const messages = toPushMessages(notification, signer);
     await Promise.all(

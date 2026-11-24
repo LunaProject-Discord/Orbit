@@ -92,6 +92,8 @@ export function toFcmMessage(token: string, message: PushMessage) {
               actions: JSON.stringify(actions.buttons),
               actionUrl: actions.url,
               actionToken: actions.token,
+              // 返信欄を出す。返信は actionUrl の後ろに "/reply" を付けた送り先へ送る。
+              ...(actions.reply ? { actionReply: "1" } : {}),
             }
           : {}),
       },
