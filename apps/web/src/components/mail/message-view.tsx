@@ -34,6 +34,7 @@ import {
   useState,
 } from "react";
 import { Hint } from "@/components/hint";
+import { ExactTime } from "@/components/mail/exact-time";
 import { MailboxMark, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import {
@@ -865,12 +866,13 @@ function ThreadItem({
             />
           )}
           {!expanded && (
-            <time
-              dateTime={message.receivedAt}
+            <ExactTime
+              value={message.receivedAt}
+              style={preferences}
               className="shrink-0 text-muted-foreground text-xs tabular-nums"
             >
               {formatListDate(message.receivedAt, new Date(), preferences)}
-            </time>
+            </ExactTime>
           )}
         </button>
         {expanded && (
@@ -1601,17 +1603,17 @@ function MessageContent({
         {sentAtShown ? "受信日時" : "日時"}
       </dt>
       <dd>
-        <time dateTime={message.receivedAt}>
+        <ExactTime value={message.receivedAt} style={preferences}>
           {formatFullDate(message.receivedAt, preferences)}
-        </time>
+        </ExactTime>
       </dd>
       {sentAtShown && message.sentAt && (
         <>
           <dt className="text-muted-foreground">送信日時</dt>
           <dd>
-            <time dateTime={message.sentAt}>
+            <ExactTime value={message.sentAt} style={preferences}>
               {formatFullDate(message.sentAt, preferences)}
-            </time>
+            </ExactTime>
           </dd>
         </>
       )}
@@ -1718,9 +1720,9 @@ function MessageContent({
                 )}
                 {message.to.length === 0 && <span className="flex-1" />}
                 {/* 狭い幅では日時を短くする (今日なら時刻だけ)。全体は広げた見出しで読める。 */}
-                <time
-                  dateTime={message.receivedAt}
-                  title={fullDate}
+                <ExactTime
+                  value={message.receivedAt}
+                  style={preferences}
                   className="shrink-0 whitespace-nowrap text-xs tabular-nums"
                 >
                   <span className="@lg:hidden">
@@ -1731,7 +1733,7 @@ function MessageContent({
                     )}
                   </span>
                   <span className="@lg:inline hidden">{fullDate}</span>
-                </time>
+                </ExactTime>
                 {toggle}
               </div>
               <h2 className="line-clamp-2 font-semibold text-xl leading-snug">

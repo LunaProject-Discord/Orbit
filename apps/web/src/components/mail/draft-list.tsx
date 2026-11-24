@@ -3,6 +3,7 @@
 import { cn } from "cn";
 import { PaperclipIcon, Trash2Icon } from "lucide-react";
 import { Hint } from "@/components/hint";
+import { ExactTime } from "@/components/mail/exact-time";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Account, ServerDraft } from "@/lib/api";
@@ -87,12 +88,13 @@ export function DraftList({
                     aria-label="添付ファイルあり"
                   />
                 )}
-                <time
-                  dateTime={draft.updatedAt}
+                <ExactTime
+                  value={draft.updatedAt}
+                  style={preferences}
                   className="shrink-0 text-muted-foreground text-xs tabular-nums"
                 >
                   {formatListDate(draft.updatedAt, new Date(), preferences)}
-                </time>
+                </ExactTime>
               </span>
               <span className="truncate font-medium text-sm">{subject}</span>
               {draft.snippet && (
