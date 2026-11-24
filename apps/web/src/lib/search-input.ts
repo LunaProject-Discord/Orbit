@@ -57,7 +57,14 @@ export type InputToken = {
 
 /** text の中で、caret の位置を含む語を切り出す。空白の上なら長さ 0 の語を返す。 */
 export function tokenAt(text: string, caret: number): InputToken {
-  // 空白で区切る。"..." の中の空白は区切りにしない (サーバーと同じ)。
+  const [from, to] = tokenRanges(text).find(
+    ([start, end]) => caret >= start && caret <= end,
+  ) ?? [caret, caret];
+  return parseToken(text, from, to);
+}
+
+/** 空白で区切った語の位置。"..." の中の空白は区切りにしない (サーバーと同じ)。 */
+function tokenRanges(text: string): [number, number][] {
   let start = 0;
   let inQuotes = false;
   const ranges: [number, number][] = [];
@@ -71,11 +78,10 @@ export function tokenAt(text: string, caret: number): InputToken {
       start = index + 1;
     }
   }
-  const range = ranges.find(([from, to]) => caret >= from && caret <= to) ?? [
-    caret,
-    caret,
-  ];
-  const [from, to] = range;
+  return ranges;
+}
+
+function parseToken(text: string, from: number, to: number): InputToken {
   let raw = text.slice(from, to);
   let negated = false;
   if (raw.startsWith("-")) {
@@ -86,6 +92,180 @@ export function tokenAt(text: string, caret: number): InputToken {
   const key = colon > 0 ? raw.slice(0, colon).toLowerCase() : "";
   const value = (colon > 0 ? raw.slice(colon + 1) : raw).replace(/["“”]/gu, "");
   return { start: from, end: to, negated, key, value };
+}
+
+/** 検索欄の中で、まとまった要素 (チップ) として出す、成立した条件。 */
+export type SearchChip = {
+  /** 入力の書き方そのまま (「from:sato@example.com」など)。 */
+  raw: string;
+  key: string;
+  value: string;
+  negated: boolean;
+};
+
+const TEXT_KEYS = ["from", "to", "cc", "subject", "body"];
+const HAS_VALUES = /^(attachment|attachments|添付)$/iu;
+const IS_VALUES = /^(unread|read|starred|flagged|未読|既読|スター)$/iu;
+const DATE_VALUE = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/u;
+
+/** 演算子として成立している (サーバーが条件として扱う) か。 */
+function isCompleteOperator(token: InputToken): boolean {
+  if (token.value === "") return false;
+  if (TEXT_KEYS.includes(token.key)) return true;
+  if (token.key === "has") return HAS_VALUES.test(token.value);
+  if (token.key === "is") return IS_VALUES.test(token.value);
+  if ((DATE_OPERATORS as readonly string[]).includes(token.key)) {
+    // 日付の除外 (-after:) はサーバーが条件として扱わないので、チップにしない。
+    return !token.negated && DATE_VALUE.test(token.value);
+  }
+  return false;
+}
+
+/**
+ * 入力を、成立した条件 (チップ) と、それ以外 (欄に残す文字) に分ける。
+ * 条件は後ろに空白があるもの (入力し終えたもの) だけをチップにし、入力中の語は欄に残す。
+ * rest は、チップにした語と、その後ろの空白を取り除いた入力。
+ */
+export function splitChips(text: string): {
+  chips: SearchChip[];
+  rest: string;
+} {
+  const chips: SearchChip[] = [];
+  let rest = "";
+  let last = 0;
+  for (const [from, to] of tokenRanges(text)) {
+    if (from === to || to >= text.length) continue;
+    const token = parseToken(text, from, to);
+    if (!isCompleteOperator(token)) continue;
+    chips.push({
+      raw: text.slice(from, to),
+      key: token.key,
+      value: token.value,
+      negated: token.negated,
+    });
+    rest += text.slice(last, from);
+    // 後ろの空白も 1 つ取り除く。
+    last = to + 1;
+  }
+  rest += text.slice(last);
+  return { chips, rest };
+}
+
+/** チップと欄の文字を、検索欄の入力に戻す。チップは確定した印として後ろに空白を残す。 */
+export function joinChips(chips: readonly SearchChip[], rest: string): string {
+  if (chips.length === 0) return rest;
+  return `${chips.map((chip) => chip.raw).join(" ")} ${rest}`;
+}
+
+/** 検索欄でチップにする演算子 (コロンを入れた時点でチップにする)。 */
+const CHIP_KEYS = [
+  "from",
+  "to",
+  "cc",
+  "subject",
+  "body",
+  "has",
+  "is",
+  "after",
+  "since",
+  "before",
+  "until",
+];
+
+/** 入力中の条件 (末尾の「from:…」)。値はチップの中の欄で入力する。 */
+export type EditingChip = {
+  key: string;
+  negated: boolean;
+  /** 「from:」「-to:」など、コロンまで。 */
+  prefix: string;
+  /** コロンの後 (" を含めた入力そのまま)。 */
+  value: string;
+};
+
+export type SearchInputParts = {
+  /** 入力し終えた条件。 */
+  chips: SearchChip[];
+  /** 条件以外の語。 */
+  rest: string;
+  /** 末尾で入力中の条件。無ければ null (欄には rest を出す)。 */
+  editing: EditingChip | null;
+};
+
+/** 値の中に、" で囲まれていない空白があるか (あれば、値を入力し終えた)。 */
+export function hasOpenSpace(value: string): boolean {
+  let inQuotes = false;
+  for (const char of value) {
+    if (char === '"' || char === "“" || char === "”") inQuotes = !inQuotes;
+    else if (!inQuotes && /\s/u.test(char)) return true;
+  }
+  return false;
+}
+
+/**
+ * 入力を、入力し終えた条件 (チップ)、それ以外の語、末尾で入力中の条件に分ける。
+ * 演算子はコロンを入れた時点で「入力中の条件」になり、値を入れて空白で区切るとチップになる。
+ */
+export function splitSearchInput(text: string): SearchInputParts {
+  const ranges = tokenRanges(text);
+  const last = ranges[ranges.length - 1];
+  if (last && last[0] < last[1] && last[1] === text.length) {
+    const raw = text.slice(last[0], last[1]);
+    const match = /^(-?)([a-z]+)([:：])(.*)$/iu.exec(raw);
+    const key = match?.[2]?.toLowerCase() ?? "";
+    if (match && CHIP_KEYS.includes(key)) {
+      const { chips, rest } = splitChips(text.slice(0, last[0]));
+      return {
+        chips,
+        rest: rest.trimEnd(),
+        editing: {
+          key,
+          negated: match[1] === "-",
+          prefix: `${match[1]}${match[2]}${match[3]}`,
+          value: match[4] ?? "",
+        },
+      };
+    }
+  }
+  return { ...splitChips(text), editing: null };
+}
+
+/** splitSearchInput の結果を、検索欄の入力に戻す。 */
+export function joinSearchInput(parts: SearchInputParts): string {
+  const base = joinChips(parts.chips, parts.rest);
+  if (!parts.editing) return base;
+  const spacer = base === "" || /\s$/u.test(base) ? "" : " ";
+  return `${base}${spacer}${parts.editing.prefix}${parts.editing.value}`;
+}
+
+const CHIP_LABELS: Record<string, string> = {
+  from: "差出人",
+  to: "宛先",
+  cc: "宛先",
+  subject: "件名",
+  body: "本文",
+  has: "添付",
+  is: "状態",
+  after: "以降",
+  since: "以降",
+  before: "より前",
+  until: "より前",
+};
+
+const STATE_LABELS: Record<string, string> = {
+  unread: "未読",
+  read: "既読",
+  starred: "スター付き",
+  flagged: "スター付き",
+  attachment: "あり",
+  attachments: "あり",
+  添付: "あり",
+};
+
+/** チップに出す名前と値 (「差出人」「sato@example.com」など)。 */
+export function chipLabel(chip: SearchChip): { label: string; value: string } {
+  const label = CHIP_LABELS[chip.key] ?? chip.key;
+  const value = STATE_LABELS[chip.value.toLowerCase()] ?? chip.value;
+  return { label: chip.negated ? `${label}以外` : label, value };
 }
 
 /** 値に空白が含まれるなら " で囲む。 */
@@ -187,6 +367,11 @@ export function addSearchHistory(history: string[], text: string): string[] {
     0,
     HISTORY_LIMIT,
   );
+}
+
+/** 最近の検索から 1 件を除く。 */
+export function removeSearchHistory(history: string[], text: string): string[] {
+  return history.filter((item) => item !== text);
 }
 
 export function writeSearchHistory(history: string[]): void {

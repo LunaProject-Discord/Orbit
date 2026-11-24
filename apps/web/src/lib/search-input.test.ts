@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import { emptyFilters } from "@/lib/search";
 import {
   addSearchHistory,
+  chipLabel,
   completeQuery,
   filtersToText,
+  hasOpenSpace,
+  joinSearchInput,
   quoteValue,
+  removeSearchHistory,
   replaceToken,
+  splitSearchInput,
   tokenAt,
 } from "@/lib/search-input";
 
@@ -97,5 +102,63 @@ describe("quoteValue / addSearchHistory", () => {
       "h",
     ]);
     expect(addSearchHistory(history, "new")).toHaveLength(8);
+  });
+});
+
+describe("splitSearchInput", () => {
+  it("入力し終えた条件はチップに、末尾の条件は入力中にする", () => {
+    expect(splitSearchInput("会議 from:sato is:unread 資料 to:ta")).toEqual({
+      chips: [
+        { raw: "from:sato", key: "from", value: "sato", negated: false },
+        { raw: "is:unread", key: "is", value: "unread", negated: false },
+      ],
+      rest: "会議 資料",
+      editing: { key: "to", negated: false, prefix: "to:", value: "ta" },
+    });
+  });
+
+  it("コロンを入れた時点で、値が空でも入力中の条件にする", () => {
+    expect(splitSearchInput("-from:")).toMatchObject({
+      chips: [],
+      rest: "",
+      editing: { key: "from", negated: true, prefix: "-from:", value: "" },
+    });
+  });
+
+  it("成立していない条件や知らない演算子は、普通の語のままにする", () => {
+    expect(splitSearchInput("is:foo http://a after:x ")).toEqual({
+      chips: [],
+      rest: "is:foo http://a after:x ",
+      editing: null,
+    });
+  });
+
+  it("joinSearchInput で元の入力に戻せる", () => {
+    for (const text of ["会議 from:sato is:unread to:ta", "from:a ", "a b"]) {
+      const parts = splitSearchInput(text);
+      expect(splitSearchInput(joinSearchInput(parts))).toEqual(parts);
+    }
+  });
+});
+
+describe("hasOpenSpace / removeSearchHistory / chipLabel", () => {
+  it('" の中の空白は区切りとみなさない', () => {
+    expect(hasOpenSpace('"佐藤 美咲')).toBe(false);
+    expect(hasOpenSpace("sato ")).toBe(true);
+  });
+
+  it("最近の検索から 1 件を除く", () => {
+    expect(removeSearchHistory(["a", "b"], "a")).toEqual(["b"]);
+  });
+
+  it("チップの名前と値", () => {
+    expect(
+      chipLabel({
+        raw: "-is:unread",
+        key: "is",
+        value: "unread",
+        negated: true,
+      }),
+    ).toEqual({ label: "状態以外", value: "未読" });
   });
 });
