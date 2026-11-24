@@ -25,6 +25,7 @@ import {
 } from "react";
 import { ja } from "react-day-picker/locale";
 import { createPortal } from "react-dom";
+import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { formatDateValue, parseDateValue } from "@/components/ui/date-picker";
@@ -36,15 +37,21 @@ import {
 import {
   ADDRESS_OPERATORS,
   addSearchHistory,
+  chipLabel,
   completeQuery,
   DATE_OPERATORS,
+  hasOpenSpace,
   type InputToken,
+  joinChips,
+  joinSearchInput,
   normalizeQuery,
   OPERATOR_VALUES,
   readSearchHistory,
+  removeSearchHistory,
   replaceToken,
   SEARCH_OPERATORS,
   type SearchOperator,
+  splitSearchInput,
   tokenAt,
   writeSearchHistory,
 } from "@/lib/search-input";
@@ -60,6 +67,8 @@ type Suggestion = {
   /** 行の右に添える説明。 */
   detail?: ReactNode;
   apply: () => void;
+  /** 候補から消せる行 (最近の検索) なら、消す処理。 */
+  remove?: () => void;
 };
 
 type Section = { title: string; items: Suggestion[]; action?: ReactNode };
@@ -121,6 +130,7 @@ export function SearchBox({
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const chipsRef = useRef<HTMLUListElement>(null);
   const [open, setOpen] = useState(false);
   const [caret, setCaret] = useState(value.text.length);
   const [active, setActive] = useState(-1);
@@ -130,8 +140,22 @@ export function SearchBox({
     left: number;
     right: number;
   } | null>(null);
-  const text = value.text;
-  const token = tokenAt(text, Math.min(caret, text.length));
+  /**
+   * 検索欄の入力の全体。入力し終えた条件はチップにし、入力中の条件 (末尾の「from:…」) は
+   * チップの中で値を入力する。欄 (input) には、入力中の条件の値か、条件以外の語を出す。
+   */
+  const full = value.text;
+  const { chips, rest, editing } = splitSearchInput(full);
+  const text = editing ? editing.value : rest;
+  const token: InputToken = editing
+    ? {
+        start: full.length - editing.prefix.length - editing.value.length,
+        end: full.length,
+        negated: editing.negated,
+        key: editing.key,
+        value: editing.value.replace(/["“”]/gu, ""),
+      }
+    : tokenAt(rest, Math.min(caret, rest.length));
   const screen = variant === "screen";
 
   const contactQuery = ADDRESS_OPERATORS.includes(
@@ -146,22 +170,86 @@ export function SearchBox({
     contactQuery === null ? 0 : token.key ? 8 : 4,
   );
 
-  const setText = (next: string, nextCaret?: number) => {
-    onChange({ ...value, text: next });
-    if (nextCaret === undefined) return;
-    setCaret(nextCaret);
+  /** 欄にカーソルを置く (描画のあと)。 */
+  const placeCaret = (position: number) => {
+    setCaret(position);
     requestAnimationFrame(() => {
       const input = inputRef.current;
       if (!input) return;
       input.focus();
-      input.setSelectionRange(nextCaret, nextCaret);
+      input.setSelectionRange(position, position);
     });
   };
-  const replace = (target: InputToken, replacement: string) => {
-    const result = replaceToken(text, target, replacement);
-    setText(result.text, result.caret);
+  /**
+   * 入力の全体を置き換える。チップが増えたり減ったり、入力中の条件に入ったり出たりして
+   * 欄の中身が入れ替わったときは、カーソルを欄の末尾に置く。
+   */
+  const apply = (next: string, nextCaret?: number) => {
+    onChange({ ...value, text: next });
+    const after = splitSearchInput(next);
+    const changed =
+      after.chips.length !== chips.length ||
+      after.editing?.key !== editing?.key ||
+      (after.editing === null) !== (editing === null);
+    const view = after.editing ? after.editing.value : after.rest;
+    if (changed) placeCaret(view.length);
+    else if (nextCaret !== undefined) placeCaret(nextCaret);
   };
-  const submit = (query = text) => {
+  const setFull = (next: string) => {
+    const after = splitSearchInput(next);
+    onChange({ ...value, text: next });
+    placeCaret((after.editing ? after.editing.value : after.rest).length);
+  };
+  /** 欄の文字が変わった。入力中の条件の値なら、空白で区切った時点でチップにする。 */
+  const setText = (next: string, nextCaret?: number) => {
+    if (!editing) {
+      apply(joinSearchInput({ chips, rest: next, editing: null }), nextCaret);
+      return;
+    }
+    if (!hasOpenSpace(next)) {
+      apply(
+        joinSearchInput({ chips, rest, editing: { ...editing, value: next } }),
+        nextCaret,
+      );
+      return;
+    }
+    // 値を入力し終えた。空白の後ろ (貼り付けた文字など) は、条件以外の語にする。
+    const trimmed = next.trimStart();
+    const space = trimmed.search(/\s/u);
+    const head = space === -1 ? trimmed : trimmed.slice(0, space);
+    const tail = space === -1 ? "" : trimmed.slice(space).trim();
+    const base = joinSearchInput({ chips, rest, editing: null });
+    const spacer = base === "" || /\s$/u.test(base) ? "" : " ";
+    const committed =
+      head === "" ? base : `${base}${spacer}${editing.prefix}${head} `;
+    apply(
+      tail
+        ? `${committed}${/\s$/u.test(committed) ? "" : " "}${tail}`
+        : committed,
+    );
+  };
+  const removeChip = (index: number) => {
+    apply(
+      joinSearchInput({
+        chips: chips.filter((_, item) => item !== index),
+        rest,
+        editing,
+      }),
+      Math.min(caret, text.length),
+    );
+  };
+  const replace = (target: InputToken, replacement: string) => {
+    if (editing) {
+      apply(replaceToken(full, target, replacement).text);
+      return;
+    }
+    const result = replaceToken(rest, target, replacement);
+    apply(
+      joinSearchInput({ chips, rest: result.text, editing: null }),
+      result.caret,
+    );
+  };
+  const submit = (query = full) => {
     rememberSearch(query);
     setHistory(readSearchHistory());
     setOpen(false);
@@ -171,7 +259,7 @@ export function SearchBox({
   };
 
   const sections = buildSections({
-    text,
+    text: full,
     token,
     contacts: contactQuery === null ? [] : contacts,
     history,
@@ -183,8 +271,17 @@ export function SearchBox({
       : undefined,
     replace,
     runHistory: (query) => {
-      setText(query, query.length);
+      setFull(query);
       submit(query);
+    },
+    removeHistory: (query) => {
+      const next = removeSearchHistory(readSearchHistory(), query);
+      writeSearchHistory(next);
+      setHistory(next);
+    },
+    clearHistory: () => {
+      writeSearchHistory([]);
+      setHistory([]);
     },
   });
   const items = sections.flatMap((section) => section.items);
@@ -251,6 +348,13 @@ export function SearchBox({
       document.removeEventListener("pointerdown", onPointerDown, true);
   }, [open]);
 
+  // チップが増えたら、最後のチップ (入力したばかりのもの) が見えるようにする。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: チップの数が変わったときだけ動かす
+  useEffect(() => {
+    const list = chipsRef.current;
+    if (list) list.scrollLeft = list.scrollWidth;
+  }, [chips.length]);
+
   // 選んでいる候補が見えるようにする。
   useEffect(() => {
     if (activeIndex < 0) return;
@@ -298,8 +402,18 @@ export function SearchBox({
       case "Enter": {
         event.preventDefault();
         const item = showPanel ? items[activeIndex] : undefined;
-        if (item) item.apply();
-        else submit();
+        if (item) {
+          item.apply();
+          return;
+        }
+        // 入力中の条件は、チップにしてから検索する。
+        if (editing && editing.value.trim() !== "") {
+          const committed = `${full} `;
+          apply(committed);
+          submit(committed);
+          return;
+        }
+        submit();
         return;
       }
       case "Tab": {
@@ -309,6 +423,35 @@ export function SearchBox({
         item.apply();
         return;
       }
+      case "Delete": {
+        // 選んでいる最近の検索を消す (ブラウザーの候補と同じ操作)。
+        const item = showPanel ? items[activeIndex] : undefined;
+        if (!item?.remove) return;
+        event.preventDefault();
+        item.remove();
+        return;
+      }
+      case "Backspace": {
+        const input = event.currentTarget;
+        if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
+        if (editing) {
+          // 値の無い条件で押したら、条件をやめて普通の入力に戻る。
+          if (editing.value !== "") return;
+          event.preventDefault();
+          apply(joinSearchInput({ chips, rest, editing: null }));
+          return;
+        }
+        const last = chips[chips.length - 1];
+        if (!last) return;
+        event.preventDefault();
+        if (rest === "") {
+          // 直前のチップの値を、もう一度入力できるようにする。
+          apply(`${joinChips(chips.slice(0, -1), "")}${last.raw}`);
+        } else {
+          removeChip(chips.length - 1);
+        }
+        return;
+      }
       case "Escape": {
         if (showPanel && !screen) {
           event.preventDefault();
@@ -316,7 +459,7 @@ export function SearchBox({
           return;
         }
         // 入力があれば消し、無ければ検索欄から抜ける。
-        if (text) setText("", 0);
+        if (full) setFull("");
         else if (screen) onClose?.();
         else event.currentTarget.blur();
         return;
@@ -421,6 +564,22 @@ export function SearchBox({
                               {item.detail}
                             </span>
                           )}
+                          {item.remove && (
+                            <Hint label="最近の検索から消す" shortcut="Delete">
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                aria-label={`「${item.id.slice("history-".length)}」を最近の検索から消す`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  item.remove?.();
+                                }}
+                                className="-my-1 -mr-1 shrink-0"
+                              >
+                                <XIcon />
+                              </Button>
+                            </Hint>
+                          )}
                         </div>
                       );
                     })}
@@ -448,7 +607,7 @@ export function SearchBox({
           "group/search flex min-w-0 items-center",
           screen
             ? "h-full gap-1"
-            : "absolute inset-y-0 right-0 z-10 w-full rounded-md bg-background transition-[width] duration-200 focus-within:w-[min(18rem,calc(100cqw-2rem))]",
+            : "absolute inset-y-0 right-0 z-10 w-full rounded-md bg-background transition-[width] duration-200 focus-within:w-[min(24rem,calc(100cqw-2rem))]",
         )}
       >
         {screen && (
@@ -462,12 +621,101 @@ export function SearchBox({
             <ArrowLeftIcon />
           </Button>
         )}
-        <div className="relative min-w-0 flex-1">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: 欄の余白 (チップの横など) を押しても入力できるようにするだけ */}
+        <div
+          onMouseDown={(event) => {
+            if ((event.target as HTMLElement).closest("button, input")) return;
+            event.preventDefault();
+            inputRef.current?.focus();
+          }}
+          className={cn(
+            "flex min-w-0 flex-1 cursor-text items-center",
+            screen
+              ? "h-10 gap-1.5"
+              : "h-8 gap-1 overflow-hidden rounded-md border border-input bg-muted/40 pr-1 pl-2 transition-colors focus-within:border-ring focus-within:bg-background focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30",
+          )}
+        >
           {!screen && (
             <SearchIcon
-              className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground"
+              className="pointer-events-none size-4 shrink-0 text-muted-foreground"
               aria-hidden="true"
             />
+          )}
+          {chips.length > 0 && (
+            <ul
+              ref={chipsRef}
+              aria-label="検索の条件"
+              className={cn(
+                "flex min-w-0 shrink items-center gap-1 overflow-x-auto [scrollbar-width:none]",
+                // 虫めがねだけの狭い表示では、広げている間だけ出す。
+                !screen &&
+                  "hidden group-focus-within/search:flex @3xl/pane:flex",
+              )}
+            >
+              {chips.map((chip, index) => {
+                const { label, value: chipValue } = chipLabel(chip);
+                return (
+                  <li
+                    // 同じ条件を 2 回書くこともあるので、位置も含める。
+                    key={`${index}:${chip.raw}`}
+                    className={cn(
+                      "flex shrink-0 items-center gap-0.5 rounded bg-primary/10 pl-1.5 text-primary",
+                      screen ? "h-7 text-sm" : "h-6 text-xs",
+                    )}
+                  >
+                    <span className="font-medium opacity-75">{label}:</span>
+                    <span
+                      className={cn(
+                        "truncate",
+                        screen ? "max-w-32" : "max-w-28",
+                      )}
+                    >
+                      {chipValue}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`${label} ${chipValue} の条件を外す`}
+                      onClick={() => removeChip(index)}
+                      className="relative flex size-5 items-center justify-center rounded opacity-70 outline-none after:absolute after:-inset-1 hover:bg-primary/15 hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5 [&_svg]:size-3"
+                    >
+                      <XIcon />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {editing && rest !== "" && (
+            <span
+              className={cn(
+                "max-w-32 shrink truncate",
+                screen ? "text-base" : "text-sm",
+                !screen &&
+                  "hidden group-focus-within/search:inline @3xl/pane:inline",
+              )}
+            >
+              {rest}
+            </span>
+          )}
+          {editing && (
+            <span
+              className={cn(
+                "flex shrink-0 items-center rounded-l bg-primary/10 pl-1.5 font-medium text-primary/75",
+                screen ? "h-7 text-sm" : "h-6 text-xs",
+                !screen &&
+                  "hidden group-focus-within/search:flex @3xl/pane:flex",
+              )}
+            >
+              {
+                chipLabel({
+                  raw: "",
+                  key: editing.key,
+                  value: "",
+                  negated: editing.negated,
+                }).label
+              }
+              :
+            </span>
           )}
           <input
             ref={inputRef}
@@ -486,19 +734,30 @@ export function SearchBox({
             autoComplete="off"
             spellCheck={false}
             aria-label="メールを検索"
-            placeholder={placeholder}
+            placeholder={
+              editing
+                ? (SEARCH_OPERATORS.find(
+                    (operator) =>
+                      operator.key ===
+                      (editing.key === "cc" ? "to" : editing.key),
+                  )?.example ?? "")
+                : chips.length > 0
+                  ? undefined
+                  : placeholder
+            }
             value={text}
-            onChange={(event) => {
-              onChange({ ...value, text: event.target.value });
-              setCaret(
+            onChange={(event) =>
+              setText(
+                event.target.value,
                 event.target.selectionStart ?? event.target.value.length,
-              );
-              if (!open) openPanel();
-            }}
+              )
+            }
             onSelect={(event) =>
               setCaret(event.currentTarget.selectionStart ?? text.length)
             }
-            onFocus={openPanel}
+            onFocus={() => {
+              if (!open) openPanel();
+            }}
             onClick={() => {
               if (!open) openPanel();
             }}
@@ -510,24 +769,29 @@ export function SearchBox({
             }}
             onKeyDown={onKeyDown}
             className={cn(
-              "flex w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground",
-              screen
-                ? "h-10 text-base"
-                : "h-8 rounded-md border border-input bg-muted/40 pr-0 pl-7.5 focus:pr-8 @3xl/pane:pr-8 transition-colors focus:border-ring focus:bg-background focus:ring-3 focus:ring-ring/50 dark:bg-input/30",
+              "bg-transparent outline-none placeholder:text-muted-foreground",
+              screen ? "text-base" : "text-sm",
+              editing
+                ? cn(
+                    // 入力中の条件のチップの中の欄。中身の幅に合わせる (対応していないブラウザーでは広がる)。
+                    "field-sizing-content min-w-[5ch] max-w-48 flex-none rounded-r bg-primary/10 pr-1.5 pl-0.5 text-primary placeholder:text-primary/40",
+                    screen ? "h-7" : "h-6",
+                  )
+                : cn("h-full w-full flex-1", screen ? "min-w-24" : "min-w-20"),
             )}
           />
-          {text && (
+          {full && (
             <Button
               variant="ghost"
               size="icon-xs"
               aria-label="入力をクリア"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
-                setText("", 0);
+                setFull("");
                 openPanel();
               }}
               className={cn(
-                "absolute top-1/2 right-1 -translate-y-1/2",
+                "ml-auto shrink-0",
                 // 虫めがねだけの狭い表示では、広げている間だけ出す。
                 !screen &&
                   "hidden group-focus-within/search:inline-flex @3xl/pane:inline-flex",
@@ -551,6 +815,8 @@ function buildSections({
   onFindInMessage,
   replace,
   runHistory,
+  removeHistory,
+  clearHistory,
 }: {
   text: string;
   token: InputToken;
@@ -559,6 +825,8 @@ function buildSections({
   onFindInMessage: ((query: string) => void) | undefined;
   replace: (token: InputToken, replacement: string) => void;
   runHistory: (query: string) => void;
+  removeHistory: (query: string) => void;
+  clearHistory: () => void;
 }): Section[] {
   const sections: Section[] = [];
   const query = normalizeQuery(completeQuery(text));
@@ -680,11 +948,22 @@ function buildSections({
   if (query === "" && history.length > 0) {
     sections.push({
       title: "最近の検索",
+      action: (
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={clearHistory}
+          className="-my-1 -mr-1.5 h-6 text-muted-foreground text-xs"
+        >
+          すべて消す
+        </Button>
+      ),
       items: history.map((item) => ({
         id: `history-${item}`,
         icon: <ClockIcon />,
         label: item,
         apply: () => runHistory(item),
+        remove: () => removeHistory(item),
       })),
     });
   }
