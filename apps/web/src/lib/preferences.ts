@@ -1,10 +1,16 @@
 import { useSyncExternalStore } from "react";
+import {
+  DATE_FORMAT_MAX_LENGTH,
+  type DateFormats,
+  DEFAULT_DATE_FORMATS,
+  HOUR12_TIME_FORMATS,
+} from "@/lib/format";
 
 /**
  * 表示や動作の設定。端末 (ブラウザー) ごとに localStorage へ保存する。
  * 画面の大きさや好みは端末によって違うので、サーバーには保存しない。
  */
-export type Preferences = {
+export type Preferences = DateFormats & {
   /**
    * 画面の既定のフォント。default は Gen Interface JP、system は端末の画面のフォント、
    * sans / serif / mono はゴシック体・明朝体・等幅、custom は customFont の名前を使う。
@@ -34,8 +40,6 @@ export type Preferences = {
   showListIcons: boolean;
   /** 一覧の日付。auto は今日なら時刻だけ、datetime は常に日付と時刻。 */
   listDate: "auto" | "datetime";
-  /** 時刻を 12 時間制 (午前 / 午後) で出す。 */
-  hour12: boolean;
   /** メールを開いたときに既読にするタイミング。 */
   markRead: "immediately" | "delay" | "never";
   /** markRead が delay のときに待つ秒数。 */
@@ -89,7 +93,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   accountMarkStyle: "icon",
   showListIcons: true,
   listDate: "auto",
-  hour12: false,
+  ...DEFAULT_DATE_FORMATS,
   markRead: "immediately",
   markReadDelay: 3,
   bodyFont: "sans",
@@ -147,12 +151,31 @@ export function parsePreferences(raw: string | null): Preferences {
     if (typeof value !== typeof DEFAULT_PREFERENCES[key]) continue;
     const allowed = choices[key] as readonly unknown[] | undefined;
     if (allowed && !allowed.includes(value)) continue;
+    if (DATE_FORMAT_KEYS.has(key)) {
+      const format = String(value).slice(0, DATE_FORMAT_MAX_LENGTH);
+      if (format.trim()) result[key] = format;
+      continue;
+    }
     result[key] = FONT_NAME_KEYS.has(key)
       ? cleanFontName(String(value))
       : value;
   }
+  // 以前の「12 時間制」の設定は、時刻の書式を選んでいなければ書式に移す。
+  const old = saved as Record<string, unknown>;
+  if (
+    old.hour12 === true &&
+    old.shortTimeFormat === undefined &&
+    old.longTimeFormat === undefined
+  ) {
+    Object.assign(result, HOUR12_TIME_FORMATS);
+  }
   return result as Preferences;
 }
+
+/** 日時の書式を入れる項目。空なら標準の書式にする。 */
+const DATE_FORMAT_KEYS: ReadonlySet<keyof Preferences> = new Set(
+  Object.keys(DEFAULT_DATE_FORMATS) as (keyof DateFormats)[],
+);
 
 /** フォントの名前を入れる項目。読むときに cleanFontName を通す。 */
 const FONT_NAME_KEYS: ReadonlySet<keyof Preferences> = new Set([

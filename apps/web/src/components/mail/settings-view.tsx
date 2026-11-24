@@ -37,6 +37,11 @@ import { InvitationSettings } from "@/components/mail/invitation-settings";
 import { SecuritySettings } from "@/components/mail/security-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -64,6 +69,11 @@ import {
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
 import { isDesktopApp } from "@/lib/desktop/app";
+import {
+  DATE_FORMAT_MAX_LENGTH,
+  type DateFormats,
+  formatDateWith,
+} from "@/lib/format";
 import { preloadLocalFonts, useFontListSupport } from "@/lib/local-fonts";
 import { isNativeApp } from "@/lib/native/app";
 import {
@@ -714,10 +724,13 @@ function ListPage() {
           />
         </SettingGroup>
       </Section>
-      <Section title="日付と時刻">
+      <Section
+        title="日付と時刻"
+        description="Windows の「地域」の設定と同じ書き方で選べます。一覧では、今日のメールに短い時刻、今年のメールに月日、それより前のメールに短い日付を使います。メールの見出しは長い日付と短い時刻、ホバーで出す正確な日時は長い日付と長い時刻です。"
+      >
         <SettingGroup>
           <SelectRow
-            label="日付"
+            label="一覧の日付"
             value={preferences.listDate}
             onChange={(listDate) => set({ listDate })}
             options={[
@@ -725,16 +738,16 @@ function ListPage() {
               ["datetime", "常に日付と時刻"],
             ]}
           />
-          <SelectRow
-            label="時刻"
-            value={preferences.hour12 ? "12" : "24"}
-            onChange={(value) => set({ hour12: value === "12" })}
-            options={[
-              ["24", "24 時間 (14:30)"],
-              ["12", "12 時間 (午後2:30)"],
-            ]}
-          />
+          {DATE_FORMAT_FIELDS.map((field) => (
+            <DateFormatRow
+              key={field.key}
+              field={field}
+              value={preferences[field.key]}
+              onChange={(value) => set({ [field.key]: value })}
+            />
+          ))}
         </SettingGroup>
+        <DateFormatHelp />
       </Section>
     </>
   );
@@ -1434,6 +1447,201 @@ function SettingRow(props: {
       </div>
       {props.children}
     </div>
+  );
+}
+
+type DateFormatField = {
+  key: keyof DateFormats;
+  label: string;
+  /** 選択肢に出す書式 (先頭が標準)。 */
+  presets: readonly string[];
+};
+
+/** 日時の書式の設定項目。選択肢は Windows (日本語) の選択肢に合わせた。 */
+const DATE_FORMAT_FIELDS: readonly DateFormatField[] = [
+  {
+    key: "shortDateFormat",
+    label: "短い日付",
+    presets: [
+      "yyyy/M/d",
+      "yyyy/MM/dd",
+      "yy/MM/dd",
+      "yy/M/d",
+      "yyyy-MM-dd",
+      "yyyy.MM.dd",
+    ],
+  },
+  {
+    key: "monthDayFormat",
+    label: "月日 (今年の日付)",
+    presets: ["M/d", "MM/dd", "M月d日", "M/d(ddd)"],
+  },
+  {
+    key: "longDateFormat",
+    label: "長い日付",
+    presets: [
+      "yyyy年M月d日(ddd)",
+      "yyyy年M月d日",
+      "yyyy年MM月dd日",
+      "yyyy年M月d日 dddd",
+      "yyyy/M/d(ddd)",
+    ],
+  },
+  {
+    key: "shortTimeFormat",
+    label: "短い時刻",
+    presets: ["HH:mm", "H:mm", "tth:mm", "tt h:mm", "tt hh:mm"],
+  },
+  {
+    key: "longTimeFormat",
+    label: "長い時刻",
+    presets: ["HH:mm:ss", "H:mm:ss", "tth:mm:ss", "tt h:mm:ss", "tt hh:mm:ss"],
+  },
+];
+
+const CUSTOM_FORMAT = "custom";
+
+/** 日時の書式を選ぶ行。選択肢から選ぶか、「カスタム」で書式を入力する。 */
+function DateFormatRow(props: {
+  field: DateFormatField;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = useId();
+  const { field } = props;
+  const isPreset = field.presets.includes(props.value);
+  const [custom, setCustom] = useState(!isPreset);
+  const [draft, setDraft] = useState(props.value);
+  // 見本は、書式の違い (M と MM、H と h など) が見える固定の日時にする。
+  const sample = new Date(2026, 0, 5, 14, 5, 9);
+  const preview = formatDateWith(sample, custom ? draft : props.value);
+  const options = [
+    ...field.presets.map((format, index) => ({
+      value: format,
+      label: `${formatDateWith(sample, format)}${index === 0 ? " (標準)" : ""}`,
+    })),
+    { value: CUSTOM_FORMAT, label: "カスタム…" },
+  ];
+  const commit = () => {
+    const next = draft.slice(0, DATE_FORMAT_MAX_LENGTH);
+    if (!next.trim()) {
+      setDraft(props.value);
+      return;
+    }
+    props.onChange(next);
+  };
+  return (
+    <div className="flex flex-col gap-2 px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0 flex-1 basis-48">
+          <label htmlFor={id} className="font-medium text-sm">
+            {field.label}
+          </label>
+          <p className="text-muted-foreground text-xs tabular-nums leading-relaxed">
+            例: {preview || "(空)"}
+          </p>
+        </div>
+        <Select
+          items={options}
+          value={custom ? CUSTOM_FORMAT : props.value}
+          onValueChange={(next) => {
+            if (next === null) return;
+            if (next === CUSTOM_FORMAT) {
+              setDraft(props.value);
+              setCustom(true);
+              return;
+            }
+            setCustom(false);
+            setDraft(next);
+            props.onChange(next);
+          }}
+        >
+          <SelectTrigger id={id} size="sm" className="max-w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end" className="w-auto">
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {custom && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            aria-label={`${field.label}の書式`}
+            value={draft}
+            maxLength={DATE_FORMAT_MAX_LENGTH}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={field.presets[0]}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.currentTarget.blur();
+              }
+            }}
+            className="h-8 min-w-0 flex-1 basis-48 font-mono"
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              const standard = field.presets[0] ?? "";
+              setCustom(false);
+              setDraft(standard);
+              props.onChange(standard);
+            }}
+          >
+            標準に戻す
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** カスタムの書式で使える記号の一覧。 */
+const DATE_FORMAT_TOKENS: readonly (readonly [
+  token: string,
+  meaning: string,
+])[] = [
+  ["yyyy / yy", "年 (2026 / 26)"],
+  ["M / MM", "月 (1 / 01)"],
+  ["d / dd", "日 (5 / 05)"],
+  ["ddd / dddd", "曜日 (火 / 火曜日)"],
+  ["H / HH", "時、24 時間制 (9 / 09)"],
+  ["h / hh", "時、12 時間制 (9 / 09)"],
+  ["tt", "午前 / 午後"],
+  ["m / mm", "分 (5 / 05)"],
+  ["s / ss", "秒 (5 / 05)"],
+  ["'文字'", "囲んだ文字をそのまま出す"],
+];
+
+function DateFormatHelp() {
+  return (
+    <Collapsible className="rounded-lg border">
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-medium text-sm hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[panel-open]:rotate-90" />
+        カスタムの書式で使える記号
+      </CollapsibleTrigger>
+      <CollapsibleContent className="px-3 pb-3">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+          {DATE_FORMAT_TOKENS.map(([token, meaning]) => (
+            <div key={token} className="contents">
+              <dt className="font-mono">{token}</dt>
+              <dd className="text-muted-foreground">{meaning}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-2 text-muted-foreground text-xs">
+          ほかの文字 (年・月・日・/・: など) はそのまま出ます。
+        </p>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
