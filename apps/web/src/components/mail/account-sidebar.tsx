@@ -591,7 +591,8 @@ export function AccountSidebar({
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 shrink-0 items-center gap-2 px-4">
+      {/* デスクトップ版では、タイトルバーにハンバーガーとアプリ名があるので出さない。 */}
+      <div className="flex h-14 shrink-0 items-center gap-2 px-4 in-[[data-desktop]]:hidden">
         {headerStart}
         <span className="flex flex-1 items-center">
           <OrbitLogo className="h-7" />
@@ -599,7 +600,7 @@ export function AccountSidebar({
       </div>
       {onCompose && (
         // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
-        <div className="shrink-0 px-2 pb-2">
+        <div className="shrink-0 px-2 pb-2 in-[[data-desktop]]:pt-2">
           <Hint label="新規作成" shortcut="C">
             <Button onClick={onCompose} className="w-full justify-center gap-2">
               <PenSquareIcon />

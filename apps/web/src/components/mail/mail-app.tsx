@@ -137,7 +137,8 @@ import {
   storeUnsavedDraft,
   withReplyText,
 } from "@/lib/compose";
-import { isDesktopApp, notifyNewMail } from "@/lib/desktop/app";
+import { desktopWindow, isDesktopApp, notifyNewMail } from "@/lib/desktop/app";
+import { setTitleBarMenu } from "@/lib/desktop/title-bar-menu";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import { keepRows } from "@/lib/kept-rows";
@@ -212,7 +213,11 @@ import {
   renameCategory,
   reorderCategories,
 } from "@/lib/sidebar-categories";
-import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
+import {
+  loadSidebarFolded,
+  SIDEBAR_FOLD_KEY_LABEL,
+  storeSidebarFolded,
+} from "@/lib/sidebar-fold";
 import {
   findContactRule,
   findThreadRule,
@@ -254,7 +259,12 @@ import {
   storeCachedUnified,
 } from "@/lib/unified";
 import { randomUuid } from "@/lib/uuid";
-import { canOpenWindows, openWindow } from "@/lib/windows";
+import {
+  canOpenWindows,
+  openWindow,
+  readWindowMode,
+  windowModePath,
+} from "@/lib/windows";
 
 const PAGE_SIZE = 50;
 /** 表示中のフォルダをサーバーへ知らせる間隔。 */
@@ -398,6 +408,16 @@ export function MailApp({ user }: { user: User }) {
   const [initialRoute] = useState(() =>
     parseRoute(`${pathname}?${searchParams.toString()}`),
   );
+  /**
+   * 1 つのことだけを出すウィンドウか。作成画面だけ (デスクトップ版の新規作成・返信・転送と、
+   * 作成画面の「新しいウィンドウで開く」) と、メールだけ (一覧の「新しいウィンドウで開く」)。
+   * fresh は、移すためだけに保存した下書きで、何も書かずに閉じたら消す。
+   */
+  const [composeWindow] = useState(() => readWindowMode(searchParams));
+  const standaloneCompose = composeWindow.mode === "compose";
+  const standaloneMessage = composeWindow.mode === "message";
+  /** デスクトップ版では、作成画面をいつも新しいウィンドウで開く (あおいさんの指定)。 */
+  const composeInNewWindow = isDesktopApp() && !standaloneCompose;
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     initialRoute.accountId,
@@ -463,6 +483,23 @@ export function MailApp({ user }: { user: User }) {
     storeSidebarFolded(!sidebarFolded);
     setSidebarFolded(!sidebarFolded);
   };
+  // デスクトップ版のタイトルバーのハンバーガーメニュー。
+  // 広い画面ではサイドバーの折りたたみ (F9 と同じ)、狭い画面では引き出しの開閉。
+  const titleBarMenuRef = useRef(() => {});
+  titleBarMenuRef.current = () => {
+    if (window.matchMedia("(min-width: 48rem)").matches) toggleSidebarFolded();
+    else setSidebarOpen((open) => !open);
+  };
+  useEffect(() => {
+    if (standaloneCompose || standaloneMessage || !isDesktopApp()) return;
+    setTitleBarMenu({
+      label: "サイドバーの表示を切り替える",
+      shortcut: SIDEBAR_FOLD_KEY_LABEL,
+      expanded: !sidebarFolded || sidebarOpen,
+      onClick: () => titleBarMenuRef.current(),
+    });
+  }, [standaloneCompose, standaloneMessage, sidebarFolded, sidebarOpen]);
+  useEffect(() => () => setTitleBarMenu(null), []);
   const asideRef = useRef<HTMLElement>(null);
   const sidebarPeek = useSidebarPeek(asideRef, sidebarFolded);
 
@@ -1595,6 +1632,15 @@ export function MailApp({ user }: { user: User }) {
    * dirty は、開いた時点でまだ保存していない内容があること。
    */
   function showInCompose(next: ComposeDraft, dirty: boolean) {
+    if (composeInNewWindow) {
+      void openComposeWindow(next, dirty);
+      return;
+    }
+    showComposeHere(next, dirty);
+  }
+
+  /** 作成画面を、このウィンドウの中で開く。 */
+  function showComposeHere(next: ComposeDraft, dirty: boolean) {
     // 入力が止まるのを待たずに、開いていたメールを保存する。
     if (draft && draftDirty) void saverRef.current?.flush();
     setDraft(next);
@@ -1606,6 +1652,79 @@ export function MailApp({ user }: { user: User }) {
     setComposeOpen(true);
     if (dirty) saverRef.current?.schedule(next);
   }
+
+  /**
+   * 作成画面を新しいウィンドウで開く (デスクトップ版)。書き始めの内容は下書きとしてサーバーに保存し、
+   * 新しいウィンドウがその下書きを開く。何も入っていない新規作成は保存せず、アカウントだけを渡す。
+   * 保存できない (通信できない) か、ウィンドウを開けなければ、このウィンドウの中で開く。
+   */
+  async function openComposeWindow(next: ComposeDraft, dirty: boolean) {
+    const saver = saverRef.current;
+    const id = next.idempotencyKey;
+    const saved = saver?.revisionOf(id) != null;
+    if (next.mode === "new" && !dirty && !saved) {
+      const path = buildRoute({
+        ...emptyRoute,
+        accountId: next.accountId,
+        composeId: NEW_COMPOSE,
+      });
+      if (!(await openWindow(windowModePath(path, "compose")))) {
+        showComposeHere(next, dirty);
+      }
+      return;
+    }
+    if (saver && (dirty || !saved)) {
+      saver.schedule(next);
+      await saver.flush();
+    }
+    if (
+      saver?.revisionOf(id) != null &&
+      (await openWindow(
+        windowModePath(
+          buildRoute({ ...emptyRoute, composeId: id }),
+          "compose",
+          // 返信・転送の書き始めなど、移すためだけに保存した下書き。
+          !dirty && !saved,
+        ),
+      ))
+    ) {
+      void loadDrafts();
+      return;
+    }
+    showComposeHere(next, true);
+  }
+
+  /** 作成専用・メール専用のウィンドウを閉じる。保存や削除が終わるのを待ってから閉じる。 */
+  async function closeStandaloneWindow(pending?: Promise<unknown>) {
+    await pending?.catch(() => {});
+    if (isDesktopApp()) await desktopWindow.close();
+    else window.close();
+  }
+
+  // 作成専用のウィンドウを閉じるとき (タイトルバーの閉じるボタン、Alt+F4 など) の後始末。
+  // 書きかけは保存し終えてから、移すためだけに保存した下書きは消してから閉じる。
+  const beforeWindowCloseRef = useRef<() => Promise<void>>(async () => {});
+  beforeWindowCloseRef.current = async () => {
+    const current = draftRef.current;
+    if (!current) return;
+    if (composeWindow.fresh && !draftDirty) {
+      await handleDiscardDraft(current.idempotencyKey);
+      return;
+    }
+    await closeCompose();
+  };
+  useEffect(() => {
+    if (!standaloneCompose || !isDesktopApp()) return;
+    return desktopWindow.onCloseRequested(() => beforeWindowCloseRef.current());
+  }, [standaloneCompose]);
+
+  // メール専用のウィンドウで、メールを削除・アーカイブした (または無くなっていた) ら閉じる。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 閉じる処理は毎回の描画で作り直すので、きっかけになる値だけを見る
+  useEffect(() => {
+    if (standaloneMessage && selectedMessageId === null) {
+      void closeStandaloneWindow();
+    }
+  }, [standaloneMessage, selectedMessageId]);
 
   function handleNewMail() {
     const accountId = selectedAccountId ?? accounts?.[0]?.id;
@@ -1758,14 +1877,17 @@ export function MailApp({ user }: { user: User }) {
   /** 一覧のメールを、新しいウィンドウで開く (いまの表示と同じフォルダの中で開く)。 */
   function openMessageWindow(message: MessageSummary) {
     void openWindow(
-      buildRoute({
-        ...emptyRoute,
-        accountId: selectedAccountId,
-        mailboxId: selectedMailboxId,
-        unifiedId,
-        special: special === "starred" ? special : null,
-        messageId: message.id,
-      }),
+      windowModePath(
+        buildRoute({
+          ...emptyRoute,
+          accountId: selectedAccountId,
+          mailboxId: selectedMailboxId,
+          unifiedId,
+          special: special === "starred" ? special : null,
+          messageId: message.id,
+        }),
+        "message",
+      ),
     ).then((opened) => {
       if (!opened) showNotice("新しいウィンドウを開けませんでした。");
     });
@@ -1787,7 +1909,11 @@ export function MailApp({ user }: { user: User }) {
       );
       return;
     }
-    if (!(await openWindow(buildRoute({ ...emptyRoute, composeId: id })))) {
+    if (
+      !(await openWindow(
+        windowModePath(buildRoute({ ...emptyRoute, composeId: id }), "compose"),
+      ))
+    ) {
       showNotice("新しいウィンドウを開けませんでした。");
       return;
     }
@@ -1798,12 +1924,13 @@ export function MailApp({ user }: { user: User }) {
   }
 
   /** 作成画面を閉じる。内容を変えていれば、下書きとしてサーバーに残る。 */
-  function closeCompose() {
-    if (draft && draftDirty) void saverRef.current?.flush();
+  function closeCompose(): Promise<void> | undefined {
+    const flushed = draft && draftDirty ? saverRef.current?.flush() : undefined;
     setDraft(null);
     setDraftDirty(false);
     setComposeNotice(null);
     setComposeOpen(false);
+    return flushed;
   }
 
   /** 送信または破棄した下書きを、画面とこの端末から消す。 */
@@ -1821,14 +1948,15 @@ export function MailApp({ user }: { user: User }) {
   }
 
   /** 下書きを破棄する。サーバーからも、付けていたファイルごと消える。 */
-  function handleDiscardDraft(id: string) {
+  function handleDiscardDraft(id: string): Promise<void> {
     dropDraft(id);
-    void (async () => {
+    const done = (async () => {
       // 保存の途中なら終わるのを待つ (あとから保存が届いて作り直されないように)。
       await saverRef.current?.forget(id);
       await deleteDraft(id).catch(() => {});
       void loadDrafts();
     })();
+    return done;
   }
 
   function handleEditOutgoing(mail: OutgoingMail) {
@@ -2378,6 +2506,8 @@ export function MailApp({ user }: { user: User }) {
   // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (event) => {
+    // 作成専用のウィンドウでは、一覧の操作のキーは使わない (一覧を出していない)。
+    if (standaloneCompose || standaloneMessage) return;
     // Ctrl+A (⌘+A) で、一覧に読み込んだメールをすべて選ぶ。ブラウザーや OS と同じキーなので、
     // ショートカットキーの設定を止めていても効かせる。入力欄やメールの本文では文字の全選択のまま。
     if (isSelectAllKey(event)) {
@@ -2667,7 +2797,7 @@ export function MailApp({ user }: { user: User }) {
         onClick={() => setSidebarOpen(false)}
         className={cn(
           "fixed inset-0 top-(--titlebar-height) z-30 bg-black/30 md:hidden",
-          !sidebarOpen && "hidden",
+          (!sidebarOpen || standaloneMessage) && "hidden",
         )}
       />
       <aside
@@ -2683,6 +2813,8 @@ export function MailApp({ user }: { user: User }) {
           sidebarOpen
             ? "translate-x-0"
             : "invisible -translate-x-full md:visible",
+          // メール専用のウィンドウでは、サイドバーと一覧を出さない。
+          standaloneMessage && "hidden!",
         )}
       >
         {sidebarFolded && (
@@ -2940,7 +3072,7 @@ export function MailApp({ user }: { user: User }) {
           className={cn(
             "relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
             selectedMessageId ? "hidden" : "flex",
-            settingsOpen && "hidden!",
+            (settingsOpen || standaloneMessage) && "hidden!",
           )}
         >
           {/* 狭い画面では、検索欄を上、見出しを下に置く。 */}
@@ -3171,6 +3303,7 @@ export function MailApp({ user }: { user: User }) {
         >
           {selectedMessageId ? (
             <MessageView
+              standalone={standaloneMessage}
               messageId={selectedMessageId}
               refreshKey={refreshKey}
               single={isSingle}
@@ -3210,7 +3343,10 @@ export function MailApp({ user }: { user: User }) {
               }
               onBack={() => setSelectedMessageId(null)}
               onStep={handleStep}
-              canStep={canStep}
+              // メール専用のウィンドウでは、ほかのメールへは移らない (消したら閉じる)。
+              canStep={
+                standaloneMessage ? { previous: false, next: false } : canStep
+              }
               onMissing={handleMissing}
             />
           ) : (
@@ -3244,11 +3380,30 @@ export function MailApp({ user }: { user: User }) {
         savedAt={draftSavedAt}
         saveProblem={draftSaveProblem}
         contentVersion={draftVersion}
+        standalone={standaloneCompose}
         onOpenChange={(open) => {
-          if (open) setComposeOpen(true);
-          else closeCompose();
+          if (open) {
+            setComposeOpen(true);
+            return;
+          }
+          if (!standaloneCompose) {
+            void closeCompose();
+            return;
+          }
+          // 移すためだけに保存した下書きを、何も書かずに閉じたら消す。
+          if (composeWindow.fresh && !draftDirty && draft) {
+            void closeStandaloneWindow(
+              handleDiscardDraft(draft.idempotencyKey),
+            );
+            return;
+          }
+          void closeStandaloneWindow(closeCompose());
         }}
-        onPopOut={canOpenWindows() ? () => void popOutCompose() : undefined}
+        onPopOut={
+          canOpenWindows() && !standaloneCompose
+            ? () => void popOutCompose()
+            : undefined
+        }
         onChange={(next) => {
           setDraft(next);
           setDraftDirty(true);
@@ -3268,9 +3423,12 @@ export function MailApp({ user }: { user: User }) {
             dropDraft(draft.idempotencyKey);
           }
           void loadOutgoing();
+          if (standaloneCompose) void closeStandaloneWindow();
         }}
         onDiscard={() => {
-          if (draft) handleDiscardDraft(draft.idempotencyKey);
+          if (!draft) return;
+          const discarded = handleDiscardDraft(draft.idempotencyKey);
+          if (standaloneCompose) void closeStandaloneWindow(discarded);
         }}
       />
       <FailureToast
