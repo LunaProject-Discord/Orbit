@@ -3,6 +3,8 @@
  * Capacitor のプラグインは、アプリの中でだけ読み込む (Web 版の読み込みを重くしない)。
  */
 
+import { closeTopSheet } from "@/lib/sheet-back";
+
 type CapacitorWindow = {
   Capacitor?: {
     isNativePlatform?: () => boolean;
@@ -123,6 +125,8 @@ export function listenBackButton(): () => void {
     try {
       const { App } = await import("@capacitor/app");
       const handle = await App.addListener("backButton", ({ canGoBack }) => {
+        // 下から出るシートが開いていれば、画面は戻さずにシートだけを閉じる。
+        if (closeTopSheet()) return;
         if (backAction(canGoBack) === "back") window.history.back();
         else void App.minimizeApp();
       });
