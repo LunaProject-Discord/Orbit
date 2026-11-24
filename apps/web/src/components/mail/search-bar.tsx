@@ -448,7 +448,7 @@ export function SearchBox({
           "group/search flex min-w-0 items-center",
           screen
             ? "h-full gap-1"
-            : "absolute inset-y-0 right-0 z-10 w-full transition-[width] duration-200 focus-within:w-[min(18rem,calc(100cqw-2rem))]",
+            : "absolute inset-y-0 right-0 z-10 w-full rounded-md bg-background transition-[width] duration-200 focus-within:w-[min(18rem,calc(100cqw-2rem))]",
         )}
       >
         {screen && (
