@@ -283,20 +283,36 @@ export function installOverlayScrollbars(): () => void {
     }
   }
 
+  /**
+   * カーソルの下の要素が変わったら、次の描画の前にまとめて調べる。
+   * 調べるにはスタイルの計算が要るので、要素をまたぐたびに (一覧の行を押した直後なども) 行うと重い。
+   */
+  let overTarget: EventTarget | null = null;
+  let overFrame = 0;
   const onPointerOver = (event: PointerEvent) => {
     if (event.pointerType === "touch") return;
-    // バーの上にいる間は、そのバーの持ち主の中にいるものとして扱う。
-    let node: Element | null =
-      overlayScrollbarOwner(event.target) ??
-      (event.target instanceof Element ? event.target : null);
-    const next = new Set<HTMLElement>();
-    for (; node; node = node.parentElement) {
-      if (isScroller(node)) next.add(node);
-    }
-    hovered = next;
-    update();
+    overTarget = event.target;
+    if (overFrame) return;
+    overFrame = requestAnimationFrame(() => {
+      overFrame = 0;
+      const target = overTarget;
+      overTarget = null;
+      // バーの上にいる間は、そのバーの持ち主の中にいるものとして扱う。
+      let node: Element | null =
+        overlayScrollbarOwner(target) ??
+        (target instanceof Element ? target : null);
+      const next = new Set<HTMLElement>();
+      for (; node; node = node.parentElement) {
+        if (isScroller(node)) next.add(node);
+      }
+      hovered = next;
+      update();
+    });
   };
   const onPointerLeave = () => {
+    cancelAnimationFrame(overFrame);
+    overFrame = 0;
+    overTarget = null;
     hovered = new Set();
     update();
   };
@@ -330,6 +346,7 @@ export function installOverlayScrollbars(): () => void {
 
   return () => {
     clearInterval(interval);
+    cancelAnimationFrame(overFrame);
     document.removeEventListener("scroll", onScroll, { capture: true });
     document.removeEventListener("pointerover", onPointerOver);
     root.removeEventListener("pointerleave", onPointerLeave);

@@ -14,6 +14,7 @@ import {
   type UploadedAttachment,
 } from "@/lib/api";
 import { type ListScope, MailCache } from "@/lib/offline/mail-cache";
+import { Inflight, type Memo, MemoCache } from "@/lib/offline/memo";
 import { isOnline, subscribeOnline } from "@/lib/offline/network";
 import { type QueuedSend, SendOutbox } from "@/lib/offline/outbox";
 import {
@@ -118,6 +119,7 @@ export function closeOffline(): void {
   session = null;
   sessionUserId = null;
   prefetchQueue.length = 0;
+  clearOpenMemo();
   setQueued([]);
   void closing?.then((current) => current.close()).catch(() => {});
 }
@@ -261,17 +263,156 @@ export async function searchMessages(
   }
 }
 
+// ---------------------------------------------------------------------------
+// 開いたメールをすぐに表示するための控え
+// ---------------------------------------------------------------------------
+
+/** 取得した会話 (キーは threadKeyOf)。 */
+const threadMemo = new MemoCache<ThreadMessage[]>(300);
+/** 取得した本文。大きいことがあるので、会話より少なく持つ。 */
+const detailMemo = new MemoCache<MessageDetail>(120);
+const inflight = new Inflight();
+/**
+ * サーバーから取得してから、この時間のうちは取得し直さない
+ * (カーソルを載せたときに取得した内容を、開いたときにもう一度取りに行かない)。
+ */
+export const OPEN_MEMO_FRESH_MS = 15_000;
+
+const threadKeyOf = (id: string, mailboxId: string | null) =>
+  `${id}|${mailboxId ?? ""}`;
+
+function clearOpenMemo(): void {
+  threadMemo.clear();
+  detailMemo.clear();
+  inflight.clear();
+}
+
+/** 控えてある会話。無ければ undefined。 */
+export function peekThread(
+  id: string,
+  mailboxId: string | null,
+): Memo<ThreadMessage[]> | undefined {
+  return threadMemo.get(threadKeyOf(id, mailboxId));
+}
+
+/** 控えてある本文。無ければ undefined。 */
+export function peekMessage(id: string): Memo<MessageDetail> | undefined {
+  return detailMemo.get(id);
+}
+
+/** サーバーから取得したばかりで、取得し直さなくてよいか。 */
+export function isFresh(memo: Memo<unknown> | undefined): boolean {
+  return memo?.network === true && Date.now() - memo.at < OPEN_MEMO_FRESH_MS;
+}
+
+/** 会話の行 (一覧の 1 行) のうち、開く準備に使う値。 */
+type ConversationRow = Pick<
+  api.MessageSummary,
+  "id" | "mailboxId" | "threadCount" | "threadMessageIds"
+>;
+
+/**
+ * 端末の保存先にある会話を読み出す (サーバーには問い合わせない)。
+ * 会話として保存したものだけを見る (一覧の行から組み立てるのは時間がかかるため)。
+ * 会話として保存していなくても、一覧の行 (row) と保存してある本文から組み立てられれば、そうする。
+ */
+export async function loadSavedThread(
+  id: string,
+  mailboxId: string | null,
+  row?: ConversationRow | null,
+): Promise<ThreadMessage[] | null> {
+  const key = threadKeyOf(id, mailboxId);
+  const memo = threadMemo.get(key);
+  if (memo) return memo.value;
+  const cache = (await current())?.cache;
+  const saved = await cache?.loadSavedThread(id, mailboxId).catch(() => null);
+  if (saved) {
+    threadMemo.set(key, saved, false);
+    return saved;
+  }
+  // 会話のメールがすべてこのフォルダにあり (threadCount と同じ数)、どれも本文を保存してあれば、そこから組み立てる。
+  if (
+    !row ||
+    row.id !== id ||
+    row.threadCount !== row.threadMessageIds.length ||
+    !row.threadMessageIds.includes(id)
+  ) {
+    return null;
+  }
+  const details = await Promise.all(
+    row.threadMessageIds.map((memberId) => loadSavedMessage(memberId)),
+  );
+  if (details.some((detail) => !detail)) return null;
+  const thread = (details as MessageDetail[])
+    .map((detail) => threadMessageOf(detail, row.mailboxId))
+    // 会話は古い順に並べる (サーバーの応答と同じ)。
+    .sort(
+      (a, b) =>
+        Date.parse(a.receivedAt) - Date.parse(b.receivedAt) ||
+        a.id.localeCompare(b.id),
+    );
+  threadMemo.set(key, thread, false);
+  return thread;
+}
+
+/** 本文から、会話の中の 1 通の形を作る。 */
+function threadMessageOf(
+  detail: MessageDetail,
+  mailboxId: string,
+): ThreadMessage {
+  return {
+    id: detail.id,
+    accountId: detail.accountId,
+    threadKey: detail.threadKey,
+    subject: detail.subject,
+    from: detail.from,
+    to: detail.to,
+    cc: detail.cc,
+    receivedAt: detail.receivedAt,
+    snippet: detail.snippet,
+    hasAttachments: detail.hasAttachments,
+    seen: detail.seen,
+    flagged: detail.flagged,
+    answered: detail.answered,
+    draft: detail.draft,
+    mailboxIds: [mailboxId],
+  };
+}
+
+/** 端末の保存先にある本文を読み出す (サーバーには問い合わせない)。 */
+export async function loadSavedMessage(
+  id: string,
+): Promise<MessageDetail | null> {
+  const memo = detailMemo.get(id);
+  if (memo) return memo.value;
+  const active = await current();
+  if (!active?.known.has(id)) return null;
+  const saved = await active.cache.loadDetail(id).catch(() => undefined);
+  if (!saved) return null;
+  detailMemo.set(id, saved, false);
+  return saved;
+}
+
 export function getMessage(
   id: string,
   signal?: AbortSignal,
 ): Promise<MessageDetail> {
-  return withCache(
-    () => api.getMessage(id, signal),
-    async (cache, detail) => {
-      await cache.saveDetail(detail);
-      (await current())?.known.add(detail.id);
-    },
-    (cache) => cache.loadDetail(id),
+  return inflight.run(
+    `message|${id}`,
+    () =>
+      withCache(
+        () =>
+          api.getMessage(id).then((detail) => {
+            detailMemo.set(id, detail, true);
+            return detail;
+          }),
+        async (cache, detail) => {
+          await cache.saveDetail(detail);
+          (await current())?.known.add(detail.id);
+        },
+        (cache) => cache.loadDetail(id),
+      ),
+    signal,
   );
 }
 
@@ -280,10 +421,76 @@ export function getThread(
   mailboxId: string | null,
   signal?: AbortSignal,
 ): Promise<ThreadMessage[]> {
-  return withCache(
-    () => api.getThread(id, mailboxId, signal),
-    (cache, thread) => cache.saveThread(id, mailboxId, thread),
-    (cache) => cache.loadThread(id, mailboxId),
+  const key = threadKeyOf(id, mailboxId);
+  return inflight.run(
+    `thread|${key}`,
+    () =>
+      withCache(
+        () =>
+          api.getThread(id, mailboxId).then((thread) => {
+            threadMemo.set(key, thread, true);
+            return thread;
+          }),
+        (cache, thread) => cache.saveThread(id, mailboxId, thread),
+        (cache) => cache.loadThread(id, mailboxId),
+      ),
+    signal,
+  );
+}
+
+/** 先に用意しておく本文の数 (会話の新しいものから)。 */
+const WARM_DETAILS = 3;
+
+/**
+ * 開きそうなメール (カーソルを載せた行、押し始めた行、前後の行) の会話と本文を、
+ * 開く前にメモリーへ用意しておく。端末に保存してあればそこから読み、
+ * 無ければ (network が true のとき) サーバーから取得する。
+ */
+export function warmConversation(row: ConversationRow, network = true): void {
+  const key = threadKeyOf(row.id, row.mailboxId);
+  const memo = threadMemo.get(key);
+  // 端末にあるものをまず用意し、サーバーからの取得は並行して進める。
+  if (!memo) void loadSavedThread(row.id, row.mailboxId, row).catch(() => {});
+  if (network && isOnline() && !isFresh(memo)) {
+    void getThread(row.id, row.mailboxId).catch(() => {});
+  }
+  // 会話の行の threadMessageIds は、このフォルダにある分。新しいものほど開かれやすい。
+  const ids = [row.id, ...row.threadMessageIds.filter((id) => id !== row.id)];
+  for (const id of ids.slice(0, WARM_DETAILS)) {
+    if (detailMemo.get(id)) continue;
+    void loadSavedMessage(id)
+      .then((saved) => {
+        if (!saved?.bodyFetchedAt && network && isOnline()) {
+          return getMessage(id);
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+/** 画面で行った操作を、控えにも反映する。 */
+function applyActionToMemo(action: MessageAction): void {
+  const ids = new Set(action.messageIds);
+  if (action.action === "set_flags") {
+    const patch = <T extends { id: string; seen: boolean; flagged: boolean }>(
+      item: T,
+    ): T =>
+      ids.has(item.id)
+        ? {
+            ...item,
+            seen: action.seen ?? item.seen,
+            flagged: action.flagged ?? item.flagged,
+          }
+        : item;
+    threadMemo.update((thread) =>
+      thread.some((item) => ids.has(item.id)) ? thread.map(patch) : thread,
+    );
+    detailMemo.update((detail) => patch(detail));
+    return;
+  }
+  // 移動や削除は、会話の中身が変わる。次に開いたときにサーバーから取り直す。
+  threadMemo.update((thread) =>
+    thread.some((item) => ids.has(item.id)) ? null : thread,
   );
 }
 
@@ -302,6 +509,7 @@ export function fetchAttachment(
 
 /** 画面で行った操作を、端末に保存してある内容にも反映する。 */
 export function applyActionLocally(action: MessageAction): void {
+  applyActionToMemo(action);
   void current()
     .then((active) => active?.cache.applyAction(action))
     .catch(() => {});

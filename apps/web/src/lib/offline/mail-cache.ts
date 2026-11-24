@@ -306,6 +306,19 @@ export class MailCache {
     ]);
   }
 
+  /** 会話として保存してある内容だけを返す (一覧の行からは組み立てない)。 */
+  async loadSavedThread(
+    id: string,
+    mailboxId: string | null,
+  ): Promise<ThreadMessage[] | null> {
+    return (
+      (await this.store.get<ThreadMessage[]>(
+        "threads",
+        `${id}|${mailboxId ?? ""}`,
+      )) ?? null
+    );
+  }
+
   /**
    * 保存してある会話を返す。会話として保存していなくても、一覧の行と本文があれば、
    * そこから組み立てる (そのフォルダにある分だけになる)。
