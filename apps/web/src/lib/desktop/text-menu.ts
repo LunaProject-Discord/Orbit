@@ -133,6 +133,7 @@ export type TextMenuItem =
   | "copy"
   | "paste"
   | "selectAll"
+  | "emoji"
   | "openLink"
   | "copyLink";
 
@@ -145,6 +146,8 @@ export function textMenuItems(target: TextMenuTarget): (TextMenuItem | null)[] {
     items.push("copy");
     if (!target.editable.readOnly) items.push("paste");
     items.push(null, "selectAll");
+    // 絵文字を選ぶ画面を開き、選んだ絵文字を右クリックした位置に入れる。
+    if (!target.editable.readOnly) items.push(null, "emoji");
     return items;
   }
   if (target.linkUrl) items.push("openLink", "copyLink");

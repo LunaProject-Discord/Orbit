@@ -63,6 +63,8 @@ describe("describeTextMenuTarget / textMenuItems", () => {
       "paste",
       null,
       "selectAll",
+      null,
+      "emoji",
     ]);
   });
 
