@@ -14,12 +14,14 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { renderSVG } from "uqr";
 import { useAuth } from "@/components/auth-provider";
 import { MIN_PASSWORD_LENGTH } from "@/components/auth-shell";
 import { showNotice } from "@/components/mail/toasts";
+import { TotpInput } from "@/components/one-time-code-input";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -875,6 +877,7 @@ function TwoFactorSetupForm(props: {
   const [password, setPassword] = useState("");
   const [setup, setSetup] = useState<TwoFactorSetup | null>(null);
   const [code, setCode] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -965,11 +968,18 @@ function TwoFactorSetupForm(props: {
   if (step === "scan") {
     return (
       <form
+        ref={formRef}
         className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
-            await confirmTwoFactor(code.replace(/\s/g, ""));
+            try {
+              await confirmTwoFactor(code);
+            } catch (cause) {
+              // 間違えたコードは消して、すぐに入れ直せるようにする。
+              setCode("");
+              throw cause;
+            }
             props.onEnabled();
             setStep("codes");
           });
@@ -1001,16 +1011,15 @@ function TwoFactorSetupForm(props: {
         )}
         <Field label="6 桁のコード">
           {(id) => (
-            <Input
+            <TotpInput
               id={id}
-              required
               autoFocus
-              autoComplete="one-time-code"
-              inputMode="numeric"
-              maxLength={12}
-              className="font-mono tracking-widest"
               value={code}
-              onChange={(event) => setCode(event.target.value)}
+              onChange={setCode}
+              onComplete={() => {
+                if (!busy) formRef.current?.requestSubmit();
+              }}
+              invalid={error !== null}
             />
           )}
         </Field>
