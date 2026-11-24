@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -171,6 +172,7 @@ import {
   sendMailOrQueue,
   useOnline,
   useQueuedSends,
+  warmConversation,
 } from "@/lib/offline";
 import { usePreferences } from "@/lib/preferences";
 import {
@@ -337,6 +339,15 @@ function handlePrefetch(ids: string[], reason: "hover" | "visible") {
   void prefetchBodies(ids, reason).catch(() => {});
 }
 
+/** 開きそうな行の会話と本文を、開く前に用意しておく。 */
+function handleWarm(message: MessageSummary) {
+  // このアプリの下書きの控えは、作成画面で開くので用意しない。
+  if (!message.draftId) warmConversation(message);
+}
+
+/** メールを開いてから、前後の行の準備を始めるまでの時間 (J / K で続けて移るときは用意しない)。 */
+const WARM_NEIGHBORS_MS = 300;
+
 /**
  * 取得し直した先頭ページを、読み込み済みの一覧に反映する。
  * 先頭ページの範囲は新しい内容で置き換え、それより古い読み込み済みの分は残す。
@@ -362,16 +373,27 @@ function setNotice(notice: { message: string; tone: "error" | "info" } | null) {
 }
 
 export function MailApp({ user }: { user: User }) {
-  const preferences = usePreferences();
-  const { signOut } = useAuth();
   // 開いたときの URL が指す表示から始める (再読み込み、ブックマーク、通知から開いた場合)。
   // ログイン画面から移ってきた直後は window.location がまだ前の画面を指していることがあるので、
   // 描画中のページの URL を Next.js から受け取る。
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [initialRoute] = useState(() =>
-    parseRoute(`${pathname}?${searchParams.toString()}`),
-  );
+  const [initialUrl] = useState(() => `${pathname}?${searchParams.toString()}`);
+  // URL は表示を変えるたびに書き換える (メールを開くたびなど)。Next.js はそのたびにこの部品を
+  // 描き直すので、画面の本体は、使う値 (開いたときの URL) が変わらない限り描き直さない。
+  return <MailView user={user} initialUrl={initialUrl} />;
+}
+
+const MailView = memo(function MailView({
+  user,
+  initialUrl,
+}: {
+  user: User;
+  initialUrl: string;
+}) {
+  const preferences = usePreferences();
+  const { signOut } = useAuth();
+  const [initialRoute] = useState(() => parseRoute(initialUrl));
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     initialRoute.accountId,
@@ -2182,26 +2204,30 @@ export function MailApp({ user }: { user: User }) {
    * 複数のアカウントのメールが並ぶ一覧 (すべての受信トレイ、スター付き、全体の検索) で、
    * どのアカウントのメールかを、アカウントのマーク (設定したアイコンか色の点) で示す。
    */
-  const accountMark =
-    selectedAccountId === null && (accounts?.length ?? 0) > 1
-      ? (message: MessageSummary) => {
-          const account = accounts?.find(
-            (item) => item.id === message.accountId,
-          );
-          return account
-            ? {
-                mark: (
-                  <AccountListMark
-                    accounts={accounts ?? []}
-                    account={account}
-                    dotClass="size-1.5"
-                  />
-                ),
-                name: account.displayName || account.email,
-              }
-            : null;
-        }
-      : undefined;
+  // 一覧の行は、渡した値が変わったときだけ描き直す。関数も、もとの値が変わるまで同じものを渡す。
+  const accountMark = useMemo(
+    () =>
+      selectedAccountId === null && (accounts?.length ?? 0) > 1
+        ? (message: MessageSummary) => {
+            const account = accounts?.find(
+              (item) => item.id === message.accountId,
+            );
+            return account
+              ? {
+                  mark: (
+                    <AccountListMark
+                      accounts={accounts ?? []}
+                      account={account}
+                      dotClass="size-1.5"
+                    />
+                  ),
+                  name: account.displayName || account.email,
+                }
+              : null;
+          }
+        : undefined,
+    [selectedAccountId, accounts],
+  );
   const settingsOpen = special === "settings";
   /** 狭い画面でサイドバーを開くボタン。 */
   const menuButton = (className: string) => (
@@ -2218,15 +2244,20 @@ export function MailApp({ user }: { user: User }) {
     </Button>
   );
   /** 検索結果の各行に出す、メールのある場所。アカウントを選んでいなければアカウント名も添える。 */
-  const locationLabel = (message: MessageSummary): string | null => {
-    const mailbox = mailboxes?.find((item) => item.id === message.mailboxId);
-    if (!mailbox) return null;
-    const account = selectedAccountId
-      ? null
-      : accounts?.find((item) => item.id === message.accountId);
-    const name = account ? account.displayName || account.email : null;
-    return name ? `${name} · ${mailboxLabel(mailbox)}` : mailboxLabel(mailbox);
-  };
+  const locationLabel = useCallback(
+    (message: MessageSummary): string | null => {
+      const mailbox = mailboxes?.find((item) => item.id === message.mailboxId);
+      if (!mailbox) return null;
+      const account = selectedAccountId
+        ? null
+        : accounts?.find((item) => item.id === message.accountId);
+      const name = account ? account.displayName || account.email : null;
+      return name
+        ? `${name} · ${mailboxLabel(mailbox)}`
+        : mailboxLabel(mailbox);
+    },
+    [mailboxes, selectedAccountId, accounts],
+  );
 
   // 開いているメールを含む行。会話に新しいメールが届いて行の代表が替わっても、同じ行を指す。
   // 会話の中の 1 通だけを開いているときは、その会話の行。
@@ -2246,6 +2277,21 @@ export function MailApp({ user }: { user: User }) {
     checkedIds.has(message.id),
   );
   const selecting = selectMode || checkedRows.length > 0;
+
+  // 開いたメールの前後の行も用意しておく (J / K やスワイプで次へ移ったときに、すぐ表示できる)。
+  const openRowId = selectedMessage?.id ?? null;
+  useEffect(() => {
+    if (!openRowId) return;
+    const timer = setTimeout(() => {
+      const list = messagesRef.current ?? [];
+      const index = list.findIndex((message) => message.id === openRowId);
+      if (index === -1) return;
+      for (const neighbor of [list[index + 1], list[index - 1]]) {
+        if (neighbor) handleWarm(neighbor);
+      }
+    }, WARM_NEIGHBORS_MS);
+    return () => clearTimeout(timer);
+  }, [openRowId]);
 
   /** 広げた会話の中の 1 通の、既読とスター。中身をまだ取得していなければ空。 */
   const childFlags = (rowId: string, childId: string) => {
@@ -2942,6 +2988,7 @@ export function MailApp({ user }: { user: User }) {
                   ref={messageListRef}
                   scrollRef={listScrollRef}
                   onPrefetch={handlePrefetch}
+                  onWarm={handleWarm}
                   messages={messages}
                   error={listError}
                   selectedId={
@@ -3263,4 +3310,4 @@ export function MailApp({ user }: { user: User }) {
       />
     </div>
   );
-}
+});

@@ -102,7 +102,17 @@ import {
 } from "@/lib/format";
 import { useFontFaceCss } from "@/lib/local-fonts";
 import { actionTargets, mailboxLabel, useMailboxes } from "@/lib/mailboxes";
-import { fetchAttachment, getMessage, getThread } from "@/lib/offline";
+import {
+  fetchAttachment,
+  getMessage,
+  getThread,
+  isFresh,
+  loadSavedMessage,
+  loadSavedThread,
+  peekMessage,
+  peekThread,
+  warmConversation,
+} from "@/lib/offline";
 import {
   bodyExtraCss,
   bodyFontFamily,
@@ -270,17 +280,24 @@ export function MessageView({
   canStep,
   onMissing,
 }: Props) {
-  const [state, setState] = useState<State>({ status: "loading" });
+  // 控えてある会話があれば、読み込み中の表示を挟まずに最初から表示する。
+  const [initial] = useState(() =>
+    initialView(messageId, summary?.mailboxId ?? null, single),
+  );
+  const [state, setState] = useState<State>(initial.state);
   /** 会話の中で、本文を開いているメッセージ。 */
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(
+    initial.expanded,
+  );
   // 同じメールでも、会話の全体と 1 通だけの表示は別のものとして扱う。
   const viewKey = `${messageId}:${single}`;
   const [shownId, setShownId] = useState(viewKey);
   if (shownId !== viewKey) {
     // 別のメールを選んだら、前の本文を出したままにしない。
     setShownId(viewKey);
-    setState({ status: "loading" });
-    setExpanded(new Set());
+    const next = initialView(messageId, summary?.mailboxId ?? null, single);
+    setState(next.state);
+    setExpanded(next.expanded);
   }
 
   const summaryRef = useRef(summary);
@@ -308,9 +325,14 @@ export function MessageView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: 開いているメールが変わるたびに取り消す
   useEffect(() => () => clearTimeout(readTimer.current), [viewKey]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey は再取得のきっかけとして使う
-  useEffect(() => {
+  /** 最後に取得したときの refreshKey。変わっていたら、控えがあってもサーバーから取り直す。 */
+  const fetchedRefreshKey = useRef(refreshKey);
+
+  // 控えを表示するときに、読み込み中の表示を一度も描かないよう、描画の前に行う。
+  useLayoutEffect(() => {
     const controller = new AbortController();
+    const refreshed = fetchedRefreshKey.current !== refreshKey;
+    fetchedRefreshKey.current = refreshKey;
     if (session.current.messageId !== viewKey) {
       session.current = {
         messageId: viewKey,
@@ -318,62 +340,95 @@ export function MessageView({
         markedRead: false,
       };
     }
-    getThread(
-      messageId,
-      summaryRef.current?.mailboxId ?? null,
-      controller.signal,
-    )
-      .then((all) => {
-        const thread = single
-          ? all.filter((message) => message.id === messageId)
-          : all;
-        if (thread.length === 0) {
-          onMissing();
-          return;
-        }
-        const current = session.current;
-        const last = thread.at(-1);
-        // 初めて見るメッセージのうち、未読のものと最新のものは本文を開いておく。
-        // (自分で閉じたものは、取得し直しても閉じたままにする。)
-        const open = thread
-          .filter(
-            (message) =>
-              !current.known.has(message.id) &&
-              (!message.seen || message.id === last?.id),
-          )
-          .map((message) => message.id);
-        for (const message of thread) current.known.add(message.id);
-        if (open.length > 0) {
-          setExpanded((ids) => new Set([...ids, ...open]));
-        }
-        setState({ status: "ready", thread, size: all.length });
+    const mailboxId = summaryRef.current?.mailboxId ?? null;
+    /** サーバーからの応答を反映したか (それより後に届いた端末の控えは使わない)。 */
+    let settled = false;
+    /**
+     * 会話を表示する。markable が false (端末の控えなど、古いかもしれない内容) のときは、
+     * 既読にする処理はサーバーからの応答を待って行う (ほかの端末で読んだメールを既読にし直さない)。
+     */
+    const apply = (all: ThreadMessage[], markable: boolean) => {
+      const thread = single
+        ? all.filter((message) => message.id === messageId)
+        : all;
+      if (thread.length === 0) {
+        onMissing();
+        return;
+      }
+      const current = session.current;
+      const last = thread.at(-1);
+      // 初めて見るメッセージのうち、未読のものと最新のものは本文を開いておく。
+      // (自分で閉じたものは、取得し直しても閉じたままにする。)
+      const open = thread
+        .filter(
+          (message) =>
+            !current.known.has(message.id) &&
+            (!message.seen || message.id === last?.id),
+        )
+        .map((message) => message.id);
+      for (const message of thread) current.known.add(message.id);
+      if (open.length > 0) {
+        setExpanded((ids) =>
+          open.every((id) => ids.has(id)) ? ids : new Set([...ids, ...open]),
+        );
+      }
+      setState((previous) =>
+        previous.status === "ready" &&
+        previous.size === all.length &&
+        sameThread(previous.thread, thread)
+          ? previous
+          : { status: "ready", thread, size: all.length },
+      );
 
-        // 開いたら既読にする (1 回だけ。あとから未読に戻した場合は、そのままにする)。
-        // 設定によって、すぐに、少し待ってから、または自動では既読にしない。
-        if (current.markedRead) return;
-        const { markRead, markReadDelay } = preferencesRef.current;
-        if (markRead === "never") return;
-        current.markedRead = true;
-        const mark = () => {
-          // 1 通だけを表示しているときは、会話のほかのメールは既読にしない。
-          const row = single ? null : summaryRef.current;
-          const unread = thread
-            .filter((message) => !message.seen)
-            .map((message) => message.id);
-          if (unread.length > 0 || (row && !row.seen)) {
-            onActionRef.current(
-              [...new Set([...(row?.threadMessageIds ?? []), ...unread])],
-              { action: "set_flags", seen: true },
-            );
-          }
-        };
-        if (markRead === "immediately") mark();
-        else {
-          readTimer.current = setTimeout(() => {
-            // 待っている間に別のメールへ移っていたら、既読にしない。
-            if (session.current === current) mark();
-          }, markReadDelay * 1000);
+      // 開いたら既読にする (1 回だけ。あとから未読に戻した場合は、そのままにする)。
+      // 設定によって、すぐに、少し待ってから、または自動では既読にしない。
+      if (current.markedRead || !markable) return;
+      const { markRead, markReadDelay } = preferencesRef.current;
+      if (markRead === "never") return;
+      current.markedRead = true;
+      const mark = () => {
+        // 1 通だけを表示しているときは、会話のほかのメールは既読にしない。
+        const row = single ? null : summaryRef.current;
+        const unread = thread
+          .filter((message) => !message.seen)
+          .map((message) => message.id);
+        if (unread.length > 0 || (row && !row.seen)) {
+          onActionRef.current(
+            [...new Set([...(row?.threadMessageIds ?? []), ...unread])],
+            { action: "set_flags", seen: true },
+          );
         }
+      };
+      if (markRead === "immediately") mark();
+      else {
+        readTimer.current = setTimeout(() => {
+          // 待っている間に別のメールへ移っていたら、既読にしない。
+          if (session.current === current) mark();
+        }, markReadDelay * 1000);
+      }
+    };
+
+    // 控え (前に取得した内容、端末の保存先) があれば、サーバーの応答を待たずにまず表示する。
+    const memo = peekThread(messageId, mailboxId);
+    const fresh = !refreshed && isFresh(memo);
+    if (memo) apply(memo.value, fresh);
+    if (fresh) return () => controller.abort();
+    if (!memo && !refreshed) {
+      void loadSavedThread(messageId, mailboxId, summaryRef.current).then(
+        (saved) => {
+          if (saved && !settled && !controller.signal.aborted)
+            apply(saved, false);
+        },
+      );
+    }
+    // 会話の取得と並行して、開くことになる本文も取りに行く (会話が届いてから頼むと、往復が 2 回になる)。
+    if (!refreshed && summaryRef.current) {
+      warmConversation(summaryRef.current);
+    }
+    getThread(messageId, mailboxId, controller.signal)
+      .then((all) => {
+        settled = true;
+        apply(all, true);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -470,6 +525,8 @@ export function MessageView({
   const last = thread?.at(-1);
   // 会話のキー。端末に保存してあった古い内容には無いので、一覧の行からも探す。
   const threadKey = first?.threadKey ?? summary?.threadKey ?? null;
+  /** 会話のアカウントと件名。読み込み中は一覧の行の値を使う。 */
+  const conversation = first ?? row ?? null;
 
   // 見出しの下に出す、メールのある場所 (アカウントとフォルダ)。
   const account = accounts.find((item) => item.id === first?.accountId);
@@ -616,31 +673,40 @@ export function MessageView({
         >
           <ArrowLeftIcon />
         </Button>
-        {thread && first && (
+        {/* 読み込み中も一覧の行の値で出しておく (別のメールへ移るたびに作り直さない)。 */}
+        {((thread && first) || row) && (
           <MessageToolbar
-            accountId={first.accountId}
+            accountId={first?.accountId ?? row?.accountId ?? ""}
             // 会話のうち、表示中のフォルダにある分をまとめて操作する。
             targetIds={targetIds}
             starId={row?.id ?? messageId}
             mailboxId={toolbarMailboxId}
-            seen={row?.seen ?? thread.every((message) => message.seen)}
-            flagged={row?.flagged ?? thread.some((message) => message.flagged)}
+            seen={row?.seen ?? thread?.every((message) => message.seen) ?? true}
+            flagged={
+              row?.flagged ??
+              thread?.some((message) => message.flagged) ??
+              false
+            }
             moveRequest={moveRequest + swipeMove}
             onAction={act}
             onCompose={compose}
             signatureSet={
               threadKey !== null &&
-              findThreadRule(signatureRules, first.accountId, threadKey) !==
-                null
+              conversation !== null &&
+              findThreadRule(
+                signatureRules,
+                conversation.accountId,
+                threadKey,
+              ) !== null
             }
             onSignature={
-              threadKey === null
+              threadKey === null || conversation === null
                 ? null
                 : () =>
                     onThreadSignature({
-                      accountId: first.accountId,
+                      accountId: conversation.accountId,
                       threadKey,
-                      subject: first.subject,
+                      subject: conversation.subject,
                     })
             }
           />
@@ -708,6 +774,45 @@ export function MessageView({
   );
 }
 
+/**
+ * メールを開いた直後の表示。控えてある会話があれば、それを表示する
+ * (本文を開いておくメッセージの決め方は、取得した後と同じ: 未読のものと最新のもの)。
+ */
+function initialView(
+  messageId: string,
+  mailboxId: string | null,
+  single: boolean,
+): { state: State; expanded: ReadonlySet<string> } {
+  const memo = peekThread(messageId, mailboxId);
+  const thread = memo
+    ? single
+      ? memo.value.filter((message) => message.id === messageId)
+      : memo.value
+    : [];
+  if (!memo || thread.length === 0) {
+    return { state: { status: "loading" }, expanded: new Set() };
+  }
+  const last = thread.at(-1);
+  return {
+    state: { status: "ready", thread, size: memo.value.length },
+    expanded: new Set(
+      thread
+        .filter((message) => !message.seen || message.id === last?.id)
+        .map((message) => message.id),
+    ),
+  };
+}
+
+/** 会話の表示に使う値が同じか (同じなら、取得し直しても描き直さない)。 */
+function sameThread(a: ThreadMessage[], b: ThreadMessage[]): boolean {
+  return a.length === b.length && JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** 本文の内容が同じか。 */
+function sameDetail(a: MessageDetail, b: MessageDetail): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
 function MessageSkeleton() {
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6" aria-busy="true">
@@ -743,19 +848,52 @@ function LoadedMessage({
   details?: boolean;
   onDetail: (message: MessageDetail) => void;
 }) {
-  const [message, setMessage] = useState<MessageDetail | null>(null);
+  // 控えてある本文があれば、最初からそれを表示する。
+  const [message, setMessage] = useState<MessageDetail | null>(
+    () => peekMessage(id)?.value ?? null,
+  );
+  const [shownId, setShownId] = useState(id);
+  if (shownId !== id) {
+    setShownId(id);
+    setMessage(peekMessage(id)?.value ?? null);
+  }
   const [failed, setFailed] = useState(false);
   const onDetailRef = useRef(onDetail);
   onDetailRef.current = onDetail;
+  const fetchedRefreshKey = useRef(refreshKey);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey は再取得のきっかけとして使う
   useEffect(() => {
     const controller = new AbortController();
+    const refreshed = fetchedRefreshKey.current !== refreshKey;
+    fetchedRefreshKey.current = refreshKey;
+    let settled = false;
+    const show = (loaded: MessageDetail) => {
+      // 内容が同じなら置き換えない (本文の枠を描き直さない)。
+      setMessage((current) =>
+        current && sameDetail(current, loaded) ? current : loaded,
+      );
+      setFailed(false);
+      onDetailRef.current(loaded);
+    };
+    const memo = peekMessage(id);
+    if (memo) onDetailRef.current(memo.value);
+    // 本文は後から変わらないので、取得済みの控えがあれば取り直さない (同期で変わったときを除く)。
+    if (memo && !refreshed && (isFresh(memo) || memo.value.bodyFetchedAt)) {
+      if (!isFresh(memo)) {
+        // 既読やスターなどは変わることがあるので、表示した後で確かめる。
+        void getMessage(id, controller.signal).then(show, () => {});
+      }
+      return () => controller.abort();
+    }
+    if (!memo && !refreshed) {
+      void loadSavedMessage(id).then((saved) => {
+        if (saved && !settled && !controller.signal.aborted) show(saved);
+      });
+    }
     getMessage(id, controller.signal)
       .then((loaded) => {
-        setMessage(loaded);
-        setFailed(false);
-        onDetailRef.current(loaded);
+        settled = true;
+        show(loaded);
       })
       .catch(() => {
         // 再取得の失敗では、表示中の本文を消さない。
