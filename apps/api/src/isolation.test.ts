@@ -457,6 +457,8 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
         `/unified/${own.unified}/messages`,
       );
       expect(await unified.text()).toContain(own.message);
+      const contacts = await request(token, "GET", "/contacts?q=sender");
+      expect(await contacts.text()).toContain(`${own.mark}-sender`);
     }
   });
 
@@ -507,6 +509,8 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       "/unified",
       `/unified/${collect}/messages`,
       "/signatures",
+      "/contacts?limit=5000",
+      "/contacts?q=sender",
       "/settings",
       "/security",
       "/sync?since=0",
