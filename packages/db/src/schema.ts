@@ -742,6 +742,17 @@ export const unifiedFolders = pgTable(
   (t) => [index("unified_folders_user_idx").on(t.userId)],
 );
 
+/**
+ * サイドバーのカテゴリ (利用者が作る、アカウントや統合フォルダのまとまり)。
+ * items は中に入れた項目 (初めからある項目の名前、統合フォルダの ID、アカウントの ID)。
+ * 中での順番は、項目そのものの並び順 (order やアカウントの並び順) に従う。
+ */
+export type SidebarCategory = {
+  id: string;
+  name: string;
+  items: string[];
+};
+
 /** 初めからある項目の見た目。null は初期の設定のまま。 */
 export type BuiltinViewStyle = {
   name: string | null;
@@ -765,6 +776,8 @@ export const sidebarLayouts = pgTable("sidebar_layouts", {
     .$type<Record<string, BuiltinViewStyle>>()
     .notNull()
     .default({}),
+  /** サイドバーのカテゴリ (上から順)。 */
+  categories: jsonb().$type<SidebarCategory[]>().notNull().default([]),
   updatedAt: updatedAt(),
 });
 

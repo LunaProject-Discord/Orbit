@@ -10,7 +10,9 @@ import {
   FolderPenIcon,
   FolderPlusIcon,
   InboxIcon,
+  ListPlusIcon,
   ListRestartIcon,
+  ListTreeIcon,
   LogInIcon,
   MailCheckIcon,
   RefreshCwIcon,
@@ -20,10 +22,20 @@ import {
 } from "lucide-react";
 import {
   ContextMenuItem,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
   ContextMenuSeparator,
   ContextMenuShortcut,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
 } from "@/components/ui/context-menu";
-import { type Account, type MailboxSummary, oauthProviderOf } from "@/lib/api";
+import {
+  type Account,
+  type MailboxSummary,
+  oauthProviderOf,
+  type SidebarCategory,
+} from "@/lib/api";
 import { moveBy } from "@/lib/mailboxes";
 
 /** サイドバーの右クリックメニューから呼ぶ操作。 */
@@ -71,6 +83,70 @@ export function MoveItems({
         <ContextMenuShortcut>Alt+↓</ContextMenuShortcut>
       </ContextMenuItem>
     </>
+  );
+}
+
+/** カテゴリを持たない項目を表す、ラジオの値。 */
+const NO_CATEGORY = "";
+
+/**
+ * 項目 (アカウントや統合フォルダ) を入れるカテゴリを選ぶ、子メニュー。
+ * カテゴリが 1 つも無ければ、作るだけの項目を出す。
+ */
+export function CategoryMenu({
+  categories,
+  current,
+  onAssign,
+  onCreate,
+}: {
+  categories: readonly SidebarCategory[];
+  /** いま入っているカテゴリの ID。入っていなければ null。 */
+  current: string | null;
+  onAssign: (categoryId: string | null) => void;
+  /** 新しいカテゴリを作って、この項目を入れる。 */
+  onCreate: () => void;
+}) {
+  if (categories.length === 0) {
+    return (
+      <ContextMenuItem onClick={onCreate}>
+        <ListPlusIcon />
+        新しいカテゴリに入れる…
+      </ContextMenuItem>
+    );
+  }
+  return (
+    <ContextMenuSub>
+      <ContextMenuSubTrigger className="gap-2">
+        <ListTreeIcon />
+        カテゴリ
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent className="w-56" title="カテゴリ">
+        <ContextMenuRadioGroup
+          value={current ?? NO_CATEGORY}
+          onValueChange={(value: string) =>
+            onAssign(value === NO_CATEGORY ? null : value)
+          }
+        >
+          <ContextMenuRadioItem value={NO_CATEGORY} closeOnClick>
+            カテゴリなし
+          </ContextMenuRadioItem>
+          {categories.map((category) => (
+            <ContextMenuRadioItem
+              key={category.id}
+              value={category.id}
+              closeOnClick
+            >
+              <span className="truncate">{category.name}</span>
+            </ContextMenuRadioItem>
+          ))}
+        </ContextMenuRadioGroup>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={onCreate}>
+          <ListPlusIcon />
+          新しいカテゴリ…
+        </ContextMenuItem>
+      </ContextMenuSubContent>
+    </ContextMenuSub>
   );
 }
 
@@ -171,9 +247,10 @@ export function AccountMenuItems({
   onToggle,
   onReorder,
   actions,
+  categoryMenu,
 }: {
   account: Account;
-  /** すべてのアカウント (いまの表示順)。 */
+  /** 同じ並びのアカウント (いまの表示順)。 */
   accountIds: string[];
   /** このアカウントのフォルダ。 */
   mailboxes: MailboxSummary[];
@@ -183,6 +260,8 @@ export function AccountMenuItems({
   onToggle: () => void;
   onReorder: (ids: string[]) => void;
   actions: SidebarMenuActions;
+  /** カテゴリを選ぶ子メニュー (CategoryMenu)。 */
+  categoryMenu?: React.ReactNode;
 }) {
   const sorted = mailboxes.filter((mailbox) => mailbox.sortOrder !== null);
   const provider =
@@ -215,6 +294,7 @@ export function AccountMenuItems({
       )}
       <ContextMenuSeparator />
       <MoveItems id={account.id} ids={accountIds} onReorder={onReorder} />
+      {categoryMenu}
       <ContextMenuItem
         disabled={sorted.length === 0}
         onClick={() =>
