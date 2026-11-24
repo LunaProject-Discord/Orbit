@@ -11,6 +11,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { isNativeApp } from "@/lib/native/app";
+import { registerSheetBack } from "@/lib/sheet-back";
 import {
   SHEET_QUERY,
   sheetDismisses,
@@ -130,12 +132,47 @@ function blocksSheetDrag(target: EventTarget | null, sheet: HTMLElement) {
  * スマホ幅のシートを、指で下へ払って閉じられるようにする。返す ref をシートの要素に付ける。
  * 指の動きに合わせてシートが下がり、離したときに十分下がっていれば閉じる (足りなければ戻る)。
  * 閉じる方法は、引数か、Root が渡す SheetCloseContext から受け取る。
+ *
+ * 開いている間は、戻る操作 (Android の戻るボタン・戻るジェスチャー) でも閉じられるようにする
+ * (lib/sheet-back.ts)。入れ子のメニューでは、全体ではなく 1 つ前のシートへ戻る。
  */
 export function useSheetSwipe(onDismiss?: () => void, enabled = true) {
   const context = useContext(SheetCloseContext);
+  const subSheet = useSubSheet();
   const dismiss = useRef<(() => void) | undefined>(undefined);
   dismiss.current = onDismiss ?? context?.close;
+  const back = useRef<(() => void) | undefined>(undefined);
+  back.current = subSheet?.close ?? onDismiss ?? context?.close;
   const [sheet, setSheet] = useState<HTMLElement | null>(null);
+
+  // 開いている間 (data-open が付いている間) だけ、戻る操作の受け先に登録する。
+  // 閉じても要素が残る部品 (セレクト) があるので、要素の有無ではなく data-open を見る。
+  useEffect(() => {
+    if (!sheet || !enabled) return;
+    let unregister: (() => void) | null = null;
+    const update = () => {
+      const open =
+        sheet.hasAttribute("data-open") &&
+        window.matchMedia(SHEET_QUERY).matches;
+      if (open && !unregister) {
+        // アプリでは戻るボタンを listenBackButton が受け取るので、CloseWatcher は使わない。
+        unregister = registerSheetBack(() => back.current?.(), !isNativeApp());
+      } else if (!open && unregister) {
+        unregister();
+        unregister = null;
+      }
+    };
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(sheet, {
+      attributes: true,
+      attributeFilter: ["data-open"],
+    });
+    return () => {
+      observer.disconnect();
+      unregister?.();
+    };
+  }, [sheet, enabled]);
 
   useEffect(() => {
     if (!sheet || !enabled) return;
