@@ -403,6 +403,12 @@ export function ComposeWindow({
 
   if (!draft || !open) return null;
 
+  // ほかの欄で選び済みの宛先は、候補に出さない。
+  const chosenAddresses = [
+    ...draft.to.list,
+    ...draft.cc.list,
+    ...draft.bcc.list,
+  ].map((entry) => entry.address);
   const showExtra =
     extraShownFor === draft.idempotencyKey ||
     draft.cc.list.length > 0 ||
@@ -775,6 +781,7 @@ export function ComposeWindow({
             onChange={(value) =>
               changeWithSignature((current) => ({ ...current, to: value }))
             }
+            exclude={chosenAddresses}
             disabled={sending}
           />
           {!showExtra && (
@@ -794,6 +801,7 @@ export function ComposeWindow({
                 id={`${id}-cc`}
                 value={draft.cc}
                 onChange={(value) => set("cc", value)}
+                exclude={chosenAddresses}
                 disabled={sending}
               />
             </Row>
@@ -802,6 +810,7 @@ export function ComposeWindow({
                 id={`${id}-bcc`}
                 value={draft.bcc}
                 onChange={(value) => set("bcc", value)}
+                exclude={chosenAddresses}
                 disabled={sending}
               />
             </Row>

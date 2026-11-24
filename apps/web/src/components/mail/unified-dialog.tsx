@@ -4,6 +4,7 @@ import { cn } from "cn";
 import { ChevronRightIcon, LayersIcon } from "lucide-react";
 import { type FormEvent, useId, useMemo, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
+import { ContactInput } from "@/components/mail/contact-suggestions";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { MailboxIcon, MailboxMark } from "@/components/mail/mailbox-icon";
 import { BUILTIN_ICONS } from "@/components/mail/unified-mark";
@@ -472,17 +473,30 @@ export function UnifiedDialog({
                           >
                             {label}
                           </Label>
-                          <Input
-                            id={`${id}-${key}`}
-                            value={filters[key]}
-                            maxLength={200}
-                            placeholder={placeholder}
-                            autoComplete="off"
-                            onChange={(event) =>
-                              setFilters({ [key]: event.target.value })
-                            }
-                            className="h-8"
-                          />
+                          {key === "from" || key === "to" ? (
+                            <ContactInput
+                              id={`${id}-${key}`}
+                              value={filters[key]}
+                              maxLength={200}
+                              placeholder={placeholder}
+                              onValueChange={(value) =>
+                                setFilters({ [key]: value })
+                              }
+                              className="h-8"
+                            />
+                          ) : (
+                            <Input
+                              id={`${id}-${key}`}
+                              value={filters[key]}
+                              maxLength={200}
+                              placeholder={placeholder}
+                              autoComplete="off"
+                              onChange={(event) =>
+                                setFilters({ [key]: event.target.value })
+                              }
+                              className="h-8"
+                            />
+                          )}
                         </div>
                       ))}
                       <Label htmlFor={`${id}-period`} className="font-normal">
