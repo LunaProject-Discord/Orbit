@@ -26,11 +26,11 @@ export type DateStyle = DateFormats & {
 };
 
 export const DEFAULT_DATE_FORMATS: DateFormats = {
-  shortDateFormat: "yyyy/M/d",
+  shortDateFormat: "yyyy/MM/dd",
   monthDayFormat: "M/d",
-  longDateFormat: "yyyy年M月d日(ddd)",
-  shortTimeFormat: "HH:mm",
-  longTimeFormat: "HH:mm:ss",
+  longDateFormat: "yyyy年M月d日 (ddd)",
+  shortTimeFormat: "H:mm",
+  longTimeFormat: "H:mm:ss",
 };
 
 /** 12 時間制を選んでいた端末の設定を移すときの時刻の書式。 */
@@ -170,7 +170,7 @@ export function formatFullDate(
 }
 
 /**
- * ホバーで出す正確な日時 (長い日付 + 長い時刻。標準は 2026年11月24日(火) 09:35:12)。
+ * ホバーで出す正確な日時 (長い日付 + 長い時刻。標準は 2026年11月24日 (火) 9:35:12)。
  * 一覧などの短い日時に添えて、年月日・曜日・秒まで読めるようにする。
  */
 export function formatExactDate(
