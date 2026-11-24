@@ -45,12 +45,15 @@ fn escape(text: &str) -> String {
 }
 
 /// トーストの XML。message_id があるときだけ、ボタンと返信欄を付ける。
+/// send_icon (送信ボタンの絵の file:/// の URL) があれば、送信ボタンを絵にして入力欄の右側に置く。
+/// 無ければ、ほかのボタンと同じ列に「送信」の文字で置く。
 pub(crate) fn toast_xml(
     title: &str,
     body: &str,
     message_id: Option<&str>,
     buttons: &[ToastButton],
     reply: bool,
+    send_icon: Option<&str>,
 ) -> String {
     let mut xml = format!(
         "<toast launch=\"{TAP}\" activationType=\"foreground\"><visual><binding template=\"ToastGeneric\"><text>{}</text>",
@@ -65,8 +68,19 @@ pub(crate) fn toast_xml(
         let mut count = 0;
         if reply {
             actions.push_str(&format!(
-                "<input id=\"{REPLY_INPUT}\" type=\"text\" placeHolderContent=\"返信を入力\"/>\
-                 <action content=\"送信\" arguments=\"{SEND_REPLY}\" activationType=\"foreground\"/>"
+                "<input id=\"{REPLY_INPUT}\" type=\"text\" placeHolderContent=\"返信を入力\"/>"
+            ));
+            // hint-inputId を付けたボタンは、入力欄の右側に並ぶ (絵が要る)。
+            let beside = send_icon
+                .map(|icon| {
+                    format!(
+                        " hint-inputId=\"{REPLY_INPUT}\" imageUri=\"{}\"",
+                        escape(icon)
+                    )
+                })
+                .unwrap_or_default();
+            actions.push_str(&format!(
+                "<action content=\"送信\" arguments=\"{SEND_REPLY}\" activationType=\"foreground\"{beside}/>"
             ));
             count += 1;
         }
@@ -116,6 +130,7 @@ mod tests {
                 button("archive", "アーカイブ"),
             ],
             true,
+            None,
         );
         assert_eq!(
             xml,
@@ -137,6 +152,7 @@ mod tests {
             None,
             &[button("read", "既読にする")],
             true,
+            None,
         );
         assert!(!xml.contains("<actions>"));
         assert!(!xml.contains("<text></text>"));
@@ -153,6 +169,7 @@ mod tests {
                 button("star", "スター <付ける>"),
             ],
             false,
+            None,
         );
         assert!(xml.contains("<text>A &amp; &lt;B&gt;</text><text>&quot;x&quot;</text>"));
         assert!(!xml.contains("evil"));
@@ -172,7 +189,28 @@ mod tests {
             Some("01a1fcb1-b4bb-71cc-9452-cd6f31df8724"),
             &many,
             true,
+            None,
         );
         assert_eq!(xml.matches("<action ").count(), MAX_TOAST_ACTIONS);
+    }
+
+    #[test]
+    fn 送信ボタンの絵があれば入力欄の右側に置く() {
+        let xml = toast_xml(
+            "t",
+            "b",
+            Some("01a1fcb1-b4bb-71cc-9452-cd6f31df8724"),
+            &[button("read", "既読にする")],
+            true,
+            Some("file:///C:/Users/a&b/AppData/send.png"),
+        );
+        assert!(xml.contains(
+            "<action content=\"送信\" arguments=\"reply\" activationType=\"foreground\" \
+             hint-inputId=\"reply\" imageUri=\"file:///C:/Users/a&amp;b/AppData/send.png\"/>"
+        ));
+        // ほかのボタンは、入力欄の下の列に並ぶ。
+        assert!(xml.contains(
+            "<action content=\"既読にする\" arguments=\"action:read\" activationType=\"foreground\"/>"
+        ));
     }
 }

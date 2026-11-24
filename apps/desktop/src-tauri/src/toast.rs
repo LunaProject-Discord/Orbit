@@ -9,7 +9,7 @@
 //! 移ったあとの通知の操作はアプリへ届かないことがある (通知のプラグインと同じ制限)。
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use windows::core::{Interface, HSTRING};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::{IReference, TypedEventHandler};
@@ -128,6 +128,24 @@ fn handle_activation(
     let _ = app.emit_to(MAIN_WINDOW, NOTIFICATION_ACTION_EVENT, action);
 }
 
+/// 送信ボタンの絵 (アプリに埋め込んだ PNG)。トーストは絵をファイルで受け取るので、
+/// アプリのキャッシュのフォルダへ書き出して file:/// の URL を返す。書き出せなければ None
+/// (そのときは送信ボタンを文字のボタンにする)。
+fn send_icon(app: &AppHandle) -> Option<String> {
+    const ICON: &[u8] = include_bytes!("../icons/notification-send.png");
+    let dir = app.path().app_cache_dir().ok()?;
+    let path = dir.join("notification-send.png");
+    let current = std::fs::read(&path).ok();
+    if current.as_deref() != Some(ICON) {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(&path, ICON).ok()?;
+    }
+    Some(format!(
+        "file:///{}",
+        path.display().to_string().replace('\\', "/")
+    ))
+}
+
 /// トーストを出す。
 pub(crate) fn show(
     app: &AppHandle,
@@ -144,6 +162,7 @@ pub(crate) fn show(
         message_id.as_deref(),
         buttons,
         reply,
+        send_icon(app).as_deref(),
     )))?;
     let toast = ToastNotification::CreateToastNotification(&doc)?;
     if let Some(id) = &message_id {
