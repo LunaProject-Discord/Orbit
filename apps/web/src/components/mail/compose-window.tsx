@@ -69,6 +69,7 @@ import {
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
+import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
 import { insertIntoField } from "@/lib/emoji/insert";
 import { formatSize } from "@/lib/format";
 import { sendMailOrQueue, useOnline } from "@/lib/offline";
@@ -388,6 +389,17 @@ export function ComposeWindow({
     },
     [accounts, commit],
   );
+
+  // 作成専用のウィンドウでは、件名をタイトルバーに出す (「件名 ― Orbit Mail」)。
+  const windowName = draft ? draft.subject.trim() || titles[draft.mode] : null;
+  useEffect(() => {
+    if (!standalone) return;
+    setTitleBarTitle(windowName);
+  }, [standalone, windowName]);
+  useEffect(() => {
+    if (!standalone) return;
+    return () => setTitleBarTitle(null);
+  }, [standalone]);
 
   if (!draft || !open) return null;
 

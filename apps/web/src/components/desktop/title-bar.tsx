@@ -19,7 +19,11 @@ import {
   isDesktopApp,
   showSystemMenu,
 } from "@/lib/desktop/app";
-import { useTitleBarMenu } from "@/lib/desktop/title-bar-menu";
+import {
+  useTitleBarMenu,
+  useTitleBarTitle,
+  windowTitle,
+} from "@/lib/desktop/title-bar-menu";
 
 /**
  * Windows のキャプションボタンの字形 (Segoe Fluent Icons / Segoe MDL2 Assets)。
@@ -149,6 +153,7 @@ export function DesktopTitleBar() {
   /** ウィンドウが前面にあるか。後ろにあるときは、OS の枠と同じく文字とアイコンを薄くする。 */
   const [active, setActive] = useState(true);
   const menu = useTitleBarMenu();
+  const title = windowTitle(useTitleBarTitle());
 
   useEffect(() => {
     if (!isDesktopApp()) return;
@@ -167,6 +172,12 @@ export function DesktopTitleBar() {
       window.removeEventListener("blur", onBlur);
     };
   }, []);
+
+  // OS のウィンドウの名前 (タスクバーや Alt+Tab に出る) も合わせる。
+  useEffect(() => {
+    if (!platform) return;
+    void desktopWindow.setTitle(title);
+  }, [platform, title]);
 
   if (!platform) return null;
   const mac = platform === "macos";
@@ -201,7 +212,7 @@ export function DesktopTitleBar() {
       {hamburger}
       <span
         className={cn(
-          "pointer-events-none flex items-center gap-2",
+          "pointer-events-none flex min-w-0 items-center gap-2",
           mac
             ? "absolute inset-x-0 justify-center"
             : hamburger
@@ -209,8 +220,8 @@ export function DesktopTitleBar() {
               : "ml-3",
         )}
       >
-        <OrbitMark className="size-4" />
-        <span className="text-xs">Orbit Mail</span>
+        <OrbitMark className="size-4 shrink-0" />
+        <span className="truncate text-xs">{title}</span>
       </span>
       <span data-tauri-drag-region className="h-full flex-1" />
       {!mac && (

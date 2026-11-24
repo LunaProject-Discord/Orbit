@@ -128,6 +128,10 @@ export const desktopWindow = {
       return false;
     }
   },
+  /** OS のウィンドウの名前 (タスクバーや Alt+Tab に出る) を変える。 */
+  async setTitle(title: string) {
+    await (await currentWindow()).setTitle(title).catch(() => {});
+  },
   /**
    * ウィンドウが閉じられる直前に呼ぶ (タイトルバーの閉じる、システムメニュー、Alt+F4 など)。
    * handler が終わるのを待ってから閉じる。戻り値の関数で解除する。
