@@ -22,10 +22,12 @@ import {
   ReplyIcon,
   SignatureIcon,
   StarIcon,
+  TextSearchIcon,
   Trash2Icon,
   UserRoundIcon,
 } from "lucide-react";
 import {
+  type ReactNode,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -37,6 +39,7 @@ import { Hint } from "@/components/hint";
 import { ExactTime } from "@/components/mail/exact-time";
 import { MailboxMark, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
+import { MessageFindBar } from "@/components/mail/message-find-bar";
 import {
   MessageSwipe,
   type MessageSwipeSide,
@@ -241,6 +244,10 @@ type Props = {
   canStep: { previous: boolean; next: boolean };
   /** メールが削除されていた場合に呼ぶ。 */
   onMissing: () => void;
+  /** ツールバーの右端に置くもの (広い画面の検索欄)。 */
+  toolbarEnd?: ReactNode;
+  /** nonce が変わると、メールの中の検索を text で開く (検索欄の候補やショートカットキーから)。 */
+  findRequest?: { text: string; nonce: number } | null;
 };
 
 type State =
@@ -273,7 +280,28 @@ export function MessageView({
   onStep,
   canStep,
   onMissing,
+  toolbarEnd,
+  findRequest,
 }: Props) {
+  /** メールの中の検索。開いていなければ null。 */
+  const [find, setFind] = useState<{ text: string; request: number } | null>(
+    null,
+  );
+  const handledFind = useRef(findRequest?.nonce ?? 0);
+  useEffect(() => {
+    if (!findRequest || findRequest.nonce === handledFind.current) return;
+    handledFind.current = findRequest.nonce;
+    setFind((current) => ({
+      text: findRequest.text || current?.text || "",
+      request: (current?.request ?? 0) + 1,
+    }));
+  }, [findRequest]);
+  const openFind = () =>
+    setFind((current) => ({
+      text: current?.text ?? "",
+      request: (current?.request ?? 0) + 1,
+    }));
+  const contentRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<State>({ status: "loading" });
   /** 会話の中で、本文を開いているメッセージ。 */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -285,6 +313,7 @@ export function MessageView({
     setShownId(viewKey);
     setState({ status: "loading" });
     setExpanded(new Set());
+    setFind(null);
   }
 
   const summaryRef = useRef(summary);
@@ -644,6 +673,7 @@ export function MessageView({
             moveRequest={moveRequest + swipeMove}
             onAction={act}
             onCompose={compose}
+            onFind={openFind}
             signatureSet={
               threadKey !== null &&
               findThreadRule(signatureRules, first.accountId, threadKey) !==
@@ -661,65 +691,82 @@ export function MessageView({
             }
           />
         )}
+        {toolbarEnd}
       </div>
-      <MessageSwipe
-        left={swipeSides.left}
-        right={swipeSides.right}
-        wheel={preferences.trackpadSwipe}
-        resetKey={viewKey}
-      >
-        {state.status === "loading" ? (
-          <MessageSkeleton />
-        ) : state.status === "error" || !first ? (
-          <p role="alert" className="p-4 text-muted-foreground text-sm sm:p-6">
-            メールを読み込めませんでした。
-          </p>
-        ) : state.thread.length === 1 ? (
-          <>
-            {threadLink}
-            <LoadedMessage
-              // 別のメールを開いたら、スクロール位置を先頭に戻す。
-              key={first.id}
-              id={first.id}
-              refreshKey={refreshKey}
-              meta={meta}
-              mailbox={mailbox}
-              profile={profile}
-              onDetail={handleDetail}
-            />
-            {quickReplyBox}
-          </>
-        ) : (
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <header className="flex flex-col gap-2 border-b p-4 sm:p-6">
-              <h2 className="font-semibold text-xl leading-snug">
-                {first.subject || "(件名なし)"}
-              </h2>
-              {meta}
-            </header>
-            <ol>
-              {state.thread.map((message) => (
-                <ThreadItem
-                  key={message.id}
-                  message={message}
-                  expanded={expanded.has(message.id)}
-                  refreshKey={refreshKey}
-                  profile={profile}
-                  onToggle={() =>
-                    setExpanded((ids) => {
-                      const next = new Set(ids);
-                      if (!next.delete(message.id)) next.add(message.id);
-                      return next;
-                    })
-                  }
-                  onDetail={handleDetail}
-                />
-              ))}
-            </ol>
-            {quickReplyBox}
-          </div>
-        )}
-      </MessageSwipe>
+      {find && (
+        <MessageFindBar
+          rootRef={contentRef}
+          initialText={find.text}
+          request={find.request}
+          onClose={() => setFind(null)}
+        />
+      )}
+      <div ref={contentRef} className="flex min-h-0 flex-1 flex-col">
+        <MessageSwipe
+          left={swipeSides.left}
+          right={swipeSides.right}
+          wheel={preferences.trackpadSwipe}
+          resetKey={viewKey}
+        >
+          {state.status === "loading" ? (
+            <MessageSkeleton />
+          ) : state.status === "error" || !first ? (
+            <p
+              role="alert"
+              className="p-4 text-muted-foreground text-sm sm:p-6"
+            >
+              メールを読み込めませんでした。
+            </p>
+          ) : state.thread.length === 1 ? (
+            <>
+              {threadLink}
+              <LoadedMessage
+                // 別のメールを開いたら、スクロール位置を先頭に戻す。
+                key={first.id}
+                id={first.id}
+                refreshKey={refreshKey}
+                meta={meta}
+                mailbox={mailbox}
+                profile={profile}
+                onDetail={handleDetail}
+              />
+              {quickReplyBox}
+            </>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <header
+                data-find-scope=""
+                className="flex flex-col gap-2 border-b p-4 sm:p-6"
+              >
+                <h2 className="font-semibold text-xl leading-snug">
+                  {first.subject || "(件名なし)"}
+                </h2>
+                {meta}
+              </header>
+              <ol>
+                {state.thread.map((message) => (
+                  <ThreadItem
+                    key={message.id}
+                    message={message}
+                    expanded={expanded.has(message.id)}
+                    refreshKey={refreshKey}
+                    profile={profile}
+                    onToggle={() =>
+                      setExpanded((ids) => {
+                        const next = new Set(ids);
+                        if (!next.delete(message.id)) next.add(message.id);
+                        return next;
+                      })
+                    }
+                    onDetail={handleDetail}
+                  />
+                ))}
+              </ol>
+              {quickReplyBox}
+            </div>
+          )}
+        </MessageSwipe>
+      </div>
     </div>
   );
 }
@@ -952,9 +999,12 @@ function MessageToolbar({
   moveRequest,
   onAction,
   onCompose,
+  onFind,
   signatureSet,
   onSignature,
 }: {
+  /** このメールの中の検索を開く。 */
+  onFind: () => void;
   /** この会話に署名を決めてあるか。 */
   signatureSet: boolean;
   /** この会話の署名を決める画面を開く。会話のキーが分からなければ null (ボタンを出さない)。 */
@@ -1123,6 +1173,10 @@ function MessageToolbar({
             <DropdownMenuItem onClick={() => onCompose("forward")}>
               <ForwardIcon />
               転送
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onFind}>
+              <TextSearchIcon />
+              このメールの中を検索
             </DropdownMenuItem>
             {onSignature && (
               <DropdownMenuItem onClick={onSignature}>
@@ -1692,7 +1746,10 @@ function MessageContent({
     >
       {/* 会話の中では、件名と差出人は会話側の見出しに出ている。 */}
       {!inThread && (
-        <header className="@container shrink-0 border-b px-4 py-3 sm:px-6">
+        <header
+          data-find-scope=""
+          className="@container shrink-0 border-b px-4 py-3 sm:px-6"
+        >
           {collapsed ? (
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
