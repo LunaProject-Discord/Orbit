@@ -21,6 +21,7 @@ import {
   useState,
 } from "react";
 import { Hint } from "@/components/hint";
+import { ExactTime } from "@/components/mail/exact-time";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import { SwipeRow } from "@/components/mail/swipe-row";
 import { Button } from "@/components/ui/button";
@@ -227,12 +228,13 @@ function ThreadChildRow({
             aria-label="添付ファイルあり"
           />
         )}
-        <time
-          dateTime={child.receivedAt}
+        <ExactTime
+          value={child.receivedAt}
+          style={preferences}
           className="shrink-0 text-muted-foreground text-xs tabular-nums"
         >
           {formatListDate(child.receivedAt, new Date(), preferences)}
-        </time>
+        </ExactTime>
       </span>
       {child.snippet && (
         <span className="line-clamp-1 text-muted-foreground text-xs">
@@ -643,8 +645,9 @@ export function MessageList({
                           </span>
                         </Hint>
                       )}
-                      <time
-                        dateTime={message.receivedAt}
+                      <ExactTime
+                        value={message.receivedAt}
+                        style={preferences}
                         className="shrink-0 text-muted-foreground text-xs tabular-nums"
                       >
                         {formatListDate(
@@ -652,7 +655,7 @@ export function MessageList({
                           new Date(),
                           preferences,
                         )}
-                      </time>
+                      </ExactTime>
                     </span>
                     <span
                       className={cn(

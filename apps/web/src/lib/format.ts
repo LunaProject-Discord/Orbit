@@ -27,6 +27,17 @@ function formatsFor(hour12: boolean) {
       minute: "2-digit",
       hour12,
     }),
+    // ホバーで出す正確な日時。曜日と秒まで出す。
+    exact: new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      weekday: "short",
+      hour: hour12 ? "numeric" : "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12,
+    }),
     // 時刻の桁は、一覧 (time) と揃える (24 時間制では 00:31 のように 2 桁)。
     full: new Intl.DateTimeFormat("ja-JP", {
       year: "numeric",
@@ -71,6 +82,19 @@ export function formatFullDate(
 ): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : formatsOf(style).full.format(date);
+}
+
+/**
+ * ホバーで出す正確な日時 (例: 2026年11月24日(火) 09:35:12)。
+ * 一覧などの短い日時に添えて、年月日・曜日・秒まで読めるようにする。
+ */
+export function formatExactDate(
+  value: string,
+  style: DateStyle = defaultStyle,
+): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return formatsOf(style).exact.format(date);
 }
 
 /**
