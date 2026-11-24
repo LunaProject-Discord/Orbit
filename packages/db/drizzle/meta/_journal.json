@@ -211,6 +211,13 @@
       "when": 1795489394784,
       "tag": "0029_sidebar_categories",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1795490896301,
+      "tag": "0030_pending_placements",
+      "breakpoints": true
     }
   ]
 }

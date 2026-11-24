@@ -510,6 +510,12 @@ export const messageMailboxes = pgTable(
       .references(() => messages.id, { onDelete: "cascade" }),
     uid: bigint({ mode: "bigint" }),
     modseq: bigint({ mode: "bigint" }),
+    /**
+     * 移動を受け付けた時刻。移動先のフォルダに先に置いた所在で、メールサーバーでの移動と
+     * 移動先の同期が済むまで入る (その間、IMAP では UID が無い)。同期で同じメールが
+     * 見つかればこの所在に結び付け直し、見つからないまま時間が経てば外す。
+     */
+    pendingSince: timestamp({ withTimezone: true }),
   },
   (t) => [
     primaryKey({ columns: [t.mailboxId, t.messageId] }),
