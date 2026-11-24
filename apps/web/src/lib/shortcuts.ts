@@ -104,6 +104,45 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
   }
 }
 
+/**
+ * すべて選択のキー (Windows / Linux は Ctrl+A、macOS は ⌘+A)。
+ * どちらの OS でも、もう一方のキーで押しても受け付ける。
+ */
+export function isSelectAllKey(event: KeyLike): boolean {
+  return (
+    (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.isComposing &&
+    event.key.toLowerCase() === "a"
+  );
+}
+
+/** すべて選択のキーで一覧のメールを選ぶ範囲 (一覧の枠) に付ける印。 */
+export const SELECT_ALL_SCOPE_ATTRIBUTE = "data-select-all-scope";
+
+/**
+ * すべて選択のキーを、一覧のメールの選択に使うかどうか。
+ * 入力欄にいるときや、メールの本文などを見ているときは、ふつうの文字の全選択に任せる。
+ * target はキーを受けた要素、lastPointer は最後にマウスや指で押した要素。
+ * どこにも入っていない (body) ときは、最後に押した場所で決める。まだどこも押していなければ一覧。
+ */
+export function selectAllTargetsList(
+  target: EventTarget | null,
+  lastPointer: EventTarget | null,
+): boolean {
+  if (isTypingTarget(target)) return false;
+  const scope =
+    target instanceof HTMLElement &&
+    target !== target.ownerDocument.body &&
+    target !== target.ownerDocument.documentElement
+      ? target
+      : lastPointer;
+  if (scope === null) return true;
+  if (!(scope instanceof Element)) return false;
+  return scope.closest(`[${SELECT_ALL_SCOPE_ATTRIBUTE}]`) !== null;
+}
+
 /** 文字を入力する場所にいる間は、ショートカットを効かせない。 */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;

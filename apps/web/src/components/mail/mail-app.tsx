@@ -186,7 +186,13 @@ import {
 } from "@/lib/route";
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
-import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
+import {
+  isSelectAllKey,
+  isTypingTarget,
+  resolveShortcut,
+  SELECT_ALL_SCOPE_ATTRIBUTE,
+  selectAllTargetsList,
+} from "@/lib/shortcuts";
 import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
 import {
   findContactRule,
@@ -498,6 +504,15 @@ export function MailApp({ user }: { user: User }) {
   const [selectMode, setSelectMode] = useState(false);
   /** Shift を押しながらの範囲選択の起点 (最後にチェックを操作した行)。 */
   const anchorRef = useRef<string | null>(null);
+  // 最後にマウスや指で押した要素。すべて選択のキーを一覧に使うかどうかの判断に使う。
+  const lastPointerRef = useRef<EventTarget | null>(null);
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      lastPointerRef.current = event.target;
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
   /** 増やすと、選択したメールの移動先メニューが開く (ショートカットキー用)。 */
   const [bulkMoveRequest, setBulkMoveRequest] = useState(0);
   /** サーバーに保存してある下書き (どの端末で書いたものも含む)。読み込み前は null。 */
@@ -1282,9 +1297,21 @@ export function MailApp({ user }: { user: User }) {
     anchorRef.current = id;
   }
 
+  /** ドラッグで範囲を選んだとき。 */
+  function handleBandSelect(next: Set<string>, anchor: string | null) {
+    setCheckedIds(next);
+    if (anchor !== null) anchorRef.current = anchor;
+  }
+
   /** 選択した行 (会話) にまとめて操作する。 */
   function performBulk(rows: MessageSummary[], input: MessageActionInput) {
-    for (const ids of actionBatches(rows)) performAction(ids, input);
+    // スターは 1 通表示と同じく、付けるときは会話の最新の 1 通にだけ付ける
+    // (外すときは会話のすべてから外す)。
+    const targets =
+      input.action === "set_flags" && input.flagged === true
+        ? rows.map((row) => ({ ...row, threadMessageIds: [row.id] }))
+        : rows;
+    for (const ids of actionBatches(targets)) performAction(ids, input);
     // 移動や削除で一覧から無くなるので、選択も終える。
     if (input.action !== "set_flags") clearSelection();
   }
@@ -2259,6 +2286,20 @@ export function MailApp({ user }: { user: User }) {
   // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
   const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (event) => {
+    // Ctrl+A (⌘+A) で、一覧に読み込んだメールをすべて選ぶ。ブラウザーや OS と同じキーなので、
+    // ショートカットキーの設定を止めていても効かせる。入力欄やメールの本文では文字の全選択のまま。
+    if (isSelectAllKey(event)) {
+      if (!selectAllTargetsList(event.target, lastPointerRef.current)) return;
+      if (document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (draftsSelected || special === "outgoing" || special === "settings") {
+        return;
+      }
+      const list = messages ?? [];
+      if (list.length === 0) return;
+      event.preventDefault();
+      setCheckedIds(new Set(list.map((message) => message.id)));
+      return;
+    }
     // 設定でショートカットキーを止めていても、Esc で閉じる操作は残す。
     if (!preferences.shortcuts && event.key !== "Escape") return;
     const command = resolveShortcut(event);
@@ -2790,6 +2831,7 @@ export function MailApp({ user }: { user: User }) {
         )}
         <section
           aria-label="メール一覧"
+          {...{ [SELECT_ALL_SCOPE_ATTRIBUTE]: "" }}
           className={cn(
             "relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
             selectedMessageId ? "hidden" : "flex",
@@ -2959,6 +3001,7 @@ export function MailApp({ user }: { user: User }) {
                   checkedIds={checkedIds}
                   selecting={selecting}
                   onToggleCheck={handleToggleCheck}
+                  onBandSelect={handleBandSelect}
                   swipeFor={swipeFor}
                   onSwipeMove={setMoveTarget}
                   hasMore={nextCursor !== null}

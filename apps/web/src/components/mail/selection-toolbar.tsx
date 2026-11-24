@@ -7,6 +7,8 @@ import {
   MailIcon,
   MailOpenIcon,
   OctagonAlertIcon,
+  StarIcon,
+  StarOffIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -61,6 +63,8 @@ export function SelectionToolbar({
 }: Props) {
   const count = rows.length;
   const allSeen = rows.every((row) => row.seen);
+  // 選んだメールがすべてスター付きなら外し、1 つでも付いていなければ付ける。
+  const allFlagged = count > 0 && rows.every((row) => row.flagged);
   const inTrash = mailbox?.specialUse === "trash";
   const inArchive = mailbox?.specialUse === "archive";
   const inJunk = mailbox?.specialUse === "junk";
@@ -101,6 +105,14 @@ export function SelectionToolbar({
           onClick={() => act({ action: "set_flags", seen: !allSeen })}
         >
           {allSeen ? <MailIcon /> : <MailOpenIcon />}
+        </ToolbarButton>
+        <ToolbarButton
+          disabled={count === 0}
+          label={allFlagged ? "スターを外す" : "スターを付ける"}
+          shortcut={shortcutLabels.toggleStar}
+          onClick={() => act({ action: "set_flags", flagged: !allFlagged })}
+        >
+          {allFlagged ? <StarOffIcon /> : <StarIcon />}
         </ToolbarButton>
         {!inArchive && !inTrash && (
           <ToolbarButton

@@ -23,6 +23,10 @@ import {
 import { Hint } from "@/components/hint";
 import { ExactTime } from "@/components/mail/exact-time";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
+import {
+  BAND_IGNORE_ATTRIBUTE,
+  useRubberBand,
+} from "@/components/mail/rubber-band";
 import { SwipeRow } from "@/components/mail/swipe-row";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -121,6 +125,11 @@ type Props = {
   onSelect: (id: string) => void;
   /** 行のチェックを切り替える。range が true なら、直前に操作した行からこの行までを選ぶ。 */
   onToggleCheck: (id: string, range: boolean) => void;
+  /**
+   * マウスのドラッグで範囲を選んだとき (ラバーバンド選択)。anchor は次の Shift クリックの起点。
+   * 渡さなければ、ドラッグでは選ばない。
+   */
+  onBandSelect?: (next: Set<string>, anchor: string | null) => void;
   /** 右クリックメニューからの操作。 */
   onAction: (messageIds: string[], input: MessageActionInput) => void;
   /** 右クリックメニューの「新しいウィンドウで開く」。渡さなければ、その項目を出さない。 */
@@ -267,6 +276,7 @@ export function MessageList({
   selecting,
   onSelect,
   onToggleCheck,
+  onBandSelect,
   onAction,
   onOpenWindow,
   onLoadMore,
@@ -371,6 +381,22 @@ export function MessageList({
     prefetcher.visible(pendingVisibleKey ? pendingVisibleKey.split(",") : []);
   }, [prefetcher, pendingVisibleKey]);
 
+  // マウスのドラッグで四角を描いて、掛かった行を選ぶ。描画していない行も、
+  // 仮想化の測った位置 (まだ測っていなければ見積もり) で判定する。
+  const band = useRubberBand({
+    scrollRef,
+    enabled: onBandSelect !== undefined && count > 0,
+    getRows: () =>
+      virtualizer.measurementsCache.flatMap((measure) => {
+        const item = items[measure.index];
+        return item?.kind === "row"
+          ? [{ id: item.message.id, start: measure.start, end: measure.end }]
+          : [];
+      }),
+    getSelected: () => checkedIds,
+    onChange: (next, anchor) => onBandSelect?.(next, anchor),
+  });
+
   useImperativeHandle(ref, () => ({
     scrollToMessage(id, childId) {
       const index = items.findIndex((item) =>
@@ -420,7 +446,20 @@ export function MessageList({
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="relative flex flex-col">
+      {band && (
+        <div
+          aria-hidden="true"
+          data-rubber-band=""
+          className="pointer-events-none absolute z-20 rounded-[3px] border border-blue-500/80 bg-blue-500/15 dark:border-blue-400/80 dark:bg-blue-400/20"
+          style={{
+            left: band.left,
+            top: band.top,
+            width: band.width,
+            height: band.height,
+          }}
+        />
+      )}
       {error && (
         <p
           role="alert"
@@ -706,7 +745,11 @@ export function MessageList({
         })}
       </ul>
       {hasMore && (
-        <div ref={loadMoreRef} className="flex justify-center p-4">
+        <div
+          ref={loadMoreRef}
+          {...{ [BAND_IGNORE_ATTRIBUTE]: "" }}
+          className="flex justify-center p-4"
+        >
           <Button
             variant="outline"
             size="sm"
