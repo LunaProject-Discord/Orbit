@@ -641,9 +641,16 @@ export function ComposeWindow({
               <XIcon />
             </Button>
           )}
-          <h2 className="min-w-0 flex-1 truncate font-semibold text-base">
+          {/* 作成専用のウィンドウでは、題名はタイトルバーに出している。 */}
+          <h2
+            className={cn(
+              "min-w-0 flex-1 truncate font-semibold text-base",
+              standalone && "sr-only",
+            )}
+          >
             {titles[draft.mode]}
           </h2>
+          {standalone && <span className="flex-1" />}
           <Button
             type="button"
             variant="ghost"
@@ -660,8 +667,13 @@ export function ComposeWindow({
           </Button>
         </header>
 
-        {/* 広い画面: 窓の見出し。 */}
-        <header className="hidden h-12 shrink-0 items-center gap-2 border-b pr-2 pl-4 sm:flex">
+        {/* 広い画面: 窓の見出し。作成専用のウィンドウでは、題名はタイトルバーに出すので置かない。 */}
+        <header
+          className={cn(
+            "hidden h-12 shrink-0 items-center gap-2 border-b pr-2 pl-4",
+            !standalone && "sm:flex",
+          )}
+        >
           <h2 className="shrink-0 font-semibold text-sm">
             {titles[draft.mode]}
           </h2>
@@ -983,7 +995,13 @@ export function ComposeWindow({
               })}
             </ul>
           )}
-          <p className="shrink-0 px-4 pb-2 text-muted-foreground text-xs sm:hidden">
+          <p
+            className={cn(
+              "shrink-0 px-4 pb-2 text-muted-foreground text-xs",
+              // 広い画面では見出しに出す (見出しの無い作成専用のウィンドウを除く)。
+              !standalone && "sm:hidden",
+            )}
+          >
             {saved}
           </p>
           {!online && (
