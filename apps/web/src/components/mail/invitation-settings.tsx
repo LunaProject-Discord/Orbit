@@ -42,6 +42,8 @@ import {
   NetworkError,
   type User,
 } from "@/lib/api";
+import { useDateStyle } from "@/lib/date-format-settings";
+import { type DateStyle, formatFullDate, formatShortDate } from "@/lib/format";
 
 /** 有効期限の選択肢 (日数)。 */
 const EXPIRY_OPTIONS = [
@@ -51,12 +53,6 @@ const EXPIRY_OPTIONS = [
   { value: "14", label: "14 日" },
   { value: "30", label: "30 日" },
 ];
-
-const dateTime = new Intl.DateTimeFormat("ja-JP", {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-const dateOnly = new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium" });
 
 function messageOf(error: unknown): string {
   if (error instanceof NetworkError) {
@@ -94,14 +90,18 @@ function titleOf(invitation: Invitation): string {
   return invitation.label || invitation.email || "名前のない招待";
 }
 
-function detailOf(invitation: Invitation, state: InvitationState): string {
+function detailOf(
+  invitation: Invitation,
+  state: InvitationState,
+  style: DateStyle,
+): string {
   if (state === "used") {
     const who = invitation.usedByEmail
       ? `${invitation.usedByName ?? ""} (${invitation.usedByEmail})`.trim()
       : "削除された利用者";
-    return `${who} が登録 ・ ${dateTime.format(new Date(invitation.usedAt ?? invitation.createdAt))}`;
+    return `${who} が登録 ・ ${formatFullDate(invitation.usedAt ?? invitation.createdAt, style)}`;
   }
-  const limit = dateTime.format(new Date(invitation.expiresAt));
+  const limit = formatFullDate(invitation.expiresAt, style);
   const only = invitation.email ? ` ・ ${invitation.email} 専用` : "";
   return state === "expired"
     ? `${limit} に期限切れ${only}`
@@ -110,6 +110,7 @@ function detailOf(invitation: Invitation, state: InvitationState): string {
 
 /** 設定の「利用者と招待」のページ。管理者だけが使える。 */
 export function InvitationSettings({ user }: { user: User }) {
+  const dateStyle = useDateStyle();
   const [invitations, setInvitations] = useState<Invitation[] | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -205,7 +206,7 @@ export function InvitationSettings({ user }: { user: User }) {
                       </Badge>
                     </p>
                     <p className="truncate text-muted-foreground text-xs">
-                      {detailOf(invitation, state)}
+                      {detailOf(invitation, state, dateStyle)}
                     </p>
                   </div>
                   <Button
@@ -249,7 +250,7 @@ export function InvitationSettings({ user }: { user: User }) {
                 </p>
                 <p className="truncate text-muted-foreground text-xs">
                   {member.email} ・{" "}
-                  {dateOnly.format(new Date(member.createdAt))} に登録
+                  {formatShortDate(member.createdAt, dateStyle)} に登録
                 </p>
               </li>
             ))}

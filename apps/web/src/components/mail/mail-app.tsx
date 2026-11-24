@@ -144,6 +144,7 @@ import {
   storeUnsavedDraft,
   withReplyText,
 } from "@/lib/compose";
+import { refreshDateStyle } from "@/lib/date-format-settings";
 import { desktopWindow, isDesktopApp, notifyNewMail } from "@/lib/desktop/app";
 import { setTitleBarMenu } from "@/lib/desktop/title-bar-menu";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
@@ -982,6 +983,7 @@ const MailView = memo(function MailView({
     void loadDrafts();
     void loadUnified();
     void refreshSwipeSettings();
+    void refreshDateStyle();
     void loadSignatureRules();
   }, [
     loadAccounts,
@@ -1641,6 +1643,7 @@ const MailView = memo(function MailView({
         void loadDrafts();
         void loadUnified();
         void refreshSwipeSettings();
+        void refreshDateStyle();
         void loadSignatureRules();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
@@ -1677,6 +1680,7 @@ const MailView = memo(function MailView({
       void loadDrafts();
       void loadUnified();
       void refreshSwipeSettings();
+      void refreshDateStyle();
       void loadSignatureRules();
       void loadFirstPage(selectionRef.current, false);
       void saverRef.current?.flush();

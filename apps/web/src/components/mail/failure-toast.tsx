@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { Account, FailedOperation, MailboxSummary } from "@/lib/api";
+import { useDateStyle } from "@/lib/date-format-settings";
 import {
   failureDescription,
   failureReport,
@@ -43,6 +44,7 @@ export function FailureToast({
   onRetry,
   onDismiss,
 }: Props) {
+  const dateStyle = useDateStyle();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const accountName = (accountId: string) => {
@@ -108,7 +110,7 @@ export function FailureToast({
                 </p>
                 <p className="truncate text-muted-foreground text-xs">
                   {accountName(failure.accountId)} ·{" "}
-                  {formatFullDate(failure.failedAt)}
+                  {formatFullDate(failure.failedAt, dateStyle)}
                 </p>
               </div>
               <p className="select-text break-words rounded-md bg-muted px-2.5 py-1.5 font-mono text-xs">

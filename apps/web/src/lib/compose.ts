@@ -10,6 +10,7 @@ import type {
   UploadedAttachment,
 } from "@/lib/api";
 import { splitAttachments } from "@/lib/attachments";
+import { currentDateStyle } from "@/lib/date-format-settings";
 import { addressFull, formatFullDate } from "@/lib/format";
 import { type ResolvedSignature, resolveSignature } from "@/lib/signatures";
 import { randomUuid } from "@/lib/uuid";
@@ -250,7 +251,10 @@ export function buildDraftFrom(
   draft.threadKey =
     account?.id === message.accountId ? message.threadKey : null;
   const sender = message.from[0];
-  const date = formatFullDate(message.sentAt ?? message.receivedAt);
+  const date = formatFullDate(
+    message.sentAt ?? message.receivedAt,
+    currentDateStyle(),
+  );
   const headFor = (to: Address[]) =>
     draftHead(
       resolveSignature({

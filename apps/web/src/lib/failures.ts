@@ -1,4 +1,6 @@
 import type { FailedOperation, MailboxSummary } from "@/lib/api";
+import { currentDateStyle } from "@/lib/date-format-settings";
+import { type DateStyle, formatExactDate } from "@/lib/format";
 import { mailboxLabel } from "@/lib/mailboxes";
 
 /**
@@ -89,12 +91,13 @@ export function failureReport(
   failures: FailedOperation[],
   mailboxes: Mailboxes,
   accountName: (accountId: string) => string,
+  style: DateStyle = currentDateStyle(),
 ): string {
   return failures
     .map((failure) =>
       [
         `${failureDescription(failure, mailboxes)} (${accountName(failure.accountId)})`,
-        `日時: ${new Date(failure.failedAt).toLocaleString("ja-JP")}`,
+        `日時: ${formatExactDate(failure.failedAt, style)}`,
         `理由: ${failure.error ?? "不明"}`,
       ].join("\n"),
     )

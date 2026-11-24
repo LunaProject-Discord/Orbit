@@ -11,6 +11,7 @@ import {
   authStateHeader,
   clearAuthState,
 } from "@/lib/auth-state";
+import type { DateStyle } from "@/lib/format";
 import { usesAppOAuth } from "@/lib/native/oauth";
 import { reportReachable } from "@/lib/offline/network";
 import { apiUrl } from "@/lib/server-url";
@@ -1362,6 +1363,8 @@ export type SharedSettings = {
   swipe: SwipeSettings;
   /** 通知に付けるボタン (出す順)。 */
   notificationActions: NotificationAction[];
+  /** 日付と時刻の形式。保存していなければ null (標準の値)。 */
+  dateFormat: DateStyle | null;
 };
 
 /** どの端末でも同じにする設定を取得する。 */
@@ -1377,6 +1380,13 @@ export async function saveNotificationActions(
   await apiFetch("/v1/settings/notification-actions", {
     method: "PUT",
     body: { actions },
+  });
+}
+
+export async function saveDateFormat(dateFormat: DateStyle): Promise<void> {
+  await apiFetch("/v1/settings/date-format", {
+    method: "PUT",
+    body: dateFormat,
   });
 }
 

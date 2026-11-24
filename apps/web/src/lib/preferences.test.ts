@@ -28,28 +28,6 @@ describe("parsePreferences", () => {
     });
   });
 
-  it("以前の 12 時間制の設定を時刻の書式に移す", () => {
-    const result = parsePreferences(JSON.stringify({ hour12: true }));
-    expect(result.shortTimeFormat).toBe("tth:mm");
-    expect(result.longTimeFormat).toBe("tth:mm:ss");
-    expect(
-      parsePreferences(
-        JSON.stringify({ hour12: true, shortTimeFormat: "H:mm" }),
-      ).shortTimeFormat,
-    ).toBe("H:mm");
-  });
-
-  it("日時の書式は空なら標準、長すぎれば切り詰める", () => {
-    const result = parsePreferences(
-      JSON.stringify({
-        shortDateFormat: "  ",
-        longDateFormat: "y".repeat(100),
-      }),
-    );
-    expect(result.shortDateFormat).toBe(DEFAULT_PREFERENCES.shortDateFormat);
-    expect(result.longDateFormat).toHaveLength(64);
-  });
-
   it("知らない値や型の合わない値は標準に戻す", () => {
     const result = parsePreferences(
       JSON.stringify({

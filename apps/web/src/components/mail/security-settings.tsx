@@ -64,6 +64,8 @@ import {
   type TwoFactorSetup,
   type User,
 } from "@/lib/api";
+import { useDateStyle } from "@/lib/date-format-settings";
+import { type DateStyle, formatShortDate } from "@/lib/format";
 import {
   PasskeyAlreadyRegistered,
   PasskeyCancelled,
@@ -118,6 +120,7 @@ type Props = {
  * Orbit へのログインに使うメールアドレス、パスワード、2 段階認証、パスキーを扱う。
  */
 export function SecuritySettings({ user }: Props) {
+  const dateStyle = useDateStyle();
   const { refreshUser } = useAuth();
   const [status, setStatus] = useState<SecurityStatus | null>(null);
   const [passkeys, setPasskeys] = useState<Passkey[] | null>(null);
@@ -289,7 +292,7 @@ export function SecuritySettings({ user }: Props) {
                       {passkey.name?.trim() || "名前のないパスキー"}
                     </p>
                     <p className="truncate text-muted-foreground text-xs">
-                      {passkeyDetail(passkey)}
+                      {passkeyDetail(passkey, dateStyle)}
                     </p>
                   </div>
                   <Button
@@ -367,13 +370,11 @@ export function SecuritySettings({ user }: Props) {
   );
 }
 
-function passkeyDetail(passkey: Passkey): string {
+function passkeyDetail(passkey: Passkey, style: DateStyle): string {
   const parts: string[] = [];
   if (passkey.createdAt) {
-    const date = new Date(passkey.createdAt);
-    if (!Number.isNaN(date.getTime())) {
-      parts.push(`${date.toLocaleDateString("ja-JP")} に登録`);
-    }
+    const date = formatShortDate(passkey.createdAt, style);
+    if (date) parts.push(`${date} に登録`);
   }
   parts.push(
     passkey.deviceType === "multiDevice"

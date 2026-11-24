@@ -42,7 +42,11 @@ export const HOUR12_TIME_FORMATS = {
 /** 書式に使える文字数の上限。 */
 export const DATE_FORMAT_MAX_LENGTH = 64;
 
-const defaultStyle: DateStyle = { listDate: "auto", ...DEFAULT_DATE_FORMATS };
+export const DEFAULT_DATE_STYLE: DateStyle = {
+  listDate: "auto",
+  ...DEFAULT_DATE_FORMATS,
+};
+const defaultStyle = DEFAULT_DATE_STYLE;
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 const TOKEN =
@@ -135,6 +139,24 @@ export function formatListDate(
   const day = dayPart(date, now, style);
   if (style.listDate !== "datetime") return day ?? time;
   return `${day ?? formatDateWith(date, style.monthDayFormat)} ${time}`;
+}
+
+/** 短い日付だけ (登録日など)。 */
+export function formatShortDate(
+  value: string | Date,
+  style: DateStyle = defaultStyle,
+): string {
+  const date = value instanceof Date ? value : parse(value);
+  return date ? formatDateWith(date, style.shortDateFormat) : "";
+}
+
+/** 短い時刻だけ (保存した時刻など)。 */
+export function formatShortTime(
+  value: string | Date,
+  style: DateStyle = defaultStyle,
+): string {
+  const date = value instanceof Date ? value : parse(value);
+  return date ? formatDateWith(date, style.shortTimeFormat) : "";
 }
 
 /** メールの見出し用の日時 (長い日付 + 短い時刻)。 */
