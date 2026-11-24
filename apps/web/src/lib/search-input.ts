@@ -265,7 +265,7 @@ const STATE_LABELS: Record<string, string> = {
 export function chipLabel(chip: SearchChip): { label: string; value: string } {
   const label = CHIP_LABELS[chip.key] ?? chip.key;
   const value = STATE_LABELS[chip.value.toLowerCase()] ?? chip.value;
-  return { label: chip.negated ? `${label}以外` : label, value };
+  return { label, value };
 }
 
 /** 値に空白が含まれるなら " で囲む。 */
