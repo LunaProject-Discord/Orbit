@@ -31,6 +31,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MailboxSummary, MessageSummary } from "@/lib/api";
 import { actionTargets, useMailboxes } from "@/lib/mailboxes";
+import { skipsDeleteConfirm } from "@/lib/permanent-delete";
 import { shortcutLabels } from "@/lib/shortcuts";
 
 type Props = {
@@ -45,6 +46,13 @@ type Props = {
   /** 値が増えると、移動先のメニューを開く (ショートカットキー用)。 */
   moveRequest: number;
   onAction: (rows: MessageSummary[], input: MessageActionInput) => void;
+  /** 選んだメールがすべてごみ箱にある (削除は完全な削除になる)。 */
+  permanentDelete: boolean;
+  /**
+   * 選んだメールを削除する。ごみ箱にあるものは完全に削除する。
+   * skipConfirm は Shift を押しながら押したとき。
+   */
+  onDelete: (skipConfirm: boolean) => void;
   onSelectAll: (checked: boolean) => void;
   /** 選択を解除。 */
   onClose: () => void;
@@ -58,6 +66,8 @@ export function SelectionToolbar({
   junkAvailable,
   moveRequest,
   onAction,
+  permanentDelete,
+  onDelete,
   onSelectAll,
   onClose,
 }: Props) {
@@ -154,14 +164,9 @@ export function SelectionToolbar({
         )}
         <ToolbarButton
           disabled={count === 0}
-          label={inTrash ? "完全に削除" : "削除"}
-          onClick={() =>
-            act(
-              inTrash
-                ? { action: "delete" }
-                : { action: "move", destination: "trash" },
-            )
-          }
+          label={permanentDelete ? "完全に削除" : "削除"}
+          shortcut={shortcutLabels.delete}
+          onClick={(event) => onDelete(skipsDeleteConfirm(event))}
         >
           <Trash2Icon />
         </ToolbarButton>

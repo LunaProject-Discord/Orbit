@@ -47,6 +47,8 @@ export function resolveShortcut(event: KeyLike): ShortcutCommand | null {
       case "U":
         return "markUnread";
       case "#":
+      // Shift+Delete は、ごみ箱の中で確認を出さずに完全に削除する。
+      case "Delete":
         return "delete";
       case "!":
         return "junk";

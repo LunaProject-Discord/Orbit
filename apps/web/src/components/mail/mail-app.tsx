@@ -48,6 +48,10 @@ import {
 import { MessageView } from "@/components/mail/message-view";
 import { MoveDialog } from "@/components/mail/move-dialog";
 import { OutgoingList } from "@/components/mail/outgoing-list";
+import {
+  PermanentDeleteDialog,
+  type PermanentDeleteRequest,
+} from "@/components/mail/permanent-delete-dialog";
 import { PullToRefresh } from "@/components/mail/pull-to-refresh";
 import {
   rememberSearch,
@@ -197,6 +201,12 @@ import {
   insertPendingMoves,
   pruneSnapshots,
 } from "@/lib/pending-moves";
+import {
+  type ActionHandler,
+  isInTrash,
+  skipsDeleteConfirm,
+  splitForDelete,
+} from "@/lib/permanent-delete";
 import { usePreferences } from "@/lib/preferences";
 import {
   buildRoute,
@@ -1495,6 +1505,54 @@ const MailView = memo(function MailView({
     for (const ids of actionBatches(targets)) performAction(ids, input);
     // 移動や削除で一覧から無くなるので、選択も終える。
     if (input.action !== "set_flags") clearSelection();
+  }
+
+  /** 完全な削除の確認で待っている操作。 */
+  const [deleteConfirm, setDeleteConfirm] =
+    useState<PermanentDeleteRequest | null>(null);
+
+  /**
+   * 完全な削除は、Shift を押しながらの操作でなければ確認してから行う。
+   * それ以外の操作は、そのまま行う。
+   */
+  const requestAction = useCallback<ActionHandler>(
+    (messageIds, input, options) => {
+      const run = () => {
+        performAction(messageIds, input);
+        options?.onDone?.();
+      };
+      if (input.action === "delete" && !options?.skipConfirm) {
+        setDeleteConfirm({ count: messageIds.length, run });
+        return;
+      }
+      run();
+    },
+    [performAction],
+  );
+
+  /**
+   * 選んだメールを削除する。ごみ箱にあるものは完全に削除し (確認してから)、
+   * ほかのフォルダのものはごみ箱へ移す。検索結果や統合フォルダでは両方が混ざる。
+   */
+  function deleteRows(rows: MessageSummary[], skipConfirm: boolean) {
+    const { toTrash, permanent } = splitForDelete(rows, mailboxes ?? []);
+    const run = () => {
+      if (toTrash.length > 0) {
+        performBulk(toTrash, { action: "move", destination: "trash" });
+      }
+      if (permanent.length > 0) performBulk(permanent, { action: "delete" });
+    };
+    if (permanent.length > 0 && !skipConfirm) {
+      setDeleteConfirm({
+        count: permanent.reduce(
+          (sum, row) => sum + row.threadMessageIds.length,
+          0,
+        ),
+        run,
+      });
+      return;
+    }
+    run();
   }
 
   // 検索欄の入力が止まったら検索する。入力も条件も無くなったら、すぐに通常の一覧へ戻す。
@@ -2796,7 +2854,6 @@ const MailView = memo(function MailView({
     if (checkedRows.length > 0 || selectMode) {
       const flags = (input: { seen?: boolean; flagged?: boolean }) =>
         performBulk(checkedRows, { action: "set_flags", ...input });
-      const inTrash = selectedMailbox?.specialUse === "trash";
       const inJunk = selectedMailbox?.specialUse === "junk";
       let handled = true;
       switch (command) {
@@ -2819,12 +2876,7 @@ const MailView = memo(function MailView({
           performBulk(checkedRows, { action: "move", destination: "archive" });
           break;
         case "delete":
-          performBulk(
-            checkedRows,
-            inTrash
-              ? { action: "delete" }
-              : { action: "move", destination: "trash" },
-          );
+          deleteRows(checkedRows, skipsDeleteConfirm(event));
           break;
         case "move":
           setBulkMoveRequest((count) => count + 1);
@@ -2938,8 +2990,17 @@ const MailView = memo(function MailView({
         openNeighbor();
         break;
       case "delete":
-        performAction(id, { action: "move", destination: "trash" });
-        openNeighbor();
+        // ごみ箱の中では完全に削除する (Shift+Delete でなければ確認してから)。
+        if (isInTrash(message, mailboxes ?? [])) {
+          requestAction(
+            id,
+            { action: "delete" },
+            { skipConfirm: skipsDeleteConfirm(event), onDone: openNeighbor },
+          );
+        } else {
+          performAction(id, { action: "move", destination: "trash" });
+          openNeighbor();
+        }
         break;
       case "move":
         setMoveRequest((count) => count + 1);
@@ -3300,6 +3361,12 @@ const MailView = memo(function MailView({
                 junkAvailable={junkAvailable(checkedRows)}
                 moveRequest={bulkMoveRequest}
                 onAction={performBulk}
+                permanentDelete={
+                  checkedRows.length > 0 &&
+                  splitForDelete(checkedRows, mailboxes ?? []).toTrash
+                    .length === 0
+                }
+                onDelete={(skipConfirm) => deleteRows(checkedRows, skipConfirm)}
                 onSelectAll={(checked) =>
                   setCheckedIds(
                     new Set(
@@ -3505,7 +3572,7 @@ const MailView = memo(function MailView({
                           ? { emptyText: "このフォルダにメールはありません。" }
                           : {})}
                   onSelect={handleSelectMessage}
-                  onAction={performAction}
+                  onAction={requestAction}
                   onOpenWindow={
                     canOpenWindows() ? openMessageWindow : undefined
                   }
@@ -3546,7 +3613,7 @@ const MailView = memo(function MailView({
               summary={selectedMessage}
               accounts={accounts ?? []}
               mailboxes={mailboxes ?? []}
-              onAction={performAction}
+              onAction={requestAction}
               moveRequest={moveRequest}
               composeRequest={composeRequest}
               onCompose={handleCompose}
@@ -3759,6 +3826,10 @@ const MailView = memo(function MailView({
           );
           void loadMailboxes();
         }}
+      />
+      <PermanentDeleteDialog
+        request={deleteConfirm}
+        onClose={() => setDeleteConfirm(null)}
       />
       <MoveDialog
         message={moveTarget}

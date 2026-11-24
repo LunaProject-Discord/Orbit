@@ -37,11 +37,11 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary, ThreadMessage } from "@/lib/api";
 import { BodyPrefetcher, type PrefetchReason } from "@/lib/body-prefetch";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { addressLabel, formatListDate } from "@/lib/format";
+import type { ActionHandler } from "@/lib/permanent-delete";
 import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
 import type { SwipeOutcome } from "@/lib/swipe";
@@ -133,7 +133,7 @@ type Props = {
    */
   onBandSelect?: (next: Set<string>, anchor: string | null) => void;
   /** 右クリックメニューからの操作。 */
-  onAction: (messageIds: string[], input: MessageActionInput) => void;
+  onAction: ActionHandler;
   /** 右クリックメニューの「新しいウィンドウで開く」。渡さなければ、その項目を出さない。 */
   onOpenWindow?: (message: MessageSummary) => void;
   onLoadMore: () => void;
@@ -167,7 +167,7 @@ type RowHandlers = {
   select: (id: string) => void;
   toggleCheck: (id: string, range: boolean) => void;
   toggleExpand: (id: string) => void;
-  action: (messageIds: string[], input: MessageActionInput) => void;
+  action: ActionHandler;
   swipeMove: (message: MessageSummary) => void;
   openWindow: (message: MessageSummary) => void;
   warm: (message: MessageSummary) => void;
@@ -659,7 +659,8 @@ export function MessageList({
     select: (id) => latest.current.onSelect(id),
     toggleCheck: (id, range) => latest.current.onToggleCheck(id, range),
     toggleExpand: (id) => latest.current.onToggleExpand(id),
-    action: (ids, input) => latest.current.onAction(ids, input),
+    action: (ids, input, options) =>
+      latest.current.onAction(ids, input, options),
     swipeMove: (message) => latest.current.onSwipeMove?.(message),
     openWindow: (message) => latest.current.onOpenWindow?.(message),
     warm: (message) => latest.current.onWarm?.(message),

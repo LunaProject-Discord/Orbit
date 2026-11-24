@@ -119,6 +119,11 @@ import {
   warmConversation,
 } from "@/lib/offline";
 import {
+  type ActionHandler,
+  type ActionOptions,
+  skipsDeleteConfirm,
+} from "@/lib/permanent-delete";
+import {
   bodyExtraCss,
   bodyFontFamily,
   bodyStyle,
@@ -223,7 +228,7 @@ type Props = {
   /** 見出しに、どのアカウントのどのフォルダのメールかを出すために使う。 */
   accounts: Account[];
   mailboxes: MailboxSummary[];
-  onAction: (messageIds: string[], input: MessageActionInput) => void;
+  onAction: ActionHandler;
   /** 値が増えると、移動先のメニューを開く (ショートカットキー用)。 */
   moveRequest: number;
   /** count が増えると、表示中のメールへの返信・転送を始める (ショートカットキー用)。 */
@@ -515,7 +520,7 @@ export function MessageView({
   }, [composeRequest, replyTargetId]);
 
   /** 既読やスターの操作を、表示中の内容にもすぐ反映する (1 通だけの表示は、一覧の行の値を使えないため)。 */
-  const act: Props["onAction"] = (ids, input) => {
+  const act: Props["onAction"] = (ids, input, options) => {
     if (input.action === "set_flags") {
       const targets = new Set(ids);
       setState((current) =>
@@ -535,7 +540,7 @@ export function MessageView({
           : current,
       );
     }
-    onAction(ids, input);
+    onAction(ids, input, options);
   };
   // 一覧の行は会話全体を表すので、1 通だけの表示では使わない。
   const row = single ? null : summary;
@@ -650,15 +655,21 @@ export function MessageView({
           return;
         }
         // スターは、付けるときは 1 通に、外すときは対象のすべてから外す (ツールバーと同じ)。
-        act(
-          outcome.kind === "star" ? [row?.id ?? messageId] : targetIds,
-          input,
-        );
-        if (!outcome.removes) return;
+        const ids =
+          outcome.kind === "star" ? [row?.id ?? messageId] : targetIds;
+        if (!outcome.removes) {
+          act(ids, input);
+          return;
+        }
         // 表示中のメールは一覧から無くなるので、続けて読めるよう隣のメールを開く。
-        if (canStep.next) onStep(1);
-        else if (canStep.previous) onStep(-1);
-        else onBack();
+        // 完全な削除は確認を出すので、削除を確定してから移る。
+        act(ids, input, {
+          onDone: () => {
+            if (canStep.next) onStep(1);
+            else if (canStep.previous) onStep(-1);
+            else onBack();
+          },
+        });
       },
     };
   };
@@ -1172,7 +1183,8 @@ function MessageToolbar({
     handledMoveRequest.current = moveRequest;
     setMoveOpen(true);
   }, [moveRequest]);
-  const act = (input: MessageActionInput) => onAction(targetIds, input);
+  const act = (input: MessageActionInput, options?: ActionOptions) =>
+    onAction(targetIds, input, options);
 
   return (
     <TooltipProvider>
@@ -1367,11 +1379,13 @@ function MessageToolbar({
           <ToolbarButton
             label={inTrash ? "完全に削除" : "削除"}
             shortcut={shortcutLabels.delete}
-            onClick={() =>
+            onClick={(event) =>
               act(
                 inTrash || !trash
                   ? { action: "delete" }
                   : { action: "move", mailboxId: trash.id },
+                // 完全な削除は、Shift を押しながらなら確認を出さない。
+                { skipConfirm: skipsDeleteConfirm(event) },
               )
             }
           >

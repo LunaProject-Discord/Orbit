@@ -23,6 +23,11 @@ import {
 import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary } from "@/lib/api";
 import { actionTargets, useMailboxes } from "@/lib/mailboxes";
+import {
+  type ActionHandler,
+  type ActionOptions,
+  skipsDeleteConfirm,
+} from "@/lib/permanent-delete";
 import { shortcutLabels } from "@/lib/shortcuts";
 
 /**
@@ -35,7 +40,7 @@ export function MessageMenuItems({
   onOpenWindow,
 }: {
   message: MessageSummary;
-  onAction: (messageIds: string[], input: MessageActionInput) => void;
+  onAction: ActionHandler;
   /** 新しいウィンドウで開く。開けない環境 (スマホアプリ) では渡さない。 */
   onOpenWindow?: (message: MessageSummary) => void;
 }) {
@@ -43,8 +48,8 @@ export function MessageMenuItems({
   const { archive, trash, inTrash, junk, notJunk, destinations } =
     actionTargets(mailboxes, message.mailboxId);
   // 一覧の 1 行は会話 1 つなので、会話のうちこのフォルダにある分をまとめて操作する。
-  const act = (input: MessageActionInput) =>
-    onAction(message.threadMessageIds, input);
+  const act = (input: MessageActionInput, options?: ActionOptions) =>
+    onAction(message.threadMessageIds, input, options);
 
   return (
     <>
@@ -126,11 +131,13 @@ export function MessageMenuItems({
       {(trash || inTrash) && (
         <ContextMenuItem
           variant="destructive"
-          onClick={() =>
+          onClick={(event) =>
             act(
               inTrash || !trash
                 ? { action: "delete" }
                 : { action: "move", mailboxId: trash.id },
+              // 完全な削除は、Shift を押しながらなら確認を出さない。
+              { skipConfirm: skipsDeleteConfirm(event) },
             )
           }
         >
