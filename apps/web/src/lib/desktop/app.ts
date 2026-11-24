@@ -128,6 +128,35 @@ export const desktopWindow = {
       return false;
     }
   },
+  /** OS のウィンドウの名前 (タスクバーや Alt+Tab に出る) を変える。 */
+  async setTitle(title: string) {
+    await (await currentWindow()).setTitle(title).catch(() => {});
+  },
+  /**
+   * ウィンドウが閉じられる直前に呼ぶ (タイトルバーの閉じる、システムメニュー、Alt+F4 など)。
+   * handler が終わるのを待ってから閉じる。戻り値の関数で解除する。
+   */
+  onCloseRequested(handler: () => Promise<void>): () => void {
+    let cancelled = false;
+    let remove: (() => void) | null = null;
+    void (async () => {
+      try {
+        const unlisten = await (await currentWindow()).onCloseRequested(
+          async () => {
+            await handler().catch(() => {});
+          },
+        );
+        if (cancelled) unlisten();
+        else remove = unlisten;
+      } catch {
+        // 受け取れなければ、閉じる前の後始末をせずに閉じるだけ。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
+  },
   /** ウィンドウの大きさが変わるたびに呼ぶ。戻り値の関数で解除する。 */
   onResized(listener: () => void): () => void {
     let cancelled = false;
@@ -147,3 +176,16 @@ export const desktopWindow = {
     };
   },
 };
+
+/**
+ * タイトルバーの右クリックで、OS のシステムメニュー (元のサイズに戻す・移動・最小化・最大化・閉じる) を出す。
+ * Windows だけ (apps/desktop の show_system_menu)。at を渡すと、その位置 (画面の中の CSS ピクセル) に出す。
+ * 渡さなければカーソルの位置に出す。
+ */
+export function showSystemMenu(at?: { x: number; y: number }): void {
+  const scale = typeof window === "undefined" ? 1 : window.devicePixelRatio;
+  void invokeDesktop(
+    "show_system_menu",
+    at ? { x: at.x * scale, y: at.y * scale } : {},
+  );
+}

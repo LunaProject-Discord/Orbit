@@ -59,6 +59,7 @@ function ContextMenuContent({
   side = "right",
   sideOffset = 0,
   backdrop = true,
+  positionerClassName,
   ...props
 }: ContextMenuPrimitive.Popup.Props &
   Pick<
@@ -67,13 +68,19 @@ function ContextMenuContent({
   > & {
     /** スマホ幅のシートの後ろに幕を出す。入れ子のメニューでは出さない。 */
     backdrop?: boolean;
+    /** 重なりの順 (z-index) を変えるときなどに使う。 */
+    positionerClassName?: string;
   }) {
   const swipe = useSheetSwipe();
   return (
     <ContextMenuPrimitive.Portal>
       {backdrop && <ContextMenuPrimitive.Backdrop className={sheetBackdrop} />}
       <ContextMenuPrimitive.Positioner
-        className={cn("isolate z-50 outline-none", sheetPositioner)}
+        className={cn(
+          "isolate z-50 outline-none",
+          sheetPositioner,
+          positionerClassName,
+        )}
         align={align}
         alignOffset={alignOffset}
         side={side}

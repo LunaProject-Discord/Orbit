@@ -92,6 +92,7 @@ import {
 import type { ComposeMode } from "@/lib/compose";
 import { isDesktopApp } from "@/lib/desktop/app";
 import { attachTextMenu } from "@/lib/desktop/text-menu";
+import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
 import {
   externalLinkOf,
   handlesExternalLinks,
@@ -235,6 +236,8 @@ type Props = {
     subject: string;
   }) => void;
   onBack: () => void;
+  /** メールだけを出すウィンドウ。一覧に戻るボタンを出さず、件名をタイトルバーに出す。 */
+  standalone?: boolean;
   /** 一覧で前 (-1) や次 (1) にあるメールを開く。 */
   onStep: (step: 1 | -1) => void;
   /** 一覧の前や次に、開けるメールがあるか。 */
@@ -273,6 +276,7 @@ export function MessageView({
   onContactSignature,
   onThreadSignature,
   onBack,
+  standalone = false,
   onStep,
   canStep,
   onMissing,
@@ -632,19 +636,31 @@ export function MessageView({
           }
         : { left: null, right: null };
 
+  // メールだけを出すウィンドウでは、件名をタイトルバーに出す (「件名 ― Orbit Mail」)。
+  const windowName = first ? first.subject || "(件名なし)" : null;
+  useEffect(() => {
+    if (standalone && windowName) setTitleBarTitle(windowName);
+  }, [standalone, windowName]);
+  useEffect(() => {
+    if (!standalone) return;
+    return () => setTitleBarTitle(null);
+  }, [standalone]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 一覧の見出しと高さを揃えた、操作用のツールバー。 */}
       <div className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:px-4">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="一覧に戻る"
-          onClick={onBack}
-          className="lg:hidden"
-        >
-          <ArrowLeftIcon />
-        </Button>
+        {!standalone && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="一覧に戻る"
+            onClick={onBack}
+            className="lg:hidden"
+          >
+            <ArrowLeftIcon />
+          </Button>
+        )}
         {thread && first && (
           <MessageToolbar
             accountId={first.accountId}
