@@ -34,6 +34,10 @@ windows = { version = "0.62", features = [
   "Foundation_Collections",
   "Data_Xml_Dom",
   "UI_Notifications",
+  # タイトルバーの右クリックで出す、OS のシステムメニュー (src/system_menu.rs)。
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.release]

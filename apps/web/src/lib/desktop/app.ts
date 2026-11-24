@@ -147,3 +147,16 @@ export const desktopWindow = {
     };
   },
 };
+
+/**
+ * タイトルバーの右クリックで、OS のシステムメニュー (元のサイズに戻す・移動・最小化・最大化・閉じる) を出す。
+ * Windows だけ (apps/desktop の show_system_menu)。at を渡すと、その位置 (画面の中の CSS ピクセル) に出す。
+ * 渡さなければカーソルの位置に出す。
+ */
+export function showSystemMenu(at?: { x: number; y: number }): void {
+  const scale = typeof window === "undefined" ? 1 : window.devicePixelRatio;
+  void invokeDesktop(
+    "show_system_menu",
+    at ? { x: at.x * scale, y: at.y * scale } : {},
+  );
+}

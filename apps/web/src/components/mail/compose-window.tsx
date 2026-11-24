@@ -142,6 +142,11 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   /** 作成画面を新しいウィンドウへ移す。移せない環境 (スマホアプリ) では渡さない。 */
   onPopOut?: () => void;
+  /**
+   * 作成画面だけを出すウィンドウ (デスクトップ版の新規作成など)。ウィンドウいっぱいに広げ、
+   * 折りたたみ・最大化・新しいウィンドウで開くボタンは出さない。閉じるとウィンドウも閉じる。
+   */
+  standalone?: boolean;
   onChange: (draft: ComposeDraft) => void;
   /** 送信を始める前に呼ぶ。下書きの保存を止めるのを待ってから送信する。 */
   onBeforeSend: () => Promise<void>;
@@ -188,6 +193,7 @@ export function ComposeWindow({
   contentVersion,
   onOpenChange,
   onPopOut,
+  standalone = false,
   onChange,
   onBeforeSend,
   onSendFailed,
@@ -543,7 +549,7 @@ export function ComposeWindow({
     )
   );
 
-  if (minimized) {
+  if (minimized && !standalone) {
     return (
       <section
         aria-label="作成中のメール"
@@ -582,9 +588,11 @@ export function ComposeWindow({
       data-maximized={maximized || undefined}
       className={cn(
         "fixed inset-0 top-(--titlebar-height) z-40 flex flex-col bg-popover text-popover-foreground sm:shadow-2xl",
-        maximized
-          ? "sm:inset-4 sm:top-[calc(var(--titlebar-height)+1rem)] sm:rounded-xl sm:border"
-          : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
+        standalone
+          ? "sm:shadow-none"
+          : maximized
+            ? "sm:inset-4 sm:top-[calc(var(--titlebar-height)+1rem)] sm:rounded-xl sm:border"
+            : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
       )}
     >
       <form
@@ -638,15 +646,17 @@ export function ComposeWindow({
             {titles[draft.mode]}
           </h2>
           <span className="min-w-0 flex-1 truncate">{saved}</span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="作成画面を折りたたむ"
-            onClick={() => setMinimized(true)}
-          >
-            <MinusIcon />
-          </Button>
+          {!standalone && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="作成画面を折りたたむ"
+              onClick={() => setMinimized(true)}
+            >
+              <MinusIcon />
+            </Button>
+          )}
           {onPopOut && (
             <Hint label="新しいウィンドウで開く">
               <Button
@@ -660,18 +670,20 @@ export function ComposeWindow({
               </Button>
             </Hint>
           )}
-          <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={maximized ? "元の大きさに戻す" : "最大化"}
-              aria-pressed={maximized}
-              onClick={toggleMaximized}
-            >
-              {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
-            </Button>
-          </Hint>
+          {!standalone && (
+            <Hint label={maximized ? "元の大きさに戻す" : "最大化"}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={maximized ? "元の大きさに戻す" : "最大化"}
+                aria-pressed={maximized}
+                onClick={toggleMaximized}
+              >
+                {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+              </Button>
+            </Hint>
+          )}
           <Button
             type="button"
             variant="ghost"
