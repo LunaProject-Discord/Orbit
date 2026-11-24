@@ -36,12 +36,18 @@ function PopoverContent({
   side = "bottom",
   sideOffset = 4,
   collisionPadding = 8,
+  anchor,
   initialFocus,
   ...props
 }: PopoverPrimitive.Popup.Props &
   Pick<
     PopoverPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset" | "collisionPadding"
+    | "align"
+    | "alignOffset"
+    | "side"
+    | "sideOffset"
+    | "collisionPadding"
+    | "anchor"
   >) {
   // スマホ幅では画面の下から出るシートにする (見た目は globals.css の [data-menu-sheet])。
   const narrow = useNarrowScreen();
@@ -56,6 +62,7 @@ function PopoverContent({
         side={side}
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
+        anchor={anchor}
         className={cn("isolate z-50", sheetPositioner)}
       >
         <PopoverPrimitive.Popup

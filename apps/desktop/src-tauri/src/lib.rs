@@ -213,6 +213,9 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
     let new_window_handle = app.clone();
     WebviewWindowBuilder::from_config(app, &config)?
         .initialization_script(script)
+        // 右クリックメニューの「貼り付け」で、確認なしにクリップボードを読めるようにする
+        // (WebView の標準のメニューは画面側で止め、アプリのメニューを出している)。
+        .enable_clipboard_access()
         // アプリの画面の外へは移動させず、外部の URL はブラウザーで開く
         // (Google / Microsoft のログイン画面もここを通る)。
         .on_navigation(move |url| {

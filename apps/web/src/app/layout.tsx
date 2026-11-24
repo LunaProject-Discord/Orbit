@@ -8,6 +8,7 @@ import "gen-interface-jp/display-700.css";
 import "./globals.css";
 import { AuthGate, AuthProvider } from "@/components/auth-provider";
 import { DesktopBoot } from "@/components/desktop/desktop-boot";
+import { DesktopTextContextMenu } from "@/components/desktop/text-context-menu";
 import { DesktopTitleBar } from "@/components/desktop/title-bar";
 import { NativeBoot } from "@/components/native-boot";
 import { OfflineBoot } from "@/components/offline-boot";
@@ -49,6 +50,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <NativeBoot />
           <DesktopBoot />
           <DesktopTitleBar />
+          <DesktopTextContextMenu />
           <AuthProvider>
             <TooltipProvider>
               <AuthGate>{children}</AuthGate>

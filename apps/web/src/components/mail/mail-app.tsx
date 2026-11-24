@@ -2494,7 +2494,8 @@ export function MailApp({ user }: { user: User }) {
           "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-72 max-w-[85vw] transition-transform md:translate-x-0",
           // 折りたたみ中は細い帯の幅だけを確保し、サイドバーは一覧の上に重ねて出す。
           sidebarFolded
-            ? "md:relative md:w-12 md:max-w-none md:shrink-0"
+            ? // relative では top がずらす量になるので、タイトルバーの分を 0 に戻す (デスクトップ版で帯が下がっていた)。
+              "md:relative md:top-0 md:w-12 md:max-w-none md:shrink-0"
             : "md:static md:z-auto md:w-64",
           sidebarOpen
             ? "translate-x-0"

@@ -86,7 +86,10 @@ import {
   splitAttachments,
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
+import { isDesktopApp } from "@/lib/desktop/app";
+import { attachTextMenu } from "@/lib/desktop/text-menu";
 import {
+  externalLinkOf,
   handlesExternalLinks,
   interceptExternalLinks,
 } from "@/lib/external-links";
@@ -1430,6 +1433,14 @@ function BodyFrame({
     if (handlesExternalLinks() && linked.current !== doc) {
       linked.current = doc;
       interceptExternalLinks(doc);
+      // デスクトップ版では、本文の中の右クリックでも WebView の標準のメニューを出さない。
+      if (isDesktopApp()) {
+        attachTextMenu(
+          doc,
+          (node) => externalLinkOf(node, window.location.origin),
+          element,
+        );
+      }
     }
     if (doc === measured.current) refit.current?.();
     else measure(doc);
