@@ -1,5 +1,6 @@
 import type { SearchParams } from "@/lib/api";
 import { emptyFilters, isSearchActive } from "@/lib/search";
+import { filtersToText } from "@/lib/search-input";
 
 /**
  * 画面の状態のうち、URL に残すもの。再読み込みやブックマーク、ブラウザーの「戻る」で
@@ -95,9 +96,9 @@ function dateOf(params: URLSearchParams, name: string): string {
 
 /** 一覧を表す URL に付ける、検索の内容を読み取る。 */
 function searchOf(params: URLSearchParams): SearchParams | null {
+  // 以前の絞り込み条件 (from= など) は、検索欄の書き方 (from:…) にして読む。
   const search: SearchParams = {
-    text: params.get("q") ?? "",
-    filters: {
+    text: filtersToText(params.get("q") ?? "", {
       from: params.get("from") ?? "",
       to: params.get("to") ?? "",
       subject: params.get("subject") ?? "",
@@ -106,7 +107,8 @@ function searchOf(params: URLSearchParams): SearchParams | null {
       hasAttachment: params.get("attachment") === "1",
       unread: params.get("unread") === "1",
       flagged: params.get("starred") === "1",
-    },
+    }),
+    filters: emptyFilters,
     scope: params.get("in") === "folder" ? "folder" : "all",
   };
   return isSearchActive(search) ? search : null;

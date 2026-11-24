@@ -1050,6 +1050,112 @@ export async function updateAccount(
   return account;
 }
 
+export type ServerSecurity = "ssl" | "starttls" | "plain";
+
+/** 自動で見つかった受信 / 送信サーバー。 */
+export type DiscoveredServer = {
+  host: string;
+  port: number;
+  security: ServerSecurity;
+  username: string;
+  /** password は通常のパスワード認証、oauth2 はサービスのログイン画面が要る。 */
+  auth: "password" | "oauth2" | "other";
+};
+
+export type DiscoveredSettings = {
+  /** 見つけた場所。 */
+  source:
+    | "preset"
+    | "autoconfig"
+    | "well-known"
+    | "ispdb"
+    | "mx"
+    | "autodiscover"
+    | "srv";
+  provider: Account["provider"];
+  imap: DiscoveredServer;
+  smtp: DiscoveredServer;
+};
+
+/** メールアドレスのドメインから、IMAP / SMTP の設定を探す。見つからなければ null。 */
+export async function discoverAccountSettings(
+  email: string,
+): Promise<DiscoveredSettings | null> {
+  const { settings } = await apiJson<{ settings: DiscoveredSettings | null }>(
+    "/v1/accounts/discover",
+    { method: "POST", body: { email } },
+  );
+  return settings;
+}
+
+export type AccountServerInput = {
+  imap: ServerSettings;
+  smtp: ServerSettings;
+  username: string;
+  /** 省くと保存済みのパスワードを使う。 */
+  password?: string;
+  allowLegacyTls?: boolean;
+};
+
+export type ServerCheck =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "auth_failed"
+        | "connection_failed"
+        | "legacy_tls_required"
+        | "host_not_found"
+        | "host_not_allowed";
+      detail?: string;
+    };
+
+export type ServerCheckResult = {
+  ok: boolean;
+  imap: ServerCheck;
+  smtp: ServerCheck;
+};
+
+/** 接続先の変更を保存せずに、受信と送信へログインできるかを確かめる。 */
+export async function testAccountServer(
+  id: string,
+  input: AccountServerInput,
+): Promise<ServerCheckResult> {
+  return apiJson<ServerCheckResult>(`/v1/accounts/${id}/server/test`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/**
+ * 接続先を変える。受信と送信の両方へログインできたときだけ保存される。
+ * 確かめられなければ、結果を持った ServerCheckError を投げる。
+ */
+export async function updateAccountServer(
+  id: string,
+  input: AccountServerInput,
+): Promise<Account> {
+  try {
+    const { account } = await apiJson<{ account: Account }>(
+      `/v1/accounts/${id}/server`,
+      { method: "PUT", body: input },
+    );
+    return account;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "verification_failed") {
+      throw new ServerCheckError(error.body as ServerCheckResult);
+    }
+    throw error;
+  }
+}
+
+export class ServerCheckError extends Error {
+  constructor(readonly result: ServerCheckResult) {
+    super("verification_failed");
+    this.name = "ServerCheckError";
+  }
+}
+
 export async function deleteAccount(id: string): Promise<void> {
   await apiFetch(`/v1/accounts/${id}`, { method: "DELETE" });
 }

@@ -94,17 +94,8 @@ describe("buildRoute と parseRoute", () => {
       accountId: ACCOUNT,
       messageId: MESSAGE,
       search: {
-        text: "見積もり 2026",
-        filters: {
-          from: "tanaka@example.com",
-          to: "",
-          subject: "件名 & 記号",
-          since: "2026-11-01",
-          until: "2026-11-21",
-          hasAttachment: true,
-          unread: false,
-          flagged: true,
-        },
+        text: 'from:tanaka@example.com subject:"件名 & 記号" 見積もり',
+        filters: emptyFilters,
         scope: "folder",
       },
     };
@@ -114,6 +105,16 @@ describe("buildRoute と parseRoute", () => {
     );
     expect(parseRoute(url)).toEqual(route);
     expect(parseRoute("/?q=abc").search?.text).toBe("abc");
+  });
+
+  it("以前の絞り込み条件の URL は、検索欄の書き方にして読む", () => {
+    const search = parseRoute(
+      "/?q=%E8%A6%8B%E7%A9%8D&from=tanaka%40example.com&subject=a+b&since=2026-11-01&until=2026-11-30&attachment=1&unread=1&starred=1",
+    ).search;
+    expect(search?.text).toBe(
+      '見積 from:tanaka@example.com subject:"a b" after:2026-11-01 before:2026-12-01 has:attachment is:unread is:starred',
+    );
+    expect(search?.filters).toEqual(emptyFilters);
   });
 
   it("検索する内容が無ければ、検索中として扱わない", () => {
@@ -173,7 +174,7 @@ describe("以前の形の URL (すべて ? 以降)", () => {
       ["/?compose=new", "/compose/new"],
       [
         `/?account=${ACCOUNT}&q=abc&unread=1`,
-        `/accounts/${ACCOUNT}?q=abc&unread=1`,
+        `/accounts/${ACCOUNT}?q=abc+is%3Aunread`,
       ],
     ];
     for (const [legacy, current] of cases) {

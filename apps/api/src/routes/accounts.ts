@@ -6,6 +6,7 @@ import {
   type ChangeNotification,
   createGoogleAuthorizeUrl,
   createMicrosoftAuthorizeUrl,
+  decryptCredentials,
   encryptCredentials,
   exchangeGoogleCode,
   exchangeMicrosoftCode,
@@ -25,9 +26,15 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { accountIcon } from "../lib/account-icon.js";
+import {
+  type DiscoveryDeps,
+  defaultDiscoveryDeps,
+  discoverMailSettings,
+} from "../lib/autoconfig.js";
 import { isDistinct, recordChanges } from "../lib/changes.js";
 import { resolvesToPrivateAddress } from "../lib/host-check.js";
-import { verifyImap } from "../lib/imap-verify.js";
+import { verifyImap as defaultVerifyImap } from "../lib/imap-verify.js";
+import { verifySmtp as defaultVerifySmtp } from "../lib/smtp-verify.js";
 
 const server = z.object({
   host: z.string().trim().min(1).max(253),
@@ -93,6 +100,31 @@ const microsoftCompleteBody = z.object({
 
 const idParam = z.object({ id: z.uuid() });
 
+const discoverBody = z.object({ email: z.email().max(320) });
+
+/** 追加済みアカウントの接続先を変える。password を省くと、保存済みのパスワードを使う。 */
+const serverSettingsBody = z.object({
+  imap: server,
+  smtp: server,
+  username: z.string().min(1).max(320),
+  password: z.string().min(1).max(1024).optional(),
+  allowLegacyTls: z.boolean().optional(),
+});
+
+/** 接続の確認の結果。受信と送信を別々に返し、どちらが悪いかを画面で示せるようにする。 */
+type ServerCheck =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "auth_failed"
+        | "connection_failed"
+        | "legacy_tls_required"
+        | "host_not_found"
+        | "host_not_allowed";
+      detail?: string;
+    };
+
 /** アカウントに付けられる色。"#rrggbb" (小文字) の色そのもの。 */
 const ACCOUNT_COLOR = /^#[0-9a-f]{6}$/;
 
@@ -150,14 +182,80 @@ const publicColumns = {
   createdAt: mailAccounts.createdAt,
 };
 
-export function accountRoutes({
-  db,
-  encryptionKey,
-  allowPrivateMailHosts,
-  microsoft,
-  google,
-}: RouteDeps) {
+/** テストで差し替えるもの。省けば実際のネットワークを使う。 */
+export type AccountRouteOverrides = {
+  discovery?: DiscoveryDeps;
+  verifyImap?: typeof defaultVerifyImap;
+  verifySmtp?: typeof defaultVerifySmtp;
+};
+
+export function accountRoutes(
+  {
+    db,
+    encryptionKey,
+    allowPrivateMailHosts,
+    microsoft,
+    google,
+  }: Pick<
+    RouteDeps,
+    "db" | "encryptionKey" | "allowPrivateMailHosts" | "microsoft" | "google"
+  >,
+  overrides: AccountRouteOverrides = {},
+) {
   const app = new Hono<AppEnv>();
+  const verifyImap = overrides.verifyImap ?? defaultVerifyImap;
+  const verifySmtp = overrides.verifySmtp ?? defaultVerifySmtp;
+  const discovery =
+    overrides.discovery ?? defaultDiscoveryDeps(allowPrivateMailHosts);
+
+  /** 内部ネットワークを指すホストを断る。問題なければ null。 */
+  async function checkHost(host: string): Promise<ServerCheck | null> {
+    if (allowPrivateMailHosts) return null;
+    const isPrivate = await resolvesToPrivateAddress(host).catch(() => null);
+    if (isPrivate === null) return { ok: false, reason: "host_not_found" };
+    if (isPrivate) return { ok: false, reason: "host_not_allowed" };
+    return null;
+  }
+
+  /** 受信 (IMAP) と送信 (SMTP) に、実際にログインできるかを同時に確かめる。 */
+  async function checkServers(settings: {
+    imap: z.infer<typeof server>;
+    smtp: z.infer<typeof server>;
+    username: string;
+    password: string;
+    allowLegacyTls: boolean;
+  }): Promise<{ imap: ServerCheck; smtp: ServerCheck }> {
+    const [imap, smtp] = await Promise.all([
+      (async (): Promise<ServerCheck> =>
+        (await checkHost(settings.imap.host)) ??
+        (await verifyImap({
+          ...settings.imap,
+          username: settings.username,
+          password: settings.password,
+          allowLegacyTls: settings.allowLegacyTls,
+        })))(),
+      (async (): Promise<ServerCheck> =>
+        (await checkHost(settings.smtp.host)) ??
+        (await verifySmtp({
+          ...settings.smtp,
+          username: settings.username,
+          password: settings.password,
+          allowLegacyTls: settings.allowLegacyTls,
+          allowInsecure: allowPrivateMailHosts,
+        })))(),
+    ]);
+    return { imap, smtp };
+  }
+
+  /**
+   * メールアドレスのドメインから、IMAP / SMTP の設定を探す。
+   * 見つからなければ settings は null (画面で手入力してもらう)。
+   */
+  app.post("/discover", zValidator("json", discoverBody), async (c) => {
+    const { email } = c.req.valid("json");
+    const settings = await discoverMailSettings(email, discovery);
+    return c.json({ settings });
+  });
 
   app.get("/", async (c) => {
     const rows = await db
@@ -262,6 +360,26 @@ export function accountRoutes({
     });
     if (!verified.ok) {
       return c.json({ error: verified.reason, detail: verified.detail }, 422);
+    }
+    // 送信の設定の誤りも、追加する前に分かるようにする。
+    const smtpVerified = await verifySmtp({
+      ...body.smtp,
+      username: body.username,
+      password: body.password,
+      allowLegacyTls: body.allowLegacyTls,
+      allowInsecure: allowPrivateMailHosts,
+    });
+    if (!smtpVerified.ok) {
+      return c.json(
+        {
+          error:
+            smtpVerified.reason === "legacy_tls_required"
+              ? "legacy_tls_required"
+              : `smtp_${smtpVerified.reason}`,
+          detail: smtpVerified.detail,
+        },
+        422,
+      );
     }
 
     const account = await db.transaction(async (tx) => {
@@ -693,6 +811,150 @@ export function accountRoutes({
             sql`select pg_notify(${CHANNEL_CHANGES}, ${JSON.stringify(payload)})`,
           );
         }
+        return row;
+      });
+      if (!account) {
+        return c.json({ error: "not_found" }, 404);
+      }
+      return c.json({ account });
+    },
+  );
+
+  /** 変更後の接続先の設定を組み立てる。パスワードを省いたら保存済みのものを使う。 */
+  async function serverSettingsOf(
+    userId: string,
+    id: string,
+    body: z.infer<typeof serverSettingsBody>,
+  ) {
+    const [account] = await db
+      .select({
+        protocol: mailAccounts.protocol,
+        authType: mailAccounts.authType,
+        provider: mailAccounts.provider,
+        allowLegacyTls: mailAccounts.allowLegacyTls,
+        credentialsEncrypted: mailAccounts.credentialsEncrypted,
+      })
+      .from(mailAccounts)
+      .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, userId)));
+    if (!account) return { error: "not_found" as const };
+    // Google / Microsoft でログインしたアカウントは、接続先が決まっている。
+    if (account.protocol !== "imap" || account.authType !== "password") {
+      return { error: "not_editable" as const };
+    }
+    let password = body.password;
+    if (password === undefined) {
+      const credentials = decryptCredentials(
+        account.credentialsEncrypted,
+        encryptionKey,
+        userId,
+      );
+      if (credentials.type !== "password") {
+        return { error: "not_editable" as const };
+      }
+      password = credentials.password;
+    }
+    const provider: typeof account.provider =
+      account.provider === "generic" || account.provider === "icloud"
+        ? (providerOfImapHost(body.imap.host) ?? "generic")
+        : account.provider;
+    return {
+      settings: {
+        imap: body.imap,
+        smtp: body.smtp,
+        username: body.username,
+        password,
+        provider,
+        allowLegacyTls:
+          provider === "generic" &&
+          (body.allowLegacyTls ?? account.allowLegacyTls),
+      },
+    };
+  }
+
+  /** 接続先の変更を保存せずに、受信と送信へログインできるかだけを確かめる。 */
+  app.post(
+    "/:id/server/test",
+    zValidator("param", idParam),
+    zValidator("json", serverSettingsBody),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const prepared = await serverSettingsOf(
+        c.var.user.id,
+        id,
+        c.req.valid("json"),
+      );
+      if ("error" in prepared) {
+        return c.json(
+          { error: prepared.error },
+          prepared.error === "not_found" ? 404 : 400,
+        );
+      }
+      const checks = await checkServers(prepared.settings);
+      return c.json({ ok: checks.imap.ok && checks.smtp.ok, ...checks });
+    },
+  );
+
+  /**
+   * 追加済みアカウントの接続先 (ホスト、ポート、TLS、ユーザー名、パスワード) を変える。
+   * 受信と送信の両方へログインできたときだけ保存し、同期をつなぎ直す。
+   */
+  app.put(
+    "/:id/server",
+    zValidator("param", idParam),
+    zValidator("json", serverSettingsBody),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const user = c.var.user;
+      const prepared = await serverSettingsOf(user.id, id, c.req.valid("json"));
+      if ("error" in prepared) {
+        return c.json(
+          { error: prepared.error },
+          prepared.error === "not_found" ? 404 : 400,
+        );
+      }
+      const { settings } = prepared;
+      const checks = await checkServers(settings);
+      if (!checks.imap.ok || !checks.smtp.ok) {
+        return c.json(
+          { error: "verification_failed", ok: false, ...checks },
+          422,
+        );
+      }
+      const account = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(mailAccounts)
+          .set({
+            imapHost: settings.imap.host,
+            imapPort: settings.imap.port,
+            imapSecure: settings.imap.secure,
+            smtpHost: settings.smtp.host,
+            smtpPort: settings.smtp.port,
+            smtpSecure: settings.smtp.secure,
+            username: settings.username,
+            provider: settings.provider,
+            allowLegacyTls: settings.allowLegacyTls,
+            credentialsEncrypted: encryptCredentials(
+              { type: "password", password: settings.password },
+              encryptionKey,
+              user.id,
+            ),
+            // 直したので、止まっていた同期を再開する。
+            status: "active",
+            lastError: null,
+          })
+          .where(
+            and(
+              eq(mailAccounts.id, id),
+              eq(mailAccounts.userId, user.id),
+              eq(mailAccounts.protocol, "imap"),
+              eq(mailAccounts.authType, "password"),
+            ),
+          )
+          .returning(publicColumns);
+        if (!row) return null;
+        await recordChanges(tx, user.id, "account", [id]);
+        // 同期ワーカーが、新しい接続先でつなぎ直す。
+        await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);
         return row;
       });
       if (!account) {

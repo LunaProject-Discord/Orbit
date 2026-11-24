@@ -21,6 +21,7 @@ import {
   PointerIcon,
   RefreshCwIcon,
   RotateCcwIcon,
+  ServerIcon,
   ShieldCheckIcon,
   SignatureIcon,
   SunIcon,
@@ -30,6 +31,10 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
+import {
+  AccountServerDialog,
+  canEditServer,
+} from "@/components/mail/account-server-dialog";
 import { ColorPicker } from "@/components/mail/color-picker";
 import { FontPicker } from "@/components/mail/font-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
@@ -1195,6 +1200,7 @@ function AccountCard({
   }
   const problem = accountProblems[account.status];
   const provider = oauthProviderOf(account);
+  const [editingServer, setEditingServer] = useState(false);
   const color = accountColorHex(accounts, account.id);
 
   const save = (patch: Parameters<typeof updateAccount>[1]) => {
@@ -1390,6 +1396,16 @@ function AccountCard({
             ? "署名を編集"
             : "署名を設定"}
         </Button>
+        {canEditServer(account) && (
+          <Button
+            variant={problem ? "default" : "outline"}
+            size="sm"
+            onClick={() => setEditingServer(true)}
+          >
+            <ServerIcon />
+            {problem ? "サーバー設定を確認" : "サーバー設定"}
+          </Button>
+        )}
         {account.status === "auth_required" && provider && (
           <Button variant="outline" size="sm" onClick={() => onReauth(account)}>
             {provider === "google"
@@ -1409,6 +1425,11 @@ function AccountCard({
           削除
         </Button>
       </div>
+      <AccountServerDialog
+        account={editingServer ? account : null}
+        onOpenChange={setEditingServer}
+        onUpdated={onUpdated}
+      />
     </li>
   );
 }
