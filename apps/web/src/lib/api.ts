@@ -954,6 +954,41 @@ export type SignatureRule = {
   updatedAt: string;
 };
 
+/** 宛先の候補にする相手 (送受信したメールの相手)。 */
+export type Contact = {
+  /** 小文字のメールアドレス。 */
+  address: string;
+  /** いちばん新しいメールで使われていた名前。 */
+  name: string | null;
+  /** このアドレスへ送った回数 (宛先・Cc・Bcc)。 */
+  sentCount: number;
+  /** このアドレスから受け取った回数。 */
+  receivedCount: number;
+  /** 最後にやり取りした日時。 */
+  lastAt: string | null;
+  /** 並べる順の目安 (送った回数を重く、新しいほど重い)。 */
+  score: number;
+};
+
+/**
+ * 宛先の候補を、よくやり取りする順に取得する。q を渡すと名前かアドレスの一部で絞り込む。
+ * 画面では lib/contacts.ts の useContactSuggestions を使う (全件を手元に持って絞り込む)。
+ */
+export async function getContacts(
+  { q, limit }: { q?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<Contact[]> {
+  const params = new URLSearchParams();
+  if (q?.trim()) params.set("q", q.trim());
+  if (limit !== undefined) params.set("limit", String(limit));
+  const query = params.toString();
+  const { contacts } = await apiJson<{ contacts: Contact[] }>(
+    `/v1/contacts${query ? `?${query}` : ""}`,
+    { signal },
+  );
+  return contacts;
+}
+
 export async function listSignatureRules(
   signal?: AbortSignal,
 ): Promise<SignatureRule[]> {
