@@ -38,6 +38,7 @@ describe("resolveShortcut", () => {
   it("Shift との組み合わせは、割り当てたものだけを受け付ける", () => {
     expect(key("I", { shiftKey: true })).toBe("markRead");
     expect(key("U", { shiftKey: true })).toBe("markUnread");
+    expect(key("Delete", { shiftKey: true })).toBe("delete");
     expect(key("#", { shiftKey: true })).toBe("delete");
     expect(key("!", { shiftKey: true })).toBe("junk");
     expect(key("S", { shiftKey: true })).toBeNull();
