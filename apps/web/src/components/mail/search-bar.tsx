@@ -131,6 +131,11 @@ export function SearchBox({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const chipsRef = useRef<HTMLUListElement>(null);
+  // 条件の並びが左右に隠れているか (端を薄くするため)。
+  const [chipsOverflow, setChipsOverflow] = useState({
+    start: false,
+    end: false,
+  });
   const [open, setOpen] = useState(false);
   const [caret, setCaret] = useState(value.text.length);
   const [active, setActive] = useState(-1);
@@ -352,8 +357,28 @@ export function SearchBox({
   // biome-ignore lint/correctness/useExhaustiveDependencies: チップの数が変わったときだけ動かす
   useEffect(() => {
     const list = chipsRef.current;
-    if (list) list.scrollLeft = list.scrollWidth;
+    if (!list) return;
+    list.scrollLeft = list.scrollWidth;
+    measureChips(list);
   }, [chips.length]);
+
+  // 入力中のチップが伸びて並びの幅が変わったときも、端の薄さを付け直す。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 並び (ul) が出たり消えたりしたときだけ付け直す
+  useEffect(() => {
+    const list = chipsRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureChips(list));
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [chips.length > 0]);
+
+  function measureChips(list: HTMLElement) {
+    const start = list.scrollLeft > 1;
+    const end = list.scrollLeft + list.clientWidth < list.scrollWidth - 1;
+    setChipsOverflow((prev) =>
+      prev.start === start && prev.end === end ? prev : { start, end },
+    );
+  }
 
   // 選んでいる候補が見えるようにする。
   useEffect(() => {
@@ -632,7 +657,7 @@ export function SearchBox({
             "flex min-w-0 flex-1 cursor-text items-center",
             screen
               ? "h-10 gap-1.5"
-              : "h-8 gap-1 overflow-hidden rounded-md border border-input bg-muted/40 pr-1 pl-2 transition-colors focus-within:border-ring focus-within:bg-background focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30",
+              : "h-8 gap-1.5 overflow-hidden rounded-md border border-input bg-muted/40 pr-1 pl-2 transition-colors focus-within:border-ring focus-within:bg-background focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30",
           )}
         >
           {!screen && (
@@ -645,8 +670,19 @@ export function SearchBox({
             <ul
               ref={chipsRef}
               aria-label="検索の条件"
+              onScroll={(event) => measureChips(event.currentTarget)}
               className={cn(
                 "flex min-w-0 shrink items-center gap-1 overflow-x-auto [scrollbar-width:none]",
+                // 隠れている側の端は、欄の端で切れて見えないよう薄くする。
+                chipsOverflow.start &&
+                  chipsOverflow.end &&
+                  "[mask-image:linear-gradient(to_right,transparent,#000_1rem,#000_calc(100%-1rem),transparent)]",
+                chipsOverflow.start &&
+                  !chipsOverflow.end &&
+                  "[mask-image:linear-gradient(to_right,transparent,#000_1rem)]",
+                !chipsOverflow.start &&
+                  chipsOverflow.end &&
+                  "[mask-image:linear-gradient(to_right,#000_calc(100%-1rem),transparent)]",
                 // 虫めがねだけの狭い表示では、広げている間だけ出す。
                 !screen &&
                   "hidden group-focus-within/search:flex @3xl/pane:flex",
@@ -658,15 +694,16 @@ export function SearchBox({
                   <li
                     // 同じ条件を 2 回書くこともあるので、位置も含める。
                     key={`${index}:${chip.raw}`}
-                    className={cn(
-                      "flex shrink-0 items-center gap-0.5 rounded bg-primary/10 pl-1.5 text-primary",
-                      screen ? "h-7 text-sm" : "h-6 text-xs",
-                    )}
+                    className={chipClass(chip.negated, screen, false)}
                   >
-                    <span className="font-medium opacity-75">{label}:</span>
+                    <ChipHead
+                      chipKey={chip.key}
+                      label={label}
+                      negated={chip.negated}
+                    />
                     <span
                       className={cn(
-                        "truncate",
+                        "truncate font-semibold",
                         screen ? "max-w-32" : "max-w-28",
                       )}
                     >
@@ -674,9 +711,15 @@ export function SearchBox({
                     </span>
                     <button
                       type="button"
-                      aria-label={`${label} ${chipValue} の条件を外す`}
+                      aria-label={`${chip.negated ? "除外の条件 " : ""}${label} ${chipValue} を外す`}
                       onClick={() => removeChip(index)}
-                      className="relative flex size-5 items-center justify-center rounded opacity-70 outline-none after:absolute after:-inset-1 hover:bg-primary/15 hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5 [&_svg]:size-3"
+                      className={cn(
+                        "relative flex shrink-0 items-center justify-center rounded-sm opacity-60 outline-none transition after:absolute after:-inset-1 hover:bg-current/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5",
+                        // 押せる範囲の右側はチップの端で止める (はみ出すと並びの幅が伸び、余白ができる)。
+                        screen
+                          ? "size-5 [&_svg]:size-3.5 after:-right-1 pointer-coarse:after:-right-1"
+                          : "size-4 [&_svg]:size-3 after:-right-0.5 pointer-coarse:after:-right-0.5",
+                      )}
                     >
                       <XIcon />
                     </button>
@@ -697,89 +740,99 @@ export function SearchBox({
               {rest}
             </span>
           )}
-          {editing && (
-            <span
-              className={cn(
-                "flex shrink-0 items-center rounded-l bg-primary/10 pl-1.5 font-medium text-primary/75",
-                screen ? "h-7 text-sm" : "h-6 text-xs",
-                !screen &&
-                  "hidden group-focus-within/search:flex @3xl/pane:flex",
-              )}
-            >
-              {
-                chipLabel({
-                  raw: "",
-                  key: editing.key,
-                  value: "",
-                  negated: editing.negated,
-                }).label
-              }
-              :
-            </span>
-          )}
-          <input
-            ref={inputRef}
-            id={SEARCH_INPUT_ID}
-            type="text"
-            role="combobox"
-            aria-expanded={showPanel}
-            aria-controls={`${id}-listbox`}
-            aria-autocomplete="list"
-            aria-activedescendant={
-              showPanel && activeIndex >= 0
-                ? `${id}-option-${activeIndex}`
-                : undefined
-            }
-            enterKeyHint="search"
-            autoComplete="off"
-            spellCheck={false}
-            aria-label="メールを検索"
-            placeholder={
-              editing
-                ? (SEARCH_OPERATORS.find(
-                    (operator) =>
-                      operator.key ===
-                      (editing.key === "cc" ? "to" : editing.key),
-                  )?.example ?? "")
-                : chips.length > 0
-                  ? undefined
-                  : placeholder
-            }
-            value={text}
-            onChange={(event) =>
-              setText(
-                event.target.value,
-                event.target.selectionStart ?? event.target.value.length,
-              )
-            }
-            onSelect={(event) =>
-              setCaret(event.currentTarget.selectionStart ?? text.length)
-            }
-            onFocus={() => {
-              if (!open) openPanel();
-            }}
-            onClick={() => {
-              if (!open) openPanel();
-            }}
-            onBlur={(event) => {
-              // 候補 (カレンダーなど) へ移ったときは閉じない。
-              if (panelRef.current?.contains(event.relatedTarget as Node))
-                return;
-              setOpen(false);
-            }}
-            onKeyDown={onKeyDown}
-            className={cn(
-              "bg-transparent outline-none placeholder:text-muted-foreground",
-              screen ? "text-base" : "text-sm",
+          {/* 入力中の条件は、欄 (input) ごとチップに包む。欄は作り直さない (フォーカスを保つ) よう、
+              包みは常に置き、入力中でなければ display: contents にする。 */}
+          <span
+            className={
               editing
                 ? cn(
-                    // 入力中の条件のチップの中の欄。中身の幅に合わせる (対応していないブラウザーでは広がる)。
-                    "field-sizing-content min-w-[5ch] max-w-48 flex-none rounded-r bg-primary/10 pr-1.5 pl-0.5 text-primary placeholder:text-primary/40",
-                    screen ? "h-7" : "h-6",
+                    chipClass(editing.negated, screen, true),
+                    !screen &&
+                      "hidden group-focus-within/search:flex @3xl/pane:flex",
                   )
-                : cn("h-full w-full flex-1", screen ? "min-w-24" : "min-w-20"),
+                : "contents"
+            }
+          >
+            {editing && (
+              <ChipHead
+                chipKey={editing.key}
+                label={
+                  chipLabel({
+                    raw: "",
+                    key: editing.key,
+                    value: "",
+                    negated: editing.negated,
+                  }).label
+                }
+                negated={editing.negated}
+              />
             )}
-          />
+            <input
+              ref={inputRef}
+              id={SEARCH_INPUT_ID}
+              type="text"
+              role="combobox"
+              aria-expanded={showPanel}
+              aria-controls={`${id}-listbox`}
+              aria-autocomplete="list"
+              aria-activedescendant={
+                showPanel && activeIndex >= 0
+                  ? `${id}-option-${activeIndex}`
+                  : undefined
+              }
+              enterKeyHint="search"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="メールを検索"
+              placeholder={
+                editing
+                  ? (SEARCH_OPERATORS.find(
+                      (operator) =>
+                        operator.key ===
+                        (editing.key === "cc" ? "to" : editing.key),
+                    )?.example ?? "")
+                  : chips.length > 0
+                    ? undefined
+                    : placeholder
+              }
+              value={text}
+              onChange={(event) =>
+                setText(
+                  event.target.value,
+                  event.target.selectionStart ?? event.target.value.length,
+                )
+              }
+              onSelect={(event) =>
+                setCaret(event.currentTarget.selectionStart ?? text.length)
+              }
+              onFocus={() => {
+                if (!open) openPanel();
+              }}
+              onClick={() => {
+                if (!open) openPanel();
+              }}
+              onBlur={(event) => {
+                // 候補 (カレンダーなど) へ移ったときは閉じない。
+                if (panelRef.current?.contains(event.relatedTarget as Node))
+                  return;
+                setOpen(false);
+              }}
+              onKeyDown={onKeyDown}
+              className={cn(
+                "bg-transparent outline-none placeholder:text-muted-foreground",
+                // 入力中のチップの中ではチップと同じ大きさにする。スマホは iOS が 16px 未満の欄で
+                // 画面を拡大してしまうので、text-base のまま。
+                screen ? "text-base" : editing ? "text-xs" : "text-sm",
+                editing
+                  ? // 入力中の条件のチップの中の欄。中身の幅に合わせる (対応していないブラウザーでは広がる)。
+                    "field-sizing-content h-full min-w-[2ch] max-w-48 flex-none font-semibold text-inherit placeholder:font-normal placeholder:text-current/45"
+                  : cn(
+                      "h-full w-full flex-1",
+                      screen ? "min-w-24" : "min-w-20",
+                    ),
+              )}
+            />
+          </span>
           {full && (
             <Button
               variant="ghost"
@@ -804,6 +857,66 @@ export function SearchBox({
       </div>
       {panel}
     </search>
+  );
+}
+
+/** チップのアイコン (演算子ごと)。 */
+const chipIcons: Record<string, ReactNode> = {
+  ...operatorIcons,
+  cc: operatorIcons.to,
+  since: operatorIcons.after,
+  until: operatorIcons.before,
+};
+
+/**
+ * 条件のチップの見た目。条件はブランドの藍色、除外 (-from: など) は赤みのある色にし、
+ * 入力中のチップは縁を濃くして、いま値を入れている場所だと分かるようにする。
+ */
+function chipClass(negated: boolean, screen: boolean, editing: boolean) {
+  return cn(
+    "flex shrink-0 items-center gap-1 rounded-md pl-1.5 ring-1 ring-inset transition-colors",
+    screen ? "h-8 pr-1 text-sm" : "h-6 pr-0.5 text-xs",
+    editing && (screen ? "pr-2" : "pr-1.5"),
+    negated
+      ? cn(
+          "bg-rose-500/10 text-rose-950 ring-rose-500/20 dark:bg-rose-400/15 dark:text-rose-50 dark:ring-rose-400/25",
+          editing && "bg-rose-500/15 ring-rose-500/50 dark:ring-rose-400/60",
+        )
+      : cn(
+          "bg-indigo-500/10 text-indigo-950 ring-indigo-500/20 dark:bg-indigo-400/15 dark:text-indigo-50 dark:ring-indigo-400/25",
+          editing &&
+            "bg-indigo-500/15 ring-indigo-500/50 dark:ring-indigo-400/60",
+        ),
+  );
+}
+
+/** チップの頭 (アイコンと条件の名前)。値と見分けられるよう、色を薄くして細めの字にする。 */
+function ChipHead({
+  chipKey,
+  label,
+  negated,
+}: {
+  chipKey: string;
+  label: string;
+  negated: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "flex shrink-0 items-center gap-1 font-medium [&_svg]:size-3.5 [&_svg]:shrink-0",
+        negated
+          ? "text-rose-700 dark:text-rose-300"
+          : "text-indigo-700 dark:text-indigo-300",
+      )}
+    >
+      {chipIcons[chipKey]}
+      {negated && (
+        <span className="rounded-sm bg-rose-500/15 px-1 font-semibold text-[0.625rem] leading-4 dark:bg-rose-400/20">
+          除外
+        </span>
+      )}
+      {label}
+    </span>
   );
 }
 

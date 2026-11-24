@@ -159,6 +159,6 @@ describe("hasOpenSpace / removeSearchHistory / chipLabel", () => {
         value: "unread",
         negated: true,
       }),
-    ).toEqual({ label: "状態以外", value: "未読" });
+    ).toEqual({ label: "状態", value: "未読" });
   });
 });
