@@ -7,8 +7,8 @@ import { ExactTime } from "@/components/mail/exact-time";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Account, ServerDraft } from "@/lib/api";
+import { useDateStyle } from "@/lib/date-format-settings";
 import { addressLabel, formatListDate } from "@/lib/format";
-import { usePreferences } from "@/lib/preferences";
 
 type Props = {
   /** サーバーに保存してある下書き。読み込み前は null。 */
@@ -38,7 +38,7 @@ export function DraftList({
   onOpen,
   onDiscard,
 }: Props) {
-  const preferences = usePreferences();
+  const dateStyle = useDateStyle();
   if (drafts === null) {
     return (
       <div className="flex flex-col" aria-busy="true">
@@ -90,10 +90,9 @@ export function DraftList({
                 )}
                 <ExactTime
                   value={draft.updatedAt}
-                  style={preferences}
                   className="shrink-0 text-muted-foreground text-xs tabular-nums"
                 >
-                  {formatListDate(draft.updatedAt, new Date(), preferences)}
+                  {formatListDate(draft.updatedAt, new Date(), dateStyle)}
                 </ExactTime>
               </span>
               <span className="truncate font-medium text-sm">{subject}</span>

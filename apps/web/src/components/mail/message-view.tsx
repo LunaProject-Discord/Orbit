@@ -90,6 +90,7 @@ import {
   splitAttachments,
 } from "@/lib/attachments";
 import type { ComposeMode } from "@/lib/compose";
+import { useDateStyle } from "@/lib/date-format-settings";
 import { isDesktopApp } from "@/lib/desktop/app";
 import { attachTextMenu } from "@/lib/desktop/text-menu";
 import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
@@ -1004,6 +1005,7 @@ function ThreadItem({
   onDetail: (message: MessageDetail) => void;
 }) {
   const preferences = usePreferences();
+  const dateStyle = useDateStyle();
   // 詳細 (宛先、Cc、返信先、日時などの表) を出しているか。
   // 見出しを広げて使う設定なら、最初から出す。メールごとに切り替えられる。
   const [details, setDetails] = useState(
@@ -1050,7 +1052,7 @@ function ThreadItem({
                     recipients.length > 0
                       ? `宛先: ${recipients.map(addressLabel).join("、")} · `
                       : ""
-                  }${formatFullDate(message.receivedAt, preferences)}`
+                  }${formatFullDate(message.receivedAt, dateStyle)}`
                 : message.snippet}
             </span>
           </span>
@@ -1069,10 +1071,9 @@ function ThreadItem({
           {!expanded && (
             <ExactTime
               value={message.receivedAt}
-              style={preferences}
               className="shrink-0 text-muted-foreground text-xs tabular-nums"
             >
-              {formatListDate(message.receivedAt, new Date(), preferences)}
+              {formatListDate(message.receivedAt, new Date(), dateStyle)}
             </ExactTime>
           )}
         </button>
@@ -1696,6 +1697,7 @@ function MessageContent({
   /** 外部の画像を表示すると決めたメールの ID。別のメールを開くと元 (非表示) に戻る。 */
   const [imagesShownFor, setImagesShownFor] = useState<string | null>(null);
   const preferences = usePreferences();
+  const dateStyle = useDateStyle();
   const showImages =
     preferences.remoteImages === "always" || imagesShownFor === message.id;
   const frameStyle = bodyStyle(preferences);
@@ -1738,7 +1740,7 @@ function MessageContent({
     hasRemoteImages(message.bodyHtml);
 
   const collapsed = preferences.messageHeader === "collapsed";
-  const fullDate = formatFullDate(message.receivedAt, preferences);
+  const fullDate = formatFullDate(message.receivedAt, dateStyle);
   // 返信先は、差出人と違うときだけ出す (同じアドレスを指定しているメールが多い)。
   const senders = new Set(
     message.from.map((item) => item.address.toLowerCase()),
@@ -1811,16 +1813,16 @@ function MessageContent({
         {sentAtShown ? "受信日時" : "日時"}
       </dt>
       <dd>
-        <ExactTime value={message.receivedAt} style={preferences}>
-          {formatFullDate(message.receivedAt, preferences)}
+        <ExactTime value={message.receivedAt}>
+          {formatFullDate(message.receivedAt, dateStyle)}
         </ExactTime>
       </dd>
       {sentAtShown && message.sentAt && (
         <>
           <dt className="text-muted-foreground">送信日時</dt>
           <dd>
-            <ExactTime value={message.sentAt} style={preferences}>
-              {formatFullDate(message.sentAt, preferences)}
+            <ExactTime value={message.sentAt}>
+              {formatFullDate(message.sentAt, dateStyle)}
             </ExactTime>
           </dd>
         </>
@@ -1933,14 +1935,13 @@ function MessageContent({
                 {/* 狭い幅では日時を短くする (今日なら時刻だけ)。全体は広げた見出しで読める。 */}
                 <ExactTime
                   value={message.receivedAt}
-                  style={preferences}
                   className="shrink-0 whitespace-nowrap text-xs tabular-nums"
                 >
                   <span className="@lg:hidden">
                     {formatCompactDate(
                       message.receivedAt,
                       new Date(),
-                      preferences,
+                      dateStyle,
                     )}
                   </span>
                   <span className="@lg:inline hidden">{fullDate}</span>

@@ -40,6 +40,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary, ThreadMessage } from "@/lib/api";
 import { BodyPrefetcher, type PrefetchReason } from "@/lib/body-prefetch";
+import { useDateStyle } from "@/lib/date-format-settings";
 import { addressLabel, formatListDate } from "@/lib/format";
 import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
@@ -205,6 +206,7 @@ function ThreadChildRow({
   onSelect: () => void;
 }) {
   const preferences = usePreferences();
+  const dateStyle = useDateStyle();
   const unread = !child.seen;
   return (
     <button
@@ -258,10 +260,9 @@ function ThreadChildRow({
         )}
         <ExactTime
           value={child.receivedAt}
-          style={preferences}
           className="shrink-0 text-muted-foreground text-xs tabular-nums"
         >
-          {formatListDate(child.receivedAt, new Date(), preferences)}
+          {formatListDate(child.receivedAt, new Date(), dateStyle)}
         </ExactTime>
       </span>
       {child.snippet && (
@@ -317,6 +318,7 @@ const MessageRow = memo(function MessageRow({
   canOpenWindow: boolean;
 }) {
   const preferences = usePreferences();
+  const dateStyle = useDateStyle();
   const warmTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -490,10 +492,9 @@ const MessageRow = memo(function MessageRow({
               )}
               <ExactTime
                 value={message.receivedAt}
-                style={preferences}
                 className="shrink-0 text-muted-foreground text-xs tabular-nums"
               >
-                {formatListDate(message.receivedAt, new Date(), preferences)}
+                {formatListDate(message.receivedAt, new Date(), dateStyle)}
               </ExactTime>
             </span>
             <span className={cn("truncate text-sm", unread && "font-semibold")}>

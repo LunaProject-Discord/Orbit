@@ -12,6 +12,8 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { useDateStyle } from "@/lib/date-format-settings";
+import { formatShortDate } from "@/lib/format";
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -37,12 +39,6 @@ export function formatDateValue(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-const display = new Intl.DateTimeFormat("ja-JP", {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
 /**
  * 日付を 1 つ選ぶ欄。押すとカレンダーが開く。
  * 値は YYYY-MM-DD の文字列で、未指定は空文字。
@@ -67,6 +63,7 @@ export function DatePicker({
   "aria-label"?: string;
   disabled?: boolean;
 }) {
+  const dateStyle = useDateStyle();
   const [open, setOpen] = useState(false);
   const calendar = useRef<HTMLDivElement>(null);
   const selected = parseDateValue(value);
@@ -85,7 +82,7 @@ export function DatePicker({
             // 読み上げでは、欄の名前に続けて選んである日付を伝える。
             aria-label={
               label
-                ? `${label}: ${selected ? display.format(selected) : placeholder}`
+                ? `${label}: ${selected ? formatShortDate(selected, dateStyle) : placeholder}`
                 : undefined
             }
             className={cn(
@@ -98,7 +95,7 @@ export function DatePicker({
       >
         <CalendarIcon className="text-muted-foreground" aria-hidden="true" />
         <span className="truncate">
-          {selected ? display.format(selected) : placeholder}
+          {selected ? formatShortDate(selected, dateStyle) : placeholder}
         </span>
       </PopoverTrigger>
       <PopoverContent

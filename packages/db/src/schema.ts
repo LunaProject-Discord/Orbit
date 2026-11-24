@@ -801,6 +801,19 @@ export type SwipeAction =
 export type SwipeSettings = { left: SwipeAction; right: SwipeAction };
 
 /**
+ * 日付と時刻の形式 (Windows の「地域」の設定と同じ書き方の書式)。
+ * listDate は一覧の日付 (auto は今日なら時刻だけ、datetime は常に日付と時刻)。
+ */
+export type DateFormatSettings = {
+  listDate: "auto" | "datetime";
+  shortDateFormat: string;
+  monthDayFormat: string;
+  longDateFormat: string;
+  shortTimeFormat: string;
+  longTimeFormat: string;
+};
+
+/**
  * 利用者ごとの、どの端末でも同じにする設定。行の無い利用者は、すべて標準の値。
  * 画面の大きさなどに依る設定 (フォント、行の間隔など) は端末側に保存する。
  */
@@ -815,6 +828,8 @@ export const userSettings = pgTable("user_settings", {
    * null は標準の値、空の配列はボタンを付けない。
    */
   notificationActions: jsonb().$type<string[]>(),
+  /** 日付と時刻の形式。null は標準の値。 */
+  dateFormat: jsonb().$type<DateFormatSettings>(),
   updatedAt: updatedAt(),
 });
 

@@ -8,6 +8,7 @@ import {
   BellOffIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  Clock3Icon,
   ListIcon,
   LogOutIcon,
   type LucideIcon,
@@ -73,10 +74,12 @@ import {
   updateAccount,
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
+import { changeDateStyle, useDateStyle } from "@/lib/date-format-settings";
 import { isDesktopApp } from "@/lib/desktop/app";
 import {
   DATE_FORMAT_MAX_LENGTH,
   type DateFormats,
+  type DateStyle,
   formatDateWith,
 } from "@/lib/format";
 import { preloadLocalFonts, useFontListSupport } from "@/lib/local-fonts";
@@ -189,10 +192,16 @@ const CATEGORIES: Record<
   },
   list: {
     label: "メール一覧",
-    summary: "行の間隔、プレビュー、マーク、日付",
+    summary: "行の間隔、プレビュー、マーク",
     description:
       "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: ListIcon,
+  },
+  datetime: {
+    label: "日付と時刻",
+    summary: "日付と時刻の形式",
+    description: "このページの設定は、すべての端末で共通です。",
+    icon: Clock3Icon,
   },
   reading: {
     label: "メールの表示",
@@ -424,6 +433,8 @@ function SettingsPage({
       return <FontsPage />;
     case "list":
       return <ListPage />;
+    case "datetime":
+      return <DateTimePage />;
     case "reading":
       return <ReadingPage />;
     case "actions":
@@ -729,30 +740,52 @@ function ListPage() {
           />
         </SettingGroup>
       </Section>
+    </>
+  );
+}
+
+function DateTimePage() {
+  const style = useDateStyle();
+  const [error, setError] = useState(false);
+  const change = (patch: Partial<DateStyle>) => {
+    setError(false);
+    void changeDateStyle(patch).then((saved) => setError(!saved));
+  };
+  return (
+    <>
       <Section
-        title="日付と時刻"
+        title="形式"
         description="Windows の「地域」の設定と同じ書き方で選べます。一覧では、今日のメールに短い時刻、今年のメールに月日、それより前のメールに短い日付を使います。メールの見出しは長い日付と短い時刻、ホバーで出す正確な日時は長い日付と長い時刻です。"
       >
         <SettingGroup>
+          {DATE_FORMAT_FIELDS.map((field) => (
+            <DateFormatRow
+              key={field.key}
+              field={field}
+              value={style[field.key]}
+              onChange={(value) => change({ [field.key]: value })}
+            />
+          ))}
+        </SettingGroup>
+        <DateFormatHelp />
+      </Section>
+      <Section title="メール一覧">
+        <SettingGroup>
           <SelectRow
             label="一覧の日付"
-            value={preferences.listDate}
-            onChange={(listDate) => set({ listDate })}
+            value={style.listDate}
+            onChange={(listDate) => change({ listDate })}
             options={[
               ["auto", "今日は時刻、それ以外は日付"],
               ["datetime", "常に日付と時刻"],
             ]}
           />
-          {DATE_FORMAT_FIELDS.map((field) => (
-            <DateFormatRow
-              key={field.key}
-              field={field}
-              value={preferences[field.key]}
-              onChange={(value) => set({ [field.key]: value })}
-            />
-          ))}
         </SettingGroup>
-        <DateFormatHelp />
+        {error && (
+          <p role="alert" className="text-destructive text-xs">
+            日付と時刻の形式を保存できませんでした。通信の状態を確認して、もう一度選んでください。
+          </p>
+        )}
       </Section>
     </>
   );

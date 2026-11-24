@@ -1,5 +1,5 @@
 import { MAX_NOTIFICATION_ACTIONS, NOTIFICATION_ACTIONS } from "@orbit/core";
-import type { SwipeSettings } from "@orbit/db";
+import type { DateFormatSettings, SwipeSettings } from "@orbit/db";
 import { z } from "zod";
 
 /** 一覧の行をスワイプしたときに選べる操作。 */
@@ -54,3 +54,27 @@ export const notificationActionSettings = z.object({
     .max(MAX_NOTIFICATION_ACTIONS)
     .refine((actions) => new Set(actions).size === actions.length),
 });
+
+/** 日時の書式に使える文字数の上限。 */
+export const DATE_FORMAT_MAX_LENGTH = 64;
+
+const dateFormatString = z
+  .string()
+  .max(DATE_FORMAT_MAX_LENGTH)
+  .refine((value) => value.trim().length > 0);
+
+/** 日付と時刻の形式。書式の中身 (記号の意味) は画面側で解釈する。 */
+export const dateFormatSettings = z.object({
+  listDate: z.enum(["auto", "datetime"]),
+  shortDateFormat: dateFormatString,
+  monthDayFormat: dateFormatString,
+  longDateFormat: dateFormatString,
+  shortTimeFormat: dateFormatString,
+  longTimeFormat: dateFormatString,
+});
+
+/** 保存してあった日時の形式を読む。保存していない (または形が合わない) なら null。 */
+export function readDateFormat(saved: unknown): DateFormatSettings | null {
+  const result = dateFormatSettings.safeParse(saved);
+  return result.success ? result.data : null;
+}

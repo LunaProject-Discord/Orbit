@@ -69,9 +69,10 @@ import {
   resolveRecipients,
   sanitizeHtml,
 } from "@/lib/compose";
+import { useDateStyle } from "@/lib/date-format-settings";
 import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
 import { insertIntoField } from "@/lib/emoji/insert";
-import { formatSize } from "@/lib/format";
+import { formatShortTime, formatSize } from "@/lib/format";
 import { sendMailOrQueue, useOnline } from "@/lib/offline";
 import { randomUuid } from "@/lib/uuid";
 
@@ -104,11 +105,6 @@ const titles = {
   reply: "返信",
   forward: "転送",
 } as const;
-
-const timeFormat = new Intl.DateTimeFormat("ja-JP", {
-  hour: "2-digit",
-  minute: "2-digit",
-});
 
 /** サーバーへ送っている途中の添付ファイル。 */
 type Upload = {
@@ -201,6 +197,7 @@ export function ComposeWindow({
   onSent,
   onDiscard,
 }: Props) {
+  const dateStyle = useDateStyle();
   const id = useId();
   const online = useOnline();
   const [error, setError] = useState<string | null>(null);
@@ -562,7 +559,7 @@ export function ComposeWindow({
   ) : (
     savedAt && (
       <span className="truncate text-muted-foreground text-xs">
-        下書きを保存しました {timeFormat.format(savedAt)}
+        下書きを保存しました {formatShortTime(savedAt, dateStyle)}
       </span>
     )
   );

@@ -46,6 +46,7 @@ export const SETTINGS_CATEGORIES = [
   "appearance",
   "fonts",
   "list",
+  "datetime",
   "reading",
   "actions",
   "sidebar",
