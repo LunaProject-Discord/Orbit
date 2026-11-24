@@ -15,6 +15,7 @@ import type { EventsHub } from "./lib/events-hub.js";
 import type { SystemMailer } from "./lib/system-mail.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
+import { contactRoutes } from "./routes/contacts.js";
 import { draftRoutes } from "./routes/drafts.js";
 import { failureRoutes } from "./routes/failures.js";
 import { focusRoutes } from "./routes/focus.js";
@@ -162,6 +163,7 @@ export function createApp({
     }),
   );
   authed.route("/signatures", signatureRoutes(deps));
+  authed.route("/contacts", contactRoutes(deps));
   authed.route("/invitations", invitationRoutes({ db, webOrigin }));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));

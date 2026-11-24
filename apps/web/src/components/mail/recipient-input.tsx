@@ -8,6 +8,10 @@ import {
   useState,
 } from "react";
 import { Hint } from "@/components/hint";
+import {
+  ContactSuggestionList,
+  useContactCombobox,
+} from "@/components/mail/contact-suggestions";
 import type { Address } from "@/lib/api";
 import {
   mergeAddresses,
@@ -23,6 +27,11 @@ type Props = {
   disabled?: boolean;
   placeholder?: string;
   inputRef?: Ref<HTMLInputElement>;
+  /**
+   * 候補から除くアドレス (ほかの欄で選び済みの宛先など)。この欄で選び済みの宛先は、
+   * 渡さなくても除く。
+   */
+  exclude?: readonly string[];
 };
 
 /**
@@ -36,8 +45,24 @@ export function RecipientInput({
   disabled,
   placeholder,
   inputRef,
+  exclude,
 }: Props) {
   const [focused, setFocused] = useState(false);
+  const combobox = useContactCombobox({
+    query: value.text,
+    exclude: [...value.list.map((entry) => entry.address), ...(exclude ?? [])],
+    // 候補を選んだら、入力中の文字列の代わりにその宛先を加える。
+    onPick: (contact) =>
+      onChange({
+        list: mergeAddresses(value.list, [
+          {
+            ...(contact.name ? { name: contact.name } : {}),
+            address: contact.address,
+          },
+        ]),
+        text: "",
+      }),
+  });
 
   /** 入力中の文字列を宛先にする。読み取れなかった分は入力欄に残す。 */
   function commit(text: string) {
@@ -49,6 +74,7 @@ export function RecipientInput({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (combobox.handleKeyDown(event)) return;
     if (event.nativeEvent.isComposing) return;
     if (
       (event.key === "Enter" && !event.ctrlKey && !event.metaKey) ||
@@ -91,7 +117,7 @@ export function RecipientInput({
     parseAddressList(value.text).invalid.length > 0;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+    <div className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
       {value.list.map((entry) => (
         <Hint key={entry.address} label={addressFull(entry)}>
           <span className="inline-flex h-7 max-w-full pointer-coarse:h-9 items-center gap-1 rounded-full border bg-muted/60 pr-1 pl-2.5 text-sm">
@@ -118,6 +144,7 @@ export function RecipientInput({
         autoComplete="off"
         autoCapitalize="off"
         spellCheck={false}
+        {...combobox.inputProps}
         aria-invalid={invalid || undefined}
         placeholder={value.list.length === 0 ? placeholder : undefined}
         value={value.text}
@@ -125,13 +152,18 @@ export function RecipientInput({
         onChange={(event) => onChange({ ...value, text: event.target.value })}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
-        onFocus={() => setFocused(true)}
+        onFocus={() => {
+          setFocused(true);
+          combobox.inputProps.onFocus();
+        }}
         onBlur={() => {
           setFocused(false);
+          combobox.inputProps.onBlur();
           if (value.text.trim()) commit(value.text);
         }}
         className="h-7 min-w-24 flex-1 pointer-coarse:h-10 bg-transparent text-base outline-none placeholder:text-muted-foreground aria-invalid:text-destructive md:text-sm"
       />
+      <ContactSuggestionList {...combobox.list} />
     </div>
   );
 }
