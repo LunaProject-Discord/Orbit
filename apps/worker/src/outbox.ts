@@ -6,6 +6,7 @@ import {
 import { type Database, mailAccounts, mailboxes, outbox } from "@orbit/db";
 import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
+import { dropPendingPlacements } from "./mailbox-store.js";
 
 /** 一時的な失敗 (接続が切れたなど) でやり直す回数の上限。超えたら失敗として扱う。 */
 const MAX_ATTEMPTS = 5;
@@ -124,6 +125,26 @@ export async function processOutbox(
         .select({ userId: mailAccounts.userId })
         .from(mailAccounts)
         .where(eq(mailAccounts.id, accountId));
+      if (account && row.kind === "move") {
+        // 移動先に先に置いた所在を外す (移動元は上の突き合わせで戻る)。
+        const destination = (
+          row.payload as { destination?: { mailboxId?: string } }
+        ).destination;
+        if (destination?.mailboxId) {
+          await dropPendingPlacements(
+            tx,
+            { id: accountId, userId: account.userId },
+            destination.mailboxId,
+            [
+              ...new Set(
+                ((row.payload.targets ?? []) as OutboxTarget[]).map(
+                  (target) => target.messageId,
+                ),
+              ),
+            ],
+          );
+        }
+      }
       if (account) {
         await recordChanges(tx, account.userId, "account", "upsert", [
           accountId,

@@ -183,6 +183,11 @@ import {
   useOnline,
   useQueuedSends,
 } from "@/lib/offline";
+import {
+  adjustUnreadCounts,
+  insertPendingMoves,
+  pruneSnapshots,
+} from "@/lib/pending-moves";
 import { usePreferences } from "@/lib/preferences";
 import {
   buildRoute,
@@ -586,6 +591,33 @@ export function MailApp({ user }: { user: User }) {
   const starred = special === "starred";
   const starredRef = useRef(starred);
   starredRef.current = starred;
+  /** 送信待ちの移動ごとの、操作したときの行の控え (移動先の一覧に先に出すのに使う)。 */
+  const moveSnapshotsRef = useRef(new Map<string, readonly MessageSummary[]>());
+  const pendingMailboxesRef = useRef<MailboxSummary[] | null>(null);
+  pendingMailboxesRef.current = mailboxes;
+  /**
+   * 取得した一覧に、まだサーバーへ届いていない操作を重ねる。既読やスター、移動元から
+   * 外す分に加えて、移動先の一覧には移動したメールを入れる (「元に戻す」を待つ間も含む)。
+   */
+  const overlayPending = useCallback(
+    (rows: MessageSummary[], selection: Selection): MessageSummary[] => {
+      const pending = queueRef.current?.pending() ?? [];
+      const applied = applyActions(rows, pending);
+      pruneSnapshots(moveSnapshotsRef.current, pending);
+      // 検索結果・スター付き・統合フォルダは条件で決まるので、移動先として重ねない。
+      if (searchRef.current || starredRef.current || selection.unifiedId) {
+        return applied;
+      }
+      return insertPendingMoves(
+        applied,
+        pending,
+        moveSnapshotsRef.current,
+        pendingMailboxesRef.current ?? [],
+        selection,
+      );
+    },
+    [],
+  );
   /** 統合フォルダと、サイドバー上部の項目の並び順。 */
   const [unified, setUnified] = useState<UnifiedState>(emptyUnifiedState);
   /** サーバーから統合フォルダを取得し終えたか (無くなったフォルダの URL を見分けるのに使う)。 */
@@ -600,6 +632,8 @@ export function MailApp({ user }: { user: User }) {
   const [devices, setDevices] = useState(0);
   /** まだサーバーへ送れていない操作の数。 */
   const [pendingActions, setPendingActions] = useState(0);
+  /** 送信待ちの操作が変わるたびに増える (未読数に送信待ちの操作を重ね直すのに使う)。 */
+  const [pendingVersion, setPendingVersion] = useState(0);
   /** 作成画面で開いているメール。閉じると、内容は下書きとしてサーバーに残る。 */
   const [draft, setDraft] = useState<ComposeDraft | null>(null);
   /** 開いてから内容を変えたか。変えていない新規のメールは、閉じたら残さない。 */
@@ -851,10 +885,7 @@ export function MailApp({ user }: { user: User }) {
         if (!searchRef.current && !starredRef.current && !selection.unifiedId) {
           void cachedMessages(selection, PAGE_SIZE).then((saved) => {
             if (!saved || request !== listRequest.current) return;
-            const rows = applyActions(
-              saved.messages,
-              queueRef.current?.pending() ?? [],
-            );
+            const rows = overlayPending(saved.messages, selection);
             // サーバーの応答が先に届いていたら、そちらを残す。
             setMessages((current) => current ?? rows);
           });
@@ -866,10 +897,7 @@ export function MailApp({ user }: { user: User }) {
         setListError(null);
         setSearchTerms(terms ?? []);
         // まだサーバーへ送れていない操作を、取得した一覧に重ねる。
-        const fetched = applyActions(
-          page.messages,
-          queueRef.current?.pending() ?? [],
-        );
+        const fetched = overlayPending(page.messages, selection);
         const kept = keptRowsRef.current;
         setMessages((current) =>
           current && !reset
@@ -898,7 +926,7 @@ export function MailApp({ user }: { user: User }) {
         );
       }
     },
-    [fetchPage],
+    [fetchPage, overlayPending],
   );
 
   useEffect(() => {
@@ -920,10 +948,19 @@ export function MailApp({ user }: { user: User }) {
     loadSignatureRules,
   ]);
 
+  /** 未読数に、まだサーバーへ届いていない操作 (既読、移動、削除) を重ねたフォルダ。 */
+  const countedMailboxes = useMemo(() => {
+    void pendingVersion;
+    if (!mailboxes) return mailboxes;
+    const pending = queueRef.current?.pending() ?? [];
+    pruneSnapshots(moveSnapshotsRef.current, pending);
+    return adjustUnreadCounts(mailboxes, pending, moveSnapshotsRef.current);
+  }, [mailboxes, pendingVersion]);
+
   // タブの題名に、受信トレイの未読数を出す。
   useEffect(() => {
-    showUnreadCount(inboxUnreadCount(mailboxes ?? []));
-  }, [mailboxes]);
+    showUnreadCount(inboxUnreadCount(countedMailboxes ?? []));
+  }, [countedMailboxes]);
   useEffect(() => () => showUnreadCount(0), []);
 
   /** 通知から開く。受信トレイに切り替えて、そのメールを表示する。 */
@@ -1077,7 +1114,10 @@ export function MailApp({ user }: { user: User }) {
     const queue = createActionQueue();
     queueRef.current = queue;
     setPendingActions(queue.pending().length);
-    const unsubscribeCount = queue.onChange(setPendingActions);
+    const unsubscribeCount = queue.onChange((count) => {
+      setPendingActions(count);
+      setPendingVersion((version) => version + 1);
+    });
     const unsubscribe = queue.onRejected(() => {
       // 画面に先に反映した内容を取り消すため、サーバーの状態を取り直す。
       setNotice({ message: ACTION_ERROR, tone: "error" });
@@ -1202,6 +1242,13 @@ export function MailApp({ user }: { user: User }) {
       }
       if (input.action === "set_flags") {
         keepAffectedRows(affectedRows(messagesRef.current ?? [], messageIds));
+      }
+      {
+        // 移動先の一覧や未読数に、サーバーへ届く前から反映できるよう控えておく。
+        const rows = affectedRows(messagesRef.current ?? [], messageIds);
+        if (rows.length > 0) {
+          moveSnapshotsRef.current.set(action.idempotencyKey, rows);
+        }
       }
       setMessages((current) => current && applyActions(current, [action]));
       setThreadRows((current) => applyActionToThreads(current, action));
@@ -2821,7 +2868,7 @@ export function MailApp({ user }: { user: User }) {
           <SidebarRail
             className="hidden md:flex"
             accounts={accounts}
-            mailboxes={mailboxes}
+            mailboxes={countedMailboxes}
             selectedAccountId={selectedAccountId}
             folderView={
               !draftsSelected && special === null && unifiedId === null
@@ -2866,7 +2913,7 @@ export function MailApp({ user }: { user: User }) {
             }
             user={user}
             accounts={accounts}
-            mailboxes={mailboxes}
+            mailboxes={countedMailboxes}
             selectedAccountId={selectedAccountId}
             selectedMailboxId={selectedMailboxId}
             onSelect={handleSelectFolder}

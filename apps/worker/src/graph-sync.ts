@@ -25,6 +25,7 @@ import {
 } from "./graph-parse.js";
 import {
   applyMailboxList,
+  dropStalePending,
   removePlacements,
   type SyncAccount,
 } from "./mailbox-store.js";
@@ -181,6 +182,30 @@ async function applyPage(
         delete values.flagged;
       }
       let messageId = idOf.get(item.id);
+      if (!messageId && values.messageIdHeader) {
+        // このアプリで移動したメールは、移動先に「移動中」の所在が先にある。Graph では
+        // 移動するとメッセージの ID が変わるので、Message-ID で同じメールを探して結び付ける。
+        const [pending] = await tx
+          .select({ messageId: messageMailboxes.messageId })
+          .from(messageMailboxes)
+          .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
+          .where(
+            and(
+              eq(messageMailboxes.mailboxId, mailboxId),
+              isNotNull(messageMailboxes.pendingSince),
+              eq(messages.accountId, account.id),
+              eq(messages.messageIdHeader, values.messageIdHeader),
+            ),
+          )
+          .limit(1);
+        if (pending) {
+          messageId = pending.messageId;
+          await tx
+            .update(messages)
+            .set({ providerMessageId: item.id })
+            .where(eq(messages.id, messageId));
+        }
+      }
       if (messageId) {
         if (Object.keys(values).length > 0) {
           await tx
@@ -231,7 +256,12 @@ async function applyPage(
       await tx
         .insert(messageMailboxes)
         .values({ mailboxId, messageId })
-        .onConflictDoNothing();
+        // 移動中として先に置いた所在なら、確定させる。
+        .onConflictDoUpdate({
+          target: [messageMailboxes.mailboxId, messageMailboxes.messageId],
+          set: { pendingSince: null },
+          setWhere: isNotNull(messageMailboxes.pendingSince),
+        });
       changed.push(messageId);
     }
     await recordChanges(tx, account.userId, "message", "upsert", changed);
@@ -320,7 +350,13 @@ export async function syncGraphFolder(
         })
         .from(messageMailboxes)
         .innerJoin(messages, eq(messages.id, messageMailboxes.messageId))
-        .where(eq(messageMailboxes.mailboxId, mailbox.id));
+        .where(
+          and(
+            eq(messageMailboxes.mailboxId, mailbox.id),
+            // 移動中として置いた所在は、まだサーバーに無くてよい (片付けは別に行う)。
+            isNull(messageMailboxes.pendingSince),
+          ),
+        );
       const stale = local
         .filter(
           (row) => !row.providerMessageId || !seen.has(row.providerMessageId),
@@ -334,6 +370,8 @@ export async function syncGraphFolder(
     .update(mailboxes)
     .set({ syncState: deltaLink, lastSyncedAt: new Date() })
     .where(eq(mailboxes.id, mailbox.id));
+  // 移動中として置いたまま結び付かなかった所在を片付ける。
+  await dropStalePending(db, account, mailbox.id);
   return { added, removed };
 }
 
