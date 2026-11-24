@@ -25,7 +25,7 @@ describe("formatCompactDate", () => {
   });
 
   it("今年なら月日と時刻", () => {
-    expect(formatCompactDate(at(2026, 0, 5, 9, 3), now)).toBe("1/5 09:03");
+    expect(formatCompactDate(at(2026, 0, 5, 9, 3), now)).toBe("1/5 9:03");
   });
 
   it("去年以前は年月日と時刻", () => {
@@ -55,7 +55,7 @@ describe("formatExactDate", () => {
 
   it("年月日・曜日・秒まで出す", () => {
     expect(formatExactDate(at(2026, 10, 24, 9, 5, 7))).toBe(
-      "2026年11月24日(火) 09:05:07",
+      "2026年11月24日 (火) 9:05:07",
     );
   });
 
@@ -65,7 +65,7 @@ describe("formatExactDate", () => {
         at(2026, 10, 24, 21, 44, 30),
         style({ longTimeFormat: "tth:mm:ss" }),
       ),
-    ).toBe("2026年11月24日(火) 午後9:44:30");
+    ).toBe("2026年11月24日 (火) 午後9:44:30");
   });
 
   it("日時として読めない値は空文字", () => {

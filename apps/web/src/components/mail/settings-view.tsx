@@ -1517,8 +1517,8 @@ const DATE_FORMAT_FIELDS: readonly DateFormatField[] = [
     key: "shortDateFormat",
     label: "短い日付",
     presets: [
-      "yyyy/M/d",
       "yyyy/MM/dd",
+      "yyyy/M/d",
       "yy/MM/dd",
       "yy/M/d",
       "yyyy-MM-dd",
@@ -1534,6 +1534,7 @@ const DATE_FORMAT_FIELDS: readonly DateFormatField[] = [
     key: "longDateFormat",
     label: "長い日付",
     presets: [
+      "yyyy年M月d日 (ddd)",
       "yyyy年M月d日(ddd)",
       "yyyy年M月d日",
       "yyyy年MM月dd日",
@@ -1544,12 +1545,12 @@ const DATE_FORMAT_FIELDS: readonly DateFormatField[] = [
   {
     key: "shortTimeFormat",
     label: "短い時刻",
-    presets: ["HH:mm", "H:mm", "tth:mm", "tt h:mm", "tt hh:mm"],
+    presets: ["H:mm", "HH:mm", "tth:mm", "tt h:mm", "tt hh:mm"],
   },
   {
     key: "longTimeFormat",
     label: "長い時刻",
-    presets: ["HH:mm:ss", "H:mm:ss", "tth:mm:ss", "tt h:mm:ss", "tt hh:mm:ss"],
+    presets: ["H:mm:ss", "HH:mm:ss", "tth:mm:ss", "tt h:mm:ss", "tt hh:mm:ss"],
   },
 ];
 
