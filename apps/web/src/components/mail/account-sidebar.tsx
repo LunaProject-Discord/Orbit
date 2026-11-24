@@ -30,6 +30,7 @@ import {
   LayersPlusIcon,
   ListChecksIcon,
   ListPlusIcon,
+  ListXIcon,
   PencilIcon,
   PenSquareIcon,
   PlusIcon,
@@ -145,7 +146,8 @@ type SortData = {
 };
 
 /** カテゴリの見出しの、項目を落とせる場所に持たせる情報。 */
-type CategoryDropData = { kind: "category-drop"; category: string };
+/** カテゴリの見出し (category が null なら「カテゴリから外す」の場所) に持たせる情報。 */
+type CategoryDropData = { kind: "category-drop"; category: string | null };
 
 const CATEGORY_GROUP = "categories";
 /** 並び替えの単位。カテゴリごとに分ける (カテゴリなしは空の文字列)。 */
@@ -370,6 +372,8 @@ export function AccountSidebar({
     }),
   );
   const [announcement, setAnnouncement] = useState("");
+  /** カテゴリに入っている項目をドラッグしている (「カテゴリから外す」の場所を出す)。 */
+  const [draggingCategorized, setDraggingCategorized] = useState(false);
   /** ドラッグの直後に起きるクリックで、フォルダが開かないようにする。 */
   const draggedRef = useRef(false);
   /** キーボードで動かした項目。並び替えの後もフォーカスを保つ。 */
@@ -437,6 +441,7 @@ export function AccountSidebar({
     move(data, ids, id);
   };
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    setDraggingCategorized(false);
     setTimeout(() => {
       draggedRef.current = false;
     }, 0);
@@ -448,7 +453,7 @@ export function AccountSidebar({
     if (!data || !over || !target) return;
     const key = String(active.id);
     const from = data.category ?? null;
-    // カテゴリの見出しに落とした: そのカテゴリの最後に入れる。
+    // カテゴリの見出しに落とした: そのカテゴリの最後に入れる (「カテゴリから外す」なら外す)。
     if (target.kind === "category-drop") {
       if (target.category !== from) assign(data, key, target.category);
       return;
@@ -620,15 +625,22 @@ export function AccountSidebar({
           collisionDetection={sameGroup}
           modifiers={[restrictToVerticalAxis]}
           accessibility={{ announcements: dragAnnouncements }}
-          onDragStart={() => {
+          onDragStart={({ active }) => {
             draggedRef.current = true;
+            const data = active.data.current as SortData | undefined;
+            setDraggingCategorized(
+              (data?.kind === "account" || data?.kind === "view") &&
+                (data.category ?? null) !== null,
+            );
           }}
           onDragEnd={handleDragEnd}
           onDragCancel={() => {
+            setDraggingCategorized(false);
             // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
             if (!menuPressRef.current) draggedRef.current = false;
           }}
         >
+          {draggingCategorized && <UncategorizeDrop />}
           {renderViews(groups.views, null)}
           <button
             type="button"
@@ -973,6 +985,31 @@ function CategorySection({
           <div className="flex flex-col gap-0.5">{children}</div>
         ))}
     </section>
+  );
+}
+
+/**
+ * カテゴリに入っている項目をドラッグしている間だけ、一覧の上端に出す「カテゴリから外す」の場所。
+ * 下の項目を押し下げないよう (ドラッグ中の項目の位置がずれないよう)、上の項目に重ねて出す。
+ */
+function UncategorizeDrop() {
+  const drop = useDroppable({
+    id: "category-drop:none",
+    data: { kind: "category-drop", category: null } satisfies CategoryDropData,
+  });
+  return (
+    <div
+      ref={drop.setNodeRef}
+      className={cn(
+        "sticky top-0 z-20 -mb-11 flex h-11 shrink-0 items-center justify-center gap-2 rounded-md border-2 border-dashed bg-sidebar text-muted-foreground text-xs shadow-sm transition-colors",
+        drop.isOver
+          ? "border-primary bg-sidebar-accent text-sidebar-foreground"
+          : "border-border",
+      )}
+    >
+      <ListXIcon className="size-4" aria-hidden="true" />
+      ここに落とすとカテゴリから外します
+    </div>
   );
 }
 
