@@ -145,7 +145,7 @@ export function SidebarRail({
       )}
       <nav
         aria-label="メールアカウントとフォルダ (折りたたみ中)"
-        className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-hidden py-1"
+        className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden py-1 [scrollbar-width:none]"
       >
         {sidebarEntries(unified).visible.map((entry) => {
           if (entry.folder) {

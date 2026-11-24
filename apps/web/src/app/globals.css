@@ -63,6 +63,15 @@
     --titlebar-height: 2.25rem;
   }
 
+  /*
+   * デスクトップ版では、端までスクロールしたときに画面全体が弾む (バウンスする) 動きを止める。
+   * Windows (WebView2) はアプリ側でも ElasticOverscroll を切っている (apps/desktop/src-tauri/tauri.conf.json)。
+   */
+  html[data-desktop],
+  html[data-desktop] body {
+    overscroll-behavior: none;
+  }
+
   body {
     @apply bg-background text-foreground;
     padding-top: var(--titlebar-height);

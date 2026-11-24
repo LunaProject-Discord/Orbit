@@ -78,6 +78,6 @@ export function interceptExternalLinks(
 }
 
 /** いちばん外側の画面から外部の URL へ移動する。アプリ側が止めて、既定のブラウザーで開く。 */
-function openExternally(url: string): void {
+export function openExternally(url: string): void {
   window.location.assign(url);
 }
