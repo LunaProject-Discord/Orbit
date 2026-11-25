@@ -127,7 +127,7 @@ export function IconPicker({
             style={colorStyle}
             className={
               compact
-                ? "size-8 shrink-0 p-0 font-normal pointer-coarse:size-11"
+                ? "size-9 shrink-0 p-0 font-normal pointer-coarse:size-11"
                 : "max-w-full justify-start gap-2 font-normal"
             }
           />

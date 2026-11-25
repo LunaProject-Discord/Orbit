@@ -1231,6 +1231,9 @@ function Section(props: {
   );
 }
 
+/** 表示名・アイコン・色の見出し。Label (leading-none) と同じ高さにそろえる。 */
+const FIELD_LABEL_CLASS = "font-medium text-sm leading-none";
+
 function AccountCard({
   account,
   accounts,
@@ -1328,8 +1331,8 @@ function AccountCard({
 
       {/* スマホ幅は 1 行目に表示名、2 行目にアイコンと色。広い画面ではアイコン・表示名・色を 1 行に。 */}
       <div className="flex flex-wrap items-start gap-x-3 gap-y-3">
-        <div className="flex flex-col gap-1.5">
-          <span id={`${id}-icon`} className="font-medium text-sm">
+        <div className="flex flex-col gap-2">
+          <span id={`${id}-icon`} className={FIELD_LABEL_CLASS}>
             アイコン
           </span>
           <IconPicker
@@ -1342,7 +1345,7 @@ function AccountCard({
             colorStyle={accountColorStyle(color)}
           />
         </div>
-        <div className="order-first flex min-w-0 basis-full flex-col gap-1.5 sm:order-none sm:flex-1 sm:basis-0">
+        <div className="order-first flex min-w-0 basis-full flex-col gap-2 sm:order-none sm:flex-1 sm:basis-0">
           <Label htmlFor={`${id}-name`}>表示名</Label>
           <Input
             id={`${id}-name`}
@@ -1357,11 +1360,11 @@ function AccountCard({
                 event.currentTarget.blur();
               }
             }}
-            className="h-8"
+            className="h-9"
           />
         </div>
-        <div className="flex flex-col gap-1.5">
-          <span id={`${id}-color`} className="font-medium text-sm">
+        <div className="flex flex-col gap-2">
+          <span id={`${id}-color`} className={FIELD_LABEL_CLASS}>
             色
           </span>
           <ColorPicker
@@ -1369,6 +1372,7 @@ function AccountCard({
             chosen={account.color !== null}
             onChange={chooseColor}
             labelledBy={`${id}-color`}
+            triggerClassName="h-9 pointer-coarse:h-11"
           />
         </div>
       </div>
