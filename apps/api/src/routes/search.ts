@@ -1,9 +1,14 @@
 import { zValidator } from "@hono/zod-validator";
 import { mailAccounts, mailboxes, messageMailboxes, messages } from "@orbit/db";
-import { and, desc, eq, type SQL, sql } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import {
+  listOrderQuery,
+  listOrderSql,
+  nextListCursor,
+} from "../lib/list-order.js";
 import {
   highlightTerms,
   isEmptySearch,
@@ -65,11 +70,8 @@ const searchQuery = z.object({
   /** 日付の区切りに使うタイムゾーン (Asia/Tokyo など)。 */
   timeZone: z.string().max(64).refine(isTimeZone).default("UTC"),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  /** 前のページの nextCursor。 */
-  cursor: z.string().max(100).optional(),
+  ...listOrderQuery,
 });
-
-const cursorPattern = /^(\d{4}-[0-9T:.-]+Z)_([0-9a-f-]{36})$/;
 
 /** 抜粋で、見つかった語の前に付ける文字数と全体の長さ。 */
 const EXCERPT_BEFORE = 30;
@@ -161,15 +163,11 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
       )`,
     );
 
-    if (query.cursor) {
-      const match = cursorPattern.exec(query.cursor);
-      if (!match) {
-        return c.json({ error: "invalid_cursor" }, 400);
-      }
-      conditions.push(
-        sql`(${messages.receivedAt}, ${messages.id}) < (${match[1]}::timestamptz, ${match[2]}::uuid)`,
-      );
+    const order = listOrderSql(query, query.cursor);
+    if (!order) {
+      return c.json({ error: "invalid_cursor" }, 400);
     }
+    if (order.after) conditions.push(order.after);
 
     // 結果に添えるフォルダ。探したフォルダを優先し、「すべてのメール」やごみ箱は後回しにする。
     const preferred =
@@ -224,16 +222,17 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
         answered: messages.answered,
         excerpt,
         excerptPosition: position,
+        sortKey: order.key,
       })
       .from(messages)
       .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
       .where(and(...conditions))
-      .orderBy(desc(messages.receivedAt), desc(messages.id))
+      .orderBy(...order.orderBy)
       .limit(query.limit + 1);
 
     const page = rows
       .slice(0, query.limit)
-      .map(({ excerpt: text, excerptPosition, ...message }) => ({
+      .map(({ excerpt: text, excerptPosition, sortKey: _, ...message }) => ({
         ...message,
         // 検索結果は会話にまとめず、当てはまったメールを 1 通ずつ返す。
         threadCount: 1,
@@ -242,11 +241,9 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
           ? `${excerptPosition > EXCERPT_BEFORE + 1 ? "…" : ""}${text.replace(/\s+/g, " ").trim()}`
           : null,
       }));
-    const last = page.at(-1);
+    const last = rows[query.limit - 1];
     const nextCursor =
-      rows.length > query.limit && last
-        ? `${last.receivedAt.toISOString()}_${last.id}`
-        : null;
+      rows.length > query.limit && last ? nextListCursor(query, last) : null;
     return c.json({ messages: page, nextCursor, terms });
   });
 

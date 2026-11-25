@@ -12,6 +12,7 @@ import {
   clearAuthState,
 } from "@/lib/auth-state";
 import type { DateStyle } from "@/lib/format";
+import { isDefaultSort, type ListSort } from "@/lib/list-sort";
 import { usesAppOAuth } from "@/lib/native/oauth";
 import { reportReachable } from "@/lib/offline/network";
 import { apiUrl } from "@/lib/server-url";
@@ -1161,6 +1162,13 @@ export async function deleteAccount(id: string): Promise<void> {
   await apiFetch(`/v1/accounts/${id}`, { method: "DELETE" });
 }
 
+/** 一覧の並び順を問い合わせに加える。新しい順 (標準) なら何も付けない。 */
+function setSortQuery(query: URLSearchParams, sort: ListSort | undefined) {
+  if (!sort || isDefaultSort(sort)) return;
+  query.set("sort", sort.key);
+  query.set("order", sort.order);
+}
+
 export async function listMessages(
   params: {
     accountId?: string | null;
@@ -1168,6 +1176,8 @@ export async function listMessages(
     mailboxId?: string | null;
     cursor?: string | null;
     limit?: number;
+    /** 並び順。省略すると新しい順。 */
+    sort?: ListSort;
   },
   signal?: AbortSignal,
 ): Promise<MessagePage> {
@@ -1175,6 +1185,7 @@ export async function listMessages(
   if (params.accountId) query.set("accountId", params.accountId);
   if (params.mailboxId) query.set("mailboxId", params.mailboxId);
   if (params.cursor) query.set("cursor", params.cursor);
+  setSortQuery(query, params.sort);
   return apiJson<MessagePage>(`/v1/messages?${query}`, { signal });
 }
 
@@ -1214,6 +1225,8 @@ export async function searchMessages(
     unifiedId?: string | null;
     cursor?: string | null;
     limit?: number;
+    /** 並び順。省略すると新しい順。 */
+    sort?: ListSort;
   },
   signal?: AbortSignal,
 ): Promise<SearchPage> {
@@ -1227,6 +1240,7 @@ export async function searchMessages(
   if (params.mailboxId) query.set("mailboxId", params.mailboxId);
   if (params.unifiedId) query.set("unifiedId", params.unifiedId);
   if (params.cursor) query.set("cursor", params.cursor);
+  setSortQuery(query, params.sort);
   if (filters.from.trim()) query.set("from", filters.from.trim());
   if (filters.to.trim()) query.set("to", filters.to.trim());
   if (filters.subject.trim()) query.set("subject", filters.subject.trim());
@@ -1435,11 +1449,12 @@ export async function saveSidebarCategories(
 /** 統合フォルダのメールの一覧。フォルダの一覧と同じ形で、会話ごとに 1 行。 */
 export async function listUnifiedMessages(
   id: string,
-  params: { cursor?: string | null; limit?: number },
+  params: { cursor?: string | null; limit?: number; sort?: ListSort },
   signal?: AbortSignal,
 ): Promise<MessagePage> {
   const query = new URLSearchParams({ limit: String(params.limit ?? 50) });
   if (params.cursor) query.set("cursor", params.cursor);
+  setSortQuery(query, params.sort);
   return apiJson<MessagePage>(`/v1/unified/${id}/messages?${query}`, {
     signal,
   });

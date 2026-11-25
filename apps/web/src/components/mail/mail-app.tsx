@@ -3,11 +3,13 @@
 import { cn } from "cn";
 import {
   InboxIcon,
+  LayoutListIcon,
   ListChecksIcon,
   MenuIcon,
   PenSquareIcon,
   PlusIcon,
   SearchIcon,
+  Table2Icon,
 } from "lucide-react";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
@@ -48,6 +50,7 @@ import {
 import { MessageView } from "@/components/mail/message-view";
 import { MoveDialog } from "@/components/mail/move-dialog";
 import { OutgoingList } from "@/components/mail/outgoing-list";
+import { PaneResizer } from "@/components/mail/pane-resizer";
 import {
   PermanentDeleteDialog,
   type PermanentDeleteRequest,
@@ -154,6 +157,7 @@ import { setTitleBarMenu } from "@/lib/desktop/title-bar-menu";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import { keepRows } from "@/lib/kept-rows";
+import { DEFAULT_SORT, isDefaultSort, sortComparator } from "@/lib/list-sort";
 import {
   mailboxLabel,
   refreshMailboxes,
@@ -208,7 +212,7 @@ import {
   skipsDeleteConfirm,
   splitForDelete,
 } from "@/lib/permanent-delete";
-import { usePreferences } from "@/lib/preferences";
+import { updatePreferences, usePreferences } from "@/lib/preferences";
 import {
   buildRoute,
   emptyRoute,
@@ -256,6 +260,11 @@ import {
   useSwipeSettings,
 } from "@/lib/swipe";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
+import {
+  MIN_PANE_WIDTH,
+  updateTableView,
+  useTableView,
+} from "@/lib/table-view";
 import {
   applyActionToThreads,
   flattenRows,
@@ -384,13 +393,8 @@ type Selection = {
   unifiedId: string | null;
 };
 
-/** 一覧の並び順 (新しい順)。a が b より後ろなら正。 */
-function compareMessages(a: MessageSummary, b: MessageSummary): number {
-  if (a.receivedAt !== b.receivedAt) {
-    return a.receivedAt < b.receivedAt ? 1 : -1;
-  }
-  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
-}
+/** 一覧の並び順で比べる関数の型。a が b より後ろなら正。 */
+type CompareMessages = (a: MessageSummary, b: MessageSummary) => number;
 
 /**
  * 一覧で見ているメールの本文を先に取得するよう頼む。頼めなくても (オフラインなど)
@@ -417,6 +421,7 @@ function mergeFirstPage(
   current: MessageSummary[],
   firstPage: MessageSummary[],
   firstPageHasMore: boolean,
+  compareMessages: CompareMessages,
 ): MessageSummary[] {
   const last = firstPage.at(-1);
   if (!last || !firstPageHasMore) return firstPage;
@@ -575,6 +580,21 @@ const MailView = memo(function MailView({
   /** 検索欄を置く場所を決める画面の幅。 */
   const wide = useMediaQuery("(min-width: 1024px)");
   const medium = useMediaQuery("(min-width: 768px)");
+  const tableView = useTableView();
+  /** 一覧をテーブル表示で出しているか。狭い画面 (幅 768px 未満) ではカード表示にする。 */
+  const tableShown = preferences.listLayout === "table" && medium;
+  /** 一覧の並び順。テーブル表示の見出しで選んだ順で、カード表示ではいつも新しい順。 */
+  const listSort = tableShown ? tableView.sort : DEFAULT_SORT;
+  const listSortKey = `${listSort.key}:${listSort.order}`;
+  const listSortRef = useRef(listSort);
+  listSortRef.current = listSort;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 並び順は listSortKey で見分ける
+  const compareMessages = useMemo(
+    () => sortComparator(listSort),
+    [listSortKey],
+  );
+  const compareMessagesRef = useRef<CompareMessages>(compareMessages);
+  compareMessagesRef.current = compareMessages;
   /** 検索結果で目立たせる語 (サーバーが検索欄の入力から求める)。 */
   const [searchTerms, setSearchTerms] = useState<string[]>([]);
 
@@ -671,6 +691,7 @@ const MailView = memo(function MailView({
         moveSnapshotsRef.current,
         pendingMailboxesRef.current ?? [],
         selection,
+        compareMessagesRef.current,
       );
     },
     [],
@@ -895,12 +916,14 @@ const MailView = memo(function MailView({
       { accountId, mailboxId, unifiedId: unified }: Selection,
       cursor: string | null,
     ) => {
-      const params = { accountId, mailboxId, cursor, limit: PAGE_SIZE };
+      const sort = listSortRef.current;
+      const params = { accountId, mailboxId, cursor, limit: PAGE_SIZE, sort };
       if (starredRef.current) {
         const page = await searchMessages({
           ...starredSearch,
           cursor,
           limit: PAGE_SIZE,
+          sort,
         });
         return { page, terms: null };
       }
@@ -911,6 +934,7 @@ const MailView = memo(function MailView({
           const page = await listUnifiedMessages(unified, {
             cursor,
             limit: PAGE_SIZE,
+            sort,
           });
           return { page, terms: null };
         }
@@ -919,6 +943,7 @@ const MailView = memo(function MailView({
           unifiedId: unified,
           cursor,
           limit: PAGE_SIZE,
+          sort,
         });
         return { page, terms: page.terms };
       }
@@ -939,7 +964,13 @@ const MailView = memo(function MailView({
         setNextCursor(null);
         setListError(null);
         // サーバーの応答を待たずに、端末に保存してある一覧を先に出す。
-        if (!searchRef.current && !starredRef.current && !selection.unifiedId) {
+        // 端末に保存してあるのは新しい順の一覧なので、ほかの並び順では使わない。
+        if (
+          !searchRef.current &&
+          !starredRef.current &&
+          !selection.unifiedId &&
+          isDefaultSort(listSortRef.current)
+        ) {
           void cachedMessages(selection, PAGE_SIZE).then((saved) => {
             if (!saved || request !== listRequest.current) return;
             const rows = overlayPending(saved.messages, selection);
@@ -960,9 +991,14 @@ const MailView = memo(function MailView({
           current && !reset
             ? keepRows(
                 current,
-                mergeFirstPage(current, fetched, page.nextCursor !== null),
+                mergeFirstPage(
+                  current,
+                  fetched,
+                  page.nextCursor !== null,
+                  compareMessagesRef.current,
+                ),
                 kept,
-                compareMessages,
+                compareMessagesRef.current,
               )
             : fetched,
         );
@@ -1347,7 +1383,8 @@ const MailView = memo(function MailView({
       // 一覧を取得し直すのを待たずに、控えておいた行を戻す。
       setMessages(
         (current) =>
-          current && restoreRows(current, group.rows, compareMessages),
+          current &&
+          restoreRows(current, group.rows, compareMessagesRef.current),
       );
       // 開いていたメールを操作で閉じていたら、開き直す。
       // (操作のあとに隣のメールへ移っていた場合も、元のメールへ戻る。)
@@ -1628,6 +1665,7 @@ const MailView = memo(function MailView({
     unifiedId,
     search,
     starred,
+    listSortKey,
     loadFirstPage,
   ]);
 
@@ -3392,7 +3430,23 @@ const MailView = memo(function MailView({
             selectedMessageId ? "hidden" : "flex",
             (settingsOpen || standaloneMessage) && "hidden!",
           )}
+          // テーブル表示では、一覧の幅を右端のつまみで変えられる (メールの表示と並べる広い画面)。
+          style={
+            tableShown && wide
+              ? {
+                  width: tableView.paneWidth,
+                  minWidth: MIN_PANE_WIDTH,
+                  maxWidth: "calc(100vw - 40rem)",
+                }
+              : undefined
+          }
         >
+          {tableShown && wide && (
+            <PaneResizer
+              width={tableView.paneWidth}
+              onChange={(paneWidth) => updateTableView({ paneWidth })}
+            />
+          )}
           <div className="flex shrink-0 flex-col">
             {selecting ? (
               <SelectionToolbar
@@ -3444,6 +3498,32 @@ const MailView = memo(function MailView({
                   !wide &&
                   !selectedMessageId &&
                   searchBox("popup")}
+                {medium && !draftsSelected && special !== "outgoing" && (
+                  <Hint
+                    label={
+                      tableShown
+                        ? "カード表示に切り替え"
+                        : "テーブル表示に切り替え"
+                    }
+                  >
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={
+                        tableShown
+                          ? "カード表示に切り替え"
+                          : "テーブル表示に切り替え"
+                      }
+                      onClick={() =>
+                        updatePreferences({
+                          listLayout: tableShown ? "cards" : "table",
+                        })
+                      }
+                    >
+                      {tableShown ? <LayoutListIcon /> : <Table2Icon />}
+                    </Button>
+                  </Hint>
+                )}
                 {!draftsSelected &&
                   special !== "outgoing" &&
                   (messages?.length ?? 0) > 0 && (
@@ -3559,6 +3639,8 @@ const MailView = memo(function MailView({
               ) : (
                 <MessageList
                   ref={messageListRef}
+                  layout={tableShown ? "table" : "cards"}
+                  sort={listSort}
                   scrollRef={listScrollRef}
                   onPrefetch={handlePrefetch}
                   onWarm={handleWarm}

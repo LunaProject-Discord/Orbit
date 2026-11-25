@@ -25,6 +25,14 @@ import { Hint } from "@/components/hint";
 import { ExactTime } from "@/components/mail/exact-time";
 import { MessageMenuItems } from "@/components/mail/message-context-menu";
 import {
+  TABLE_LEFT_PAD,
+  TABLE_LEFT_PAD_SELECTING,
+  TABLE_ROW_HEIGHT,
+  TableCells,
+  TableHeader,
+  toggledCell,
+} from "@/components/mail/message-table";
+import {
   BAND_IGNORE_ATTRIBUTE,
   useRubberBand,
 } from "@/components/mail/rubber-band";
@@ -42,10 +50,12 @@ import type { MessageSummary, ThreadMessage } from "@/lib/api";
 import { BodyPrefetcher, type PrefetchReason } from "@/lib/body-prefetch";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { addressLabel, formatListDate } from "@/lib/format";
+import type { ListSort } from "@/lib/list-sort";
 import type { ActionHandler, ActionOptions } from "@/lib/permanent-delete";
 import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
 import type { SwipeOutcome } from "@/lib/swipe";
+import { gridTemplate, type TableColumn, useTableView } from "@/lib/table-view";
 import { flattenRows, itemKey, type ThreadRows } from "@/lib/thread-rows";
 
 /** 一覧を外から操作するための窓口。 */
@@ -88,8 +98,18 @@ const ESTIMATED_CHILD_HEIGHT = 52;
 /** 見えている範囲の前後に余分に描画しておく行数。 */
 const OVERSCAN = 8;
 
+/** テーブル表示で使う列と、CSS grid の列の幅の指定。 */
+type TableLayout = { columns: readonly TableColumn[]; template: string };
+
 type Props = {
   ref?: Ref<MessageListHandle>;
+  /**
+   * 一覧の見た目。cards は差出人・件名・本文を重ねたカード、table は列に分けた表
+   * (Thunderbird のテーブル表示に当たる)。省略すると cards。
+   */
+  layout?: "cards" | "table";
+  /** テーブル表示の見出しに出す、いまの並び順。 */
+  sort?: ListSort;
   /** 一覧をスクロールさせている要素。見えている範囲の行だけを描画するのに使う。 */
   scrollRef: RefObject<HTMLElement | null>;
   messages: MessageSummary[] | null;
@@ -214,16 +234,47 @@ function ThreadChildRow({
   child,
   selected,
   showRecipients,
+  table,
+  selecting,
   onSelect,
 }: {
   child: ThreadMessage;
   selected: boolean;
   showRecipients: boolean;
+  table: TableLayout | null;
+  /** 複数選択中 (会話の行と列の位置を揃える)。 */
+  selecting: boolean;
   onSelect: () => void;
 }) {
   const preferences = usePreferences();
   const dateStyle = useDateStyle();
   const unread = !child.seen;
+  if (table) {
+    return (
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected ? "true" : undefined}
+        className={cn(
+          "grid w-full select-none items-center pr-8 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+          selecting ? TABLE_LEFT_PAD_SELECTING : TABLE_LEFT_PAD,
+          selected && "bg-muted",
+        )}
+        style={{
+          gridTemplateColumns: table.template,
+          height: TABLE_ROW_HEIGHT[preferences.density],
+        }}
+      >
+        <TableCells
+          row={{ ...child, threadCount: 1 }}
+          columns={table.columns}
+          recipients={showRecipients}
+          dateStyle={dateStyle}
+          child
+        />
+      </button>
+    );
+  }
   return (
     <button
       type="button"
@@ -310,6 +361,7 @@ const MessageRow = memo(function MessageRow({
   prefetcher,
   handlers,
   canOpenWindow,
+  table,
 }: {
   message: MessageSummary;
   /** 仮想化の並びでの位置 (高さの実測に使う)。 */
@@ -332,6 +384,8 @@ const MessageRow = memo(function MessageRow({
   prefetcher: BodyPrefetcher;
   handlers: RowHandlers;
   canOpenWindow: boolean;
+  /** テーブル表示の列。null ならカード表示。 */
+  table: TableLayout | null;
 }) {
   const preferences = usePreferences();
   const dateStyle = useDateStyle();
@@ -402,12 +456,15 @@ const MessageRow = memo(function MessageRow({
                   : `会話のメール ${message.threadCount} 通を一覧に表示`
               }
               onClick={() => handlers.toggleExpand(message.id)}
-              className="absolute top-0 left-0 z-10 flex h-full w-5 items-start justify-start rounded-sm pl-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset pointer-coarse:w-7"
+              className={cn(
+                "absolute top-0 left-0 z-10 flex h-full w-5 justify-start rounded-sm pl-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset pointer-coarse:w-7",
+                table ? "items-center" : "items-start",
+              )}
             >
               <ChevronRightIcon
                 className={cn(
                   "size-3.5 transition-transform",
-                  chevronTop[preferences.density],
+                  !table && chevronTop[preferences.density],
                   expanded && "rotate-90",
                 )}
                 aria-hidden="true"
@@ -423,120 +480,178 @@ const MessageRow = memo(function MessageRow({
                 handlers.toggleCheck(message.id, event.shiftKey)
               }
               className={cn(
-                "absolute left-4 z-10",
-                checkboxTop[preferences.density],
+                "absolute z-10",
+                table
+                  ? "top-1/2 left-5 -translate-y-1/2"
+                  : cn("left-4", checkboxTop[preferences.density]),
               )}
             />
           )}
-          <button
-            type="button"
-            onClick={(event) => {
-              // Shift / Ctrl (Cmd) を押しながら、または選択中は、開かずにチェックを切り替える。
-              if (event.shiftKey) handlers.toggleCheck(message.id, true);
-              else if (selecting || event.ctrlKey || event.metaKey) {
-                handlers.toggleCheck(message.id, false);
-              } else handlers.select(message.id);
-            }}
-            aria-current={selected ? "true" : undefined}
-            className={cn(
-              "flex w-full select-none flex-col gap-0.5 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
-              rowPadding[preferences.density],
-              selecting && "pl-11",
-              selected && "bg-muted",
-              checked && "bg-primary/10 hover:bg-primary/15",
-            )}
-          >
-            <span className="flex items-center gap-2">
-              {unread && (
-                <span
-                  className="size-2 shrink-0 rounded-full bg-primary"
-                  aria-hidden="true"
-                />
+          {table ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                if (event.shiftKey) handlers.toggleCheck(message.id, true);
+                else if (selecting || event.ctrlKey || event.metaKey) {
+                  handlers.toggleCheck(message.id, false);
+                } else {
+                  // スターと未読の列を押したときは、開かずに切り替える (Thunderbird と同じ)。
+                  const cell = toggledCell(event.target);
+                  if (cell === "flagged") {
+                    handlers.action(message.threadMessageIds, {
+                      action: "set_flags",
+                      flagged: !message.flagged,
+                    });
+                  } else if (cell === "unread") {
+                    handlers.action(message.threadMessageIds, {
+                      action: "set_flags",
+                      seen: !message.seen,
+                    });
+                  } else handlers.select(message.id);
+                }
+              }}
+              aria-current={selected ? "true" : undefined}
+              className={cn(
+                "grid w-full select-none items-center pr-8 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                selecting ? TABLE_LEFT_PAD_SELECTING : TABLE_LEFT_PAD,
+                selected && "bg-muted",
+                checked && "bg-primary/10 hover:bg-primary/15",
               )}
-              <span
-                className={cn(
-                  "min-w-0 truncate text-sm",
-                  unread ? "font-semibold" : "text-muted-foreground",
+              style={{
+                gridTemplateColumns: table.template,
+                height: TABLE_ROW_HEIGHT[preferences.density],
+              }}
+            >
+              <TableCells
+                row={message}
+                columns={table.columns}
+                recipients={showRecipients}
+                dateStyle={dateStyle}
+                subject={
+                  message.subject ? (
+                    <Highlighted
+                      text={message.subject}
+                      terms={highlightTerms}
+                    />
+                  ) : undefined
+                }
+                mark={mark ?? null}
+                location={location ?? null}
+              />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={(event) => {
+                // Shift / Ctrl (Cmd) を押しながら、または選択中は、開かずにチェックを切り替える。
+                if (event.shiftKey) handlers.toggleCheck(message.id, true);
+                else if (selecting || event.ctrlKey || event.metaKey) {
+                  handlers.toggleCheck(message.id, false);
+                } else handlers.select(message.id);
+              }}
+              aria-current={selected ? "true" : undefined}
+              className={cn(
+                "flex w-full select-none flex-col gap-0.5 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                rowPadding[preferences.density],
+                selecting && "pl-11",
+                selected && "bg-muted",
+                checked && "bg-primary/10 hover:bg-primary/15",
+              )}
+            >
+              <span className="flex items-center gap-2">
+                {unread && (
+                  <span
+                    className="size-2 shrink-0 rounded-full bg-primary"
+                    aria-hidden="true"
+                  />
                 )}
-              >
-                {unread && <span className="sr-only">未読 </span>}
-                {showRecipients
-                  ? message.to.length > 0
-                    ? `宛先: ${message.to.map(addressLabel).join("、")}`
-                    : "(宛先なし)"
-                  : addressLabel(message.from[0])}
-              </span>
-              {message.threadCount > 1 && (
                 <span
-                  role="img"
-                  className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
-                  aria-label={`${message.threadCount} 通のやり取り`}
+                  className={cn(
+                    "min-w-0 truncate text-sm",
+                    unread ? "font-semibold" : "text-muted-foreground",
+                  )}
                 >
-                  {message.threadCount}
+                  {unread && <span className="sr-only">未読 </span>}
+                  {showRecipients
+                    ? message.to.length > 0
+                      ? `宛先: ${message.to.map(addressLabel).join("、")}`
+                      : "(宛先なし)"
+                    : addressLabel(message.from[0])}
                 </span>
-              )}
-              {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
-              <span className="flex-1" />
-              {preferences.showListIcons && message.answered && (
-                <ReplyIcon
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                  aria-label="返信済み"
-                />
-              )}
-              {preferences.showListIcons && message.flagged && (
-                <StarIcon
-                  className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
-                  aria-label="スター付き"
-                />
-              )}
-              {preferences.showListIcons && message.hasAttachments && (
-                <PaperclipIcon
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                  aria-label="添付ファイルあり"
-                />
-              )}
-              {mark && (
-                <Hint label={mark.name}>
+                {message.threadCount > 1 && (
                   <span
                     role="img"
-                    aria-label={mark.name}
-                    className="flex shrink-0"
+                    className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
+                    aria-label={`${message.threadCount} 通のやり取り`}
                   >
-                    {mark.mark}
+                    {message.threadCount}
                   </span>
-                </Hint>
-              )}
-              <ExactTime
-                value={message.receivedAt}
-                className="shrink-0 text-muted-foreground text-xs tabular-nums"
-              >
-                {formatListDate(message.receivedAt, new Date(), dateStyle)}
-              </ExactTime>
-            </span>
-            <span className={cn("truncate text-sm", unread && "font-semibold")}>
-              {message.subject ? (
-                <Highlighted text={message.subject} terms={highlightTerms} />
-              ) : (
-                "(件名なし)"
-              )}
-            </span>
-            {preview && preferences.previewLines > 0 && (
-              <span
-                className={cn(
-                  "text-muted-foreground text-xs",
-                  previewClamp[preferences.previewLines],
                 )}
+                {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
+                <span className="flex-1" />
+                {preferences.showListIcons && message.answered && (
+                  <ReplyIcon
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                    aria-label="返信済み"
+                  />
+                )}
+                {preferences.showListIcons && message.flagged && (
+                  <StarIcon
+                    className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+                    aria-label="スター付き"
+                  />
+                )}
+                {preferences.showListIcons && message.hasAttachments && (
+                  <PaperclipIcon
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                    aria-label="添付ファイルあり"
+                  />
+                )}
+                {mark && (
+                  <Hint label={mark.name}>
+                    <span
+                      role="img"
+                      aria-label={mark.name}
+                      className="flex shrink-0"
+                    >
+                      {mark.mark}
+                    </span>
+                  </Hint>
+                )}
+                <ExactTime
+                  value={message.receivedAt}
+                  className="shrink-0 text-muted-foreground text-xs tabular-nums"
+                >
+                  {formatListDate(message.receivedAt, new Date(), dateStyle)}
+                </ExactTime>
+              </span>
+              <span
+                className={cn("truncate text-sm", unread && "font-semibold")}
               >
-                <Highlighted text={preview} terms={highlightTerms} />
+                {message.subject ? (
+                  <Highlighted text={message.subject} terms={highlightTerms} />
+                ) : (
+                  "(件名なし)"
+                )}
               </span>
-            )}
-            {location && (
-              <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
-                <FolderIcon className="size-3 shrink-0" aria-hidden="true" />
-                <span className="truncate">{location}</span>
-              </span>
-            )}
-          </button>
+              {preview && preferences.previewLines > 0 && (
+                <span
+                  className={cn(
+                    "text-muted-foreground text-xs",
+                    previewClamp[preferences.previewLines],
+                  )}
+                >
+                  <Highlighted text={preview} terms={highlightTerms} />
+                </span>
+              )}
+              {location && (
+                <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
+                  <FolderIcon className="size-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{location}</span>
+                </span>
+              )}
+            </button>
+          )}
         </SwipeRow>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-56">
@@ -554,6 +669,8 @@ const MessageRow = memo(function MessageRow({
 
 export function MessageList({
   ref,
+  layout = "cards",
+  sort,
   scrollRef,
   messages,
   error,
@@ -612,10 +729,10 @@ export function MessageList({
   const [scrollMargin, setScrollMargin] = useState(0);
   const hasError = error !== null;
   const hasRows = count > 0;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 帯や行の有無が変わったときに測り直す
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 帯や見出し、行の有無が変わったときに測り直す
   useLayoutEffect(() => {
     setScrollMargin(listRef.current?.offsetTop ?? 0);
-  }, [hasError, hasRows]);
+  }, [hasError, hasRows, layout]);
 
   // 見えている範囲の行だけを描画する (仮想化)。行の高さは本文の行数などで変わるので、
   // 描画した行を実測して位置を決める。
@@ -624,13 +741,40 @@ export function MessageList({
     () => flattenRows(messages ?? [], expandedIds, threadRows),
     [messages, expandedIds, threadRows],
   );
+
+  // テーブル表示の列。アカウントの列は複数のアカウントが並ぶ一覧、場所の列は検索結果など
+  // 場所を出す一覧でだけ使う。
+  const preferences = usePreferences();
+  const tableView = useTableView();
+  const isTable = layout === "table";
+  const hasAccountColumn =
+    accountMark !== undefined && preferences.showAccountMark;
+  const hasLocationColumn = locationLabel !== undefined;
+  const tableColumns = useMemo(
+    () =>
+      tableView.columns.filter(
+        (column) =>
+          (column.id !== "account" || hasAccountColumn) &&
+          (column.id !== "location" || hasLocationColumn),
+      ),
+    [tableView.columns, hasAccountColumn, hasLocationColumn],
+  );
+  const table = useMemo<TableLayout | null>(() => {
+    if (!isTable) return null;
+    const columns = tableColumns.filter((column) => column.visible);
+    return { columns, template: gridTemplate(columns) };
+  }, [isTable, tableColumns]);
+  const tableRowHeight = TABLE_ROW_HEIGHT[preferences.density];
+
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) =>
-      items[index]?.kind === "row"
-        ? ESTIMATED_ROW_HEIGHT
-        : ESTIMATED_CHILD_HEIGHT,
+      isTable
+        ? tableRowHeight
+        : items[index]?.kind === "row"
+          ? ESTIMATED_ROW_HEIGHT
+          : ESTIMATED_CHILD_HEIGHT,
     getItemKey: (index) => {
       const item = items[index];
       return item ? itemKey(item) : index;
@@ -803,6 +947,16 @@ export function MessageList({
           }}
         />
       )}
+      {table && (
+        <TableHeader
+          columns={table.columns}
+          allColumns={tableColumns}
+          template={table.template}
+          sort={sort ?? { key: "date", order: "desc" }}
+          recipients={showRecipients}
+          selecting={selecting}
+        />
+      )}
       {error && (
         <p
           role="alert"
@@ -856,6 +1010,8 @@ export function MessageList({
                     selectedChild.id === item.child.id
                   }
                   showRecipients={showRecipients}
+                  table={table}
+                  selecting={selecting}
                   onSelect={() => onSelectChild(item.parent.id, item.child.id)}
                 />
               </li>
@@ -883,6 +1039,7 @@ export function MessageList({
               prefetcher={prefetcher}
               handlers={handlers}
               canOpenWindow={onOpenWindow !== undefined}
+              table={table}
             />
           );
         })}

@@ -25,6 +25,11 @@ import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import type { EventsHub } from "../lib/events-hub.js";
 import {
+  listOrderQuery,
+  listOrderSql,
+  nextListCursor,
+} from "../lib/list-order.js";
+import {
   enqueueMessageAction,
   messageActionBody,
 } from "../lib/message-actions.js";
@@ -45,8 +50,7 @@ const listQuery = z.object({
   /** 省略すると受信トレイ。 */
   mailboxId: z.uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  /** 前のページの nextCursor。 */
-  cursor: z.string().max(100).optional(),
+  ...listOrderQuery,
 });
 
 const prefetchBody = z.object({
@@ -58,8 +62,6 @@ const prefetchBody = z.object({
 
 /** 1 つの会話として返すメッセージの上限。 */
 const THREAD_LIMIT = 200;
-
-const cursorPattern = /^(\d{4}-[0-9T:.-]+Z)_([0-9a-f-]{36})$/;
 
 export function messageRoutes({
   db,
@@ -79,15 +81,11 @@ export function messageRoutes({
         ? eq(mailboxes.id, query.mailboxId)
         : eq(mailboxes.specialUse, "inbox"),
     );
-    if (query.cursor) {
-      const match = cursorPattern.exec(query.cursor);
-      if (!match) {
-        return c.json({ error: "invalid_cursor" }, 400);
-      }
-      conditions.push(
-        sql`(${messages.receivedAt}, ${messages.id}) < (${match[1]}::timestamptz, ${match[2]}::uuid)`,
-      );
+    const order = listOrderSql(query, query.cursor);
+    if (!order) {
+      return c.json({ error: "invalid_cursor" }, 400);
     }
+    if (order.after) conditions.push(order.after);
 
     // 会話ごとに 1 行にまとめ、表示中のフォルダで最も新しいメッセージを代表にする。
     conditions.push(isThreadHead);
@@ -119,28 +117,29 @@ export function messageRoutes({
               or d.remote_provider_id = ${messages.providerMessageId})
           limit 1
         )`,
+        sortKey: order.key,
       })
       .from(messages)
       .innerJoin(messageMailboxes, eq(messageMailboxes.messageId, messages.id))
       .innerJoin(mailboxes, eq(mailboxes.id, messageMailboxes.mailboxId))
       .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
       .where(and(...conditions))
-      .orderBy(desc(messages.receivedAt), desc(messages.id))
+      .orderBy(...order.orderBy)
       .limit(query.limit + 1);
 
     // 既読・スター・添付は、会話のうち表示中のフォルダにある分をまとめた値にする。
-    const page = rows.slice(0, query.limit).map(({ thread, ...row }) => ({
-      ...row,
-      seen: thread.seen,
-      flagged: thread.flagged,
-      hasAttachments: thread.hasAttachments,
-      threadMessageIds: thread.ids,
-    }));
-    const last = page.at(-1);
+    const page = rows
+      .slice(0, query.limit)
+      .map(({ thread, sortKey, ...row }) => ({
+        ...row,
+        seen: thread.seen,
+        flagged: thread.flagged,
+        hasAttachments: thread.hasAttachments,
+        threadMessageIds: thread.ids,
+      }));
+    const last = rows[query.limit - 1];
     const nextCursor =
-      rows.length > query.limit && last
-        ? `${last.receivedAt.toISOString()}_${last.id}`
-        : null;
+      rows.length > query.limit && last ? nextListCursor(query, last) : null;
     return c.json({ messages: page, nextCursor });
   });
 

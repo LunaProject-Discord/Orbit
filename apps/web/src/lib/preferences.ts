@@ -22,6 +22,11 @@ export type Preferences = {
   monoFont: string;
   /** 画面全体の文字の大きさ (標準に対する %)。 */
   fontSize: number;
+  /**
+   * メール一覧の見た目。cards は差出人・件名・本文を重ねたカード、table は列に分けた表。
+   * table は一覧に十分な幅がある画面 (幅 768px 以上) でだけ使い、狭い画面ではカードにする。
+   */
+  listLayout: "cards" | "table";
   /** メール一覧の行の間隔。 */
   density: "compact" | "standard" | "comfortable";
   /** メール一覧に出す本文の行数。0 なら出さない。 */
@@ -79,6 +84,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   serifFont: "",
   monoFont: "",
   fontSize: 100,
+  listLayout: "cards",
   density: "standard",
   previewLines: 2,
   showAccountMark: true,
@@ -111,6 +117,7 @@ const choices: {
 } = {
   font: ["default", "system", "sans", "serif", "mono", "custom"],
   fontSize: FONT_SIZES,
+  listLayout: ["cards", "table"],
   density: ["compact", "standard", "comfortable"],
   previewLines: [0, 1, 2, 3],
   accountMarkStyle: ["icon", "dot"],
