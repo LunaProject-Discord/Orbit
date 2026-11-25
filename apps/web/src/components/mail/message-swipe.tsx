@@ -15,6 +15,7 @@ import { startsDrawerOpen } from "@/lib/drawer-swipe";
 import {
   insideSidewaysScroller,
   insideTextField,
+  restartsWheelSwipe,
   shouldCommit,
   swipeAxis,
   swipeThreshold,
@@ -125,6 +126,8 @@ export function MessageSwipe({
     coolUntil: 0,
     /** 最後に、横の動きを枠のスクロールに任せた時刻。 */
     scrolledAt: 0,
+    /** 直前に届いた横の動き (慣性の残りと、新しいスワイプを見分ける)。 */
+    lastDx: 0,
   });
 
   const width = () => rootRef.current?.offsetWidth ?? 0;
@@ -437,17 +440,22 @@ export function MessageSwipe({
         }
       };
       const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.5;
+      const previousDx = wheeling.lastDx;
+      if (horizontal) wheeling.lastDx = event.deltaX;
       if (!wheeling.active) {
         if (!horizontal || Math.abs(event.deltaX) < 2) return;
-        // 操作の直後に続く慣性の分は、次の操作を始めない。
+        // 操作の直後に続く慣性の分は、次の操作を始めない。ただし、慣性の途中や直後でも、
+        // 新しく払い始めた動き (強くなった、向きが変わった) なら受け付ける (続けて払えるように)。
         if (Date.now() < wheeling.coolUntil) {
-          event.preventDefault();
-          wheeling.coolUntil = Date.now() + WHEEL_COOLDOWN_MS;
-          return;
+          if (!restartsWheelSwipe(previousDx, event.deltaX)) {
+            event.preventDefault();
+            wheeling.coolUntil = Date.now() + WHEEL_COOLDOWN_MS;
+            return;
+          }
+          wheeling.coolUntil = 0;
         }
         // その向きに行うことが無ければ、ブラウザーの動作 (戻る / 進むなど) に任せる。
         if (!(event.deltaX > 0 ? state.left : state.right)) return;
-        if (settleTimer.current) return;
         if (insideTextField(event.target)) return;
         if (
           insideSidewaysScroller(
@@ -464,6 +472,8 @@ export function MessageSwipe({
           wheeling.scrolledAt = Date.now();
           return;
         }
+        // 前のスワイプの送り出しの途中なら、その場で移ってから始める。
+        interrupt();
         wheeling.active = true;
       }
       event.preventDefault();

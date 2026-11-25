@@ -11,14 +11,17 @@ const WIDTH = 400;
 function Viewer({
   count,
   onShow,
+  wheel = false,
 }: {
   count: number;
   onShow: (index: number) => void;
+  wheel?: boolean;
 }) {
   const [index, setIndex] = useState(0);
   onShow(index);
   return (
     <MessageSwipe
+      wheel={wheel}
       resetKey={`message-${index}`}
       left={
         index < count - 1
@@ -101,6 +104,31 @@ function swipeLeft(id: number) {
   touch("touchend", id, x, at);
 }
 
+/** トラックパッドの横の動きを 1 つ送り、時計を 1 コマ進める。 */
+function wheel(deltaX: number) {
+  const event = new Event("wheel", { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    deltaX: { value: deltaX },
+    deltaY: { value: 0 },
+    deltaMode: { value: 0 },
+    ctrlKey: { value: false },
+  });
+  act(() => {
+    surface().dispatchEvent(event);
+  });
+  act(() => vi.advanceTimersByTime(16));
+}
+
+/** 2 本指で左へ払う。指を離したあとも、弱まりながら慣性の動きが続く。 */
+function trackpadSwipeLeft(inertia: number) {
+  for (const delta of [2, 6, 14, 24, 30, 30, 26]) wheel(delta);
+  let delta = 22;
+  for (let frame = 0; frame < inertia; frame++) {
+    wheel(Math.max(1, Math.round(delta)));
+    delta *= 0.9;
+  }
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(WIDTH);
@@ -162,5 +190,35 @@ describe("MessageSwipe", () => {
     swipeLeft(2);
     act(() => vi.advanceTimersByTime(200));
     expect(shown).toBe(2);
+  });
+
+  it("トラックパッドで払ったあとの慣性では、続けて移らない", () => {
+    let shown = -1;
+    act(() =>
+      root.render(
+        <Viewer count={5} wheel onShow={(index) => (shown = index)} />,
+      ),
+    );
+    trackpadSwipeLeft(80);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shown).toBe(1);
+  });
+
+  it("トラックパッドで、慣性の途中や直後に続けて払っても受け付ける", () => {
+    let shown = -1;
+    act(() =>
+      root.render(
+        <Viewer count={5} wheel onShow={(index) => (shown = index)} />,
+      ),
+    );
+    // 慣性の途中で次を払う。
+    trackpadSwipeLeft(8);
+    trackpadSwipeLeft(8);
+    // 慣性が終わった直後に次を払う。
+    trackpadSwipeLeft(40);
+    act(() => vi.advanceTimersByTime(50));
+    trackpadSwipeLeft(40);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shown).toBe(4);
   });
 });
