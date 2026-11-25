@@ -381,3 +381,44 @@ export function writeSearchHistory(history: string[]): void {
     // 保存できなくても検索はできる。
   }
 }
+
+/** チップを「from:」などのコロンまでと、その後ろ (値) に分ける。 */
+export function splitChipRaw(
+  raw: string,
+): { prefix: string; value: string } | null {
+  const match = /^(-?[a-z]+[:：])(.*)$/iu.exec(raw);
+  return match ? { prefix: match[1] ?? "", value: match[2] ?? "" } : null;
+}
+
+/** その場で編集しているチップ。 */
+export type InPlaceDraft = {
+  key: string;
+  negated: boolean;
+  prefix: string;
+  value: string;
+};
+
+/**
+ * 確定したチップのうち 1 つをその場で編集しているときの、入力の全体。
+ * others は編集中のもの以外のチップ、at は編集中のチップの位置。値が空なら条件ごと除き、
+ * 引用符を閉じ忘れていれば閉じる。
+ */
+export function inPlaceText(
+  others: readonly SearchChip[],
+  at: number,
+  draft: InPlaceDraft,
+  rest: string,
+): string {
+  const value = draft.value.trim();
+  if (value === "") return joinChips(others, rest);
+  const quotes = (value.match(/["“”]/gu) ?? []).length;
+  const raw = `${draft.prefix}${value}${quotes % 2 === 1 ? '"' : ""}`;
+  const chips = [...others];
+  chips.splice(Math.min(at, chips.length), 0, {
+    raw,
+    key: draft.key,
+    value: value.replace(/["“”]/gu, ""),
+    negated: draft.negated,
+  });
+  return joinChips(chips, rest);
+}

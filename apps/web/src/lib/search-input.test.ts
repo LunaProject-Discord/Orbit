@@ -6,10 +6,12 @@ import {
   completeQuery,
   filtersToText,
   hasOpenSpace,
+  inPlaceText,
   joinSearchInput,
   quoteValue,
   removeSearchHistory,
   replaceToken,
+  splitChipRaw,
   splitSearchInput,
   tokenAt,
 } from "@/lib/search-input";
@@ -160,5 +162,49 @@ describe("hasOpenSpace / removeSearchHistory / chipLabel", () => {
         negated: true,
       }),
     ).toEqual({ label: "状態", value: "未読" });
+  });
+});
+
+describe("inPlaceText", () => {
+  const chips = splitSearchInput(
+    "from:sato is:unread has:attachment 会議",
+  ).chips;
+  const others = chips.filter((_, index) => index !== 1);
+  const draft = { key: "is", negated: false, prefix: "is:", value: "starred" };
+
+  it("編集中のチップを元の位置に戻す", () => {
+    expect(inPlaceText(others, 1, draft, "会議")).toBe(
+      "from:sato is:starred has:attachment 会議",
+    );
+  });
+
+  it("値が空なら条件ごと除く", () => {
+    expect(inPlaceText(others, 1, { ...draft, value: " " }, "")).toBe(
+      "from:sato has:attachment ",
+    );
+  });
+
+  it("閉じ忘れた引用符を閉じる", () => {
+    expect(
+      inPlaceText(
+        [],
+        0,
+        {
+          key: "subject",
+          negated: false,
+          prefix: "subject:",
+          value: '"週次 報',
+        },
+        "",
+      ),
+    ).toBe('subject:"週次 報" ');
+  });
+
+  it("チップを書き方と値に分ける", () => {
+    expect(splitChipRaw('-subject:"週次 報告"')).toEqual({
+      prefix: "-subject:",
+      value: '"週次 報告"',
+    });
+    expect(splitChipRaw("会議")).toBeNull();
   });
 });
