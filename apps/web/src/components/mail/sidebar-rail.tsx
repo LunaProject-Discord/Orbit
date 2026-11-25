@@ -5,8 +5,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   LayersPlusIcon,
-  PanelLeftCloseIcon,
-  PanelLeftOpenIcon,
+  MenuIcon,
   SettingsIcon,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -38,7 +37,10 @@ import {
 } from "@/lib/sidebar-fold";
 import { builtinLabel, builtinStyle, type SidebarEntry } from "@/lib/unified";
 
-/** サイドバーを折りたたむ / 広げたままにするボタン。帯とサイドバーの同じ位置に置く。 */
+/**
+ * サイドバーを折りたたむ / 広げたままにするボタン (ハンバーガーメニューのアイコン)。
+ * 帯とサイドバーの同じ位置に置く。
+ */
 export function SidebarFoldButton({
   folded,
   onToggle,
@@ -62,7 +64,7 @@ export function SidebarFoldButton({
         onClick={onToggle}
         className={className}
       >
-        {folded ? <PanelLeftOpenIcon /> : <PanelLeftCloseIcon />}
+        <MenuIcon />
       </Button>
     </Hint>
   );
