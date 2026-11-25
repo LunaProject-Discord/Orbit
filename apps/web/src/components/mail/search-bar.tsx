@@ -442,6 +442,21 @@ export function SearchBox({
     }
     placeCaret(to === "end" ? inputView(parts).length : 0);
   };
+  /**
+   * 条件の入力 (その場での編集か、末尾の入力中の条件) をやめて、普通の語の入力に戻る
+   * (語の部分や欄の空いている所を押したとき)。値があれば条件を確定し、空なら捨てる。
+   * at は語の中のカーソルの位置 (省略すると末尾)。
+   */
+  const leaveToText = (at?: number) => {
+    if (inPlace) {
+      leaveChip("end");
+    } else if (editing) {
+      setFull(joinSearchInput({ ...settledParts(), editing: null }));
+    } else {
+      return;
+    }
+    if (at !== undefined) placeCaret(at);
+  };
   /** その場で編集しているチップの値が変わった。空白で区切ったら確定する。 */
   const setInPlaceValue = (next: string, nextCaret?: number) => {
     if (!inPlace) return;
@@ -1028,9 +1043,16 @@ export function SearchBox({
             />
           )}
           {/* チップと入力欄は、ひとまとまりで横にスクロールする。 */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: 空いている所を押したら語の入力に戻るだけ (キーボードでは ← → で移れる) */}
           <div
             ref={scrollRef}
             onScroll={(event) => measureChips(event.currentTarget)}
+            // 条件を入力している間に欄の空いている所を押したら、普通の語の入力に戻る。
+            onMouseDown={(event) => {
+              if (event.target !== event.currentTarget || !slot) return;
+              event.preventDefault();
+              leaveToText();
+            }}
             className={cn(
               "flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
               // 隠れている側の端は、欄の端で切れて見えないよう薄くする。
@@ -1134,10 +1156,17 @@ export function SearchBox({
               </ul>
             )}
             {(editing || inPlace || openGroup) && rest !== "" && (
+              // biome-ignore lint/a11y/noStaticElementInteractions: 押した位置で語の入力に戻るだけ (キーボードでは ← → で移れる)
               <span
                 style={{ order: SLOT_ORDER - 2 }}
+                // 押したら、条件の入力をやめて、押した位置から語を編集する。
+                onMouseDown={(event) => {
+                  if (!slot) return;
+                  event.preventDefault();
+                  leaveToText(textOffsetAt(event.clientX, event.clientY));
+                }}
                 className={cn(
-                  "shrink-0 whitespace-pre",
+                  "shrink-0 cursor-text whitespace-pre",
                   screen ? "text-base" : "text-sm",
                   !screen &&
                     "hidden group-focus-within/search:inline @3xl/pane:inline",
@@ -1302,6 +1331,20 @@ const PANEL_MIN_WIDTH = 288;
 
 /** 末尾の入力欄 (と条件以外の語) の並び順。チップ (0, 1, 2…) より後ろに置く。 */
 const SLOT_ORDER = 10000;
+
+/** 画面の位置にある文字の、その文字の並び (テキスト) の中での位置。測れなければ undefined。 */
+function textOffsetAt(x: number, y: number): number | undefined {
+  const doc = document as Document & {
+    caretPositionFromPoint?: (
+      x: number,
+      y: number,
+    ) => { offset: number } | null;
+  };
+  if (doc.caretPositionFromPoint) {
+    return doc.caretPositionFromPoint(x, y)?.offset;
+  }
+  return document.caretRangeFromPoint?.(x, y)?.startOffset;
+}
 
 /** 欄 (input) に出す文字 (入力中の条件の値か、条件以外の語)。 */
 function inputView(parts: SearchInputParts): string {
