@@ -4,9 +4,9 @@ import { cn } from "cn";
 import { ChevronRightIcon, LayersIcon } from "lucide-react";
 import { type FormEvent, useId, useMemo, useState } from "react";
 import { ColorPicker } from "@/components/mail/color-picker";
-import { ContactInput } from "@/components/mail/contact-suggestions";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { MailboxIcon, MailboxMark } from "@/components/mail/mailbox-icon";
+import { UnifiedConditionBuilder } from "@/components/mail/unified-condition-builder";
 import { BUILTIN_ICONS } from "@/components/mail/unified-mark";
 import {
   AlertDialog,
@@ -30,13 +30,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ACCOUNT_TEXT_CLASS, accountColorStyle } from "@/lib/account-colors";
 import { AccountMark } from "@/lib/account-icons";
 import {
@@ -47,7 +40,6 @@ import {
   deleteUnifiedFolder,
   type MailboxSummary,
   saveBuiltinStyle,
-  type UnifiedFilters,
   type UnifiedFolder,
   type UnifiedFolderInput,
   type UnifiedRole,
@@ -67,8 +59,13 @@ import {
   isScopeEmpty,
   scopeMailboxes,
   UNIFIED_ROLES,
-  WITHIN_DAYS,
 } from "@/lib/unified";
+import {
+  type EditableGroup,
+  fromEditable,
+  toEditable,
+  toUnifiedFilters,
+} from "@/lib/unified-conditions";
 
 /** 開いている統合フォルダのダイアログ。 */
 export type UnifiedDialogTarget =
@@ -94,7 +91,6 @@ type Props = {
 
 /** 色を選んでいないときに、色を選ぶ画面の出だしにする色。 */
 const DEFAULT_COLOR = "#737373";
-const NO_PERIOD = "none";
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -134,6 +130,10 @@ export function UnifiedDialog({
 }: Props) {
   const id = useId();
   const [form, setForm] = useState<Form>(newForm);
+  // 条件は、入力欄が作り直されないよう、画面用の ID を付けた形で編集する。
+  const [conditions, setConditions] = useState<EditableGroup>(() =>
+    toEditable(emptyUnifiedFilters.root),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 閉じるアニメーションの間も内容が消えないよう、最後の対象を覚えておく。
@@ -141,10 +141,13 @@ export function UnifiedDialog({
   if (target && target !== shown) {
     setShown(target);
     setError(null);
-    if (target.kind === "create") setForm(newForm());
-    else if (target.kind === "edit") {
+    if (target.kind === "create") {
+      setForm(newForm());
+      setConditions(toEditable(emptyUnifiedFilters.root));
+    } else if (target.kind === "edit") {
       const { name, icon, color, scope, filters } = target.folder;
       setForm({ name, icon, color, scope, filters });
+      setConditions(toEditable(toUnifiedFilters(filters).root));
     } else if (target.kind === "builtin") {
       setForm({ ...newForm(), ...target.style, name: target.style.name ?? "" });
     }
@@ -163,13 +166,8 @@ export function UnifiedDialog({
       ...current,
       scope: { ...current.scope, ...patch },
     }));
-  const setFilters = (patch: Partial<UnifiedFilters>) =>
-    setForm((current) => ({
-      ...current,
-      filters: { ...current.filters, ...patch },
-    }));
 
-  const { scope, filters } = form;
+  const { scope } = form;
   const sources = useMemo(
     () => scopeMailboxes(scope, mailboxes),
     [scope, mailboxes],
@@ -189,6 +187,7 @@ export function UnifiedDialog({
     const input: Form = {
       ...form,
       name: form.name.trim(),
+      filters: { version: 2, root: fromEditable(conditions) },
       scope: {
         ...scope,
         mailboxIds:
@@ -425,122 +424,13 @@ export function UnifiedDialog({
                     <legend className="mb-2 font-medium text-sm">
                       条件 (任意)
                       <span className="mt-1 block font-normal text-muted-foreground text-xs">
-                        指定した条件のすべてに当てはまるメールだけを表示します。
+                        条件をグループにまとめ、「すべて」「いずれか」「どれでもない」を組み合わせられます。
                       </span>
                     </legend>
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                      {(
-                        [
-                          ["unread", "未読のみ"],
-                          ["flagged", "スター付き"],
-                          ["hasAttachment", "添付あり"],
-                        ] as const
-                      ).map(([key, label]) => (
-                        <div key={key} className="flex items-center gap-2">
-                          <Checkbox
-                            id={`${id}-${key}`}
-                            checked={filters[key]}
-                            onCheckedChange={(checked) =>
-                              setFilters({ [key]: checked === true })
-                            }
-                          />
-                          <Label
-                            htmlFor={`${id}-${key}`}
-                            className="font-normal"
-                          >
-                            {label}
-                          </Label>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
-                      {(
-                        [
-                          ["from", "差出人", "名前またはアドレス"],
-                          ["to", "宛先", "名前またはアドレス"],
-                          ["subject", "件名", ""],
-                          [
-                            "text",
-                            "含まれる語句",
-                            "件名・差出人・宛先・本文から検索",
-                          ],
-                        ] as const
-                      ).map(([key, label, placeholder]) => (
-                        <div key={key} className="contents">
-                          <Label
-                            htmlFor={`${id}-${key}`}
-                            className="font-normal"
-                          >
-                            {label}
-                          </Label>
-                          {key === "from" || key === "to" ? (
-                            <ContactInput
-                              id={`${id}-${key}`}
-                              value={filters[key]}
-                              maxLength={200}
-                              placeholder={placeholder}
-                              onValueChange={(value) =>
-                                setFilters({ [key]: value })
-                              }
-                              className="h-8"
-                            />
-                          ) : (
-                            <Input
-                              id={`${id}-${key}`}
-                              value={filters[key]}
-                              maxLength={200}
-                              placeholder={placeholder}
-                              autoComplete="off"
-                              onChange={(event) =>
-                                setFilters({ [key]: event.target.value })
-                              }
-                              className="h-8"
-                            />
-                          )}
-                        </div>
-                      ))}
-                      <Label htmlFor={`${id}-period`} className="font-normal">
-                        期間
-                      </Label>
-                      <Select
-                        items={[
-                          { value: NO_PERIOD, label: "指定しない" },
-                          ...WITHIN_DAYS.map(({ days, label }) => ({
-                            value: String(days),
-                            label,
-                          })),
-                        ]}
-                        value={
-                          filters.withinDays === null
-                            ? NO_PERIOD
-                            : String(filters.withinDays)
-                        }
-                        onValueChange={(next) =>
-                          setFilters({
-                            withinDays:
-                              next === NO_PERIOD || next === null
-                                ? null
-                                : Number(next),
-                          })
-                        }
-                      >
-                        <SelectTrigger
-                          id={`${id}-period`}
-                          size="sm"
-                          className="w-fit"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent align="start" className="w-auto">
-                          <SelectItem value={NO_PERIOD}>指定しない</SelectItem>
-                          {WITHIN_DAYS.map(({ days, label }) => (
-                            <SelectItem key={days} value={String(days)}>
-                              {label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <UnifiedConditionBuilder
+                      value={conditions}
+                      onChange={setConditions}
+                    />
                   </fieldset>
                 </>
               )}

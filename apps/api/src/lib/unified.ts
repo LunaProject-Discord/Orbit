@@ -10,8 +10,14 @@ import {
 } from "@orbit/db";
 import { and, eq, inArray, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
-import { parseSearchQuery } from "./search-query.js";
-import { termCondition } from "./search-sql.js";
+import { filterConditions } from "./unified-filters.js";
+
+export {
+  filterConditions,
+  normalizeFilters,
+  readFilters,
+  unifiedFilters,
+} from "./unified-filters.js";
 
 /**
  * 統合フォルダ。複数のアカウントのフォルダを 1 つの一覧にまとめ、条件で絞り込む。
@@ -41,18 +47,6 @@ export const unifiedScope = z.object({
   all: z.boolean(),
   roles: z.array(z.enum(UNIFIED_ROLES)).max(UNIFIED_ROLES.length),
   mailboxIds: z.array(z.uuid()).max(500),
-});
-
-const word = z.string().max(200);
-export const unifiedFilters = z.object({
-  unread: z.boolean(),
-  flagged: z.boolean(),
-  hasAttachment: z.boolean(),
-  from: word,
-  to: word,
-  subject: word,
-  text: word,
-  withinDays: z.number().int().min(1).max(3650).nullable(),
 });
 
 /** 並び順と隠す項目。決まった名前か、統合フォルダの ID。 */
@@ -106,16 +100,6 @@ export function normalizeScope(scope: UnifiedScope): UnifiedScope {
   };
 }
 
-export function normalizeFilters(filters: UnifiedFilters): UnifiedFilters {
-  return {
-    ...filters,
-    from: filters.from.trim(),
-    to: filters.to.trim(),
-    subject: filters.subject.trim(),
-    text: filters.text.trim(),
-  };
-}
-
 /**
  * フォルダが、統合フォルダの集める場所に入っているか。
  * 外側の問い合わせの mailboxes を参照する。
@@ -132,30 +116,6 @@ export function scopeCondition(scope: UnifiedScope): SQL {
     parts.push(inArray(mailboxes.id, scope.mailboxIds));
   }
   return parts.length === 0 ? sql`false` : (or(...parts) as SQL);
-}
-
-/** メールが、統合フォルダの条件に当てはまるか。外側の問い合わせの messages を参照する。 */
-export function filterConditions(filters: UnifiedFilters): SQL[] {
-  const conditions: SQL[] = [];
-  if (filters.unread) conditions.push(eq(messages.seen, false));
-  if (filters.flagged) conditions.push(eq(messages.flagged, true));
-  if (filters.hasAttachment) conditions.push(eq(messages.hasAttachments, true));
-  for (const field of ["from", "to", "subject"] as const) {
-    const text = filters[field].trim();
-    if (text !== "") {
-      conditions.push(termCondition({ field, text, negated: false }));
-    }
-  }
-  // 「含む文字」は検索欄と同じ書き方 (空白で区切ると、すべてを含むメール) で解釈する。
-  for (const term of parseSearchQuery(filters.text).terms) {
-    conditions.push(termCondition(term));
-  }
-  if (filters.withinDays !== null) {
-    conditions.push(
-      sql`${messages.receivedAt} >= now() - make_interval(days => ${filters.withinDays}::int)`,
-    );
-  }
-  return conditions;
 }
 
 type Folder = { scope: UnifiedScope; filters: UnifiedFilters };

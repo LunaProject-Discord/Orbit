@@ -20,6 +20,7 @@ import {
   normalizeCategories,
   normalizeFilters,
   ownScope,
+  readFilters,
   sidebarCategories,
   sidebarLayout,
   unifiedFilters,
@@ -122,6 +123,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
     const folders = await Promise.all(
       rows.map(async (row) => ({
         ...row,
+        filters: readFilters(row.filters),
         unreadCount: await unifiedUnreadCount(db, userId, row),
       })),
     );
@@ -155,7 +157,10 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
       })
       .returning(publicColumns);
     await notifyChanged(db, userId);
-    return c.json({ folder }, 201);
+    return c.json(
+      { folder: folder && { ...folder, filters: readFilters(folder.filters) } },
+      201,
+    );
   });
 
   /** サイドバー上部の項目の並び順と、隠す項目を保存する。 */
@@ -263,7 +268,9 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
         return c.json({ error: "not_found" }, 404);
       }
       await notifyChanged(db, userId);
-      return c.json({ folder });
+      return c.json({
+        folder: { ...folder, filters: readFilters(folder.filters) },
+      });
     },
   );
 

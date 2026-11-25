@@ -167,12 +167,22 @@ describe("describeUnified", () => {
     const text = describeUnified(
       {
         scope: { all: false, roles: ["sent"], mailboxIds: ["work", "gone"] },
-        filters: { ...emptyUnifiedFilters, unread: true, withinDays: 7 },
+        filters: {
+          version: 2,
+          root: {
+            type: "group",
+            match: "all",
+            children: [
+              { type: "flag", flag: "unread", negate: false },
+              { type: "received", days: 7, negate: false },
+            ],
+          },
+        },
       },
       [mailbox("work", null)],
     );
     expect(text).toBe(
-      "全アカウントの送信済み、選んだフォルダ 1 個 / 未読、7 日以内",
+      "全アカウントの送信済み、選んだフォルダ 1 個 / 未読、受信が7 日以内",
     );
   });
 });
