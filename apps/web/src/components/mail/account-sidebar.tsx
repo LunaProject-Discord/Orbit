@@ -6,7 +6,9 @@ import {
   closestCenter,
   DndContext,
   type DragEndEvent,
+  type DragOverEvent,
   MouseSensor,
+  pointerWithin,
   TouchSensor,
   useDroppable,
   useSensor,
@@ -37,7 +39,14 @@ import {
   SettingsIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
 import { Hint } from "@/components/hint";
 import { MailboxMark } from "@/components/mail/mailbox-icon";
@@ -80,6 +89,7 @@ import type { SpecialView } from "@/lib/route";
 import {
   groupSidebar,
   mergeSubsetOrder,
+  orderSections,
   toggleCategoryFolded,
   useFoldedCategories,
 } from "@/lib/sidebar-categories";
@@ -145,13 +155,71 @@ type SortData = {
   category?: string | null;
 };
 
-/** カテゴリの見出しの、項目を落とせる場所に持たせる情報。 */
 /** カテゴリの見出し (category が null なら「カテゴリから外す」の場所) に持たせる情報。 */
 type CategoryDropData = { kind: "category-drop"; category: string | null };
 
-const CATEGORY_GROUP = "categories";
-/** 並び替えの単位。カテゴリごとに分ける (カテゴリなしは空の文字列)。 */
-const accountGroup = (category: string | null) => `accounts:${category ?? ""}`;
+/** カテゴリなしのアカウントとカテゴリを、混ぜて並び替える単位。 */
+const SECTION_GROUP = "sections";
+/** 並び替えの単位。カテゴリごとに分ける (カテゴリなしのアカウントは、カテゴリと同じ並び)。 */
+const accountGroup = (category: string | null) =>
+  category === null ? SECTION_GROUP : `accounts:${category}`;
+
+/**
+ * 別のカテゴリへドラッグしている間に出す、入る位置の目印。
+ * id の項目の上 (before) か下 (after)、または category のカテゴリの最後 (end)。
+ */
+type DropHint =
+  | { id: string; edge: "before" | "after" }
+  | { id: string; edge: "end" }
+  | null;
+const DropHintContext = createContext<DropHint>(null);
+
+/** 入る位置の目印の線。親は relative にしておく。 */
+function DropLine({ edge }: { edge: "before" | "after" }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "pointer-events-none absolute inset-x-1 z-20 h-0.5 rounded-full bg-primary",
+        edge === "before" ? "-top-px" : "-bottom-px",
+      )}
+    />
+  );
+}
+
+/**
+ * moved を target の位置へ動かすと (moveTo と同じ)、target の上と下のどちらに入るか。
+ * all は全体の並び。moved が載っていなければ上。
+ */
+function dropEdge(
+  all: readonly string[],
+  moved: string,
+  target: string,
+): "before" | "after" {
+  const from = all.indexOf(moved);
+  return from !== -1 && from < all.indexOf(target) ? "after" : "before";
+}
+
+/** keys から key を除き、target の上 (before) か下 (after) に入れ直した並び。 */
+function insertAt(
+  keys: readonly string[],
+  key: string,
+  target: string,
+  edge: "before" | "after",
+): string[] {
+  const rest = keys.filter((item) => item !== key);
+  const index = rest.indexOf(target);
+  if (index === -1) return [...rest, key];
+  rest.splice(edge === "before" ? index : index + 1, 0, key);
+  return rest;
+}
+
+/** id の項目に出す目印 (無ければ null)。 */
+function useDropLine(id: string) {
+  const hint = useContext(DropHintContext);
+  if (!hint || hint.id !== id || hint.edge === "end") return null;
+  return <DropLine edge={hint.edge} />;
+}
 const viewGroup = (category: string | null) => `views:${category ?? ""}`;
 
 /** カテゴリの見出しの右クリックメニューなどから呼ぶ操作。 */
@@ -160,10 +228,19 @@ export type CategoryActions = {
   onCreate: (key?: string) => void;
   onRename: (category: SidebarCategory) => void;
   onDelete: (category: SidebarCategory) => void;
-  /** 項目を別のカテゴリへ移す。categoryId が null ならカテゴリから外す。 */
-  onAssign: (key: string, categoryId: string | null) => void;
+  /**
+   * 項目を別のカテゴリへ移す。categoryId が null ならカテゴリから外す。
+   * sectionOrder を渡すと、カテゴリなしのアカウントとカテゴリの並びも一緒に保存する。
+   */
+  onAssign: (
+    key: string,
+    categoryId: string | null,
+    sectionOrder?: string[],
+  ) => void;
   /** カテゴリを並び替えた。ids は新しい表示順。 */
   onReorder: (ids: string[]) => void;
+  /** カテゴリなしのアカウントとカテゴリを、混ぜて並び替えた。keys は新しい表示順。 */
+  onReorderSections: (keys: string[]) => void;
 };
 
 /** サイドバー上部の項目 (初めからある項目と統合フォルダ) の右クリックメニューから呼ぶ操作。 */
@@ -186,20 +263,32 @@ export type ViewMenuActions = {
 const sameGroup: CollisionDetection = (args) => {
   const active = args.active.data.current as SortData | undefined;
   const crossCategory = active?.kind === "account" || active?.kind === "view";
-  return closestCenter({
-    ...args,
-    droppableContainers: args.droppableContainers.filter((container) => {
-      const data = container.data.current as
-        | SortData
-        | CategoryDropData
-        | undefined;
-      if (!data || !active) return false;
-      if (data.kind === "category-drop") return crossCategory;
-      return crossCategory
-        ? data.kind === active.kind
-        : "group" in data && data.group === active.group;
-    }),
+  const droppableContainers = args.droppableContainers.filter((container) => {
+    const data = container.data.current as
+      | SortData
+      | CategoryDropData
+      | undefined;
+    if (!data || !active) return false;
+    if (data.kind === "category-drop") return crossCategory;
+    if (data.group === active.group) return true;
+    // アカウントと上部の項目は、別のカテゴリの同じ種類の項目にも落とせる。
+    return crossCategory && data.kind === active.kind;
   });
+  // ポインターの下にあるものを優先する (カテゴリのように背の高い項目を動かすと、
+  // 項目の中心どうしで比べたのでは、狙った位置からずれるため)。
+  // 重なっていれば、見出し > 項目 > カテゴリ全体 の順に選ぶ。
+  const rank = (id: string | number) => {
+    const data = args.droppableContainers.find(
+      (container) => container.id === id,
+    )?.data.current as SortData | CategoryDropData | undefined;
+    if (data?.kind === "category-drop") return 0;
+    return data?.kind === "category" ? 2 : 1;
+  };
+  const under = pointerWithin({ ...args, droppableContainers });
+  if (under.length > 0) {
+    return [...under].sort((a, b) => rank(a.id) - rank(b.id));
+  }
+  return closestCenter({ ...args, droppableContainers });
 };
 
 const labelOf = (item: { data: { current?: unknown } }) =>
@@ -332,7 +421,12 @@ export function AccountSidebar({
     () => groupSidebar(unified, accounts ?? []),
     [unified, accounts],
   );
-  const categoryIds = unified.categories.map((category) => category.id);
+  const sections = useMemo(
+    () => orderSections(groups, unified.sectionOrder),
+    [groups, unified.sectionOrder],
+  );
+  const sectionKeys = sections.map((section) => section.key);
+  const [dropHint, setDropHint] = useState<DropHint>(null);
   const byAccount = useMemo(() => {
     const result = new Map<string, MailboxSummary[]>();
     for (const mailbox of mailboxes ?? []) {
@@ -414,7 +508,15 @@ export function AccountSidebar({
   const accountIds = (accounts ?? []).map((account) => account.id);
   /** ids は同じ group (カテゴリの中など) の新しい順。全体の並びに戻して保存する。 */
   const move = (data: SortData, ids: string[], id: string) => {
-    if (data.kind === "account") {
+    if (data.group === SECTION_GROUP) {
+      // カテゴリなしのアカウントとカテゴリを混ぜた並び。アカウントの順番も変わっていれば保存する。
+      const accountOrder = ids.filter((key) => accountIds.includes(key));
+      const current = accountIds.filter((key) => accountOrder.includes(key));
+      if (accountOrder.join() !== current.join()) {
+        onReorderAccounts(mergeSubsetOrder(accountIds, accountOrder));
+      }
+      categoryActions.onReorderSections(ids);
+    } else if (data.kind === "account") {
       onReorderAccounts(mergeSubsetOrder(accountIds, ids));
     } else if (data.kind === "view") {
       onReorderViews(mergeSubsetOrder(viewKeys, ids));
@@ -427,8 +529,13 @@ export function AccountSidebar({
   const categoryName = (id: string | null) =>
     unified.categories.find((category) => category.id === id)?.name;
   /** 項目を別のカテゴリへ移した (ドラッグで)。 */
-  const assign = (data: SortData, key: string, category: string | null) => {
-    categoryActions.onAssign(key, category);
+  const assign = (
+    data: SortData,
+    key: string,
+    category: string | null,
+    sectionOrder?: string[],
+  ) => {
+    categoryActions.onAssign(key, category, sectionOrder);
     const name = categoryName(category);
     setAnnouncement(
       name
@@ -440,7 +547,38 @@ export function AccountSidebar({
     refocusRef.current = id;
     move(data, ids, id);
   };
+  /** 別のカテゴリへドラッグしている間、入る位置の目印を出す。 */
+  const handleDragOver = ({ active, over }: DragOverEvent) => {
+    const data = active.data.current as SortData | undefined;
+    const target = over?.data.current as
+      | SortData
+      | CategoryDropData
+      | undefined;
+    if (!data || !over || !target) return setDropHint(null);
+    const key = String(active.id);
+    if (target.kind === "category-drop") {
+      setDropHint(
+        target.category !== null && target.category !== (data.category ?? null)
+          ? { id: target.category, edge: "end" }
+          : null,
+      );
+      return;
+    }
+    if (
+      (data.kind === "account" || data.kind === "view") &&
+      target.group !== data.group
+    ) {
+      const all = data.kind === "account" ? accountIds : viewKeys;
+      setDropHint({
+        id: String(over.id),
+        edge: dropEdge(all, key, String(over.id)),
+      });
+      return;
+    }
+    setDropHint(null);
+  };
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    setDropHint(null);
     setDraggingCategorized(false);
     setTimeout(() => {
       draggedRef.current = false;
@@ -466,7 +604,17 @@ export function AccountSidebar({
     ) {
       const all = data.kind === "account" ? accountIds : viewKeys;
       const ids = moveTo(all, key, String(over.id));
-      assign(data, key, to);
+      // カテゴリなしのアカウントの間に落としたら、混ぜた並びのその位置に入れる。
+      const sectionOrder =
+        target.group === SECTION_GROUP
+          ? insertAt(
+              sectionKeys,
+              key,
+              String(over.id),
+              dropEdge(all, key, String(over.id)),
+            )
+          : undefined;
+      assign(data, key, to, sectionOrder);
       if (ids) {
         if (data.kind === "account") onReorderAccounts(ids);
         else onReorderViews(ids);
@@ -562,32 +710,37 @@ export function AccountSidebar({
     const ids = list.map((account) => account.id);
     return (
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-        {list.map((account) => (
-          <AccountItem
-            key={account.id}
-            account={account}
-            accountIds={ids}
-            category={category}
-            categories={unified.categories}
-            categoryActions={categoryActions}
-            tree={trees.get(account.id) ?? []}
-            collapsed={collapsed}
-            onToggle={toggle}
-            accounts={accounts ?? []}
-            selected={folderView && selectedAccountId === account.id}
-            selectedMailboxId={selectedMailboxId}
-            onSelect={onSelect}
-            onMove={move}
-            onKeyboardMove={moveByKeyboard}
-            onReauth={onReauth}
-            mailboxes={byAccount.get(account.id) ?? NO_MAILBOXES}
-            menuActions={menuActions}
-            onMenuOpenChange={handleMenuOpenChange}
-          />
-        ))}
+        {list.map((account) => renderAccount(account, ids, category))}
       </SortableContext>
     );
   };
+  const renderAccount = (
+    account: Account,
+    ids: string[],
+    category: string | null,
+  ) => (
+    <AccountItem
+      key={account.id}
+      account={account}
+      accountIds={ids}
+      category={category}
+      categories={unified.categories}
+      categoryActions={categoryActions}
+      tree={trees.get(account.id) ?? []}
+      collapsed={collapsed}
+      onToggle={toggle}
+      accounts={accounts ?? []}
+      selected={folderView && selectedAccountId === account.id}
+      selectedMailboxId={selectedMailboxId}
+      onSelect={onSelect}
+      onMove={move}
+      onKeyboardMove={moveByKeyboard}
+      onReauth={onReauth}
+      mailboxes={byAccount.get(account.id) ?? NO_MAILBOXES}
+      menuActions={menuActions}
+      onMenuOpenChange={handleMenuOpenChange}
+    />
+  );
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
@@ -634,61 +787,68 @@ export function AccountSidebar({
                 (data.category ?? null) !== null,
             );
           }}
+          onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
           onDragCancel={() => {
+            setDropHint(null);
             setDraggingCategorized(false);
             // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
             if (!menuPressRef.current) draggedRef.current = false;
           }}
         >
-          {draggingCategorized && <UncategorizeDrop />}
-          {renderViews(groups.views, null)}
-          <button
-            type="button"
-            onClick={viewActions.onCreate}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0"
-          >
-            <LayersPlusIcon />
-            統合フォルダを作成
-          </button>
-          <span className="h-2 shrink-0" aria-hidden="true" />
-          {accounts === null ? (
-            <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
-              <Skeleton className="h-5 w-40" />
-              <Skeleton className="h-5 w-32" />
-            </div>
-          ) : (
-            renderAccounts(groups.accounts, null)
-          )}
-          <SortableContext
-            items={categoryIds}
-            strategy={verticalListSortingStrategy}
-          >
-            {groups.categories.map((group) => {
-              const { category } = group;
-              const empty =
-                group.views.length === 0 && group.accounts.length === 0;
-              return (
-                <CategorySection
-                  key={category.id}
-                  category={category}
-                  ids={categoryIds}
-                  folded={foldedCategories.has(category.id)}
-                  unread={group.accounts.reduce(
-                    (sum, account) => sum + inboxUnreadOf(account.id),
-                    0,
-                  )}
-                  empty={empty}
-                  onKeyboardMove={moveByKeyboard}
-                  actions={categoryActions}
-                  onMenuOpenChange={handleMenuOpenChange}
-                >
-                  {renderViews(group.views, category.id)}
-                  {renderAccounts(group.accounts, category.id)}
-                </CategorySection>
-              );
-            })}
-          </SortableContext>
+          <DropHintContext.Provider value={dropHint}>
+            {draggingCategorized && <UncategorizeDrop />}
+            {renderViews(groups.views, null)}
+            <button
+              type="button"
+              onClick={viewActions.onCreate}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0"
+            >
+              <LayersPlusIcon />
+              統合フォルダを作成
+            </button>
+            <span className="h-2 shrink-0" aria-hidden="true" />
+            {accounts === null && (
+              <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
+                <Skeleton className="h-5 w-40" />
+                <Skeleton className="h-5 w-32" />
+              </div>
+            )}
+            {/* カテゴリなしのアカウントとカテゴリは、混ぜて並び替えられる。 */}
+            <SortableContext
+              items={sectionKeys}
+              strategy={verticalListSortingStrategy}
+            >
+              {sections.map((section) => {
+                if (section.account) {
+                  return renderAccount(section.account, sectionKeys, null);
+                }
+                const { group } = section;
+                const { category } = group;
+                const empty =
+                  group.views.length === 0 && group.accounts.length === 0;
+                return (
+                  <CategorySection
+                    key={category.id}
+                    category={category}
+                    ids={sectionKeys}
+                    folded={foldedCategories.has(category.id)}
+                    unread={group.accounts.reduce(
+                      (sum, account) => sum + inboxUnreadOf(account.id),
+                      0,
+                    )}
+                    empty={empty}
+                    onKeyboardMove={moveByKeyboard}
+                    actions={categoryActions}
+                    onMenuOpenChange={handleMenuOpenChange}
+                  >
+                    {renderViews(group.views, category.id)}
+                    {renderAccounts(group.accounts, category.id)}
+                  </CategorySection>
+                );
+              })}
+            </SortableContext>
+          </DropHintContext.Provider>
         </DndContext>
         <Button
           variant="ghost"
@@ -786,6 +946,7 @@ function ViewItem({
     label,
     category,
   };
+  const dropLine = useDropLine(entry.key);
   const item = useSortableItem(entry.key, sortData, onKeyboardMove);
   const { folder } = entry;
   return (
@@ -794,6 +955,7 @@ function ViewItem({
       style={item.style}
       className={cn("relative", item.isDragging && "z-10 opacity-70")}
     >
+      {dropLine}
       <ContextMenu onOpenChange={onMenuOpenChange}>
         <ContextMenuTrigger render={<div />}>
           <Hint label={label} side="right" whenClipped>
@@ -896,7 +1058,7 @@ function CategorySection({
   children: React.ReactNode;
 }) {
   const sortData: SortData = {
-    group: CATEGORY_GROUP,
+    group: SECTION_GROUP,
     ids,
     kind: "category",
     label: category.name,
@@ -911,6 +1073,9 @@ function CategorySection({
     } satisfies CategoryDropData,
   });
   const toggle = () => toggleCategoryFolded(category.id);
+  const hint = useContext(DropHintContext);
+  /** ほかのカテゴリの項目を、このカテゴリの見出しへドラッグしている。 */
+  const dropEnd = hint?.id === category.id && hint.edge === "end";
   return (
     <section
       ref={item.setNodeRef}
@@ -928,7 +1093,7 @@ function CategorySection({
               {...item.handle}
               className={cn(
                 "flex w-full touch-manipulation select-none items-center gap-2 rounded-md px-2 py-1 text-left font-medium text-muted-foreground text-xs pointer-coarse:min-h-11 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
-                (item.isDragging || drop.isOver) &&
+                (item.isDragging || drop.isOver || dropEnd) &&
                   "bg-sidebar-accent text-sidebar-foreground",
               )}
             >
@@ -977,6 +1142,8 @@ function CategorySection({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      {/* 中の最後に入ることを示す線 (折りたたんでいれば見出しの下)。 */}
+      {dropEnd && <DropLine edge="after" />}
       {!folded &&
         (empty ? (
           <p className="py-1.5 pr-2 pl-10 text-muted-foreground text-xs">
@@ -1070,6 +1237,7 @@ function AccountItem({
     category,
   };
   const item = useSortableItem(account.id, sortData, onKeyboardMove);
+  const dropLine = useDropLine(account.id);
   return (
     <div
       ref={item.setNodeRef}
@@ -1079,6 +1247,7 @@ function AccountItem({
         item.isDragging && "z-10 opacity-70",
       )}
     >
+      {dropLine}
       <ContextMenu onOpenChange={onMenuOpenChange}>
         <ContextMenuTrigger render={<div className="flex items-start" />}>
           <AccountToggle

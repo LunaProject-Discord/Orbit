@@ -1380,6 +1380,11 @@ export type UnifiedState = {
   builtins: Record<string, BuiltinStyle>;
   /** サイドバーのカテゴリ (上から順)。 */
   categories: SidebarCategory[];
+  /**
+   * カテゴリに入れていないアカウントとカテゴリの、混ぜた並び (ID)。
+   * どの位置にアカウントとカテゴリのどちらが来るかだけを決める。
+   */
+  sectionOrder: string[];
 };
 
 /** 初めからある項目の名前・アイコン・色を保存する。すべて null なら初期の設定に戻る。 */
@@ -1481,10 +1486,11 @@ export async function saveSidebarLayout(layout: SidebarLayout): Promise<void> {
 /** サイドバーのカテゴリをまとめて保存する。 */
 export async function saveSidebarCategories(
   categories: SidebarCategory[],
+  sectionOrder?: string[],
 ): Promise<void> {
   await apiFetch("/v1/unified/categories", {
     method: "PUT",
-    body: { categories },
+    body: sectionOrder ? { categories, sectionOrder } : { categories },
   });
 }
 

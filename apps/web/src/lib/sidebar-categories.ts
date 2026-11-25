@@ -31,6 +31,57 @@ export type SidebarGroups = {
   categories: CategoryGroup[];
 };
 
+/** サイドバーのアカウントの段に並ぶもの (カテゴリなしのアカウントか、カテゴリ)。 */
+export type SidebarSection =
+  | { kind: "account"; key: string; account: Account; group?: undefined }
+  | {
+      kind: "category";
+      key: string;
+      group: CategoryGroup;
+      account?: undefined;
+    };
+
+/**
+ * カテゴリなしのアカウントとカテゴリを、保存してある混ぜた並び (sectionOrder) のとおりに並べる。
+ * sectionOrder はどの位置がアカウントでどの位置がカテゴリかだけに使い、アカウントどうしは
+ * アカウントの並び順、カテゴリどうしはカテゴリの並び順に従う。載っていない分は、
+ * アカウント、カテゴリの順で後ろに足す (以前の版と同じ、アカウントの下にカテゴリ)。
+ */
+export function orderSections(
+  groups: Pick<SidebarGroups, "accounts" | "categories">,
+  sectionOrder: readonly string[],
+): SidebarSection[] {
+  const accountIds = new Set(groups.accounts.map((account) => account.id));
+  const categoryIds = new Set(
+    groups.categories.map((group) => group.category.id),
+  );
+  const accounts = [...groups.accounts];
+  const categories = [...groups.categories];
+  const result: SidebarSection[] = [];
+  const seen = new Set<string>();
+  const pushAccount = () => {
+    const account = accounts.shift();
+    if (account) {
+      result.push({ kind: "account", key: account.id, account });
+    }
+  };
+  const pushCategory = () => {
+    const group = categories.shift();
+    if (group) {
+      result.push({ kind: "category", key: group.category.id, group });
+    }
+  };
+  for (const key of sectionOrder) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (accountIds.has(key)) pushAccount();
+    else if (categoryIds.has(key)) pushCategory();
+  }
+  while (accounts.length > 0) pushAccount();
+  while (categories.length > 0) pushCategory();
+  return result;
+}
+
 /** 項目がどのカテゴリに入っているか (key → カテゴリの ID)。先に載っているカテゴリが優先。 */
 export function categoryIndex(
   categories: readonly SidebarCategory[],

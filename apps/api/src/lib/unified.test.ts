@@ -3,6 +3,7 @@ import {
   normalizeCategories,
   normalizeFilters,
   normalizeScope,
+  sectionOrder,
   sidebarCategories,
   sidebarLayout,
   unifiedFilters,
@@ -104,5 +105,13 @@ describe("サイドバーのカテゴリ", () => {
         { id: CATEGORY, name: "個人", items: [] },
       ]).success,
     ).toBe(false);
+  });
+});
+
+describe("カテゴリとアカウントの並び", () => {
+  it("ID を小文字に揃え、重複は受け付けない", () => {
+    expect(sectionOrder.parse([ID.toUpperCase()])).toEqual([ID]);
+    expect(sectionOrder.safeParse([ID, ID.toUpperCase()]).success).toBe(false);
+    expect(sectionOrder.safeParse(["inbox"]).success).toBe(false);
   });
 });

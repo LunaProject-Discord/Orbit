@@ -24,6 +24,7 @@ import {
 import type { SpecialView } from "@/lib/route";
 import {
   groupSidebar,
+  orderSections,
   toggleCategoryFolded,
   useFoldedCategories,
 } from "@/lib/sidebar-categories";
@@ -267,8 +268,9 @@ export function SidebarRail({
           <LayersPlusIcon className="text-muted-foreground" />
         </RailItem>
         <span className="h-2 shrink-0" aria-hidden="true" />
-        {groups.accounts.map(renderAccount)}
-        {groups.categories.map(({ category, views, accounts: members }) => {
+        {orderSections(groups, unified.sectionOrder).map((section) => {
+          if (section.account) return renderAccount(section.account);
+          const { category, views, accounts: members } = section.group;
           const isFolded = folded.has(category.id);
           const unread = members.reduce(
             (sum, account) => sum + (unreadByAccount.get(account.id) ?? 0),

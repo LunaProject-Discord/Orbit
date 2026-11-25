@@ -232,6 +232,13 @@
       "when": 1795570215958,
       "tag": "0032_unified_filter_tree",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1795577290912,
+      "tag": "0033_sidebar_section_order",
+      "breakpoints": true
     }
   ]
 }

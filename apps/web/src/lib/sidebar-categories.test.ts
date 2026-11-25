@@ -6,6 +6,7 @@ import {
   categoryOf,
   groupSidebar,
   mergeSubsetOrder,
+  orderSections,
   pruneCategories,
   removeCategory,
   renameCategory,
@@ -119,5 +120,34 @@ describe("mergeSubsetOrder", () => {
       "b",
       "e",
     ]);
+  });
+});
+
+describe("orderSections", () => {
+  const groups = groupSidebar(
+    {
+      folders: [],
+      layout: { order: [], hidden: [] },
+      categories: [work, home],
+    },
+    [account("a1"), account("a2"), account("a3")],
+  );
+  const keys = (order: string[]) =>
+    orderSections(groups, order).map((section) => section.key);
+
+  it("並びが無ければ、アカウントの下にカテゴリ", () => {
+    expect(keys([])).toEqual(["a1", "a3", "c1", "c2"]);
+  });
+
+  it("カテゴリをアカウントより上に置ける", () => {
+    expect(keys(["c1", "a1", "c2", "a3"])).toEqual(["c1", "a1", "c2", "a3"]);
+  });
+
+  it("アカウントどうし・カテゴリどうしの順番は、それぞれの並び順に従う", () => {
+    expect(keys(["c2", "a3", "c1", "a1"])).toEqual(["c1", "a1", "c2", "a3"]);
+  });
+
+  it("載っていない分は後ろに足し、無くなった ID は無視する", () => {
+    expect(keys(["c1", "gone"])).toEqual(["c1", "a1", "a3", "c2"]);
   });
 });

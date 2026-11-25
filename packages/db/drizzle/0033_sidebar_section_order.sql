@@ -1,0 +1,1 @@
+ALTER TABLE "sidebar_layouts" ADD COLUMN "section_order" jsonb DEFAULT '[]'::jsonb NOT NULL;
