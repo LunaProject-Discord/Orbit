@@ -7,13 +7,13 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   DownloadIcon,
-  LoaderCircleIcon,
   type LucideIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   applyAppUpdate,
   checkForAppUpdate,
@@ -129,8 +129,10 @@ function StatusLine(props: {
       )}
     >
       <span className="flex h-5 w-4 shrink-0 items-center justify-center">
-        {Icon && (
-          <Icon className={cn("size-4", props.spin && "animate-spin")} />
+        {props.spin ? (
+          <Spinner className="size-4" />
+        ) : (
+          Icon && <Icon className="size-4" />
         )}
       </span>
       <span className="min-w-0">{props.children}</span>
@@ -217,7 +219,7 @@ export function AboutSettings() {
                 tone={tone}
                 icon={
                   working
-                    ? LoaderCircleIcon
+                    ? null
                     : tone === "error"
                       ? CircleAlertIcon
                       : tone === "ok"

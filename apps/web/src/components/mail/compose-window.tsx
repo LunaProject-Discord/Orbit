@@ -10,7 +10,6 @@ import {
   ItalicIcon,
   LinkIcon,
   ListIcon,
-  Loader2Icon,
   Maximize2Icon,
   Minimize2Icon,
   MinusIcon,
@@ -47,6 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { AccountDot } from "@/lib/account-icons";
 import {
   type Account,
@@ -936,10 +936,7 @@ export function ComposeWindow({
                   <FileTypeIcon contentType={file.contentType} />
                   <span className="truncate">{file.filename}</span>
                   <output className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
-                    <Loader2Icon
-                      className="size-3 animate-spin"
-                      aria-hidden="true"
-                    />
+                    <Spinner className="size-3" />
                     取得中
                   </output>
                   <Button

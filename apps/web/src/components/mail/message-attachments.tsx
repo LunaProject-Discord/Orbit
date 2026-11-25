@@ -9,7 +9,6 @@ import {
   FileTextIcon,
   FileVideoIcon,
   ImageIcon,
-  Loader2Icon,
   MailIcon,
   PaperclipIcon,
   PresentationIcon,
@@ -24,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Spinner } from "@/components/ui/spinner";
 import { ApiError, type Attachment } from "@/lib/api";
 import {
   type AttachmentKind,
@@ -280,11 +280,7 @@ export function MessageAttachments({
                   onClick={() => void save(file)}
                   className="relative"
                 >
-                  {loading ? (
-                    <Loader2Icon className="animate-spin" />
-                  ) : (
-                    <DownloadIcon />
-                  )}
+                  {loading ? <Spinner /> : <DownloadIcon />}
                 </Button>
               </Hint>
             </li>
@@ -324,10 +320,7 @@ export function MessageAttachments({
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md border bg-muted/30">
               {!opened.content ? (
                 <output className="flex items-center gap-2 text-muted-foreground text-sm">
-                  <Loader2Icon
-                    className="size-4 animate-spin"
-                    aria-hidden="true"
-                  />
+                  <Spinner className="size-4" />
                   取得中です
                 </output>
               ) : "text" in opened.content ? (
