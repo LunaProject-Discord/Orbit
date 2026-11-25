@@ -8,7 +8,7 @@ import {
 import { and, eq, not, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseSearchQuery } from "./search-query.js";
-import { termCondition } from "./search-sql.js";
+import { searchCondition, termCondition } from "./search-sql.js";
 
 /**
  * 統合フォルダの条件 (条件ビルダーで組んだ AND / OR / NOT の木)。
@@ -148,28 +148,9 @@ export function normalizeFilters(filters: UnifiedFilters): UnifiedFilters {
   return { version: 2, root: normalizeNode(filters.root) as UnifiedGroup };
 }
 
-/**
- * 検索の書き方で書いた条件を 1 つの SQL にする。何も条件が無ければ undefined。
- * TODO: 検索の書き方に OR が入ったら、search-sql.ts の searchCondition に置き換える。
- */
-function queryCondition(value: string): SQL | undefined {
-  const search = parseSearchQuery(value);
-  const parts: SQL[] = search.terms.map((term) => termCondition(term));
-  if (search.hasAttachment !== undefined) {
-    parts.push(eq(messages.hasAttachments, search.hasAttachment));
-  }
-  if (search.seen !== undefined) parts.push(eq(messages.seen, search.seen));
-  if (search.flagged !== undefined) {
-    parts.push(eq(messages.flagged, search.flagged));
-  }
-  if (search.since) {
-    parts.push(sql`${messages.receivedAt} >= ${search.since}::date`);
-  }
-  if (search.before) {
-    parts.push(sql`${messages.receivedAt} < ${search.before}::date`);
-  }
-  return parts.length === 0 ? undefined : and(...parts);
-}
+/** 検索の書き方 (OR、かっこ、has: / is:、folder: など) で書いた条件。何も無ければ undefined。 */
+const queryCondition = (value: string): SQL | undefined =>
+  searchCondition(parseSearchQuery(value));
 
 /** null (列が空など) は「当てはまらない」とみなしてから否定する (NOT NULL で消えないように)。 */
 const negated = (condition: SQL) => not(sql`coalesce(${condition}, false)`);

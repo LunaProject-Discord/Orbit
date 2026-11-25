@@ -132,3 +132,16 @@ describe("統合フォルダの条件", () => {
     expect(query?.params).toEqual(["%50\\%%"]);
   });
 });
+
+describe("検索の書き方の条件", () => {
+  it("OR を含む書き方を、そのまま 1 つの条件にする", () => {
+    const query = render({
+      type: "query",
+      value: "from:github OR 請求書",
+      negate: false,
+    });
+    expect(query?.sql).toMatch(/ or /);
+    expect(query?.params).toContain("%github%");
+    expect(query?.params).toContain("%請求書%");
+  });
+});
