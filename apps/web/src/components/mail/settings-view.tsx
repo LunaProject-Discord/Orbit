@@ -689,6 +689,20 @@ function ListPage() {
   const set = updatePreferences;
   return (
     <>
+      <Section title="画面の配置">
+        <SettingGroup>
+          <SelectRow
+            label="メールを表示する場所"
+            description="開いたメールを一覧の右と下のどちらに表示するかです。幅の広い画面 (1024px 以上) で使われ、境目をドラッグして一覧の大きさを変えられます。"
+            value={preferences.readingPane}
+            onChange={(readingPane) => set({ readingPane })}
+            options={[
+              ["right", "右 (標準)"],
+              ["bottom", "下"],
+            ]}
+          />
+        </SettingGroup>
+      </Section>
       <Section title="行の表示">
         <SettingGroup>
           <SelectRow

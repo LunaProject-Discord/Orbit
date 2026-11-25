@@ -1,40 +1,44 @@
 "use client";
 
-import { MIN_PANE_WIDTH } from "@/lib/table-view";
-
 /**
- * 一覧の右端のつまみ。ドラッグか左右の矢印キーで一覧の幅を変える (テーブル表示の広い画面)。
+ * 一覧とメールの表示の境目のつまみ。ドラッグか矢印キーで一覧の大きさを変える。
+ * horizontal は一覧の右端 (幅を変える)、vertical は一覧の下端 (高さを変える)。
  * 置き場所 (一覧の枠) は relative にしておく。
  */
 export function PaneResizer({
-  width,
+  size,
+  min,
+  direction,
   onChange,
 }: {
-  width: number;
-  onChange: (width: number) => void;
+  /** いまの一覧の幅か高さ (px)。 */
+  size: number;
+  min: number;
+  direction: "horizontal" | "vertical";
+  onChange: (size: number) => void;
 }) {
+  const horizontal = direction === "horizontal";
   return (
-    // biome-ignore lint/a11y/useSemanticElements: 幅を変えるつまみは hr では作れない
+    // biome-ignore lint/a11y/useSemanticElements: 大きさを変えるつまみは hr では作れない
     <div
       role="separator"
       tabIndex={0}
-      aria-orientation="vertical"
-      aria-label="メール一覧の幅"
-      aria-valuenow={width}
-      aria-valuemin={MIN_PANE_WIDTH}
+      aria-orientation={horizontal ? "vertical" : "horizontal"}
+      aria-label={horizontal ? "メール一覧の幅" : "メール一覧の高さ"}
+      aria-valuenow={size}
+      aria-valuemin={min}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.preventDefault();
         const target = event.currentTarget;
-        const startX = event.clientX;
-        // 画面の幅で抑えられている (maxWidth) ときは、見えている幅から動かし始める。
-        const startWidth =
-          target.parentElement?.getBoundingClientRect().width ?? width;
+        const start = horizontal ? event.clientX : event.clientY;
+        // 画面の大きさで抑えられている (max-width など) ときは、見えている大きさから動かし始める。
+        const rect = target.parentElement?.getBoundingClientRect();
+        const startSize = rect ? (horizontal ? rect.width : rect.height) : size;
         target.setPointerCapture(event.pointerId);
         const move = (moveEvent: PointerEvent) => {
-          onChange(
-            Math.max(MIN_PANE_WIDTH, startWidth + moveEvent.clientX - startX),
-          );
+          const now = horizontal ? moveEvent.clientX : moveEvent.clientY;
+          onChange(Math.max(min, Math.round(startSize + now - start)));
         };
         const end = () => {
           target.removeEventListener("pointermove", move);
@@ -47,17 +51,20 @@ export function PaneResizer({
       }}
       onKeyDown={(event) => {
         const step = event.shiftKey ? 80 : 16;
+        const [less, more] = horizontal
+          ? ["ArrowLeft", "ArrowRight"]
+          : ["ArrowUp", "ArrowDown"];
         const delta =
-          event.key === "ArrowLeft"
-            ? -step
-            : event.key === "ArrowRight"
-              ? step
-              : 0;
+          event.key === less ? -step : event.key === more ? step : 0;
         if (delta === 0) return;
         event.preventDefault();
-        onChange(Math.max(MIN_PANE_WIDTH, width + delta));
+        onChange(Math.max(min, size + delta));
       }}
-      className="absolute inset-y-0 -right-1 z-30 hidden w-2 cursor-col-resize outline-none hover:bg-primary/30 focus-visible:bg-primary/40 lg:block"
+      className={
+        horizontal
+          ? "absolute inset-y-0 -right-1 z-30 hidden w-2 cursor-col-resize outline-none hover:bg-primary/30 focus-visible:bg-primary/40 lg:block"
+          : "absolute inset-x-0 -bottom-1 z-30 hidden h-2 cursor-row-resize outline-none hover:bg-primary/30 focus-visible:bg-primary/40 lg:block"
+      }
     />
   );
 }

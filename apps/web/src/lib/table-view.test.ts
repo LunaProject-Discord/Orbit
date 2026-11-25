@@ -3,6 +3,7 @@ import {
   DEFAULT_COLUMNS,
   DEFAULT_TABLE_VIEW,
   gridTemplate,
+  MIN_PANE_HEIGHT,
   MIN_PANE_WIDTH,
   moveColumn,
   nextSort,
@@ -46,6 +47,9 @@ describe("parseTableView", () => {
     );
     expect(parsed.sort).toEqual({ key: "from", order: "asc" });
     expect(parsed.paneWidth).toBe(MIN_PANE_WIDTH);
+    expect(parseTableView(JSON.stringify({ paneHeight: 5 })).paneHeight).toBe(
+      MIN_PANE_HEIGHT,
+    );
     expect(
       parseTableView(JSON.stringify({ sort: { key: "size", order: "asc" } }))
         .sort,
