@@ -83,6 +83,15 @@ export function manifestUrl(server: string): string {
   return new URL("/app-update/manifest.json", server).toString();
 }
 
+/**
+ * 一覧のファイルを取得する場所 (末尾は /)。画面と同じファイルを、HTML として扱われない形で配信している。
+ * 通常の URL の HTML には、Cloudflare などの途中のサービスがスクリプトを差し込むことがあり、
+ * 一覧の SHA-256 と一致しなくなるため (deploy/Caddyfile の /app-update/files/)。
+ */
+export function filesBaseUrl(server: string): string {
+  return new URL("/app-update/files/", server).toString();
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
@@ -160,7 +169,7 @@ async function runCheck(): Promise<void> {
     setState({ status: { kind: "downloading", version: manifest.version } });
     await updater.download({
       version: manifest.version,
-      baseUrl: new URL(server).origin,
+      baseUrl: filesBaseUrl(server),
       files: manifest.files,
     });
     await refreshInfo();

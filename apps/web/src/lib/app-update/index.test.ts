@@ -75,7 +75,7 @@ describe("checkForAppUpdate", () => {
     );
     expect(updater.download).toHaveBeenCalledWith({
       version: "20261125000000",
-      baseUrl: "https://orbit.example.com",
+      baseUrl: "https://orbit.example.com/app-update/files/",
       files: [{ path: "/index.html", sha256: SHA, size: 1 }],
     });
     expect(module.appUpdateState().status).toEqual({

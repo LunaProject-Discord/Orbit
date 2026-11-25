@@ -138,7 +138,8 @@ public class AppUpdatePlugin extends Plugin {
                     call.resolve();
                     return;
                 }
-                URL base = allowedUrl(baseUrl);
+                // パスは "/" で始まるので、取得元 (末尾は /) からの相対にして組み立てる。
+                URL base = allowedUrl(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
                 WebBundles.deleteRecursively(temp);
                 boolean hasIndex = false;
                 for (int i = 0; i < files.length(); i++) {
@@ -152,7 +153,7 @@ public class AppUpdatePlugin extends Plugin {
                     hasIndex |= "/index.html".equals(path);
                     byte[] bytes = reuse(context, path, sha256);
                     if (bytes == null) {
-                        bytes = fetch(new URL(base, path), MAX_FILE_BYTES);
+                        bytes = fetch(new URL(base, path.substring(1)), MAX_FILE_BYTES);
                         if (!WebBundles.sha256(bytes).equals(sha256)) {
                             throw new IOException(path + ": 内容が一覧と一致しません");
                         }

@@ -89,6 +89,13 @@ jobs:
               fetch -sS -D - -o /dev/null "$base/v1/events" | grep -i '^x-accel-buffering: no'
               # 平文の HTTP では中身を返さない。
               test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/healthz)" = 400
+              # アプリの画面の自動更新: 一覧が署名付きで配信され、一覧のファイルが HTML としてではなく、
+              # 一覧の SHA-256 と同じ中身で取得できる (docs/app-update.md)。
+              fetch -fsS "$base/app-update/manifest.json" -o "$RUNNER_TEMP/manifest.json"
+              fetch -fsS -D - -o "$RUNNER_TEMP/index.html" "$base/app-update/files/index.html" |
+                grep -i '^content-type: application/octet-stream'
+              expected="$(python3 -c 'import json,sys; p=json.loads(json.load(open(sys.argv[1]))["payload"]); print(next(f["sha256"] for f in p["files"] if f["path"] == "/index.html"))' "$RUNNER_TEMP/manifest.json")"
+              test "$(sha256sum "$RUNNER_TEMP/index.html" | cut -d' ' -f1)" = "$expected"
               exit 0
             fi
             sleep 2
