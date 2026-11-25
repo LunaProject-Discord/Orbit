@@ -49,6 +49,46 @@ const WHEEL_COOLDOWN_MS = 250;
 
 type Direction = "left" | "right";
 
+/** 1 本の指の動き。 */
+type Gesture = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  /** 横のスワイプと決めたか。 */
+  locked: boolean;
+  /** 直前の位置と時刻 (離したときの速さを求める)。 */
+  lastX: number;
+  lastTime: number;
+  velocity: number;
+};
+
+/**
+ * 押している途中で一覧から外れた行 (送り出した行、ほかの端末で消えた行など) の指の動き。
+ * ブラウザーは、押した要素が無くなると、そのあとの動きを指の下にある要素へ送る。
+ * 続けて払ったときに、詰めて上がってきた次の行がその動きを引き継げるよう、ここに残す。
+ */
+let handoff: Gesture | null = null;
+
+function handOff(state: Gesture) {
+  handoff = { ...state };
+  const clear = (event: PointerEvent) => {
+    if (event.pointerId !== state.pointerId) return;
+    if (handoff?.pointerId === state.pointerId) handoff = null;
+    window.removeEventListener("pointerup", clear);
+    window.removeEventListener("pointercancel", clear);
+  };
+  window.addEventListener("pointerup", clear);
+  window.addEventListener("pointercancel", clear);
+}
+
+/** 引き継ぐ指の動きがあれば、受け取る (1 つの行だけが受け取る)。 */
+function takeHandoff(pointerId: number): Gesture | null {
+  if (handoff?.pointerId !== pointerId) return null;
+  const state = handoff;
+  handoff = null;
+  return state;
+}
+
 type Props = {
   /** 左へスワイプしたときに行うこと。null なら、左へは動かない。 */
   left: SwipeOutcome | null;
@@ -88,21 +128,13 @@ export function SwipeRow({
   const latest = useRef({ left, right, disabled, onCommit });
   latest.current = { left, right, disabled, onCommit };
 
-  const gesture = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    /** 横のスワイプと決めたか。 */
-    locked: boolean;
-    /** 直前の位置と時刻 (離したときの速さを求める)。 */
-    lastX: number;
-    lastTime: number;
-    velocity: number;
-  } | null>(null);
+  const gesture = useRef<Gesture | null>(null);
   const offsetRef = useRef(0);
   /** スワイプした直後のクリック (行を開く動作) を 1 回だけ止める。 */
   const suppressClick = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 画面の外へ送り出している途中で、まだ行っていない操作。 */
+  const leaving = useRef<SwipeOutcome | null>(null);
 
   const width = () => rootRef.current?.offsetWidth ?? 0;
 
@@ -164,35 +196,52 @@ export function SwipeRow({
       return;
     }
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    leaving.current = outcome;
     place(direction === "left" ? -width() : width(), true);
     settleTimer.current = setTimeout(() => {
       settleTimer.current = null;
-      latest.current.onCommit(outcome);
+      const pending = leaving.current;
+      leaving.current = null;
+      if (pending) latest.current.onCommit(pending);
       // 会話の一部だけが対象だったときなど、行が残った場合は元の位置へ戻す。
       settleTimer.current = setTimeout(settle, 400);
     }, SETTLE_MS);
   };
 
+  /**
+   * 送り出し・元の位置へ戻る動きを、すぐに終わらせる。動きの途中で次の指の動きが
+   * 始まったときに呼ぶ (続けて払ったときに、前の動きが終わるまで待たせない)。
+   * 送り出している操作はその場で行うので、行が消えて次の行が詰めて上がってくる。
+   */
+  const interrupt = () => {
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = null;
+    const pending = leaving.current;
+    leaving.current = null;
+    place(0, false);
+    setShown(null);
+    if (pending) latest.current.onCommit(pending);
+  };
+
   useEffect(
     () => () => {
       if (settleTimer.current) clearTimeout(settleTimer.current);
+      // 送り出している途中で行が一覧から外れても、払った操作は行う。
+      const pending = leaving.current;
+      leaving.current = null;
+      if (pending) latest.current.onCommit(pending);
+      // 押している途中で行が外れたら、指の下に来た次の行へ動きを引き継ぐ。
+      if (gesture.current) handOff(gesture.current);
     },
     [],
   );
 
   // 複数選択を始めたときなどは、ずらしている途中の行を元へ戻す。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: interrupt は ref 経由で最新の値を読む
   useEffect(() => {
     if (!disabled) return;
     gesture.current = null;
-    if (settleTimer.current) clearTimeout(settleTimer.current);
-    settleTimer.current = null;
-    offsetRef.current = 0;
-    const content = contentRef.current;
-    if (content) {
-      content.style.transition = "";
-      content.style.transform = "";
-    }
-    setShown(null);
+    interrupt();
   }, [disabled]);
 
   // トラックパッドの横スクロール。スクロールを止めるため、passive でない登録が要る。
@@ -279,9 +328,11 @@ export function SwipeRow({
       onPointerDown={(event) => {
         // マウスのドラッグは対象にしない (文字の選択やクリックと紛らわしい)。
         if (event.pointerType === "mouse" || !event.isPrimary) return;
-        if (disabled || (!left && !right) || settleTimer.current) return;
+        if (disabled || (!left && !right)) return;
         // 画面の左端から始めた動きは、サイドバー (ドロワー) を開く操作に任せる。
         if (startsDrawerOpen(event.clientX, window.innerWidth)) return;
+        // 前のスワイプの送り出し・戻りの途中でも、待たせずに次の動きを受け付ける。
+        interrupt();
         suppressClick.current = false;
         gesture.current = {
           pointerId: event.pointerId,
@@ -294,8 +345,18 @@ export function SwipeRow({
         };
       }}
       onPointerMove={(event) => {
-        const state = gesture.current;
-        if (!state || state.pointerId !== event.pointerId) return;
+        let state = gesture.current;
+        if (!state) {
+          // 前の行を押したまま、その行が一覧から外れて、この行が指の下に来た。
+          const taken = takeHandoff(event.pointerId);
+          if (!taken || disabled || (!left && !right)) return;
+          interrupt();
+          suppressClick.current = false;
+          // 向きはこの行で決め直す (指を捕まえ直すため)。動いた量は押した位置から数える。
+          state = { ...taken, locked: false };
+          gesture.current = state;
+        }
+        if (state.pointerId !== event.pointerId) return;
         const dx = event.clientX - state.startX;
         const dy = event.clientY - state.startY;
         if (!state.locked) {
