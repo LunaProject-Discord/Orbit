@@ -25,6 +25,19 @@
 		reverse_proxy api:8787
 	}
 
+	# アプリの画面の自動更新で取得するファイル (docs/app-update.md)。中身は Web と同じファイルだが、
+	# HTML として配信すると Cloudflare などの途中のサービスがスクリプトを差し込み、一覧の SHA-256 と
+	# 一致しなくなる。HTML として扱われないよう、種類を application/octet-stream にして配信する。
+	handle_path /app-update/files/* {
+		root * /srv
+		header {
+			Content-Type application/octet-stream
+			Cache-Control "no-cache, no-transform"
+			defer
+		}
+		file_server
+	}
+
 	# Web。Next.js の静的エクスポートなので、/login は login.html を返す。
 	# メールの画面はパス (/accounts/<ID>/folders/<ID> など) をブラウザー側で読み取るので、
 	# 対応するファイルの無いパスには最初の画面 (index.html) を返す。

@@ -35,7 +35,7 @@ import org.json.JSONObject;
 final class WebBundles {
 
     /** アプリ側の機能の版。apps/web/app-update.json の minNativeApi と合わせる。 */
-    static final int NATIVE_API = 1;
+    static final int NATIVE_API = 2;
 
     // Capacitor (com.getcapacitor.plugin.WebView) が読む設定の名前。
     private static final String CAP_PREFS = "CapWebViewSettings";

@@ -24,7 +24,7 @@ use tauri::{App, AppHandle, Assets, Manager, Runtime, State};
 
 /// アプリ側の機能の版。画面から使うコマンドを足したら 1 増やし、
 /// apps/web/app-update.json の minNativeApi も合わせる。
-pub const NATIVE_API: u32 = 1;
+pub const NATIVE_API: u32 = 2;
 
 /// 一覧の署名を確かめる公開鍵 (Ed25519、32 バイトの Base64)。ビルド時に渡す。
 /// 無いビルドでは画面を更新しない。
@@ -280,6 +280,18 @@ fn allowed_url(url: &str) -> Result<reqwest::Url, String> {
     }
 }
 
+/// 一覧のファイルの URL。base (末尾は /) からの相対で組み立てる
+/// (パスは "/" で始まるので、そのまま join するとサーバーの直下を指してしまう)。
+fn file_url(base: &reqwest::Url, path: &str) -> Result<reqwest::Url, String> {
+    let mut base = base.clone();
+    if !base.path().ends_with('/') {
+        let with_slash = format!("{}/", base.path());
+        base.set_path(&with_slash);
+    }
+    base.join(path.trim_start_matches('/'))
+        .map_err(|e| e.to_string())
+}
+
 fn client() -> Result<reqwest::Client, String> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -385,7 +397,7 @@ pub async fn app_update_download<R: Runtime>(
             let bytes = match reused {
                 Some(bytes) => bytes,
                 None => {
-                    let url = base.join(&file.path).map_err(|e| e.to_string())?;
+                    let url = file_url(&base, &file.path)?;
                     let bytes = fetch(&client, url, MAX_FILE_BYTES).await?;
                     if sha256_hex(&bytes) != file.sha256 {
                         return Err(format!("{}: 内容が一覧と一致しません", file.path));
@@ -540,6 +552,20 @@ mod tests {
         assert_eq!(relative_path("/a//b"), None);
         assert_eq!(relative_path("/a\\b"), None);
         assert_eq!(relative_path("/C:/a"), None);
+    }
+
+    #[test]
+    fn ファイルの_url_は取得元の下に組み立てる() {
+        let base = reqwest::Url::parse("https://orbit.example.com/app-update/files/").unwrap();
+        assert_eq!(
+            file_url(&base, "/_next/static/a.js").unwrap().as_str(),
+            "https://orbit.example.com/app-update/files/_next/static/a.js"
+        );
+        let no_slash = reqwest::Url::parse("https://orbit.example.com/app-update/files").unwrap();
+        assert_eq!(
+            file_url(&no_slash, "/index.html").unwrap().as_str(),
+            "https://orbit.example.com/app-update/files/index.html"
+        );
     }
 
     #[test]

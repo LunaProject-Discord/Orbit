@@ -1,4 +1,4 @@
 {
   "$comment": "画面の自動更新 (docs/app-update.md)。minNativeApi は、この画面が必要とするアプリ側 (Tauri / Android) の機能の版。アプリ側に新しいコマンドを足して画面から使うときは、アプリ側の NATIVE_API と一緒に 1 増やす。",
-  "minNativeApi": 1
+  "minNativeApi": 2
 }
