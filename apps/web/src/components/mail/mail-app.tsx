@@ -3,15 +3,11 @@
 import { cn } from "cn";
 import {
   InboxIcon,
-  LayoutListIcon,
   ListChecksIcon,
   MenuIcon,
-  PanelBottomIcon,
-  PanelRightIcon,
   PenSquareIcon,
   PlusIcon,
   SearchIcon,
-  Table2Icon,
 } from "lucide-react";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
@@ -44,6 +40,7 @@ import {
   FolderDialogs,
   type FolderDialogTarget,
 } from "@/components/mail/folder-dialogs";
+import { ListLayoutMenu } from "@/components/mail/list-layout-menu";
 import { MailboxOverridesDialog } from "@/components/mail/mailbox-overrides-dialog";
 import {
   MessageList,
@@ -214,7 +211,7 @@ import {
   skipsDeleteConfirm,
   splitForDelete,
 } from "@/lib/permanent-delete";
-import { updatePreferences, usePreferences } from "@/lib/preferences";
+import { usePreferences } from "@/lib/preferences";
 import {
   buildRoute,
   emptyRoute,
@@ -2797,6 +2794,8 @@ const MailView = memo(function MailView({
 
   // 開いているメールを含む行。会話に新しいメールが届いて行の代表が替わっても、同じ行を指す。
   // 会話の中の 1 通だけを開いているときは、その会話の行。
+  /** 一覧の見出しに、表示を選ぶ「…」のメニューを出すか (選べる項目がある幅だけ)。 */
+  const layoutMenu = medium && !draftsSelected && special !== "outgoing";
   const isSingle = single !== null && single.messageId === selectedMessageId;
   const selectedMessage =
     (selectedMessageId &&
@@ -3534,62 +3533,6 @@ const MailView = memo(function MailView({
                     medium &&
                     (messageBelow || (!wide && !selectedMessageId)) &&
                     searchBox("popup")}
-                  {wide && !draftsSelected && special !== "outgoing" && (
-                    <Hint
-                      label={
-                        messageBelow
-                          ? "メールを一覧の右に表示"
-                          : "メールを一覧の下に表示"
-                      }
-                    >
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={
-                          messageBelow
-                            ? "メールを一覧の右に表示"
-                            : "メールを一覧の下に表示"
-                        }
-                        onClick={() =>
-                          updatePreferences({
-                            readingPane: messageBelow ? "right" : "bottom",
-                          })
-                        }
-                      >
-                        {messageBelow ? (
-                          <PanelRightIcon />
-                        ) : (
-                          <PanelBottomIcon />
-                        )}
-                      </Button>
-                    </Hint>
-                  )}
-                  {medium && !draftsSelected && special !== "outgoing" && (
-                    <Hint
-                      label={
-                        tableShown
-                          ? "カード表示に切り替え"
-                          : "テーブル表示に切り替え"
-                      }
-                    >
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={
-                          tableShown
-                            ? "カード表示に切り替え"
-                            : "テーブル表示に切り替え"
-                        }
-                        onClick={() =>
-                          updatePreferences({
-                            listLayout: tableShown ? "cards" : "table",
-                          })
-                        }
-                      >
-                        {tableShown ? <LayoutListIcon /> : <Table2Icon />}
-                      </Button>
-                    </Hint>
-                  )}
                   {!draftsSelected &&
                     special !== "outgoing" &&
                     (messages?.length ?? 0) > 0 && (
@@ -3602,6 +3545,7 @@ const MailView = memo(function MailView({
                           // タッチ操作ではボタンが大きくなるので、アイコンの右端が一覧の右端に揃うよう寄せる。
                           className={cn(
                             !(showSearch && !medium) &&
+                              !layoutMenu &&
                               "-mr-2 pointer-coarse:-mr-2.5",
                           )}
                         >
@@ -3609,6 +3553,15 @@ const MailView = memo(function MailView({
                         </Button>
                       </Hint>
                     )}
+                  {/* 一覧の表示とメールを表示する場所を選ぶメニュー。 */}
+                  {layoutMenu && (
+                    <ListLayoutMenu
+                      listLayout={preferences.listLayout}
+                      readingPane={preferences.readingPane}
+                      showReadingPane={wide}
+                      className="-mr-2 pointer-coarse:-mr-2.5"
+                    />
+                  )}
                   {/* スマホでは、検索は別の画面で行う。 */}
                   {showSearch && !medium && (
                     <Hint label="検索" shortcut="/">
