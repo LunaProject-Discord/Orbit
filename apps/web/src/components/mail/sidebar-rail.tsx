@@ -258,7 +258,8 @@ export function SidebarRail({
       )}
       <nav
         aria-label="メールアカウントとフォルダ (折りたたみ中)"
-        className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden py-1 [scrollbar-width:none]"
+        data-scrollbar-hidden=""
+        className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden py-1"
       >
         {groups.views.map(renderView)}
         {orderSections(groups, unified.sectionOrder).map((section) => {

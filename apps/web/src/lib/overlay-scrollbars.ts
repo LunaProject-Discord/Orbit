@@ -19,6 +19,15 @@ const NATIVE_SCOPE =
 /** html に付ける目印。付いている間だけ、globals.css がブラウザーのバーを隠す。 */
 const ENABLED_ATTRIBUTE = "data-overlay-scrollbars";
 
+/**
+ * バーをわざと隠すスクロール領域 (検索欄のチップの並び、折りたたんだサイドバーの帯など) に付ける属性。
+ * globals.css がブラウザーのバーを隠し、重ねるバーも出さない。
+ *
+ * 計算済みスタイルの scrollbar-width では見分けられない。重ねるバーが有効な間は、
+ * ブラウザーのバーを隠すために globals.css がすべてのスクロール領域を none にしているため。
+ */
+export const SCROLLBAR_HIDDEN_ATTRIBUTE = "data-scrollbar-hidden";
+
 const BAR_CLASS = "overlay-scrollbar";
 
 /** バーの両端に空ける余白と、つまみの最小の長さ (px)。 */
@@ -89,16 +98,28 @@ function scrollsOn(style: CSSStyleDeclaration, axis: Axis): boolean {
 }
 
 /** 重ねるバーの対象になる要素か。ページ全体と、ダイアログやメニューの中は対象外。 */
-function isScroller(element: Element): element is HTMLElement {
+export function isScroller(element: Element): element is HTMLElement {
   if (!(element instanceof HTMLElement)) return false;
   if (element === document.documentElement || element === document.body) {
     return false;
   }
   const style = getComputedStyle(element);
   if (!scrollsOn(style, "x") && !scrollsOn(style, "y")) return false;
-  // バーをわざと隠している要素 (検索欄のチップの並びなど) には、重ねるバーも出さない。
-  if (style.scrollbarWidth === "none") return false;
+  if (element.hasAttribute(SCROLLBAR_HIDDEN_ATTRIBUTE)) return false;
   return element.closest(NATIVE_SCOPE) === null;
+}
+
+/** target とその祖先のうち、重ねるバーの対象になるスクロール領域 (入れ子ならすべて)。 */
+function scrollersAt(target: EventTarget | null): Set<HTMLElement> {
+  // バーの上にいる間は、そのバーの持ち主の中にいるものとして扱う。
+  let node: Element | null =
+    overlayScrollbarOwner(target) ??
+    (target instanceof Element ? target : null);
+  const found = new Set<HTMLElement>();
+  for (; node; node = node.parentElement) {
+    if (isScroller(node)) found.add(node);
+  }
+  return found;
 }
 
 /**
@@ -268,6 +289,11 @@ export function installOverlayScrollbars(): () => void {
   };
 
   function update() {
+    // カーソルを動かさないまま、その下のスクロール領域が作り直された (フォルダや表示の切り替えなど)。
+    // pointerover は次にカーソルが要素をまたぐまで来ないので、最後の位置から調べ直す。
+    if (pointer && [...hovered].some((container) => !container.isConnected)) {
+      hovered = scrollersAt(document.elementFromPoint(pointer.x, pointer.y));
+    }
     const active = new Set<HTMLElement>([...hovered, ...scrolling.keys()]);
     if (drag) active.add(drag.bar.container);
     for (const container of new Set([...active, ...bars.keys()])) {
@@ -291,30 +317,30 @@ export function installOverlayScrollbars(): () => void {
    */
   let overTarget: EventTarget | null = null;
   let overFrame = 0;
+  /** 最後にカーソルがあった位置。ページの外へ出たら null。 */
+  let pointer: { x: number; y: number } | null = null;
   const onPointerOver = (event: PointerEvent) => {
     if (event.pointerType === "touch") return;
+    pointer = { x: event.clientX, y: event.clientY };
     overTarget = event.target;
     if (overFrame) return;
     overFrame = requestAnimationFrame(() => {
       overFrame = 0;
       const target = overTarget;
       overTarget = null;
-      // バーの上にいる間は、そのバーの持ち主の中にいるものとして扱う。
-      let node: Element | null =
-        overlayScrollbarOwner(target) ??
-        (target instanceof Element ? target : null);
-      const next = new Set<HTMLElement>();
-      for (; node; node = node.parentElement) {
-        if (isScroller(node)) next.add(node);
-      }
-      hovered = next;
+      hovered = scrollersAt(target);
       update();
     });
+  };
+  const onPointerMove = (event: PointerEvent) => {
+    if (event.pointerType === "touch") return;
+    pointer = { x: event.clientX, y: event.clientY };
   };
   const onPointerLeave = () => {
     cancelAnimationFrame(overFrame);
     overFrame = 0;
     overTarget = null;
+    pointer = null;
     hovered = new Set();
     update();
   };
@@ -340,6 +366,7 @@ export function installOverlayScrollbars(): () => void {
     passive: true,
   });
   document.addEventListener("pointerover", onPointerOver, { passive: true });
+  document.addEventListener("pointermove", onPointerMove, { passive: true });
   root.addEventListener("pointerleave", onPointerLeave);
   window.addEventListener("resize", update);
   const interval = setInterval(() => {
@@ -351,6 +378,7 @@ export function installOverlayScrollbars(): () => void {
     cancelAnimationFrame(overFrame);
     document.removeEventListener("scroll", onScroll, { capture: true });
     document.removeEventListener("pointerover", onPointerOver);
+    document.removeEventListener("pointermove", onPointerMove);
     root.removeEventListener("pointerleave", onPointerLeave);
     window.removeEventListener("resize", update);
     for (const timer of scrolling.values()) clearTimeout(timer);

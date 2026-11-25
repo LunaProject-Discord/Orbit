@@ -465,7 +465,8 @@ export function PickerGrid({
           ref={tabsRef}
           role="toolbar"
           aria-label="分類"
-          className="relative flex gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          data-scrollbar-hidden=""
+          className="relative flex gap-0.5 overflow-x-auto"
         >
           <PickerTabs tabs={tabs} current={currentSection} onJump={jump} />
           {!source && <div className="h-7 max-sm:h-10" />}

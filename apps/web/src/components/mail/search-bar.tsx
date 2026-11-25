@@ -1053,8 +1053,9 @@ export function SearchBox({
               event.preventDefault();
               leaveToText();
             }}
+            data-scrollbar-hidden=""
             className={cn(
-              "flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+              "flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain",
               // 隠れている側の端は、欄の端で切れて見えないよう薄くする。
               chipsOverflow.start &&
                 chipsOverflow.end &&
