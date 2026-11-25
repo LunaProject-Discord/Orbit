@@ -208,3 +208,25 @@ describe("inPlaceText", () => {
     expect(splitChipRaw("会議")).toBeNull();
   });
 });
+
+describe("OR とかっこ", () => {
+  it("OR の前後とかっこの中の条件はチップにしない (並べ直すと意味が変わるため)", () => {
+    const parts = splitSearchInput(
+      "is:unread from:a OR from:b (to:c d) has:attachment ",
+    );
+    expect(parts.chips.map((chip) => chip.raw)).toEqual([
+      "is:unread",
+      "has:attachment",
+    ]);
+    expect(parts.rest).toBe("from:a OR from:b (to:c d) ");
+    expect(joinSearchInput(parts)).toBe(
+      "is:unread has:attachment from:a OR from:b (to:c d) ",
+    );
+  });
+
+  it("OR の後ろで入力している条件は、入力中のチップにしない", () => {
+    expect(splitSearchInput("from:a OR from:").editing).toBeNull();
+    expect(splitSearchInput("(from:a to:").editing).toBeNull();
+    expect(splitSearchInput("a from:").editing?.key).toBe("from");
+  });
+});

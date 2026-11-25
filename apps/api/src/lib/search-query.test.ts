@@ -7,6 +7,7 @@ import {
   normalizeDate,
   parseSearchQuery,
   rolesNamed,
+  type SearchNode,
 } from "./search-query.js";
 
 describe("parseSearchQuery", () => {
@@ -52,7 +53,7 @@ describe("parseSearchQuery", () => {
       parseSearchQuery(
         "has:attachment is:unread is:starred after:2026/11/1 before:2026-12-01",
       ),
-    ).toEqual({
+    ).toMatchObject({
       terms: [],
       hasAttachment: true,
       seen: false,
@@ -60,7 +61,7 @@ describe("parseSearchQuery", () => {
       since: "2026-11-01",
       before: "2026-12-01",
     });
-    expect(parseSearchQuery("is:read -has:attachment")).toEqual({
+    expect(parseSearchQuery("is:read -has:attachment")).toMatchObject({
       terms: [],
       seen: true,
       hasAttachment: false,
@@ -138,5 +139,76 @@ describe("folder:", () => {
     expect(rolesNamed("受信トレイ")).toEqual(["inbox"]);
     expect(rolesNamed("trash")).toEqual(["trash"]);
     expect(rolesNamed("仕事")).toEqual([]);
+  });
+});
+
+describe("OR とかっこ", () => {
+  const text = (value: string, negated = false): SearchNode => ({
+    kind: "text",
+    field: "any",
+    text: value,
+    negated,
+  });
+
+  it("OR は空白より強く結び付く", () => {
+    expect(parseSearchQuery("from:a OR from:b 定例").nodes).toEqual([
+      {
+        kind: "or",
+        children: [
+          { kind: "text", field: "from", text: "a", negated: false },
+          { kind: "text", field: "from", text: "b", negated: false },
+        ],
+      },
+      text("定例"),
+    ]);
+    expect(parseSearchQuery("a OR b OR is:unread").nodes).toEqual([
+      {
+        kind: "or",
+        children: [text("a"), text("b"), { kind: "seen", value: false }],
+      },
+    ]);
+  });
+
+  it("かっこでまとめ、-( ) は当てはまらないもの", () => {
+    expect(parseSearchQuery("(a b) OR c -(d OR folder:ごみ箱)").nodes).toEqual([
+      {
+        kind: "or",
+        children: [
+          { kind: "and", children: [text("a"), text("b")] },
+          text("c"),
+        ],
+      },
+      {
+        kind: "not",
+        child: {
+          kind: "or",
+          children: [
+            text("d"),
+            { kind: "folder", name: "ごみ箱", negated: false },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("小文字の or、引用符の中、余ったかっこ、前後の欠けた OR はただの語", () => {
+    expect(parseSearchQuery('a or b "OR" (株) c)').nodes).toEqual([
+      text("a"),
+      text("or"),
+      text("b"),
+      text("OR"),
+      text("株"),
+      text("c)"),
+    ]);
+    expect(parseSearchQuery("OR a OR").nodes).toEqual([text("OR"), text("a")]);
+  });
+
+  it("最上位の条件だけを terms に並べ、目立たせる語は OR の中からも選ぶ", () => {
+    const search = parseSearchQuery("定例 (議題 OR subject:日程) -(不要)");
+    expect(search.terms).toEqual([
+      { field: "any", text: "定例", negated: false },
+    ]);
+    expect(highlightTerms(search)).toEqual(["定例", "議題", "日程"]);
+    expect(isEmptySearch(parseSearchQuery("()"))).toBe(true);
   });
 });

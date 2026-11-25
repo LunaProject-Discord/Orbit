@@ -1,10 +1,14 @@
 import { mailboxes, messageMailboxes, messages } from "@orbit/db";
-import { not, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, not, or, type SQL, sql } from "drizzle-orm";
 import {
   type FolderTerm,
   likePattern,
+  type ParsedSearch,
   rolesNamed,
+  type SearchLeaf,
+  type SearchNode,
   type SearchTerm,
+  searchLeaves,
 } from "./search-query.js";
 
 /** 検索の語 1 つを、messages への条件にする (部分一致)。検索と統合フォルダで共有する。 */
@@ -63,7 +67,67 @@ export function folderCondition(folder: FolderTerm): SQL {
   return folder.negated ? sql`not ${condition}` : condition;
 }
 
-/** folder: で、そのフォルダにあるメールを探しているか (ごみ箱などを探す範囲から外さないため)。 */
-export function hasPositiveFolder(search: { folders?: FolderTerm[] }): boolean {
-  return search.folders?.some((folder) => !folder.negated) ?? false;
+/**
+ * folder: で、そのフォルダにあるメールを探しているか (ごみ箱などを探す範囲から外さないため)。
+ * OR の中や -( ) の中の指定も見る。
+ */
+export function hasPositiveFolder(
+  search: Pick<ParsedSearch, "nodes">,
+): boolean {
+  for (const { leaf, inverted } of searchLeaves(search.nodes)) {
+    if (leaf.kind === "folder" && leaf.negated === inverted) return true;
+  }
+  return false;
+}
+
+export type SearchConditionOptions = {
+  /** 日付 (after: / before:) の区切りに使うタイムゾーン。省略すると UTC。 */
+  timeZone?: string;
+};
+
+/**
+ * 検索欄の書き方 (parseSearchQuery の結果) 全体を、messages への条件 1 つにする。
+ * OR やかっこ、-( ) もここで組み立てる。条件が無ければ undefined。検索と統合フォルダで共有する。
+ */
+export function searchCondition(
+  search: Pick<ParsedSearch, "nodes">,
+  options: SearchConditionOptions = {},
+): SQL | undefined {
+  const timeZone = options.timeZone ?? "UTC";
+  const startOfDay = (date: string) =>
+    sql`(${date}::date::timestamp at time zone ${timeZone})`;
+  const leafCondition = (leaf: SearchLeaf): SQL => {
+    switch (leaf.kind) {
+      case "text":
+        return termCondition(leaf);
+      case "folder":
+        return folderCondition(leaf);
+      case "attachment":
+        return eq(messages.hasAttachments, leaf.value);
+      case "seen":
+        return eq(messages.seen, leaf.value);
+      case "flagged":
+        return eq(messages.flagged, leaf.value);
+      case "since":
+        return sql`${messages.receivedAt} >= ${startOfDay(leaf.date)}`;
+      case "before":
+        return sql`${messages.receivedAt} < ${startOfDay(leaf.date)}`;
+    }
+  };
+  const build = (node: SearchNode): SQL | undefined => {
+    switch (node.kind) {
+      case "and":
+        return and(...node.children.map(build));
+      case "or":
+        return or(...node.children.map(build));
+      case "not": {
+        const inner = build(node.child);
+        return inner ? not(inner) : undefined;
+      }
+      default:
+        return leafCondition(node);
+    }
+  };
+  if (search.nodes.length === 0) return undefined;
+  return and(...search.nodes.map(build));
 }
