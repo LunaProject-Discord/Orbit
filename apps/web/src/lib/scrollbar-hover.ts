@@ -37,5 +37,8 @@ export const SCROLLBAR_HOVER_ATTRIBUTE = "data-scrollbar-hover";
 /** スクロールしている要素に付ける属性。止まってから少しの間は残し、その後つまみを隠す。 */
 export const SCROLLING_ATTRIBUTE = "data-scrolling";
 
+/** スマホアプリで html に付ける属性。globals.css がパソコン向けのバーの指定を外し、OS のバーのままにする。 */
+export const OS_SCROLLBARS_ATTRIBUTE = "data-os-scrollbars";
+
 /** スクロールが止まってから、つまみを隠し始めるまでの時間 (ミリ秒)。 */
 export const SCROLLBAR_HIDE_DELAY = 800;
