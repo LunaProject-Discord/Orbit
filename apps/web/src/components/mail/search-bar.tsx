@@ -868,14 +868,19 @@ export function SearchBox({
                 ? { top: position.top }
                 : {
                     top: position.top + 6,
+                    // 検索欄の左右の端にそろえる。欄が狭すぎるときだけ、右端にそろえて広げる。
                     right: Math.max(8, position.right),
+                    width: Math.max(
+                      PANEL_MIN_WIDTH,
+                      window.innerWidth - position.left - position.right,
+                    ),
                   }
             }
             className={cn(
               "fixed z-50 flex flex-col overflow-y-auto overscroll-contain bg-popover text-popover-foreground",
               screen
                 ? "inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)]"
-                : "max-h-[min(32rem,calc(100dvh-var(--titlebar-height)-6rem))] w-[min(26rem,calc(100vw-1rem))] rounded-lg border shadow-lg",
+                : "max-h-[min(32rem,calc(100dvh-var(--titlebar-height)-6rem))] max-w-[calc(100vw-1rem)] rounded-lg border shadow-lg",
             )}
           >
             {dateKey && (
@@ -1291,6 +1296,9 @@ export function SearchBox({
     </search>
   );
 }
+
+/** 候補の欄の最小の幅 (検索欄がこれより狭いときは、右端にそろえてこの幅にする)。 */
+const PANEL_MIN_WIDTH = 288;
 
 /** 末尾の入力欄 (と条件以外の語) の並び順。チップ (0, 1, 2…) より後ろに置く。 */
 const SLOT_ORDER = 10000;
