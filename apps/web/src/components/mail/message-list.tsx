@@ -37,11 +37,12 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import type { MessageActionInput } from "@/lib/actions";
 import type { MessageSummary, ThreadMessage } from "@/lib/api";
 import { BodyPrefetcher, type PrefetchReason } from "@/lib/body-prefetch";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { addressLabel, formatListDate } from "@/lib/format";
-import type { ActionHandler } from "@/lib/permanent-delete";
+import type { ActionHandler, ActionOptions } from "@/lib/permanent-delete";
 import { usePreferences } from "@/lib/preferences";
 import { highlightParts } from "@/lib/search";
 import type { SwipeOutcome } from "@/lib/swipe";
@@ -134,6 +135,14 @@ type Props = {
   onBandSelect?: (next: Set<string>, anchor: string | null) => void;
   /** 右クリックメニューからの操作。 */
   onAction: ActionHandler;
+  /**
+   * 複数選択しているときに、チェックを付けた行の上で右クリックメニューから操作したとき。
+   * チェックを付けたすべての行が対象になる。渡さなければ、右クリックした行だけを操作する。
+   */
+  onSelectionAction?: (
+    input: MessageActionInput,
+    options?: ActionOptions,
+  ) => void;
   /** 右クリックメニューの「新しいウィンドウで開く」。渡さなければ、その項目を出さない。 */
   onOpenWindow?: (message: MessageSummary) => void;
   onLoadMore: () => void;
@@ -168,6 +177,13 @@ type RowHandlers = {
   toggleCheck: (id: string, range: boolean) => void;
   toggleExpand: (id: string) => void;
   action: ActionHandler;
+  /** 右クリックメニューからの操作。複数選択した行の上なら、選んだすべての行が対象。 */
+  menuAction: (
+    message: MessageSummary,
+    ids: string[],
+    input: MessageActionInput,
+    options?: ActionOptions,
+  ) => void;
   swipeMove: (message: MessageSummary) => void;
   openWindow: (message: MessageSummary) => void;
   warm: (message: MessageSummary) => void;
@@ -526,7 +542,9 @@ const MessageRow = memo(function MessageRow({
       <ContextMenuContent className="w-56">
         <MessageMenuItems
           message={message}
-          onAction={handlers.action}
+          onAction={(ids, input, options) =>
+            handlers.menuAction(message, ids, input, options)
+          }
           onOpenWindow={canOpenWindow ? handlers.openWindow : undefined}
         />
       </ContextMenuContent>
@@ -558,6 +576,7 @@ export function MessageList({
   onToggleCheck,
   onBandSelect,
   onAction,
+  onSelectionAction,
   onOpenWindow,
   onLoadMore,
   onRetry,
@@ -642,6 +661,8 @@ export function MessageList({
     onToggleCheck,
     onToggleExpand,
     onAction,
+    onSelectionAction,
+    checkedIds,
     onSwipeMove,
     onOpenWindow,
     onWarm,
@@ -651,6 +672,8 @@ export function MessageList({
     onToggleCheck,
     onToggleExpand,
     onAction,
+    onSelectionAction,
+    checkedIds,
     onSwipeMove,
     onOpenWindow,
     onWarm,
@@ -661,6 +684,17 @@ export function MessageList({
     toggleExpand: (id) => latest.current.onToggleExpand(id),
     action: (ids, input, options) =>
       latest.current.onAction(ids, input, options),
+    menuAction: (message, ids, input, options) => {
+      const { checkedIds, onSelectionAction, onAction } = latest.current;
+      // 選んだ行の上で開いたメニューは、選んだすべての行に対して行う (Finder やエクスプローラーと同じ)。
+      if (
+        onSelectionAction &&
+        checkedIds.size > 1 &&
+        checkedIds.has(message.id)
+      ) {
+        onSelectionAction(input, options);
+      } else onAction(ids, input, options);
+    },
     swipeMove: (message) => latest.current.onSwipeMove?.(message),
     openWindow: (message) => latest.current.onOpenWindow?.(message),
     warm: (message) => latest.current.onWarm?.(message),

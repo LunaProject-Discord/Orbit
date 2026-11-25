@@ -203,6 +203,7 @@ import {
 } from "@/lib/pending-moves";
 import {
   type ActionHandler,
+  type ActionOptions,
   isInTrash,
   skipsDeleteConfirm,
   splitForDelete,
@@ -1553,6 +1554,46 @@ const MailView = memo(function MailView({
       return;
     }
     run();
+  }
+  /**
+   * 複数選択した行の上の右クリックメニューからの操作。メニューは右クリックした行に
+   * 合わせて作られるので、移動先のフォルダは役割に置き換え、選んだすべての行に行う。
+   */
+  function handleSelectionMenuAction(
+    input: MessageActionInput,
+    options?: ActionOptions,
+  ) {
+    const rows = checkedRows;
+    if (rows.length === 0) return;
+    if (input.action === "set_flags") {
+      performBulk(rows, input);
+      return;
+    }
+    const target =
+      input.action === "move" && "mailboxId" in input
+        ? mailboxes?.find((mailbox) => mailbox.id === input.mailboxId)
+        : undefined;
+    // 削除 (ごみ箱へ移す・完全に削除) は、行ごとの所在で分ける。
+    if (input.action === "delete" || target?.specialUse === "trash") {
+      deleteRows(rows, options?.skipConfirm ?? false);
+      return;
+    }
+    if (input.action !== "move") return;
+    if (!("mailboxId" in input)) {
+      performBulk(rows, input);
+      return;
+    }
+    const role = target?.specialUse;
+    if (role === "inbox" || role === "junk") {
+      performBulk(rows, { action: "move", destination: role });
+    } else if (role === "archive" || role === "all") {
+      // Gmail のアーカイブは「すべてのメール」。サーバーがアカウントごとに選ぶ。
+      performBulk(rows, { action: "move", destination: "archive" });
+    } else if (target) {
+      // ほかのフォルダはアカウントごとにあるので、そのアカウントの行だけを移す。
+      const own = rows.filter((row) => row.accountId === target.accountId);
+      if (own.length > 0) performBulk(own, input);
+    }
   }
 
   // 検索欄の入力が止まったら検索する。入力も条件も無くなったら、すぐに通常の一覧へ戻す。
@@ -3573,6 +3614,7 @@ const MailView = memo(function MailView({
                           : {})}
                   onSelect={handleSelectMessage}
                   onAction={requestAction}
+                  onSelectionAction={handleSelectionMenuAction}
                   onOpenWindow={
                     canOpenWindows() ? openMessageWindow : undefined
                   }
