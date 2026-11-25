@@ -803,10 +803,6 @@ export function AccountSidebar({
             <DropHintContext.Provider value={dropHint}>
               {draggingCategorized && <UncategorizeDrop />}
               {renderViews(groups.views, null)}
-              {/* 上部の項目をすべてカテゴリに入れたら、区切りの余白も出さない。 */}
-              {groups.views.length > 0 && (
-                <span className="h-2 shrink-0" aria-hidden="true" />
-              )}
               {accounts === null && (
                 <div
                   className="flex flex-col gap-2 px-2 py-2"
@@ -1096,8 +1092,9 @@ function CategorySection({
       style={item.style}
       aria-label={category.name}
       className={cn(
+        // 上下の余白はアカウントと同じ (折りたたんでいても、ほかの項目の間と揃える)。
         // 一覧の先頭に来たら上の余白を取らない (新規作成との間を、ほかの並びと同じにする)。
-        "relative mt-3 first:mt-0",
+        "relative mt-2 first:mt-0",
         item.isDragging && "z-10 opacity-70",
       )}
     >
