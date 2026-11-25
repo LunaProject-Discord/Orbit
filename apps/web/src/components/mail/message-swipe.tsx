@@ -115,6 +115,10 @@ export function MessageSwipe({
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** スワイプで別のメールへ移ったときに、新しいメールが入ってくる向き。 */
   const entering = useRef<Direction | null>(null);
+  /** 新しいメールが入ってくる動き。次のスワイプが始まったら止める。 */
+  const enterAnimation = useRef<Animation | null>(null);
+  /** 画面の外へ送り出している途中で、まだ行っていない操作の向き。 */
+  const leaving = useRef<Direction | null>(null);
   const wheelState = useRef({
     active: false,
     endTimer: null as ReturnType<typeof setTimeout> | null,
@@ -182,9 +186,11 @@ export function MessageSwipe({
     }
     // 画面の外まで送り出してから行う。
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    leaving.current = direction;
     place(direction === "left" ? -width() : width(), true);
     settleTimer.current = setTimeout(() => {
       settleTimer.current = null;
+      leaving.current = null;
       entering.current = direction;
       latest.current[direction]?.run();
       // 表示が変わらなかった (移り先が無くなっていたなど) ときは、元の位置へ戻す。
@@ -193,6 +199,25 @@ export function MessageSwipe({
         settle();
       }, 400);
     }, SETTLE_MS);
+  };
+
+  /**
+   * 送り出し・元の位置へ戻る動きを、すぐに終わらせる。動きの途中で次の指の動きが
+   * 始まったときに呼ぶ (続けて払ったときに、前の動きが終わるまで待たせない)。
+   * 送り出している操作 (次のメールへ移るなど) は、その場で行う。
+   */
+  const interrupt = () => {
+    if (!settleTimer.current) return;
+    clearTimeout(settleTimer.current);
+    settleTimer.current = null;
+    const pending = leaving.current;
+    leaving.current = null;
+    entering.current = null;
+    enterAnimation.current?.cancel();
+    enterAnimation.current = null;
+    place(0, false);
+    setShown(null);
+    if (pending) latest.current[pending]?.run();
   };
 
   /** 指の位置に合わせてずらす量。行うことが無い向きへは、少しだけ動かす。 */
@@ -205,16 +230,20 @@ export function MessageSwipe({
   // 別のメールへ移ったら、ずらした位置を戻す。スワイプで移ったときは、反対側から入ってくる。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 表示中のメールが変わったときだけ行う
   useLayoutEffect(() => {
-    gesture.current = null;
+    // 押している途中の指の動きは、ここでは止めない (続けて払ったときに、次のメールへ
+    // 移ったあとも同じ動きのままスワイプできるように)。
     if (settleTimer.current) clearTimeout(settleTimer.current);
     settleTimer.current = null;
+    leaving.current = null;
     const from = entering.current;
     entering.current = null;
+    enterAnimation.current?.cancel();
+    enterAnimation.current = null;
     place(0, false);
     setShown(null);
     const content = contentRef.current;
     if (from && content && !motionOff()) {
-      content.animate(
+      enterAnimation.current = content.animate(
         [
           {
             transform: `translateX(${from === "left" ? 48 : -48}px)`,
@@ -240,11 +269,41 @@ export function MessageSwipe({
   useEffect(
     () => () => {
       if (settleTimer.current) clearTimeout(settleTimer.current);
+      unfollow.current?.();
       const state = wheelState.current;
       if (state.endTimer) clearTimeout(state.endTimer);
     },
     [],
   );
+
+  /** 押し始めた要素から外す登録 (押している間だけ、その要素でも動きを受け取る)。 */
+  const unfollow = useRef<(() => void) | null>(null);
+  /**
+   * touch イベントは、押し始めた要素へ届き続ける。続けて払って次のメールへ移ると、
+   * その要素が画面から外れることがあり (中身が入れ替わる)、外れた要素の動きは枠まで
+   * 伝わらない。そのため、外れたあとの分は押し始めた要素で直接受け取る。
+   */
+  const follow = (target: EventTarget | null) => {
+    unfollow.current?.();
+    unfollow.current = null;
+    const node = target as Node | null;
+    if (!node || typeof node.addEventListener !== "function") return;
+    const detached = () => !node.isConnected;
+    const move = (event: Event) => {
+      if (detached()) handlers.current.touchMove(event as TouchEvent);
+    };
+    const end = (event: Event) => {
+      if (detached()) handlers.current.touchEnd(event as TouchEvent);
+    };
+    node.addEventListener("touchmove", move, { passive: false });
+    node.addEventListener("touchend", end);
+    node.addEventListener("touchcancel", end);
+    unfollow.current = () => {
+      node.removeEventListener("touchmove", move);
+      node.removeEventListener("touchend", end);
+      node.removeEventListener("touchcancel", end);
+    };
+  };
 
   // 中で使う値や関数は、ref 経由で最新のものを読む。
   const handlers = useRef({
@@ -264,12 +323,13 @@ export function MessageSwipe({
         return;
       }
       if (state.disabled || (!state.left && !state.right)) return;
-      if (settleTimer.current) return;
       // 位置は画面を基準に読む (iframe の中と外で同じになり、中身をずらしても変わらない)。
       const x = touch.screenX - window.screenX;
       if (x < EDGE_PX || x > window.innerWidth - EDGE_PX) return;
       // 左端から始めた動きは、サイドバー (ドロワー) を開く操作に任せる。
       if (startsDrawerOpen(x, window.innerWidth)) return;
+      // 前のスワイプの送り出し・戻りの途中でも、待たせずに次の動きを受け付ける。
+      interrupt();
       gesture.current = {
         id: touch.identifier,
         startX: touch.screenX,
@@ -280,6 +340,7 @@ export function MessageSwipe({
         lastTime: event.timeStamp,
         velocity: 0,
       };
+      follow(event.target);
     },
     touchMove: (event) => {
       const state = gesture.current;
@@ -312,6 +373,9 @@ export function MessageSwipe({
           return;
         }
         state.locked = true;
+        // 新しいメールが入ってくる動きの途中なら止めて、指に合わせて動かす。
+        enterAnimation.current?.cancel();
+        enterAnimation.current = null;
       }
       // 横のスワイプの間は、縦へスクロールさせない。
       if (event.cancelable) event.preventDefault();
@@ -335,6 +399,8 @@ export function MessageSwipe({
         return;
       }
       gesture.current = null;
+      unfollow.current?.();
+      unfollow.current = null;
       if (!state.locked) return;
       const offset = offsetRef.current;
       const velocity =
@@ -469,8 +535,9 @@ export function MessageSwipe({
         {shown && side && Icon && (
           <div
             aria-hidden="true"
+            // 中身を送り出している間に押されても、この表示 (消える) ではなく枠が受け取る。
             className={cn(
-              "absolute inset-0 flex items-center gap-2 px-5 font-medium text-sm transition-colors duration-150",
+              "pointer-events-none absolute inset-0 flex items-center gap-2 px-5 font-medium text-sm transition-colors duration-150",
               shown.direction === "left" ? "justify-end" : "justify-start",
               shown.armed ? side.color : "bg-muted text-muted-foreground",
             )}
