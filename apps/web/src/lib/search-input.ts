@@ -145,6 +145,13 @@ function isCompleteOperator(token: InputToken): boolean {
   return false;
 }
 
+/**
+ * OR とかっこを使うか。検索欄では今は使わない (あおいさんの判断、2026-11-25)。サーバーも検索欄の検索では
+ * OR とかっこをただの語として探すので、まとめてチップにすることもしない。使うときは true にし、
+ * サーバー (routes/search.ts) と search-local.ts の grouping も合わせて戻す。
+ */
+export const SEARCH_GROUPING = false;
+
 type Word = { from: number; to: number; word: string };
 
 /** 語の頭の「(」「-(」の数から、語の終わりの「)」の数を引いたもの。 */
@@ -161,10 +168,14 @@ function parenDelta(word: string): number {
  */
 function splitUnits(
   text: string,
+  grouping: boolean,
 ): { from: number; to: number; words: Word[]; depth: number }[] {
   const words = tokenRanges(text)
     .filter(([from, to]) => from < to)
     .map(([from, to]) => ({ from, to, word: text.slice(from, to) }));
+  if (!grouping) {
+    return words.map((word) => ({ ...word, words: [word], depth: 0 }));
+  }
   const units: { from: number; to: number; words: Word[]; depth: number }[] =
     [];
   let index = 0;
@@ -252,14 +263,17 @@ function isUnitDone(
  * OR やかっこでまとめた条件は、入力し終えたらまとめて 1 つのグループのチップにする。
  * rest は、チップにした語と、その後ろの空白を取り除いた入力。
  */
-export function splitChips(text: string): {
+export function splitChips(
+  text: string,
+  grouping = SEARCH_GROUPING,
+): {
   chips: SearchChip[];
   rest: string;
 } {
   const chips: SearchChip[] = [];
   let rest = "";
   let last = 0;
-  const units = splitUnits(text);
+  const units = splitUnits(text, grouping);
   units.forEach((unit, index) => {
     if (!isUnitDone(text, unit, index === units.length - 1)) return;
     if (unit.words.length === 1) {
@@ -355,11 +369,19 @@ export function hasOpenSpace(value: string): boolean {
  * 入力を、入力し終えた条件 (チップ)、それ以外の語、末尾で入力中の条件に分ける。
  * 演算子はコロンを入れた時点で「入力中の条件」になり、値を入れて空白で区切るとチップになる。
  */
-export function splitSearchInput(text: string): SearchInputParts {
-  const units = splitUnits(text);
+export function splitSearchInput(
+  text: string,
+  grouping = SEARCH_GROUPING,
+): SearchInputParts {
+  const units = splitUnits(text, grouping);
   const unit = units[units.length - 1];
   if (!unit || isUnitDone(text, unit, true)) {
-    return { ...splitChips(text), open: null, tail: "", editing: null };
+    return {
+      ...splitChips(text, grouping),
+      open: null,
+      tail: "",
+      editing: null,
+    };
   }
   // 末尾のまとまりを入力している途中。後ろに空白が無ければ、最後の語を入力している。
   const typing =
@@ -379,12 +401,17 @@ export function splitSearchInput(text: string): SearchInputParts {
   if (done.length === 0) {
     // 語 1 つだけ: 条件なら入力中のチップ、そうでなければ欄の語。
     if (!editing || !typing) {
-      return { ...splitChips(text), open: null, tail: "", editing: null };
+      return {
+        ...splitChips(text, grouping),
+        open: null,
+        tail: "",
+        editing: null,
+      };
     }
-    const { chips, rest } = splitChips(text.slice(0, typing.from));
+    const { chips, rest } = splitChips(text.slice(0, typing.from), grouping);
     return { chips, rest: rest.trimEnd(), open: null, tail: "", editing };
   }
-  const { chips, rest } = splitChips(text.slice(0, unit.from));
+  const { chips, rest } = splitChips(text.slice(0, unit.from), grouping);
   return {
     chips,
     rest: rest.trimEnd(),

@@ -95,15 +95,16 @@ type Token =
  * 語に分ける。空白で区切り、"..." の中の空白は区切りにしない (from:"佐藤 美咲" も 1 つ)。
  * 語の頭の「(」と、開いたかっこを閉じる「)」はかっことして扱う (引用符の中は除く)。
  * 大文字の OR (引用符で囲んでいないもの) は「または」。
+ * grouping が false なら、OR もかっこもただの文字として扱う (検索欄では今は使わない)。
  */
-function tokenize(input: string): Token[] {
+function tokenize(input: string, grouping: boolean): Token[] {
   const tokens: Token[] = [];
   let current = "";
   let quoted = false;
   let inQuotes = false;
   let depth = 0;
   const push = () => {
-    if (current === "OR" && !quoted) tokens.push({ type: "or" });
+    if (grouping && current === "OR" && !quoted) tokens.push({ type: "or" });
     else if (current !== "" || quoted) {
       tokens.push({ type: "word", text: current, quoted });
     }
@@ -118,11 +119,16 @@ function tokenize(input: string): Token[] {
       current += char;
     } else if (/\s/u.test(char)) {
       push();
-    } else if (char === "(" && !quoted && (current === "" || current === "-")) {
+    } else if (
+      grouping &&
+      char === "(" &&
+      !quoted &&
+      (current === "" || current === "-")
+    ) {
       tokens.push({ type: "open", negated: current === "-" });
       current = "";
       depth += 1;
-    } else if (char === ")" && depth > 0) {
+    } else if (grouping && char === ")" && depth > 0) {
       push();
       tokens.push({ type: "close" });
       depth -= 1;
@@ -270,9 +276,23 @@ function parseTokens(tokens: Token[]): SearchNode[] {
   return sequence(false);
 }
 
-export function parseSearchQuery(input: string): ParsedSearch {
+/** 検索の書き方の解釈のしかた。 */
+export type SearchQueryOptions = {
+  /**
+   * OR とかっこを使うか (既定は使う)。検索欄では今は使わない (あおいさんの判断、2026-11-25) ので、
+   * 検索欄の検索では false にして、OR もかっこもただの語として探す。統合フォルダの条件では使う。
+   */
+  grouping?: boolean;
+};
+
+export function parseSearchQuery(
+  input: string,
+  options: SearchQueryOptions = {},
+): ParsedSearch {
   const result: ParsedSearch = {
-    nodes: parseTokens(tokenize(input.normalize("NFC"))),
+    nodes: parseTokens(
+      tokenize(input.normalize("NFC"), options.grouping ?? true),
+    ),
     terms: [],
   };
   for (const node of result.nodes) noteTopLevel(result, node);
@@ -354,7 +374,7 @@ export function buildSearch(
   text: string,
   filters: SearchFilters,
 ): ParsedSearch {
-  const search = parseSearchQuery(text);
+  const search = parseSearchQuery(text, { grouping: false });
   for (const [field, value] of [
     ["from", filters.from],
     ["to", filters.to],

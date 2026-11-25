@@ -143,6 +143,17 @@ describe("folder:", () => {
 });
 
 describe("OR とかっこ", () => {
+  it("grouping: false (検索欄) では、OR もかっこもただの語として探す", () => {
+    expect(
+      parseSearchQuery("from:a OR (定例 -(b)", { grouping: false }).nodes,
+    ).toEqual([
+      { kind: "text", field: "from", text: "a", negated: false },
+      { kind: "text", field: "any", text: "OR", negated: false },
+      { kind: "text", field: "any", text: "(定例", negated: false },
+      { kind: "text", field: "any", text: "(b)", negated: true },
+    ]);
+  });
+
   const text = (value: string, negated = false): SearchNode => ({
     kind: "text",
     field: "any",
