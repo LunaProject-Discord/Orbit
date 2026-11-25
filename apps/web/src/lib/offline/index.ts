@@ -13,6 +13,7 @@ import {
   type ThreadMessage,
   type UploadedAttachment,
 } from "@/lib/api";
+import { isDefaultSort, type ListSort } from "@/lib/list-sort";
 import { type ListScope, MailCache } from "@/lib/offline/mail-cache";
 import { Inflight, type Memo, MemoCache } from "@/lib/offline/memo";
 import { isOnline, subscribeOnline } from "@/lib/offline/network";
@@ -214,9 +215,17 @@ const scopeOf = (params: Partial<ListScope>): ListScope => ({
 });
 
 export function listMessages(
-  params: Partial<ListScope> & { cursor?: string | null; limit?: number },
+  params: Partial<ListScope> & {
+    cursor?: string | null;
+    limit?: number;
+    /** 並び順。端末に保存してあるのは新しい順の一覧なので、ほかの順では保存も使いもしない。 */
+    sort?: ListSort;
+  },
   signal?: AbortSignal,
 ): Promise<MessagePage> {
+  if (params.sort && !isDefaultSort(params.sort)) {
+    return api.listMessages(params, signal);
+  }
   const scope = scopeOf(params);
   const cursor = params.cursor ?? null;
   return withCache(
@@ -250,6 +259,8 @@ export async function searchMessages(
       unifiedId?: string | null;
       cursor?: string | null;
       limit?: number;
+      /** 並び順。端末の中を探すときは新しい順でしか返せないので、ほかの順では探さない。 */
+      sort?: ListSort;
     },
   signal?: AbortSignal,
 ): Promise<SearchPage> {
@@ -257,6 +268,7 @@ export async function searchMessages(
     return await api.searchMessages(params, signal);
   } catch (error) {
     if (!(error instanceof NetworkError)) throw error;
+    if (params.sort && !isDefaultSort(params.sort)) throw error;
     const cache = (await current())?.cache;
     if (!cache) throw error;
     return cache.search({ ...params, ...scopeOf(params) });
