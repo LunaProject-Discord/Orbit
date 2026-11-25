@@ -214,9 +214,18 @@ describe("inPlaceText", () => {
 });
 
 describe("OR とかっこ", () => {
+  it("検索欄では今は使わないので、OR もかっこもただの語として扱う", () => {
+    const parts = splitSearchInput("from:a OR from:b (to:c d) ");
+    expect(parts.chips.map((chip) => chip.raw)).toEqual(["from:a", "from:b"]);
+    expect(parts.rest).toBe("OR (to:c d) ");
+    expect(splitSearchInput("from:a OR from:").open).toBeNull();
+  });
+
+  // 以下は、OR とかっこを使うとき (SEARCH_GROUPING を true にしたとき) の分け方。
   it("OR でつないだ条件とかっこは、まとめて 1 つのグループのチップにする", () => {
     const parts = splitSearchInput(
       "is:unread from:a OR from:b (to:c d) has:attachment ",
+      true,
     );
     expect(parts.chips.map((chip) => chip.raw)).toEqual([
       "is:unread",
@@ -252,7 +261,7 @@ describe("OR とかっこ", () => {
   });
 
   it("否定のかっこと、語だけの OR もグループにする", () => {
-    const parts = splitSearchInput("会議 -(from:a OR b) x OR y ");
+    const parts = splitSearchInput("会議 -(from:a OR b) x OR y ", true);
     expect(parts.chips.map((chip) => chip.raw)).toEqual([
       "-(from:a OR b)",
       "x OR y",
@@ -261,28 +270,28 @@ describe("OR とかっこ", () => {
   });
 
   it("OR の後ろで入力している条件は、つないでいる途中のまとまりの後ろで入力中にする", () => {
-    const parts = splitSearchInput("is:unread from:a OR from:");
+    const parts = splitSearchInput("is:unread from:a OR from:", true);
     expect(parts.chips.map((chip) => chip.raw)).toEqual(["is:unread"]);
     expect(parts.open?.raw).toBe("from:a OR");
     expect(parts.open?.items.map((item) => item.kind)).toEqual(["chip", "or"]);
     expect(parts.editing?.key).toBe("from");
-    expect(splitSearchInput("(from:a to:").open?.raw).toBe("(from:a");
-    expect(splitSearchInput("a from:").editing?.key).toBe("from");
-    expect(splitSearchInput("a from:").open).toBeNull();
+    expect(splitSearchInput("(from:a to:", true).open?.raw).toBe("(from:a");
+    expect(splitSearchInput("a from:", true).editing?.key).toBe("from");
+    expect(splitSearchInput("a from:", true).open).toBeNull();
   });
 
   it("OR の後ろの語や、閉じていないかっこも途中のまとまりにする", () => {
-    expect(splitSearchInput("from:a OR ")).toMatchObject({
+    expect(splitSearchInput("from:a OR ", true)).toMatchObject({
       open: { raw: "from:a OR" },
       tail: "",
       editing: null,
     });
-    expect(splitSearchInput("from:a OR 会")).toMatchObject({
+    expect(splitSearchInput("from:a OR 会", true)).toMatchObject({
       open: { raw: "from:a OR" },
       tail: "会",
       editing: null,
     });
-    expect(splitSearchInput("(to:c ")).toMatchObject({
+    expect(splitSearchInput("(to:c ", true)).toMatchObject({
       open: { raw: "(to:c" },
       tail: "",
     });
@@ -296,7 +305,7 @@ describe("OR とかっこ", () => {
       "from:a OR ",
       "(b OR c) a d",
     ]) {
-      expect(joinSearchInput(splitSearchInput(text))).toBe(text);
+      expect(joinSearchInput(splitSearchInput(text, true))).toBe(text);
     }
   });
 });

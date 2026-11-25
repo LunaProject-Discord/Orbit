@@ -88,7 +88,7 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
 
   app.get("/search", zValidator("query", searchQuery), async (c) => {
     const query = c.req.valid("query");
-    const search = parseSearchQuery(query.q);
+    const search = parseSearchQuery(query.q, { grouping: false });
     for (const [field, value] of [
       ["from", query.from],
       ["to", query.to],
