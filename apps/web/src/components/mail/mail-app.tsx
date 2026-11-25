@@ -2795,6 +2795,9 @@ const MailView = memo(function MailView({
   // 開いているメールを含む行。会話に新しいメールが届いて行の代表が替わっても、同じ行を指す。
   // 会話の中の 1 通だけを開いているときは、その会話の行。
   /** 一覧の見出しに、表示を選ぶ「…」のメニューを出すか (選べる項目がある幅だけ)。 */
+  // 一覧の見出しに検索欄を置くか (一覧だけを出す幅と、メールを下に表示するとき)。
+  const headerSearch =
+    showSearch && medium && (messageBelow || (!wide && !selectedMessageId));
   const layoutMenu = medium && !draftsSelected && special !== "outgoing";
   const isSingle = single !== null && single.messageId === selectedMessageId;
   const selectedMessage =
@@ -3527,12 +3530,6 @@ const MailView = memo(function MailView({
                     short
                     className="shrink-0 md:hidden"
                   />
-                  {/* 一覧だけを出す幅では、検索欄を一覧の見出しの右に置く。 */}
-                  {/* メールを下に表示するときも、検索欄は一覧の見出しに置く。 */}
-                  {showSearch &&
-                    medium &&
-                    (messageBelow || (!wide && !selectedMessageId)) &&
-                    searchBox("popup")}
                   {!draftsSelected &&
                     special !== "outgoing" &&
                     (messages?.length ?? 0) > 0 && (
@@ -3546,6 +3543,7 @@ const MailView = memo(function MailView({
                           className={cn(
                             !(showSearch && !medium) &&
                               !layoutMenu &&
+                              !headerSearch &&
                               "-mr-2 pointer-coarse:-mr-2.5",
                           )}
                         >
@@ -3559,9 +3557,14 @@ const MailView = memo(function MailView({
                       listLayout={preferences.listLayout}
                       readingPane={preferences.readingPane}
                       showReadingPane={wide}
-                      className="-mr-2 pointer-coarse:-mr-2.5"
+                      className={cn(
+                        !headerSearch && "-mr-2 pointer-coarse:-mr-2.5",
+                      )}
                     />
                   )}
+                  {/* 一覧だけを出す幅では、検索欄を一覧の見出しの右端に置く。 */}
+                  {/* メールを下に表示するときも、検索欄は一覧の見出しの右端に置く。 */}
+                  {headerSearch && searchBox("popup")}
                   {/* スマホでは、検索は別の画面で行う。 */}
                   {showSearch && !medium && (
                     <Hint label="検索" shortcut="/">
