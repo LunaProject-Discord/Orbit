@@ -24,16 +24,16 @@ describe("統合フォルダの内容", () => {
 
   it("条件の文字は前後の空白を落とす", () => {
     const filters = normalizeFilters({
-      unread: true,
-      flagged: false,
-      hasAttachment: false,
-      from: " github ",
-      to: "",
-      subject: "",
-      text: "",
-      withinDays: 7,
+      version: 2,
+      root: {
+        type: "group",
+        match: "all",
+        children: [
+          { type: "text", field: "from", value: " github ", negate: false },
+        ],
+      },
     });
-    expect(filters.from).toBe("github");
+    expect(filters.root.children[0]).toMatchObject({ value: "github" });
     expect(unifiedFilters.safeParse(filters).success).toBe(true);
   });
 

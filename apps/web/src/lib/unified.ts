@@ -2,12 +2,17 @@ import type {
   BuiltinStyle,
   MailboxSummary,
   SidebarLayout,
-  UnifiedFilters,
   UnifiedFolder,
   UnifiedRole,
   UnifiedScope,
   UnifiedState,
 } from "@/lib/api";
+import { describeFilters, toUnifiedFilters } from "@/lib/unified-conditions";
+
+export {
+  emptyUnifiedFilters,
+  hasFilters,
+} from "@/lib/unified-conditions";
 
 /**
  * 統合フォルダ (利用者が作る、複数のフォルダをまとめた一覧) と、
@@ -40,30 +45,10 @@ export const UNIFIED_ROLES: readonly { role: UnifiedRole; label: string }[] = [
   { role: "trash", label: "ごみ箱" },
 ];
 
-/** 期間の選択肢 (受信してからの日数)。 */
-export const WITHIN_DAYS: readonly { days: number; label: string }[] = [
-  { days: 1, label: "24 時間以内" },
-  { days: 7, label: "7 日以内" },
-  { days: 30, label: "30 日以内" },
-  { days: 90, label: "90 日以内" },
-  { days: 365, label: "1 年以内" },
-];
-
 export const emptyUnifiedScope: UnifiedScope = {
   all: false,
   roles: ["inbox"],
   mailboxIds: [],
-};
-
-export const emptyUnifiedFilters: UnifiedFilters = {
-  unread: false,
-  flagged: false,
-  hasAttachment: false,
-  from: "",
-  to: "",
-  subject: "",
-  text: "",
-  withinDays: null,
 };
 
 export const emptyUnifiedState: UnifiedState = {
@@ -194,20 +179,6 @@ export function isScopeEmpty(scope: UnifiedScope): boolean {
   );
 }
 
-/** 条件を 1 つでも指定しているか。 */
-export function hasFilters(filters: UnifiedFilters): boolean {
-  return (
-    filters.unread ||
-    filters.flagged ||
-    filters.hasAttachment ||
-    filters.from.trim() !== "" ||
-    filters.to.trim() !== "" ||
-    filters.subject.trim() !== "" ||
-    filters.text.trim() !== "" ||
-    filters.withinDays !== null
-  );
-}
-
 /** 統合フォルダの内容を短い文にする (設定画面や、一覧の見出しの下に出す)。 */
 export function describeUnified(
   folder: Pick<UnifiedFolder, "scope" | "filters">,
@@ -228,24 +199,9 @@ export function describeUnified(
     );
     if (picked.length > 0) places.push(`選んだフォルダ ${picked.length} 個`);
   }
-  const conditions: string[] = [];
-  if (filters.unread) conditions.push("未読");
-  if (filters.flagged) conditions.push("スター付き");
-  if (filters.hasAttachment) conditions.push("添付あり");
-  if (filters.from.trim()) conditions.push(`差出人「${filters.from.trim()}」`);
-  if (filters.to.trim()) conditions.push(`宛先「${filters.to.trim()}」`);
-  if (filters.subject.trim()) {
-    conditions.push(`件名「${filters.subject.trim()}」`);
-  }
-  if (filters.text.trim()) conditions.push(`「${filters.text.trim()}」を含む`);
-  if (filters.withinDays !== null) {
-    conditions.push(
-      WITHIN_DAYS.find((item) => item.days === filters.withinDays)?.label ??
-        `${filters.withinDays} 日以内`,
-    );
-  }
+  const conditions = describeFilters(filters);
   const place = places.length > 0 ? places.join("、") : "フォルダ未選択";
-  return conditions.length > 0 ? `${place} / ${conditions.join("、")}` : place;
+  return conditions ? `${place} / ${conditions}` : place;
 }
 
 const CACHE_KEY = "mail.unified.v1";
@@ -264,8 +220,13 @@ export function loadCachedUnified(): UnifiedState | null {
       Array.isArray(state.layout?.hidden)
     ) {
       // 以前の版が保存した内容には、初めからある項目の見た目やカテゴリが無い。
+      // 条件は、以前の版の形 (未読のみ・差出人など) で残っていることがある。
       return {
         ...(state as UnifiedState),
+        folders: (state as UnifiedState).folders.map((folder) => ({
+          ...folder,
+          filters: toUnifiedFilters(folder.filters),
+        })),
         builtins: state.builtins ?? {},
         categories: Array.isArray(state.categories) ? state.categories : [],
       };

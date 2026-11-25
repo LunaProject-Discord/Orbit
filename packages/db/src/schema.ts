@@ -710,19 +710,43 @@ export type UnifiedScope = {
   mailboxIds: string[];
 };
 
-/** 統合フォルダに並べるメールの条件。指定したものすべてに当てはまるメールを並べる。 */
-export type UnifiedFilters = {
-  unread: boolean;
-  flagged: boolean;
-  hasAttachment: boolean;
-  /** 差出人 / 宛先 / 件名 / 件名か本文などに含まれる文字。空なら条件にしない。 */
-  from: string;
-  to: string;
-  subject: string;
-  text: string;
-  /** 受信してからこの日数以内。null なら期間を問わない。 */
-  withinDays: number | null;
+/** 文字で絞り込む場所。any は件名・差出人・宛先・本文のどこか。 */
+export type UnifiedTextField = "from" | "to" | "subject" | "body" | "any";
+
+/** メールの状態。 */
+export type UnifiedFlag = "unread" | "flagged" | "hasAttachment" | "answered";
+
+/**
+ * 条件ビルダーの条件 1 つ。negate が true なら「〜でない」(含まない、未読でない、N 日より前など)。
+ * - text: その場所に value を含む (部分一致、大文字小文字は区別しない)。
+ * - flag: その状態である。
+ * - received: 受信してから days 日以内。
+ * - query: 検索欄と同じ書き方 (from: や OR など) で書いた条件に当てはまる。
+ */
+export type UnifiedRule =
+  | { type: "text"; field: UnifiedTextField; value: string; negate: boolean }
+  | { type: "flag"; flag: UnifiedFlag; negate: boolean }
+  | { type: "received"; days: number; negate: boolean }
+  | { type: "query"; value: string; negate: boolean };
+
+/**
+ * 条件のグループ。all はすべてに当てはまる (AND)、any はいずれかに当てはまる (OR)、
+ * none はどれにも当てはまらない (NOT ... OR ...)。グループの中にグループを入れられる。
+ * 中身が空のグループや、文字が空の条件は、無いものとして扱う。
+ */
+export type UnifiedGroup = {
+  type: "group";
+  match: "all" | "any" | "none";
+  children: UnifiedCondition[];
 };
+
+export type UnifiedCondition = UnifiedRule | UnifiedGroup;
+
+/**
+ * 統合フォルダに並べるメールの条件 (条件ビルダーで組んだ木)。
+ * version 1 (未読のみ・差出人などをすべて AND で持つ形) はマイグレーション 0032 で変換した。
+ */
+export type UnifiedFilters = { version: 2; root: UnifiedGroup };
 
 /**
  * 利用者が作った統合フォルダ。複数のアカウントのフォルダを 1 つの一覧にまとめ、
