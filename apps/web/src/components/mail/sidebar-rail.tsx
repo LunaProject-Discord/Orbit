@@ -5,7 +5,9 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   LayersPlusIcon,
+  ListPlusIcon,
   MenuIcon,
+  PlusIcon,
   SettingsIcon,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -89,6 +91,8 @@ type RailProps = {
   selectedUnifiedId: string | null;
   onSelectUnified: (id: string) => void;
   onCreateUnified: () => void;
+  onAddAccount: () => void;
+  onCreateCategory: () => void;
   onCompose: ComposeHandler | null;
   onToggleFold: () => void;
   /** サイドバーが上に重なっている間は true。隠れている帯を操作や読み上げの対象から外す。 */
@@ -118,6 +122,8 @@ export function SidebarRail({
   selectedUnifiedId,
   onSelectUnified,
   onCreateUnified,
+  onAddAccount,
+  onCreateCategory,
   onCompose,
   onToggleFold,
   inert,
@@ -220,6 +226,9 @@ export function SidebarRail({
         badgeTone={problem ? "problem" : "unread"}
         selected={folderView && selectedAccountId === account.id}
         onClick={() => onSelect(account.id, null)}
+        // サイドバーのアカウントの行と同じく、上に 8px 空ける (並びの先頭では空けない)。
+        // 名前とアドレスの 2 行になる行は 16px 高いので、その分を下に空けて次の項目の高さを揃える。
+        className={cn("mt-2 first:mt-0", account.displayName && "mb-4")}
       >
         {account.icon ? (
           // アイコンや絵文字を選んでいるアカウントは、サイドバーと同じ印を出す。
@@ -261,7 +270,6 @@ export function SidebarRail({
         className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden py-1 [scrollbar-width:none]"
       >
         {groups.views.map(renderView)}
-        <span className="h-2 shrink-0" aria-hidden="true" />
         {orderSections(groups, unified.sectionOrder).map((section) => {
           if (section.account) return renderAccount(section.account);
           const { category, views, accounts: members } = section.group;
@@ -271,9 +279,11 @@ export function SidebarRail({
             0,
           );
           return (
+            // サイドバーのカテゴリと同じ組み立て (見出しの直下に中身、上に 8px) にして、
+            // 折りたたみの前後で同じ項目が同じ高さに来るようにする。
             <div
               key={category.id}
-              className="flex shrink-0 flex-col items-center gap-0.5"
+              className="mt-2 flex shrink-0 flex-col items-center first:mt-0"
             >
               {/* カテゴリの区切り。押すと、カテゴリを折りたたむ / 開く。 */}
               <RailItem
@@ -282,7 +292,7 @@ export function SidebarRail({
                 selected={false}
                 expanded={!isFolded}
                 onClick={() => toggleCategoryFolded(category.id)}
-                className="mt-2 h-5"
+                className="h-6"
               >
                 <span
                   aria-hidden="true"
@@ -299,23 +309,41 @@ export function SidebarRail({
                 </span>
               </RailItem>
               {!isFolded && (
-                <>
+                <div className="flex flex-col items-center gap-0.5">
                   {views.map(renderView)}
                   {members.map(renderAccount)}
-                </>
+                </div>
               )}
             </div>
           );
         })}
-        {/* サイドバーと同じく、追加のボタンは一覧の最後に置く。 */}
-        <RailItem
-          label="統合フォルダを追加"
-          selected={false}
-          onClick={onCreateUnified}
-          className="mt-1"
-        >
-          <LayersPlusIcon className="text-muted-foreground" />
-        </RailItem>
+        {/* サイドバーと同じく、追加のボタンは一覧の最後に、同じ並びと高さで置く。 */}
+        <div className="mt-1 flex shrink-0 flex-col items-center gap-0.5">
+          <RailItem
+            label="アカウントを追加"
+            selected={false}
+            onClick={onAddAccount}
+            className="h-9"
+          >
+            <PlusIcon className="text-muted-foreground" />
+          </RailItem>
+          <RailItem
+            label="統合フォルダを追加"
+            selected={false}
+            onClick={onCreateUnified}
+            className="h-9"
+          >
+            <LayersPlusIcon className="text-muted-foreground" />
+          </RailItem>
+          <RailItem
+            label="カテゴリを追加"
+            selected={false}
+            onClick={onCreateCategory}
+            className="h-9"
+          >
+            <ListPlusIcon className="text-muted-foreground" />
+          </RailItem>
+        </div>
       </nav>
       <div className="shrink-0 py-2">
         <RailItem
