@@ -26,6 +26,7 @@ import {
   normalizeFilters,
   ownScope,
   readFilters,
+  sectionOrder,
   sidebarCategories,
   sidebarLayout,
   unifiedFilters,
@@ -118,6 +119,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
           hidden: sidebarLayouts.hidden,
           builtins: sidebarLayouts.builtins,
           categories: sidebarLayouts.categories,
+          sectionOrder: sidebarLayouts.sectionOrder,
         })
         .from(sidebarLayouts)
         .where(eq(sidebarLayouts.userId, userId)),
@@ -134,6 +136,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
       layout: { order: layout?.order ?? [], hidden: layout?.hidden ?? [] },
       builtins: layout?.builtins ?? {},
       categories: layout?.categories ?? [],
+      sectionOrder: layout?.sectionOrder ?? [],
     });
   });
 
@@ -183,17 +186,26 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
    */
   app.put(
     "/categories",
-    zValidator("json", z.object({ categories: sidebarCategories })),
+    zValidator(
+      "json",
+      z.object({
+        categories: sidebarCategories,
+        /** 省略したら、保存してある並びのまま。 */
+        sectionOrder: sectionOrder.optional(),
+      }),
+    ),
     async (c) => {
-      const categories = normalizeCategories(c.req.valid("json").categories);
+      const body = c.req.valid("json");
+      const categories = normalizeCategories(body.categories);
+      const set = {
+        categories,
+        ...(body.sectionOrder ? { sectionOrder: body.sectionOrder } : {}),
+      };
       const userId = c.var.user.id;
       await db
         .insert(sidebarLayouts)
-        .values({ userId, categories })
-        .onConflictDoUpdate({
-          target: sidebarLayouts.userId,
-          set: { categories },
-        });
+        .values({ userId, ...set })
+        .onConflictDoUpdate({ target: sidebarLayouts.userId, set });
       await notifyChanged(db, userId);
       return c.body(null, 204);
     },

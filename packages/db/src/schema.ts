@@ -808,6 +808,12 @@ export const sidebarLayouts = pgTable("sidebar_layouts", {
     .default({}),
   /** サイドバーのカテゴリ (上から順)。 */
   categories: jsonb().$type<SidebarCategory[]>().notNull().default([]),
+  /**
+   * カテゴリに入れていないアカウントとカテゴリの、混ぜた並び (ID、上から順)。
+   * どこに何が来るか (アカウントかカテゴリか) だけを決め、アカウントどうし・カテゴリどうしの
+   * 順番は、それぞれの並び順に従う。
+   */
+  sectionOrder: jsonb().$type<string[]>().notNull().default([]),
   updatedAt: updatedAt(),
 });
 

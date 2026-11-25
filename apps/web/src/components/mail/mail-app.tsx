@@ -838,6 +838,8 @@ const MailView = memo(function MailView({
    */
   const changeCategories = (
     change: (categories: SidebarCategory[]) => SidebarCategory[],
+    /** カテゴリなしのアカウントとカテゴリの、混ぜた並び。省略したら変えない。 */
+    sectionOrder?: string[],
   ) => {
     let categories = change(unified.categories);
     if (accounts && unifiedLoaded) {
@@ -851,11 +853,13 @@ const MailView = memo(function MailView({
       );
     }
     setUnified((current) => {
-      const next = { ...current, categories };
+      const next = sectionOrder
+        ? { ...current, categories, sectionOrder }
+        : { ...current, categories };
       storeCachedUnified(next);
       return next;
     });
-    saveOrder(() => saveSidebarCategories(categories));
+    saveOrder(() => saveSidebarCategories(categories, sectionOrder));
   };
 
   const loadOutgoing = useCallback(async () => {
@@ -2600,10 +2604,22 @@ const MailView = memo(function MailView({
         tone: "info",
       });
     },
-    onAssign: (key, categoryId) =>
-      changeCategories((list) => assignCategory(list, key, categoryId)),
+    onAssign: (key, categoryId, sectionOrder) =>
+      changeCategories(
+        (list) => assignCategory(list, key, categoryId),
+        sectionOrder,
+      ),
     onReorder: (ids) =>
       changeCategories((list) => reorderCategories(list, ids)),
+    onReorderSections: (keys) =>
+      changeCategories(
+        (list) =>
+          reorderCategories(
+            list,
+            keys.filter((key) => list.some((category) => category.id === key)),
+          ),
+        keys,
+      ),
   };
   const openBuiltinDialog = (view: BuiltinView) =>
     openUnifiedDialog({

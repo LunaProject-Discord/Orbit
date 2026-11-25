@@ -58,6 +58,13 @@ export const sidebarLayout = z.object({
 
 const lower = (key: string) => key.toLowerCase();
 
+/** カテゴリに入れていないアカウントとカテゴリの、混ぜた並び (ID)。 */
+export const sectionOrder = z
+  .array(z.uuid())
+  .max(400)
+  .refine((list) => distinct(list.map(lower)))
+  .transform((list) => list.map(lower));
+
 /** 1 人が作れるカテゴリの数。 */
 export const MAX_CATEGORIES = 50;
 

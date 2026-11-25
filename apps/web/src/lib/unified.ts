@@ -56,6 +56,7 @@ export const emptyUnifiedState: UnifiedState = {
   layout: { order: [], hidden: [] },
   builtins: {},
   categories: [],
+  sectionOrder: [],
 };
 
 const NO_STYLE: BuiltinStyle = { name: null, icon: null, color: null };
@@ -229,6 +230,9 @@ export function loadCachedUnified(): UnifiedState | null {
         })),
         builtins: state.builtins ?? {},
         categories: Array.isArray(state.categories) ? state.categories : [],
+        sectionOrder: Array.isArray(state.sectionOrder)
+          ? state.sectionOrder
+          : [],
       };
     }
   } catch {
