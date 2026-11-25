@@ -803,7 +803,10 @@ export function AccountSidebar({
             <DropHintContext.Provider value={dropHint}>
               {draggingCategorized && <UncategorizeDrop />}
               {renderViews(groups.views, null)}
-              <span className="h-2 shrink-0" aria-hidden="true" />
+              {/* 上部の項目をすべてカテゴリに入れたら、区切りの余白も出さない。 */}
+              {groups.views.length > 0 && (
+                <span className="h-2 shrink-0" aria-hidden="true" />
+              )}
               {accounts === null && (
                 <div
                   className="flex flex-col gap-2 px-2 py-2"
@@ -1092,7 +1095,11 @@ function CategorySection({
       ref={item.setNodeRef}
       style={item.style}
       aria-label={category.name}
-      className={cn("relative mt-3", item.isDragging && "z-10 opacity-70")}
+      className={cn(
+        // 一覧の先頭に来たら上の余白を取らない (新規作成との間を、ほかの並びと同じにする)。
+        "relative mt-3 first:mt-0",
+        item.isDragging && "z-10 opacity-70",
+      )}
     >
       <ContextMenu onOpenChange={onMenuOpenChange}>
         <ContextMenuTrigger render={<div ref={drop.setNodeRef} />}>
@@ -1278,7 +1285,7 @@ function AccountItem({
       ref={item.setNodeRef}
       style={item.style}
       className={cn(
-        "group/account relative mt-2",
+        "group/account relative mt-2 first:mt-0",
         item.isDragging && "z-10 opacity-70",
       )}
     >
