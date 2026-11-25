@@ -7,6 +7,7 @@ import {
   CalendarIcon,
   ClockIcon,
   FileSearchIcon,
+  FlagIcon,
   FolderIcon,
   PaperclipIcon,
   SearchIcon,
@@ -91,7 +92,7 @@ const operatorIcons: Record<SearchOperator["key"], ReactNode> = {
   body: <TextIcon />,
   folder: <FolderIcon />,
   has: <PaperclipIcon />,
-  is: <SearchIcon />,
+  is: <FlagIcon />,
   after: <CalendarIcon />,
   before: <CalendarIcon />,
 };
@@ -1232,6 +1233,16 @@ export function SearchBox({
                   if (panelRef.current?.contains(event.relatedTarget as Node))
                     return;
                   setOpen(false);
+                  // 値を入れていない条件 (「-body:」だけなど) は、欄を離れたら外す
+                  // (狭い欄に中身の無いチップが残らないように)。
+                  if (editing && editing.value.trim() === "") {
+                    onChange({
+                      ...value,
+                      text: joinSearchInput({ ...parts, editing: null }),
+                    });
+                  }
+                  // 欄を離れたら、先頭の条件から見えるように戻す。
+                  if (scrollRef.current) scrollRef.current.scrollLeft = 0;
                 }}
                 onKeyDown={onKeyDown}
                 className={cn(
