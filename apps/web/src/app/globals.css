@@ -220,20 +220,28 @@
   }
 }
 
+/*
+ * スマホアプリ (Android / iOS) では、端末がマウスで指せると答えても OS のバーのままにする
+ * (html[data-os-scrollbars]、components/scrollbar-hover.tsx が付ける)。
+ */
 @media (hover: hover) and (pointer: fine) {
   @supports selector(::-webkit-scrollbar) {
-    ::-webkit-scrollbar {
+    :root:not([data-os-scrollbars])::-webkit-scrollbar,
+    :root:not([data-os-scrollbars]) *::-webkit-scrollbar {
       width: 12px;
       height: 12px;
       background: transparent;
     }
-    ::-webkit-scrollbar-track {
+    :root:not([data-os-scrollbars])::-webkit-scrollbar-track,
+    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-track {
       background-color: var(--scrollbar-track-color);
     }
-    ::-webkit-scrollbar-corner {
+    :root:not([data-os-scrollbars])::-webkit-scrollbar-corner,
+    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-corner {
       background: transparent;
     }
-    ::-webkit-scrollbar-thumb {
+    :root:not([data-os-scrollbars])::-webkit-scrollbar-thumb,
+    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-thumb {
       min-height: 36px;
       min-width: 36px;
       border: solid transparent;
@@ -242,17 +250,19 @@
       background-color: var(--scrollbar-color);
       background-clip: content-box;
     }
-    ::-webkit-scrollbar-thumb:horizontal {
+    :root:not([data-os-scrollbars])::-webkit-scrollbar-thumb:horizontal,
+    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-thumb:horizontal {
       border-width: 4px 2px 2px;
     }
-    [data-scrollbar-hover]::-webkit-scrollbar-thumb {
+    :root:not([data-os-scrollbars])
+      [data-scrollbar-hover]::-webkit-scrollbar-thumb {
       border-width: 2px;
     }
   }
 
   /* Firefox はつまみの太さと下地を細かく指定できないので、表示と非表示だけを切り替える。 */
   @supports not selector(::-webkit-scrollbar) {
-    * {
+    :root:not([data-os-scrollbars]) * {
       scrollbar-width: thin;
       scrollbar-color: var(--scrollbar-color) var(--scrollbar-track-color);
     }
@@ -287,7 +297,7 @@ html[data-overlay-scrollbars]
 }
 
 /* バーをわざと隠すスクロール領域。重ねるバーも出さない (overlay-scrollbars.ts の SCROLLBAR_HIDDEN_ATTRIBUTE)。 */
-[data-scrollbar-hidden] {
+:root [data-scrollbar-hidden] {
   scrollbar-width: none;
   &::-webkit-scrollbar {
     display: none;
