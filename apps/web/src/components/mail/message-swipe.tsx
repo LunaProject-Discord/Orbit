@@ -15,7 +15,6 @@ import { startsDrawerOpen } from "@/lib/drawer-swipe";
 import {
   insideSidewaysScroller,
   insideTextField,
-  restartsWheelSwipe,
   shouldCommit,
   swipeAxis,
   swipeThreshold,
@@ -48,8 +47,12 @@ export const SwipeSurfaceContext = createContext<
 const SETTLE_MS = 180;
 /** トラックパッドの横スクロールが止まったとみなすまでの時間 (ms)。 */
 const WHEEL_END_MS = 110;
-/** 操作のあと、指を離したあとも続く慣性のスクロールを無視する時間 (ms)。 */
-const WHEEL_COOLDOWN_MS = 400;
+/**
+ * 操作のあと、指を離したあとも続く慣性のスクロールは無視する。横の動きがこれだけ
+ * 途切れたら、慣性は終わったとみなし、次の動きを新しいスワイプとして受け付ける (ms)。
+ * 慣性の動きは毎フレーム (約 16 ms ごと) 届くので、途切れれば新しく払い始めた動き。
+ */
+const WHEEL_GESTURE_GAP_MS = 100;
 /** 横のスクロールに任せたあと、これだけ動きが途切れるまではスワイプを始めない (ms)。 */
 const WHEEL_SCROLL_GAP_MS = 300;
 /** 画面の端から始めた動きは、端末の「戻る」などの操作に任せる (px)。 */
@@ -123,11 +126,12 @@ export function MessageSwipe({
   const wheelState = useRef({
     active: false,
     endTimer: null as ReturnType<typeof setTimeout> | null,
-    coolUntil: 0,
+    /** 操作のあと、慣性の残りを無視しているか。 */
+    cooling: false,
+    /** 直前に届いた横の動きが作られた時刻 (eventTime)。 */
+    lastAt: Number.NEGATIVE_INFINITY,
     /** 最後に、横の動きを枠のスクロールに任せた時刻。 */
     scrolledAt: 0,
-    /** 直前に届いた横の動き (慣性の残りと、新しいスワイプを見分ける)。 */
-    lastDx: 0,
   });
 
   const width = () => rootRef.current?.offsetWidth ?? 0;
@@ -430,7 +434,7 @@ export function MessageSwipe({
         wheeling.endTimer = null;
         if (!wheeling.active) return;
         wheeling.active = false;
-        wheeling.coolUntil = Date.now() + WHEEL_COOLDOWN_MS;
+        wheeling.cooling = true;
         const offset = offsetRef.current;
         const direction: Direction = offset < 0 ? "left" : "right";
         if (latest.current[direction] && shouldCommit(offset, width())) {
@@ -440,19 +444,22 @@ export function MessageSwipe({
         }
       };
       const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.5;
-      const previousDx = wheeling.lastDx;
-      if (horizontal) wheeling.lastDx = event.deltaX;
+      // 動きの途切れは、届いて処理した時刻ではなく、動きが作られた時刻で測る。
+      // 別のメールを描くあいだ画面が固まると、溜まった動きがまとめて (1 つに合わさって)
+      // 届くが、それを途切れたあとの新しいスワイプと取り違えないため。
+      const at = eventTime(event);
+      const gap = at - wheeling.lastAt;
+      if (horizontal && Math.abs(event.deltaX) >= 2) wheeling.lastAt = at;
       if (!wheeling.active) {
         if (!horizontal || Math.abs(event.deltaX) < 2) return;
-        // 操作の直後に続く慣性の分は、次の操作を始めない。ただし、慣性の途中や直後でも、
-        // 新しく払い始めた動き (強くなった、向きが変わった) なら受け付ける (続けて払えるように)。
-        if (Date.now() < wheeling.coolUntil) {
-          if (!restartsWheelSwipe(previousDx, event.deltaX)) {
+        // 操作の直後に続く慣性の分は、次の操作を始めない。動きが途切れたあとなら、
+        // 新しく払い始めた動きなので受け付ける (続けて払えるように)。
+        if (wheeling.cooling) {
+          if (gap < WHEEL_GESTURE_GAP_MS) {
             event.preventDefault();
-            wheeling.coolUntil = Date.now() + WHEEL_COOLDOWN_MS;
             return;
           }
-          wheeling.coolUntil = 0;
+          wheeling.cooling = false;
         }
         // その向きに行うことが無ければ、ブラウザーの動作 (戻る / 進むなど) に任せる。
         if (!(event.deltaX > 0 ? state.left : state.right)) return;
@@ -578,4 +585,14 @@ function hasSelection(target: EventTarget | null): boolean {
   const doc = (target as Node | null)?.ownerDocument;
   const selection = doc?.getSelection?.();
   return selection != null && !selection.isCollapsed;
+}
+
+/**
+ * イベントが作られた時刻 (ms)。iframe の中の文書とは時刻の基準が違うので、
+ * それぞれの文書の基準 (timeOrigin) を足して揃える。
+ */
+function eventTime(event: Event): number {
+  const view = (event as UIEvent).view ?? window;
+  const origin = view?.performance?.timeOrigin ?? performance.timeOrigin;
+  return origin + event.timeStamp;
 }

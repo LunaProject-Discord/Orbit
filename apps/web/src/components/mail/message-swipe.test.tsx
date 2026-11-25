@@ -104,28 +104,81 @@ function swipeLeft(id: number) {
   touch("touchend", id, x, at);
 }
 
-/** トラックパッドの横の動きを 1 つ送り、時計を 1 コマ進める。 */
-function wheel(deltaX: number) {
+/** 動きが作られた時刻 (event.timeStamp)。届いて処理される時刻 (タイマー) とは別に進める。 */
+let eventClock = 1000;
+
+function wheelEvent(deltaX: number, timeStamp: number): Event {
   const event = new Event("wheel", { bubbles: true, cancelable: true });
   Object.defineProperties(event, {
     deltaX: { value: deltaX },
     deltaY: { value: 0 },
     deltaMode: { value: 0 },
     ctrlKey: { value: false },
+    timeStamp: { value: timeStamp },
   });
+  return event;
+}
+
+/** トラックパッドの横の動きを 1 つ送る。次の動きは 1 コマ (16 ms) あとに作られる。 */
+function wheel(deltaX: number) {
+  const event = wheelEvent(deltaX, eventClock);
+  eventClock += 16;
   act(() => {
     surface().dispatchEvent(event);
   });
   act(() => vi.advanceTimersByTime(16));
 }
 
-/** 2 本指で左へ払う。指を離したあとも、弱まりながら慣性の動きが続く。 */
-function trackpadSwipeLeft(inertia: number) {
-  for (const delta of [2, 6, 14, 24, 30, 30, 26]) wheel(delta);
-  let delta = 22;
-  for (let frame = 0; frame < inertia; frame++) {
-    wheel(Math.max(1, Math.round(delta)));
+/** 指を離して、次に払い始めるまで待つ。 */
+function pause(ms: number) {
+  eventClock += ms;
+  act(() => vi.advanceTimersByTime(ms));
+}
+
+/** 慣性の動き。弱まりながら続く。 */
+function inertia(frames: number, from = 22): number[] {
+  const deltas: number[] = [];
+  let delta = from;
+  for (let frame = 0; frame < frames; frame++) {
+    deltas.push(Math.max(1, Math.round(delta)));
     delta *= 0.9;
+  }
+  return deltas;
+}
+
+/** 2 本指で左へ払う。指を離したあとも、弱まりながら慣性の動きが続く。 */
+function trackpadSwipeLeft(frames: number) {
+  for (const delta of [2, 6, 14, 24, 30, 30, 26]) wheel(delta);
+  for (const delta of inertia(frames)) wheel(delta);
+}
+
+/**
+ * 2 本指で左へ払う。払い終わりに指をほぼ止めて (そこで操作が決まる)、そのあとも
+ * 慣性の動きが続く。別のメールへ移ると、描き直している間 (300 ms) 画面が固まり、
+ * その間に作られた動きは、固まりが解けたあとに 1 つに合わさって届く (ブラウザーの動作)。
+ */
+function trackpadSwipeLeftWithFreeze(moved: () => boolean) {
+  for (const delta of [2, 6, 14, 24, 30, 30, 26, 2]) wheel(delta);
+  const tail = inertia(50, 20);
+  let frozen = false;
+  for (let index = 0; index < tail.length; index++) {
+    if (!frozen && moved()) {
+      frozen = true;
+      const held = tail.slice(index, index + 18);
+      act(() => vi.advanceTimersByTime(300));
+      // 作られた時刻は、固まる前の動きから途切れずに続いている。
+      const merged = wheelEvent(
+        held.reduce((sum, delta) => sum + delta, 0),
+        eventClock + 16 * (held.length - 1),
+      );
+      eventClock += 16 * held.length;
+      act(() => {
+        surface().dispatchEvent(merged);
+      });
+      index += held.length - 1;
+      continue;
+    }
+    wheel(tail[index] ?? 1);
   }
 }
 
@@ -211,14 +264,32 @@ describe("MessageSwipe", () => {
         <Viewer count={5} wheel onShow={(index) => (shown = index)} />,
       ),
     );
-    // 慣性の途中で次を払う。
+    // 慣性の途中で次を払う (指を置くと慣性は止まり、少し間が空いてから次の動きが届く)。
     trackpadSwipeLeft(8);
+    pause(120);
     trackpadSwipeLeft(8);
     // 慣性が終わった直後に次を払う。
+    pause(120);
     trackpadSwipeLeft(40);
-    act(() => vi.advanceTimersByTime(50));
+    pause(120);
     trackpadSwipeLeft(40);
     act(() => vi.advanceTimersByTime(1000));
     expect(shown).toBe(4);
+  });
+
+  it("同じ向きに 2 回払うと、画面が固まっても 2 回だけ移る", () => {
+    let shown = -1;
+    act(() =>
+      root.render(
+        <Viewer count={5} wheel onShow={(index) => (shown = index)} />,
+      ),
+    );
+    const first = shown;
+    trackpadSwipeLeftWithFreeze(() => shown !== first);
+    pause(200);
+    const second = shown;
+    trackpadSwipeLeftWithFreeze(() => shown !== second);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shown).toBe(2);
   });
 });
