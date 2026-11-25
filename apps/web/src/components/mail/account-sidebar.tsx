@@ -34,7 +34,6 @@ import {
   ListPlusIcon,
   ListXIcon,
   PencilIcon,
-  PenSquareIcon,
   PlusIcon,
   SettingsIcon,
   Trash2Icon,
@@ -49,6 +48,10 @@ import {
 } from "react";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
 import { Hint } from "@/components/hint";
+import {
+  ComposeButton,
+  type ComposeHandler,
+} from "@/components/mail/compose-button";
 import { MailboxMark } from "@/components/mail/mailbox-icon";
 import {
   AccountMenuItems,
@@ -368,7 +371,7 @@ type Props = {
   outgoingCount: number;
   outgoingFailed: boolean;
   /** 新しいメールを書き始める。アカウントが無い間は null。 */
-  onCompose: (() => void) | null;
+  onCompose: ComposeHandler | null;
   onAdd: () => void;
   /** アカウントとフォルダの右クリックメニューから呼ぶ操作。 */
   menuActions: SidebarMenuActions;
@@ -754,124 +757,132 @@ export function AccountSidebar({
       {onCompose && (
         // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
         <div className="shrink-0 px-2 pb-2 in-[[data-desktop]]:pt-2">
-          <Hint label="新規作成" shortcut="C">
-            <Button onClick={onCompose} className="w-full justify-center gap-2">
-              <PenSquareIcon />
-              新規作成
-            </Button>
-          </Hint>
+          <ComposeButton accounts={accounts ?? []} onCompose={onCompose} />
         </div>
       )}
 
-      <nav
-        aria-label="メールアカウントとフォルダ"
-        // 左右の余白は同じにする。スクロールバーは内容の上に重ねて描く (幅を取らない) ので、
-        // 右だけ広く空けると、新規作成のボタンや項目が左に寄って見える。
-        className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1"
-        onClickCapture={(event) => {
-          if (!draggedRef.current) return;
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-      >
-        <DndContext
-          sensors={sensors}
-          collisionDetection={sameGroup}
-          modifiers={[restrictToVerticalAxis]}
-          accessibility={{ announcements: dragAnnouncements }}
-          onDragStart={({ active }) => {
-            draggedRef.current = true;
-            const data = active.data.current as SortData | undefined;
-            setDraggingCategorized(
-              (data?.kind === "account" || data?.kind === "view") &&
-                (data.category ?? null) !== null,
-            );
-          }}
-          onDragOver={handleDragOver}
-          onDragEnd={handleDragEnd}
-          onDragCancel={() => {
-            setDropHint(null);
-            setDraggingCategorized(false);
-            // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
-            if (!menuPressRef.current) draggedRef.current = false;
-          }}
+      {/* 項目の無いところを右クリックすると、追加のメニューを出す (項目の上なら、その項目のメニュー)。 */}
+      <ContextMenu onOpenChange={handleMenuOpenChange}>
+        <ContextMenuTrigger
+          render={
+            <nav
+              aria-label="メールアカウントとフォルダ"
+              // 左右の余白は同じにする。スクロールバーは内容の上に重ねて描く (幅を取らない) ので、
+              // 右だけ広く空けると、新規作成のボタンや項目が左に寄って見える。
+              className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1"
+              onClickCapture={(event) => {
+                if (!draggedRef.current) return;
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            />
+          }
         >
-          <DropHintContext.Provider value={dropHint}>
-            {draggingCategorized && <UncategorizeDrop />}
-            {renderViews(groups.views, null)}
-            <button
-              type="button"
-              onClick={viewActions.onCreate}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground text-sm pointer-coarse:py-3 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4 [&_svg]:shrink-0"
+          <DndContext
+            sensors={sensors}
+            collisionDetection={sameGroup}
+            modifiers={[restrictToVerticalAxis]}
+            accessibility={{ announcements: dragAnnouncements }}
+            onDragStart={({ active }) => {
+              draggedRef.current = true;
+              const data = active.data.current as SortData | undefined;
+              setDraggingCategorized(
+                (data?.kind === "account" || data?.kind === "view") &&
+                  (data.category ?? null) !== null,
+              );
+            }}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+            onDragCancel={() => {
+              setDropHint(null);
+              setDraggingCategorized(false);
+              // メニューを開くために取り消したときは、指を離すまでクリックを抑えたままにする。
+              if (!menuPressRef.current) draggedRef.current = false;
+            }}
+          >
+            <DropHintContext.Provider value={dropHint}>
+              {draggingCategorized && <UncategorizeDrop />}
+              {renderViews(groups.views, null)}
+              <span className="h-2 shrink-0" aria-hidden="true" />
+              {accounts === null && (
+                <div
+                  className="flex flex-col gap-2 px-2 py-2"
+                  aria-hidden="true"
+                >
+                  <Skeleton className="h-5 w-40" />
+                  <Skeleton className="h-5 w-32" />
+                </div>
+              )}
+              {/* カテゴリなしのアカウントとカテゴリは、混ぜて並び替えられる。 */}
+              <SortableContext
+                items={sectionKeys}
+                strategy={verticalListSortingStrategy}
+              >
+                {sections.map((section) => {
+                  if (section.account) {
+                    return renderAccount(section.account, sectionKeys, null);
+                  }
+                  const { group } = section;
+                  const { category } = group;
+                  const empty =
+                    group.views.length === 0 && group.accounts.length === 0;
+                  return (
+                    <CategorySection
+                      key={category.id}
+                      category={category}
+                      ids={sectionKeys}
+                      folded={foldedCategories.has(category.id)}
+                      unread={group.accounts.reduce(
+                        (sum, account) => sum + inboxUnreadOf(account.id),
+                        0,
+                      )}
+                      empty={empty}
+                      onKeyboardMove={moveByKeyboard}
+                      actions={categoryActions}
+                      onMenuOpenChange={handleMenuOpenChange}
+                    >
+                      {renderViews(group.views, category.id)}
+                      {renderAccounts(group.accounts, category.id)}
+                    </CategorySection>
+                  );
+                })}
+              </SortableContext>
+            </DropHintContext.Provider>
+          </DndContext>
+          {/* 追加のボタン。画面の下に固定せず、一覧の最後に並べる。 */}
+          <div className="mt-1 flex flex-col gap-0.5">
+            <AddButton icon={<PlusIcon />} onClick={onAdd}>
+              アカウントを追加
+            </AddButton>
+            <AddButton icon={<LayersPlusIcon />} onClick={viewActions.onCreate}>
+              統合フォルダを追加
+            </AddButton>
+            <AddButton
+              icon={<ListPlusIcon />}
+              onClick={() => categoryActions.onCreate()}
             >
-              <LayersPlusIcon />
-              統合フォルダを作成
-            </button>
-            <span className="h-2 shrink-0" aria-hidden="true" />
-            {accounts === null && (
-              <div className="flex flex-col gap-2 px-2 py-2" aria-hidden="true">
-                <Skeleton className="h-5 w-40" />
-                <Skeleton className="h-5 w-32" />
-              </div>
-            )}
-            {/* カテゴリなしのアカウントとカテゴリは、混ぜて並び替えられる。 */}
-            <SortableContext
-              items={sectionKeys}
-              strategy={verticalListSortingStrategy}
-            >
-              {sections.map((section) => {
-                if (section.account) {
-                  return renderAccount(section.account, sectionKeys, null);
-                }
-                const { group } = section;
-                const { category } = group;
-                const empty =
-                  group.views.length === 0 && group.accounts.length === 0;
-                return (
-                  <CategorySection
-                    key={category.id}
-                    category={category}
-                    ids={sectionKeys}
-                    folded={foldedCategories.has(category.id)}
-                    unread={group.accounts.reduce(
-                      (sum, account) => sum + inboxUnreadOf(account.id),
-                      0,
-                    )}
-                    empty={empty}
-                    onKeyboardMove={moveByKeyboard}
-                    actions={categoryActions}
-                    onMenuOpenChange={handleMenuOpenChange}
-                  >
-                    {renderViews(group.views, category.id)}
-                    {renderAccounts(group.accounts, category.id)}
-                  </CategorySection>
-                );
-              })}
-            </SortableContext>
-          </DropHintContext.Provider>
-        </DndContext>
-        <Button
-          variant="ghost"
-          onClick={onAdd}
-          // ボタンには 1px の枠があるので、その分を引いてアイコンを上の項目の列に揃える。
-          // タッチ操作ではボタンの左右の余白が広がるので、同じ値に戻す。
-          className="mt-1 justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
-        >
-          <PlusIcon />
-          アカウントを追加
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => categoryActions.onCreate()}
-          className="justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
-        >
-          <ListPlusIcon />
-          カテゴリを作成
-        </Button>
-        <span className="sr-only" aria-live="polite">
-          {announcement}
-        </span>
-      </nav>
+              カテゴリを追加
+            </AddButton>
+          </div>
+          <span className="sr-only" aria-live="polite">
+            {announcement}
+          </span>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-60">
+          <ContextMenuItem onClick={onAdd}>
+            <PlusIcon />
+            アカウントを追加…
+          </ContextMenuItem>
+          <ContextMenuItem onClick={viewActions.onCreate}>
+            <LayersPlusIcon />
+            統合フォルダを追加…
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => categoryActions.onCreate()}>
+            <ListPlusIcon />
+            カテゴリを追加…
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
 
       <SyncIndicator
         status={syncStatus}
@@ -1178,6 +1189,30 @@ function UncategorizeDrop() {
       <ListXIcon className="size-4" aria-hidden="true" />
       ここに落とすとカテゴリから外します
     </div>
+  );
+}
+
+/** サイドバーの一覧の最後に並べる、追加のボタン。アイコンは上の項目のアイコンの列に揃える。 */
+function AddButton({
+  icon,
+  onClick,
+  children,
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      onClick={onClick}
+      // ボタンには 1px の枠があるので、その分を引いてアイコンを上の項目の列に揃える。
+      // タッチ操作ではボタンの左右の余白が広がるので、同じ値に戻す。
+      className="justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
+    >
+      {icon}
+      {children}
+    </Button>
   );
 }
 
