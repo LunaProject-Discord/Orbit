@@ -34,7 +34,6 @@ const updater = {
   }),
   ready: vi.fn(async () => {}),
   apply: vi.fn(async () => {}),
-  reset: vi.fn(async () => {}),
 } satisfies NativeUpdater;
 
 vi.mock("./native", () => ({ nativeUpdater: () => updater }));

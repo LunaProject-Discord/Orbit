@@ -184,15 +184,6 @@ export async function applyAppUpdate(): Promise<void> {
   await nativeUpdater()?.apply();
 }
 
-/** 取得した画面を消し、次に起動したときから同梱の画面に戻す。 */
-export async function resetAppUpdate(): Promise<void> {
-  const updater = nativeUpdater();
-  if (!updater) return;
-  await updater.reset();
-  await refreshInfo();
-  setState({ status: { kind: "idle" } });
-}
-
 let started = false;
 
 /**

@@ -466,18 +466,6 @@ pub fn app_update_apply<R: Runtime>(
     app.restart();
 }
 
-/// 取得した画面を消し、次に起動したときから同梱の画面を使う。
-#[tauri::command]
-pub fn app_update_reset(bundles: State<'_, WebBundles>) -> Result<(), String> {
-    let mut state = bundles.state.lock().map_err(|e| e.to_string())?;
-    state.current = None;
-    state.pending = None;
-    state.trying = None;
-    bundles.save(&state)?;
-    bundles.clean(&state);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

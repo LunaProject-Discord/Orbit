@@ -8,7 +8,6 @@ import {
   DownloadIcon,
   LoaderCircleIcon,
   RefreshCwIcon,
-  RotateCcwIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
@@ -16,7 +15,6 @@ import { Button } from "@/components/ui/button";
 import {
   applyAppUpdate,
   checkForAppUpdate,
-  resetAppUpdate,
   type UpdateStatus,
   useAppUpdate,
 } from "@/lib/app-update";
@@ -222,23 +220,7 @@ export function AboutSettings() {
                   {isDesktopApp() ? "再起動して切り替える" : "今すぐ切り替える"}
                 </Button>
               )}
-              {(native.running || native.pending) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={working}
-                  onClick={() => void run(resetAppUpdate)}
-                >
-                  <RotateCcwIcon />
-                  同梱の画面に戻す
-                </Button>
-              )}
             </div>
-            {(native.running || native.pending) && (
-              <p className="text-muted-foreground text-xs">
-                「同梱の画面に戻す」は、取得した画面を消して、次に起動したときからアプリに同梱の画面を使います。
-              </p>
-            )}
           </div>
         )}
       </section>
