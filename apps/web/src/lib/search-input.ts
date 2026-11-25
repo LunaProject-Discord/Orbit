@@ -93,30 +93,6 @@ function tokenRanges(text: string): [number, number][] {
   return ranges;
 }
 
-/**
- * チップにせず、文字のまま残す語の位置 (語の頭)。OR の前後の語と、かっこの中の語。
- * チップは入力の先頭へまとめて並べ直すので、OR やかっこの中の条件をチップにすると意味が変わってしまう。
- */
-function groupedTokenStarts(text: string): Set<number> {
-  const ranges = tokenRanges(text).filter(([from, to]) => from < to);
-  const words = ranges.map(([from, to]) => text.slice(from, to));
-  const starts = new Set<number>();
-  let depth = 0;
-  words.forEach((word, index) => {
-    const opens = /^-?(\(+)/u.exec(word)?.[1]?.length ?? 0;
-    const closes = /(\)+)$/u.exec(word)?.[1]?.length ?? 0;
-    const grouped =
-      depth > 0 ||
-      opens > 0 ||
-      closes > 0 ||
-      words[index - 1] === "OR" ||
-      words[index + 1] === "OR";
-    if (grouped) starts.add(ranges[index]?.[0] ?? -1);
-    depth = Math.max(0, depth + opens - closes);
-  });
-  return starts;
-}
-
 function parseToken(text: string, from: number, to: number): InputToken {
   let raw = text.slice(from, to);
   let negated = false;
@@ -130,6 +106,13 @@ function parseToken(text: string, from: number, to: number): InputToken {
   return { start: from, end: to, negated, key, value };
 }
 
+/** OR やかっこでまとめた条件の中身 (グループのチップの中に、入力の順に並べて出す)。 */
+export type GroupItem =
+  | { kind: "chip"; chip: SearchChip }
+  | { kind: "or" }
+  /** 条件以外の語と、かっこ (「(」「-(」「)」)。 */
+  | { kind: "text"; text: string };
+
 /** 検索欄の中で、まとまった要素 (チップ) として出す、成立した条件。 */
 export type SearchChip = {
   /** 入力の書き方そのまま (「from:sato@example.com」など)。 */
@@ -137,6 +120,11 @@ export type SearchChip = {
   key: string;
   value: string;
   negated: boolean;
+  /**
+   * OR やかっこでまとめたグループなら、その中身 (key と value は空)。グループはまとめて 1 つの条件
+   * (ほかの条件とは「かつ」) なので、ほかのチップと同じく先頭へ並べ直しても意味は変わらない。
+   */
+  items?: GroupItem[];
 };
 
 const TEXT_KEYS = ["from", "to", "cc", "subject", "body", "folder", "in"];
@@ -157,9 +145,111 @@ function isCompleteOperator(token: InputToken): boolean {
   return false;
 }
 
+type Word = { from: number; to: number; word: string };
+
+/** 語の頭の「(」「-(」の数から、語の終わりの「)」の数を引いたもの。 */
+function parenDelta(word: string): number {
+  const opens = /^-?(\(+)/u.exec(word)?.[1]?.length ?? 0;
+  const closes = /(\)+)$/u.exec(word)?.[1]?.length ?? 0;
+  return opens - closes;
+}
+
+/**
+ * 入力を、ひとまとまりの条件 (単位) に分ける。ふつうは語 1 つが 1 つの単位で、OR でつないだ語と、
+ * かっこの中の語はまとめて 1 つの単位にする (サーバーの解釈と同じく、OR は空白より強く結び付く)。
+ * depth は、閉じていないかっこの数。
+ */
+function splitUnits(
+  text: string,
+): { from: number; to: number; words: Word[]; depth: number }[] {
+  const words = tokenRanges(text)
+    .filter(([from, to]) => from < to)
+    .map(([from, to]) => ({ from, to, word: text.slice(from, to) }));
+  const units: { from: number; to: number; words: Word[]; depth: number }[] =
+    [];
+  let index = 0;
+  while (index < words.length) {
+    let end = index;
+    let depth = Math.max(0, parenDelta(words[index]?.word ?? ""));
+    for (;;) {
+      if (depth > 0 && end + 1 < words.length) {
+        end += 1;
+        depth = Math.max(0, depth + parenDelta(words[end]?.word ?? ""));
+        continue;
+      }
+      if (words[end + 1]?.word === "OR" && words[end]?.word !== "OR") {
+        end += 1;
+        if (end + 1 < words.length) {
+          end += 1;
+          depth = Math.max(0, depth + parenDelta(words[end]?.word ?? ""));
+          continue;
+        }
+      }
+      break;
+    }
+    const unit = words.slice(index, end + 1);
+    units.push({
+      from: unit[0]?.from ?? 0,
+      to: unit[unit.length - 1]?.to ?? 0,
+      words: unit,
+      depth,
+    });
+    index = end + 1;
+  }
+  return units;
+}
+
+/** まとまりの中の語を、グループのチップの中身にする。 */
+function groupItems(text: string, words: readonly Word[]): GroupItem[] {
+  const items: GroupItem[] = [];
+  for (const { from, to, word } of words) {
+    if (word === "OR") {
+      items.push({ kind: "or" });
+      continue;
+    }
+    const open = /^-?\(+/u.exec(word)?.[0] ?? "";
+    const close = /\)+$/u.exec(word.slice(open.length))?.[0] ?? "";
+    if (open) items.push({ kind: "text", text: open });
+    const innerFrom = from + open.length;
+    const innerTo = to - close.length;
+    if (innerFrom < innerTo) {
+      const token = parseToken(text, innerFrom, innerTo);
+      const raw = text.slice(innerFrom, innerTo);
+      items.push(
+        isCompleteOperator(token)
+          ? {
+              kind: "chip",
+              chip: {
+                raw,
+                key: token.key,
+                value: token.value,
+                negated: token.negated,
+              },
+            }
+          : { kind: "text", text: raw },
+      );
+    }
+    if (close) items.push({ kind: "text", text: close });
+  }
+  return items;
+}
+
+/** まとまりを入力し終えたか (後ろに空白があり、OR で終わっておらず、かっこが閉じている)。 */
+function isUnitDone(
+  text: string,
+  unit: { to: number; words: Word[]; depth: number },
+  last: boolean,
+): boolean {
+  if (unit.to >= text.length) return false;
+  if (!last) return true;
+  const end = unit.words[unit.words.length - 1]?.word;
+  return unit.depth === 0 && !(unit.words.length > 1 && end === "OR");
+}
+
 /**
  * 入力を、成立した条件 (チップ) と、それ以外 (欄に残す文字) に分ける。
  * 条件は後ろに空白があるもの (入力し終えたもの) だけをチップにし、入力中の語は欄に残す。
+ * OR やかっこでまとめた条件は、入力し終えたらまとめて 1 つのグループのチップにする。
  * rest は、チップにした語と、その後ろの空白を取り除いた入力。
  */
 export function splitChips(text: string): {
@@ -169,21 +259,31 @@ export function splitChips(text: string): {
   const chips: SearchChip[] = [];
   let rest = "";
   let last = 0;
-  const grouped = groupedTokenStarts(text);
-  for (const [from, to] of tokenRanges(text)) {
-    if (from === to || to >= text.length || grouped.has(from)) continue;
-    const token = parseToken(text, from, to);
-    if (!isCompleteOperator(token)) continue;
-    chips.push({
-      raw: text.slice(from, to),
-      key: token.key,
-      value: token.value,
-      negated: token.negated,
-    });
-    rest += text.slice(last, from);
+  const units = splitUnits(text);
+  units.forEach((unit, index) => {
+    if (!isUnitDone(text, unit, index === units.length - 1)) return;
+    if (unit.words.length === 1) {
+      const token = parseToken(text, unit.from, unit.to);
+      if (!isCompleteOperator(token)) return;
+      chips.push({
+        raw: text.slice(unit.from, unit.to),
+        key: token.key,
+        value: token.value,
+        negated: token.negated,
+      });
+    } else {
+      chips.push({
+        raw: text.slice(unit.from, unit.to),
+        key: "",
+        value: "",
+        negated: false,
+        items: groupItems(text, unit.words),
+      });
+    }
+    rest += text.slice(last, unit.from);
     // 後ろの空白も 1 つ取り除く。
-    last = to + 1;
-  }
+    last = unit.to + 1;
+  });
   rest += text.slice(last);
   return { chips, rest };
 }
@@ -221,12 +321,23 @@ export type EditingChip = {
   value: string;
 };
 
+/** 末尾で入力中の、OR やかっこでつないでいる途中のまとまり (「from:a OR」まで入れたところなど)。 */
+export type OpenGroup = {
+  /** 入力の書き方そのまま (後ろの空白は含まない)。 */
+  raw: string;
+  items: GroupItem[];
+};
+
 export type SearchInputParts = {
   /** 入力し終えた条件。 */
   chips: SearchChip[];
   /** 条件以外の語。 */
   rest: string;
-  /** 末尾で入力中の条件。無ければ null (欄には rest を出す)。 */
+  /** 末尾でつないでいる途中のまとまり。この後ろに、入力中の条件 (editing) か語 (tail) が続く。 */
+  open?: OpenGroup | null;
+  /** open の後ろで入力中の、条件ではない語。 */
+  tail?: string;
+  /** 末尾で入力中の条件。無ければ null (欄には rest か tail を出す)。 */
   editing: EditingChip | null;
 };
 
@@ -245,40 +356,57 @@ export function hasOpenSpace(value: string): boolean {
  * 演算子はコロンを入れた時点で「入力中の条件」になり、値を入れて空白で区切るとチップになる。
  */
 export function splitSearchInput(text: string): SearchInputParts {
-  const ranges = tokenRanges(text);
-  const last = ranges[ranges.length - 1];
-  if (last && last[0] < last[1] && last[1] === text.length) {
-    const raw = text.slice(last[0], last[1]);
-    const match = /^(-?)([a-z]+)([:：])(.*)$/iu.exec(raw);
-    const key = match?.[2]?.toLowerCase() ?? "";
-    // OR の後ろやかっこの中で入力している条件は、チップにせず文字のまま入力する。
-    if (
-      match &&
-      CHIP_KEYS.includes(key) &&
-      !groupedTokenStarts(text).has(last[0])
-    ) {
-      const { chips, rest } = splitChips(text.slice(0, last[0]));
-      return {
-        chips,
-        rest: rest.trimEnd(),
-        editing: {
+  const units = splitUnits(text);
+  const unit = units[units.length - 1];
+  if (!unit || isUnitDone(text, unit, true)) {
+    return { ...splitChips(text), open: null, tail: "", editing: null };
+  }
+  // 末尾のまとまりを入力している途中。後ろに空白が無ければ、最後の語を入力している。
+  const typing =
+    unit.to === text.length ? unit.words[unit.words.length - 1] : null;
+  const done = typing ? unit.words.slice(0, -1) : unit.words;
+  const match = typing ? /^(-?)([a-z]+)([:：])(.*)$/iu.exec(typing.word) : null;
+  const key = match?.[2]?.toLowerCase() ?? "";
+  const editing: EditingChip | null =
+    match && CHIP_KEYS.includes(key)
+      ? {
           key,
           negated: match[1] === "-",
           prefix: `${match[1]}${match[2]}${match[3]}`,
           value: match[4] ?? "",
-        },
-      };
+        }
+      : null;
+  if (done.length === 0) {
+    // 語 1 つだけ: 条件なら入力中のチップ、そうでなければ欄の語。
+    if (!editing || !typing) {
+      return { ...splitChips(text), open: null, tail: "", editing: null };
     }
+    const { chips, rest } = splitChips(text.slice(0, typing.from));
+    return { chips, rest: rest.trimEnd(), open: null, tail: "", editing };
   }
-  return { ...splitChips(text), editing: null };
+  const { chips, rest } = splitChips(text.slice(0, unit.from));
+  return {
+    chips,
+    rest: rest.trimEnd(),
+    open: {
+      raw: text.slice(unit.from, done[done.length - 1]?.to ?? unit.from),
+      items: groupItems(text, done),
+    },
+    tail: typing && !editing ? typing.word : "",
+    editing,
+  };
 }
 
 /** splitSearchInput の結果を、検索欄の入力に戻す。 */
 export function joinSearchInput(parts: SearchInputParts): string {
-  const base = joinChips(parts.chips, parts.rest);
-  if (!parts.editing) return base;
-  const spacer = base === "" || /\s$/u.test(base) ? "" : " ";
-  return `${base}${spacer}${parts.editing.prefix}${parts.editing.value}`;
+  const spacer = (text: string) =>
+    text === "" || /\s$/u.test(text) ? "" : " ";
+  let text = joinChips(parts.chips, parts.rest);
+  if (parts.open) text = `${text}${spacer(text)}${parts.open.raw} `;
+  if (parts.editing) {
+    return `${text}${spacer(text)}${parts.editing.prefix}${parts.editing.value}`;
+  }
+  return parts.open ? `${text}${parts.tail ?? ""}` : text;
 }
 
 const CHIP_LABELS: Record<string, string> = {

@@ -115,6 +115,8 @@ describe("splitSearchInput", () => {
         { raw: "is:unread", key: "is", value: "unread", negated: false },
       ],
       rest: "会議 資料",
+      open: null,
+      tail: "",
       editing: { key: "to", negated: false, prefix: "to:", value: "ta" },
     });
   });
@@ -131,6 +133,8 @@ describe("splitSearchInput", () => {
     expect(splitSearchInput("is:foo http://a after:x ")).toEqual({
       chips: [],
       rest: "is:foo http://a after:x ",
+      open: null,
+      tail: "",
       editing: null,
     });
   });
@@ -210,23 +214,89 @@ describe("inPlaceText", () => {
 });
 
 describe("OR とかっこ", () => {
-  it("OR の前後とかっこの中の条件はチップにしない (並べ直すと意味が変わるため)", () => {
+  it("OR でつないだ条件とかっこは、まとめて 1 つのグループのチップにする", () => {
     const parts = splitSearchInput(
       "is:unread from:a OR from:b (to:c d) has:attachment ",
     );
     expect(parts.chips.map((chip) => chip.raw)).toEqual([
       "is:unread",
+      "from:a OR from:b",
+      "(to:c d)",
       "has:attachment",
     ]);
-    expect(parts.rest).toBe("from:a OR from:b (to:c d) ");
+    expect(parts.rest).toBe("");
+    expect(parts.chips[1]?.items).toEqual([
+      {
+        kind: "chip",
+        chip: { raw: "from:a", key: "from", value: "a", negated: false },
+      },
+      { kind: "or" },
+      {
+        kind: "chip",
+        chip: { raw: "from:b", key: "from", value: "b", negated: false },
+      },
+    ]);
+    expect(parts.chips[2]?.items).toEqual([
+      { kind: "text", text: "(" },
+      {
+        kind: "chip",
+        chip: { raw: "to:c", key: "to", value: "c", negated: false },
+      },
+      { kind: "text", text: "d" },
+      { kind: "text", text: ")" },
+    ]);
+    // グループは 1 つの条件なので、並べ直しても意味は変わらない。
     expect(joinSearchInput(parts)).toBe(
-      "is:unread has:attachment from:a OR from:b (to:c d) ",
+      "is:unread from:a OR from:b (to:c d) has:attachment ",
     );
   });
 
-  it("OR の後ろで入力している条件は、入力中のチップにしない", () => {
-    expect(splitSearchInput("from:a OR from:").editing).toBeNull();
-    expect(splitSearchInput("(from:a to:").editing).toBeNull();
+  it("否定のかっこと、語だけの OR もグループにする", () => {
+    const parts = splitSearchInput("会議 -(from:a OR b) x OR y ");
+    expect(parts.chips.map((chip) => chip.raw)).toEqual([
+      "-(from:a OR b)",
+      "x OR y",
+    ]);
+    expect(parts.rest).toBe("会議 ");
+  });
+
+  it("OR の後ろで入力している条件は、つないでいる途中のまとまりの後ろで入力中にする", () => {
+    const parts = splitSearchInput("is:unread from:a OR from:");
+    expect(parts.chips.map((chip) => chip.raw)).toEqual(["is:unread"]);
+    expect(parts.open?.raw).toBe("from:a OR");
+    expect(parts.open?.items.map((item) => item.kind)).toEqual(["chip", "or"]);
+    expect(parts.editing?.key).toBe("from");
+    expect(splitSearchInput("(from:a to:").open?.raw).toBe("(from:a");
     expect(splitSearchInput("a from:").editing?.key).toBe("from");
+    expect(splitSearchInput("a from:").open).toBeNull();
+  });
+
+  it("OR の後ろの語や、閉じていないかっこも途中のまとまりにする", () => {
+    expect(splitSearchInput("from:a OR ")).toMatchObject({
+      open: { raw: "from:a OR" },
+      tail: "",
+      editing: null,
+    });
+    expect(splitSearchInput("from:a OR 会")).toMatchObject({
+      open: { raw: "from:a OR" },
+      tail: "会",
+      editing: null,
+    });
+    expect(splitSearchInput("(to:c ")).toMatchObject({
+      open: { raw: "(to:c" },
+      tail: "",
+    });
+  });
+
+  it("途中のまとまりも joinSearchInput で元の入力に戻せる", () => {
+    for (const text of [
+      "is:unread from:a OR from:",
+      "x from:a OR 会",
+      "(to:c d ",
+      "from:a OR ",
+      "(b OR c) a d",
+    ]) {
+      expect(joinSearchInput(splitSearchInput(text))).toBe(text);
+    }
   });
 });

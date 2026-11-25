@@ -44,6 +44,7 @@ import {
   completeQuery,
   DATE_OPERATORS,
   FOLDER_OPERATORS,
+  type GroupItem,
   hasOpenSpace,
   type InPlaceDraft,
   type InputToken,
@@ -58,6 +59,7 @@ import {
   replaceToken,
   SEARCH_OPERATORS,
   type SearchChip,
+  type SearchInputParts,
   type SearchOperator,
   splitChipRaw,
   splitSearchInput,
@@ -186,7 +188,12 @@ export function SearchBox({
   const chips = inPlace ? inPlace.others : parts.chips;
   const rest = inPlace ? inPlace.rest : parts.rest;
   const editing = inPlace ? null : parts.editing;
-  const text = inPlace ? inPlace.value : editing ? editing.value : rest;
+  /** OR やかっこでつないでいる途中のまとまり (欄の手前に出す) と、その後ろで入力中の語。 */
+  const openGroup = inPlace ? null : (parts.open ?? null);
+  const tail = inPlace ? "" : (parts.tail ?? "");
+  /** 欄 (input) に出す文字のうち、条件以外の語の部分。 */
+  const words = openGroup ? tail : rest;
+  const text = inPlace ? inPlace.value : editing ? editing.value : words;
   /** 欄 (input) を包むチップ。その場で編集しているチップか、末尾の入力中の条件。 */
   const slot = inPlace ?? editing;
   const token: InputToken = inPlace
@@ -205,7 +212,7 @@ export function SearchBox({
           key: editing.key,
           value: editing.value.replace(/["“”]/gu, ""),
         }
-      : tokenAt(rest, Math.min(caret, rest.length));
+      : tokenAt(words, Math.min(caret, words.length));
   const screen = variant === "screen";
 
   const contactQuery = ADDRESS_OPERATORS.includes(
@@ -250,15 +257,15 @@ export function SearchBox({
     const changed =
       after.chips.length !== chips.length ||
       after.editing?.key !== editing?.key ||
-      (after.editing === null) !== (editing === null);
-    const view = after.editing ? after.editing.value : after.rest;
-    if (changed) placeCaret(view.length);
+      (after.editing === null) !== (editing === null) ||
+      (after.open?.raw ?? null) !== (openGroup?.raw ?? null);
+    if (changed) placeCaret(inputView(after).length);
     else if (nextCaret !== undefined) placeCaret(nextCaret);
   };
   const setFull = (next: string) => {
     const after = splitSearchInput(next);
     onChange({ ...value, text: next });
-    placeCaret((after.editing ? after.editing.value : after.rest).length);
+    placeCaret(inputView(after).length);
   };
   /** 欄の文字が変わった。入力中の条件の値なら、空白で区切った時点でチップにする。 */
   const setText = (next: string, nextCaret?: number) => {
@@ -267,12 +274,28 @@ export function SearchBox({
       return;
     }
     if (!editing) {
-      apply(joinSearchInput({ chips, rest: next, editing: null }), nextCaret);
+      apply(
+        openGroup
+          ? joinSearchInput({
+              chips,
+              rest,
+              open: openGroup,
+              tail: next,
+              editing: null,
+            })
+          : joinSearchInput({ chips, rest: next, editing: null }),
+        nextCaret,
+      );
       return;
     }
     if (!hasOpenSpace(next)) {
       apply(
-        joinSearchInput({ chips, rest, editing: { ...editing, value: next } }),
+        joinSearchInput({
+          chips,
+          rest,
+          open: openGroup,
+          editing: { ...editing, value: next },
+        }),
         nextCaret,
       );
       return;
@@ -282,7 +305,12 @@ export function SearchBox({
     const space = trimmed.search(/\s/u);
     const head = space === -1 ? trimmed : trimmed.slice(0, space);
     const tail = space === -1 ? "" : trimmed.slice(space).trim();
-    const base = joinSearchInput({ chips, rest, editing: null });
+    const base = joinSearchInput({
+      chips,
+      rest,
+      open: openGroup,
+      editing: null,
+    });
     const spacer = base === "" || /\s$/u.test(base) ? "" : " ";
     const committed =
       head === "" ? base : `${base}${spacer}${editing.prefix}${head} `;
@@ -306,6 +334,8 @@ export function SearchBox({
       joinSearchInput({
         chips: chips.filter((_, item) => item !== index),
         rest,
+        open: openGroup,
+        tail,
         editing,
       }),
       Math.min(caret, text.length),
@@ -316,11 +346,15 @@ export function SearchBox({
    * 空なら捨てる。その場で編集しているチップも元の位置に確定する。
    */
   const settledParts = (): { chips: SearchChip[]; rest: string } => {
-    if (inPlace) return splitSearchInput(inPlace.text);
+    if (inPlace) return flattenParts(splitSearchInput(inPlace.text));
     if (editing && editing.value.trim() !== "") {
-      return splitSearchInput(`${full} `);
+      return flattenParts(splitSearchInput(`${full} `));
     }
-    return splitSearchInput(joinSearchInput({ chips, rest, editing: null }));
+    return flattenParts(
+      splitSearchInput(
+        joinSearchInput({ chips, rest, open: openGroup, tail, editing: null }),
+      ),
+    );
   };
   /** index 番目の確定したチップを、その場で編集する。 */
   const enterChip = (
@@ -329,7 +363,7 @@ export function SearchBox({
     caretAt: "start" | "end",
   ) => {
     const target = settled.chips[index];
-    const split = target ? splitChipRaw(target.raw) : null;
+    const split = target && !target.items ? splitChipRaw(target.raw) : null;
     if (!target || !split) return;
     const others = settled.chips.filter((_, item) => item !== index);
     const draft: InPlaceDraft = {
@@ -359,7 +393,20 @@ export function SearchBox({
       settled.chips.length > inPlace.others.length
         ? 1
         : 0;
-    enterChip(settled, index + shift, "end");
+    const target = settled.chips[index + shift];
+    if (target?.items) {
+      // OR やかっこのグループは、末尾へ移して、最後の語から入力し直せるようにする。
+      setInPlace(null);
+      const base = joinChips(
+        settled.chips.filter((_, item) => item !== index + shift),
+        settled.rest,
+      );
+      setFull(
+        `${base}${base === "" || /\s$/u.test(base) ? "" : " "}${target.raw}`,
+      );
+    } else {
+      enterChip(settled, index + shift, "end");
+    }
     openPanel();
   };
   /**
@@ -368,25 +415,31 @@ export function SearchBox({
    */
   const leaveChip = (to: "next" | "prev" | "end" | "start" | "none") => {
     if (!inPlace) return;
-    const settled = splitSearchInput(inPlace.text);
+    const parts = splitSearchInput(inPlace.text);
+    const settled = flattenParts(parts);
     const kept = settled.chips.length > inPlace.others.length;
-    if (to === "prev" && inPlace.at > 0) {
-      enterChip(settled, inPlace.at - 1, "end");
+    if (to === "prev") {
+      const index = editableIndex(settled.chips, inPlace.at - 1, -1);
+      if (index >= 0) enterChip(settled, index, "end");
       return;
     }
     if (to === "next") {
-      const index = kept ? inPlace.at + 1 : inPlace.at;
-      if (index < settled.chips.length) {
+      const index = editableIndex(
+        settled.chips,
+        kept ? inPlace.at + 1 : inPlace.at,
+        1,
+      );
+      if (index >= 0) {
         enterChip(settled, index, "start");
         return;
       }
     }
     setInPlace(null);
     if (to === "none") {
-      setCaret(settled.rest.length);
+      setCaret(inputView(parts).length);
       return;
     }
-    placeCaret(to === "end" ? settled.rest.length : 0);
+    placeCaret(to === "end" ? inputView(parts).length : 0);
   };
   /** その場で編集しているチップの値が変わった。空白で区切ったら確定する。 */
   const setInPlaceValue = (next: string, nextCaret?: number) => {
@@ -408,7 +461,7 @@ export function SearchBox({
     onChange({ ...value, text: nextText });
     if (done) {
       setInPlace(null);
-      placeCaret(splitSearchInput(nextText).rest.length);
+      placeCaret(inputView(splitSearchInput(nextText)).length);
       return;
     }
     setInPlace({ ...draft, text: nextText });
@@ -427,16 +480,24 @@ export function SearchBox({
       const nextText = inPlaceText(inPlace.others, inPlace.at, draft, nextRest);
       onChange({ ...value, text: nextText });
       setInPlace(null);
-      placeCaret(splitSearchInput(nextText).rest.length);
+      placeCaret(inputView(splitSearchInput(nextText)).length);
       return;
     }
     if (editing) {
       apply(replaceToken(full, target, replacement).text);
       return;
     }
-    const result = replaceToken(rest, target, replacement);
+    const result = replaceToken(words, target, replacement);
     apply(
-      joinSearchInput({ chips, rest: result.text, editing: null }),
+      openGroup
+        ? joinSearchInput({
+            chips,
+            rest,
+            open: openGroup,
+            tail: result.text,
+            editing: null,
+          })
+        : joinSearchInput({ chips, rest: result.text, editing: null }),
       result.caret,
     );
   };
@@ -681,26 +742,39 @@ export function SearchBox({
         }
         if (at !== 0) return;
         if (inPlace) {
-          if (inPlace.at === 0) return;
+          if (editableIndex(inPlace.others, inPlace.at - 1, -1) < 0) return;
           event.preventDefault();
           leaveChip("prev");
           return;
         }
-        if (editing) {
-          event.preventDefault();
+        if (editing || openGroup) {
           const settled = settledParts();
-          if (rest !== "") {
+          if (editing && !openGroup && rest !== "") {
             // 入力中の条件を確定し、条件以外の語の末尾へ戻る。
+            event.preventDefault();
             setFull(joinSearchInput({ ...settled, editing: null }));
             return;
           }
-          if (chips.length > 0) enterChip(settled, chips.length - 1, "end");
-          else setFull(joinSearchInput({ ...settled, editing: null }));
+          const index = editableIndex(
+            settled.chips,
+            settled.chips.length - 1,
+            -1,
+          );
+          if (index >= 0) {
+            event.preventDefault();
+            enterChip(settled, index, "end");
+          } else if (editing) {
+            event.preventDefault();
+            setFull(joinSearchInput({ ...settled, editing: null }));
+          }
           return;
         }
-        if (chips.length === 0) return;
-        event.preventDefault();
-        enterChip(settledParts(), chips.length - 1, "end");
+        {
+          const index = editableIndex(chips, chips.length - 1, -1);
+          if (index < 0) return;
+          event.preventDefault();
+          enterChip(settledParts(), index, "end");
+        }
         return;
       }
       case "Backspace": {
@@ -710,14 +784,36 @@ export function SearchBox({
           // 値を消し終えたチップで押したら、チップごと消して前へ移る。
           if (inPlace.value !== "") return;
           event.preventDefault();
-          leaveChip(inPlace.at > 0 ? "prev" : "start");
+          leaveChip(
+            editableIndex(inPlace.others, inPlace.at - 1, -1) >= 0
+              ? "prev"
+              : "start",
+          );
           return;
         }
         if (editing) {
           // 値の無い条件で押したら、条件をやめて普通の入力に戻る。
           if (editing.value !== "") return;
           event.preventDefault();
-          apply(joinSearchInput({ chips, rest, editing: null }));
+          apply(
+            joinSearchInput({
+              chips,
+              rest,
+              open: openGroup,
+              tail: "",
+              editing: null,
+            }),
+          );
+          return;
+        }
+        if (openGroup) {
+          // つないでいる途中のまとまりの最後の語 (OR など) を、もう一度入力できるようにする。
+          if (tail !== "") return;
+          event.preventDefault();
+          const base = joinChips(chips, rest);
+          apply(
+            `${base}${base === "" || /\s$/u.test(base) ? "" : " "}${openGroup.raw}`,
+          );
           return;
         }
         const last = chips[chips.length - 1];
@@ -956,16 +1052,44 @@ export function SearchBox({
                 )}
               >
                 {chips.map((chip, index) => {
+                  const order =
+                    inPlace && index >= inPlace.at ? index + 1 : index;
+                  if (chip.items) {
+                    const description = groupDescription(chip.items);
+                    return (
+                      <li
+                        key={`${index}:${chip.raw}`}
+                        className={groupClass(screen)}
+                        style={{ order }}
+                      >
+                        <button
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          aria-label={`${description} を編集`}
+                          onClick={() => editChip(index)}
+                          className="-ml-1 flex min-w-0 cursor-pointer items-center gap-1 self-stretch rounded-sm pl-1 outline-none transition-colors hover:bg-current/5 focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <GroupItems items={chip.items} screen={screen} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`${description} を外す`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => removeChip(index)}
+                          className={removeButtonClass(screen)}
+                        >
+                          <XIcon />
+                        </button>
+                      </li>
+                    );
+                  }
                   const { label, value: chipValue } = chipLabel(chip);
                   return (
                     <li
                       // 同じ条件を 2 回書くこともあるので、位置も含める。
                       key={`${index}:${chip.raw}`}
                       className={chipClass(chip.negated, screen, false)}
-                      style={{
-                        order:
-                          inPlace && index >= inPlace.at ? index + 1 : index,
-                      }}
+                      style={{ order }}
                     >
                       <button
                         type="button"
@@ -994,13 +1118,7 @@ export function SearchBox({
                         aria-label={`${chip.negated ? "除外の条件 " : ""}${label} ${chipValue} を外す`}
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => removeChip(index)}
-                        className={cn(
-                          "relative flex shrink-0 items-center justify-center rounded-sm opacity-60 outline-none transition after:absolute after:-inset-1 hover:bg-current/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5",
-                          // 押せる範囲の右側はチップの端で止める (はみ出すと並びの幅が伸び、余白ができる)。
-                          screen
-                            ? "size-5 [&_svg]:size-3.5 after:-right-1 pointer-coarse:after:-right-1"
-                            : "size-4 [&_svg]:size-3 after:-right-0.5 pointer-coarse:after:-right-0.5",
-                        )}
+                        className={removeButtonClass(screen)}
                       >
                         <XIcon />
                       </button>
@@ -1009,9 +1127,9 @@ export function SearchBox({
                 })}
               </ul>
             )}
-            {(editing || inPlace) && rest !== "" && (
+            {(editing || inPlace || openGroup) && rest !== "" && (
               <span
-                style={{ order: SLOT_ORDER - 1 }}
+                style={{ order: SLOT_ORDER - 2 }}
                 className={cn(
                   "shrink-0 whitespace-pre",
                   screen ? "text-base" : "text-sm",
@@ -1020,6 +1138,19 @@ export function SearchBox({
                 )}
               >
                 {rest}
+              </span>
+            )}
+            {openGroup && (
+              // OR やかっこでつないでいる途中のまとまり。この後ろの欄で、続きを入力する。
+              <span
+                style={{ order: SLOT_ORDER - 1 }}
+                className={cn(
+                  "flex shrink-0 items-center gap-1",
+                  !screen &&
+                    "hidden group-focus-within/search:flex @3xl/pane:flex",
+                )}
+              >
+                <GroupItems items={openGroup.items} screen={screen} />
               </span>
             )}
             {/* 入力中の条件は、欄 (input) ごとチップに包む。欄は作り直さない (フォーカスを保つ) よう、
@@ -1075,7 +1206,7 @@ export function SearchBox({
                           operator.key ===
                           (slot.key === "cc" ? "to" : slot.key),
                       )?.example ?? "")
-                    : chips.length > 0
+                    : chips.length > 0 || openGroup
                       ? undefined
                       : placeholder
                 }
@@ -1153,6 +1284,35 @@ export function SearchBox({
 /** 末尾の入力欄 (と条件以外の語) の並び順。チップ (0, 1, 2…) より後ろに置く。 */
 const SLOT_ORDER = 10000;
 
+/** 欄 (input) に出す文字 (入力中の条件の値か、条件以外の語)。 */
+function inputView(parts: SearchInputParts): string {
+  if (parts.editing) return parts.editing.value;
+  return parts.open ? (parts.tail ?? "") : parts.rest;
+}
+
+/** チップ以外 (つないでいる途中のまとまりも) を、条件以外の語としてまとめる。 */
+function flattenParts(parts: SearchInputParts): {
+  chips: SearchChip[];
+  rest: string;
+} {
+  return {
+    chips: parts.chips,
+    rest: joinSearchInput({ ...parts, chips: [], editing: null }),
+  };
+}
+
+/** from から step の向きに探した、その場で編集できる (グループではない) チップの位置。無ければ -1。 */
+function editableIndex(
+  chips: readonly SearchChip[],
+  from: number,
+  step: 1 | -1,
+): number {
+  for (let index = from; index >= 0 && index < chips.length; index += step) {
+    if (!chips[index]?.items) return index;
+  }
+  return -1;
+}
+
 /** チップのアイコン (演算子ごと)。 */
 const chipIcons: Record<string, ReactNode> = {
   ...operatorIcons,
@@ -1181,6 +1341,112 @@ function chipClass(negated: boolean, screen: boolean, editing: boolean) {
           editing &&
             "bg-indigo-500/15 ring-indigo-500/50 dark:ring-indigo-400/60",
         ),
+  );
+}
+
+/** チップの × (外す) ボタン。 */
+function removeButtonClass(screen: boolean) {
+  return cn(
+    "relative flex shrink-0 items-center justify-center rounded-sm opacity-60 outline-none transition after:absolute after:-inset-1 hover:bg-current/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5",
+    // 押せる範囲の右側はチップの端で止める (はみ出すと並びの幅が伸び、余白ができる)。
+    screen
+      ? "size-5 [&_svg]:size-3.5 after:-right-1 pointer-coarse:after:-right-1"
+      : "size-4 [&_svg]:size-3 after:-right-0.5 pointer-coarse:after:-right-0.5",
+  );
+}
+
+/** OR やかっこでまとめたグループのチップ。中の条件 (小さなチップ) と区別できるよう、無彩色の枠にする。 */
+function groupClass(screen: boolean) {
+  return cn(
+    "flex shrink-0 items-center gap-1 rounded-md bg-muted/60 pl-1 ring-1 ring-border ring-inset",
+    screen ? "h-8 pr-1 text-sm" : "h-6 pr-0.5 text-xs",
+  );
+}
+
+/** グループの読み上げ用の説明 (「差出人 a または 差出人 b」など)。 */
+function groupDescription(items: readonly GroupItem[]): string {
+  return items
+    .map((item) => {
+      if (item.kind === "or") return "または";
+      if (item.kind === "text") {
+        if (item.text.startsWith("-")) return "次を除く (";
+        return item.text;
+      }
+      const { label, value } = chipLabel(item.chip);
+      return `${item.chip.negated ? "除外 " : ""}${label} ${value}`;
+    })
+    .join(" ");
+}
+
+/** グループの中身。条件は小さなチップ、OR とかっこは文字で、入力の順に並べる。 */
+function GroupItems({
+  items,
+  screen,
+}: {
+  items: readonly GroupItem[];
+  screen: boolean;
+}) {
+  return (
+    <>
+      {items.map((item, index) => {
+        const key = `${index}`;
+        if (item.kind === "or") {
+          return (
+            <span
+              key={key}
+              className="shrink-0 font-semibold text-[0.625rem] text-muted-foreground tracking-wide"
+            >
+              OR
+            </span>
+          );
+        }
+        if (item.kind === "text") {
+          const negated = item.text.startsWith("-");
+          const isParen = /^-?[()]+$/u.test(item.text);
+          return (
+            <span
+              key={key}
+              className={cn(
+                "flex shrink-0 items-center gap-1 whitespace-pre",
+                isParen && "font-medium text-muted-foreground",
+              )}
+            >
+              {negated && (
+                <span className="rounded-sm bg-rose-500/15 px-1 font-semibold text-[0.625rem] text-rose-700 leading-4 dark:bg-rose-400/20 dark:text-rose-300">
+                  除外
+                </span>
+              )}
+              {negated ? item.text.slice(1) : item.text}
+            </span>
+          );
+        }
+        const { label, value } = chipLabel(item.chip);
+        return (
+          <span
+            key={key}
+            className={cn(
+              chipClass(item.chip.negated, screen, false),
+              "gap-0.5 rounded-sm px-1",
+              screen ? "h-6" : "h-4.5 text-[0.6875rem]",
+            )}
+          >
+            <ChipHead
+              chipKey={item.chip.key}
+              label={label}
+              negated={item.chip.negated}
+            />
+            <span
+              className={cn(
+                "truncate font-semibold",
+                screen ? "max-w-28" : "max-w-24",
+              )}
+            >
+              {value}
+            </span>
+          </span>
+        );
+      })}
+    </>
   );
 }
 
