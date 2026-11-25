@@ -286,6 +286,14 @@ html[data-overlay-scrollbars]
   }
 }
 
+/* バーをわざと隠すスクロール領域。重ねるバーも出さない (overlay-scrollbars.ts の SCROLLBAR_HIDDEN_ATTRIBUTE)。 */
+[data-scrollbar-hidden] {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 .overlay-scrollbar {
   position: fixed;
   /* 重なったサイドバーや作成画面 (z-40) より手前、ダイアログやメニュー (z-50) より奥。 */
