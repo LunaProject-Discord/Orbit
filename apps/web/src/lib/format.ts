@@ -141,6 +141,22 @@ export function formatListDate(
   return `${day ?? formatDateWith(date, style.monthDayFormat)} ${time}`;
 }
 
+/**
+ * テーブル表示の日時の列。今日なら時刻だけ、それ以外は短い日付と時刻
+ * (標準は 2026/11/24 9:35。Thunderbird のテーブル表示と同じ考え方)。
+ */
+export function formatTableDate(
+  value: string,
+  now = new Date(),
+  style: DateStyle = defaultStyle,
+): string {
+  const date = parse(value);
+  if (!date) return "";
+  const time = formatDateWith(date, style.shortTimeFormat);
+  if (date.toDateString() === now.toDateString()) return time;
+  return `${formatDateWith(date, style.shortDateFormat)} ${time}`;
+}
+
 /** 短い日付だけ (登録日など)。 */
 export function formatShortDate(
   value: string | Date,

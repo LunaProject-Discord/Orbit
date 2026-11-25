@@ -75,6 +75,8 @@ export function insertPendingMoves(
   snapshots: MoveSnapshots,
   mailboxes: readonly MailboxSummary[],
   view: ListView,
+  /** 一覧の並び順。省略すると新しい順。 */
+  order: (a: MessageSummary, b: MessageSummary) => number = compare,
 ): MessageSummary[] {
   if (snapshots.size === 0) return rows;
   // メールごとに、最後の移動先を求める (あとの操作ほど優先する)。
@@ -177,7 +179,7 @@ export function insertPendingMoves(
   }
   if (added.length === 0) return result;
   const ids = new Set(result.map((row) => row.id));
-  return [...result, ...added.filter((row) => !ids.has(row.id))].sort(compare);
+  return [...result, ...added.filter((row) => !ids.has(row.id))].sort(order);
 }
 
 /** 送信待ちに残っていない操作の控えを捨てる。 */

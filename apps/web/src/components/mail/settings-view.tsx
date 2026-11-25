@@ -692,6 +692,16 @@ function ListPage() {
       <Section title="行の表示">
         <SettingGroup>
           <SelectRow
+            label="一覧の表示"
+            description="テーブル表示では、件名・差出人・日時などを列に分けて並べます。見出しを押すと並べ替え、ドラッグで列の入れ替えや幅の変更ができます。幅の狭い画面ではカード表示になります。"
+            value={preferences.listLayout}
+            onChange={(listLayout) => set({ listLayout })}
+            options={[
+              ["cards", "カード (標準)"],
+              ["table", "テーブル"],
+            ]}
+          />
+          <SelectRow
             label="行の間隔"
             value={preferences.density}
             onChange={(density) => set({ density })}
@@ -703,7 +713,7 @@ function ListPage() {
           />
           <SelectRow
             label="本文のプレビュー"
-            description="件名の下に表示する本文の行数です。"
+            description="カード表示で、件名の下に表示する本文の行数です。"
             value={preferences.previewLines}
             onChange={(previewLines) => set({ previewLines })}
             options={[
