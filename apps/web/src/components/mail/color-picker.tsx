@@ -48,6 +48,7 @@ export function ColorPicker({
   labelledBy,
   unsetLabel,
   resetLabel = "自動に戻す",
+  triggerClassName,
 }: {
   /** いま出している色 ("#rrggbb")。選んでいなければ、自動で割り当てた色。 */
   value: string;
@@ -60,6 +61,8 @@ export function ColorPicker({
   /** 色を選んでいないときにボタンへ出す文言と、選んだ色を外すボタンの文言 (既定は自動の色)。 */
   unsetLabel?: string;
   resetLabel?: string;
+  /** ボタンに足すクラス (並べる入力欄と高さをそろえるときなど)。 */
+  triggerClassName?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -106,7 +109,7 @@ export function ColorPicker({
             id={`${id}-trigger`}
             aria-labelledby={`${labelledBy} ${id}-trigger`}
             style={accountColorStyle(value)}
-            className="justify-start gap-2 font-normal"
+            className={cn("justify-start gap-2 font-normal", triggerClassName)}
           />
         }
       >
