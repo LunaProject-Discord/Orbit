@@ -93,6 +93,30 @@ function tokenRanges(text: string): [number, number][] {
   return ranges;
 }
 
+/**
+ * チップにせず、文字のまま残す語の位置 (語の頭)。OR の前後の語と、かっこの中の語。
+ * チップは入力の先頭へまとめて並べ直すので、OR やかっこの中の条件をチップにすると意味が変わってしまう。
+ */
+function groupedTokenStarts(text: string): Set<number> {
+  const ranges = tokenRanges(text).filter(([from, to]) => from < to);
+  const words = ranges.map(([from, to]) => text.slice(from, to));
+  const starts = new Set<number>();
+  let depth = 0;
+  words.forEach((word, index) => {
+    const opens = /^-?(\(+)/u.exec(word)?.[1]?.length ?? 0;
+    const closes = /(\)+)$/u.exec(word)?.[1]?.length ?? 0;
+    const grouped =
+      depth > 0 ||
+      opens > 0 ||
+      closes > 0 ||
+      words[index - 1] === "OR" ||
+      words[index + 1] === "OR";
+    if (grouped) starts.add(ranges[index]?.[0] ?? -1);
+    depth = Math.max(0, depth + opens - closes);
+  });
+  return starts;
+}
+
 function parseToken(text: string, from: number, to: number): InputToken {
   let raw = text.slice(from, to);
   let negated = false;
@@ -145,8 +169,9 @@ export function splitChips(text: string): {
   const chips: SearchChip[] = [];
   let rest = "";
   let last = 0;
+  const grouped = groupedTokenStarts(text);
   for (const [from, to] of tokenRanges(text)) {
-    if (from === to || to >= text.length) continue;
+    if (from === to || to >= text.length || grouped.has(from)) continue;
     const token = parseToken(text, from, to);
     if (!isCompleteOperator(token)) continue;
     chips.push({
@@ -226,7 +251,12 @@ export function splitSearchInput(text: string): SearchInputParts {
     const raw = text.slice(last[0], last[1]);
     const match = /^(-?)([a-z]+)([:：])(.*)$/iu.exec(raw);
     const key = match?.[2]?.toLowerCase() ?? "";
-    if (match && CHIP_KEYS.includes(key)) {
+    // OR の後ろやかっこの中で入力している条件は、チップにせず文字のまま入力する。
+    if (
+      match &&
+      CHIP_KEYS.includes(key) &&
+      !groupedTokenStarts(text).has(last[0])
+    ) {
       const { chips, rest } = splitChips(text.slice(0, last[0]));
       return {
         chips,
