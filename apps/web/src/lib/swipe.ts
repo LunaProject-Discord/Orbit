@@ -202,6 +202,18 @@ export function shouldCommit(
   );
 }
 
+/**
+ * 操作の直後 (慣性のスクロールの残りを無視している間) に届いたトラックパッドの横の動きが、
+ * 新しく始めたスワイプか。慣性の動きは同じ向きのまま弱まり続けるので、
+ * 前の動き (previousDx) より強くなった、または向きが変わったものを新しいスワイプとみなす。
+ */
+export function restartsWheelSwipe(previousDx: number, dx: number): boolean {
+  const size = Math.abs(dx);
+  if (size < 4) return false;
+  if (Math.sign(dx) !== Math.sign(previousDx)) return true;
+  return size > Math.abs(previousDx) * 1.5 + 1;
+}
+
 /** 行をずらせる量を、操作のある向きと行の幅に収める。 */
 export function clampOffset(
   offset: number,
