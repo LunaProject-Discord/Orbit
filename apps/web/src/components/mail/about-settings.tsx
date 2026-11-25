@@ -2,11 +2,13 @@
 
 /** 設定の「バージョン情報」。アプリと画面の版、接続先のサーバー、画面の自動更新の状態を出す。 */
 
+import { cn } from "cn";
 import {
   CircleAlertIcon,
   CircleCheckIcon,
   DownloadIcon,
   LoaderCircleIcon,
+  type LucideIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -107,6 +109,35 @@ function statusText(status: UpdateStatus): {
   }
 }
 
+/**
+ * 状態の 1 行。アイコンは 1 行目の文字の高さ (text-sm の行の高さ h-5) の中で縦の中央に置く。
+ * アイコンが無いときも同じ幅を空けて、文字の左端を変えない。
+ */
+function StatusLine(props: {
+  tone: "muted" | "ok" | "error";
+  icon: LucideIcon | null;
+  spin?: boolean;
+  children: React.ReactNode;
+}) {
+  const Icon = props.icon;
+  return (
+    <output
+      className={cn(
+        "flex min-w-0 flex-1 basis-48 items-start gap-2 text-sm",
+        props.tone === "error" && "text-destructive",
+        props.tone === "muted" && "text-muted-foreground",
+      )}
+    >
+      <span className="flex h-5 w-4 shrink-0 items-center justify-center">
+        {Icon && (
+          <Icon className={cn("size-4", props.spin && "animate-spin")} />
+        )}
+      </span>
+      <span className="min-w-0">{props.children}</span>
+    </output>
+  );
+}
+
 export function AboutSettings() {
   const { native, nativeTooOld, status } = useAppUpdate();
   const server = useServerInfo();
@@ -174,31 +205,29 @@ export function AboutSettings() {
           </p>
         </div>
         {inApp && native && (
-          <div className="flex flex-col gap-3 rounded-lg border p-3">
+          // 設定のほかの行 (settings-view.tsx の SettingRow) と同じく、状態を左、ボタンを右に置く。
+          // 縦に重ねると、状態のアイコンとボタンのアイコン・文字の左端がそろわないため。
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5">
             {nativeTooOld ? (
-              <p className="flex items-start gap-2 text-destructive text-sm">
-                <CircleAlertIcon className="mt-0.5 size-4 shrink-0" />
+              <StatusLine tone="error" icon={CircleAlertIcon}>
                 アプリ本体が古いため、画面の更新を確認できません。アプリを更新してください。
-              </p>
+              </StatusLine>
             ) : (
-              <output
-                className={
-                  tone === "error"
-                    ? "flex items-start gap-2 text-destructive text-sm"
-                    : tone === "ok"
-                      ? "flex items-start gap-2 text-sm"
-                      : "flex items-start gap-2 text-muted-foreground text-sm"
+              <StatusLine
+                tone={tone}
+                icon={
+                  working
+                    ? LoaderCircleIcon
+                    : tone === "error"
+                      ? CircleAlertIcon
+                      : tone === "ok"
+                        ? CircleCheckIcon
+                        : null
                 }
+                spin={working}
               >
-                {working ? (
-                  <LoaderCircleIcon className="mt-0.5 size-4 shrink-0 animate-spin" />
-                ) : tone === "error" ? (
-                  <CircleAlertIcon className="mt-0.5 size-4 shrink-0" />
-                ) : tone === "ok" ? (
-                  <CircleCheckIcon className="mt-0.5 size-4 shrink-0" />
-                ) : null}
-                <span>{text}</span>
-              </output>
+                {text}
+              </StatusLine>
             )}
             <div className="flex flex-wrap gap-2">
               <Button
