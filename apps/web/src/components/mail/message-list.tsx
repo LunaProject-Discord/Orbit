@@ -135,6 +135,12 @@ type Props = {
   /** 検索結果で、メールのある場所 (アカウントとフォルダ) を各行に出すための関数。 */
   locationLabel?: (message: MessageSummary) => string | null;
   /**
+   * テーブル表示の「場所」の列に出す内容。省略すると locationLabel を使う。
+   * カード表示では行が長くなるので場所を出さない一覧 (すべての受信トレイなど) でも、
+   * テーブル表示では列として出せるようにするためのもの。
+   */
+  tableLocationLabel?: (message: MessageSummary) => string | null;
+  /**
    * 複数のアカウントのメールが並ぶ一覧で、どのアカウントのメールかを示すための関数。
    * アカウントのマーク (設定したアイコンか色の点) と、読み上げ用のアカウント名を返す。
    */
@@ -686,6 +692,7 @@ export function MessageList({
   emptyText = "メールはまだありません。同期が終わるとここに表示されます。",
   highlightTerms = NO_TERMS,
   locationLabel,
+  tableLocationLabel,
   accountMark,
   checkedIds,
   selecting,
@@ -749,7 +756,8 @@ export function MessageList({
   const isTable = layout === "table";
   const hasAccountColumn =
     accountMark !== undefined && preferences.showAccountMark;
-  const hasLocationColumn = locationLabel !== undefined;
+  const tableLocation = tableLocationLabel ?? locationLabel;
+  const hasLocationColumn = tableLocation !== undefined;
   const tableColumns = useMemo(
     () =>
       tableView.columns.filter(
@@ -1033,7 +1041,7 @@ export function MessageList({
               selecting={selecting}
               showRecipients={showRecipients}
               highlightTerms={highlightTerms}
-              locationLabel={locationLabel}
+              locationLabel={isTable ? tableLocation : locationLabel}
               accountMark={accountMark}
               swipeFor={swipeFor}
               prefetcher={prefetcher}

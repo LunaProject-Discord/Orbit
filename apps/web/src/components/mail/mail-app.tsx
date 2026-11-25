@@ -3741,6 +3741,14 @@ const MailView = memo(function MailView({
                         : showsRecipients(selectedMailbox))
                     }
                     {...(accountMark ? { accountMark } : {})}
+                    // テーブル表示では、複数のフォルダのメールが並ぶ一覧 (すべての受信トレイ、
+                    // スター付き、検索結果、統合フォルダ) で「場所」の列を使える。
+                    {...(starred ||
+                    searching ||
+                    selectedUnified ||
+                    (!selectedAccountId && !selectedMailboxId)
+                      ? { tableLocationLabel: locationLabel }
+                      : {})}
                     {...(starred
                       ? {
                           emptyText:
