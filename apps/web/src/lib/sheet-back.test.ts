@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { closeTopSheet, openSheetCount, registerSheetBack } from "./sheet-back";
+import {
+  closeTopSheet,
+  openSheetCount,
+  registerSheetBack,
+  STUCK_SHEET_MS,
+} from "./sheet-back";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -72,5 +77,37 @@ describe("CloseWatcher", () => {
     const remove = registerSheetBack(vi.fn());
     remove();
     expect(destroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("残ってしまった登録", () => {
+  it("もう開いていないシートは飛ばして、画面を戻す", () => {
+    const close = vi.fn();
+    cleanups.push(registerSheetBack(close, false, () => false));
+    expect(closeTopSheet()).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(openSheetCount()).toBe(0);
+  });
+
+  it("開いていないシートの下に開いているシートがあれば、そちらを閉じる", () => {
+    const below = vi.fn();
+    const above = vi.fn();
+    cleanups.push(registerSheetBack(below, false, () => true));
+    cleanups.push(registerSheetBack(above, false, () => false));
+    expect(closeTopSheet()).toBe(true);
+    expect(above).not.toHaveBeenCalled();
+    expect(below).toHaveBeenCalledTimes(1);
+  });
+
+  it("閉じるよう頼んでも閉じなかったシートは、次の戻る操作で飛ばす", () => {
+    const close = vi.fn();
+    cleanups.push(registerSheetBack(close, false, () => true));
+    expect(closeTopSheet(1000)).toBe(true);
+    // 閉じる動きの途中で続けて押したときは、まだ待つ。
+    expect(closeTopSheet(1000 + STUCK_SHEET_MS / 2)).toBe(true);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(closeTopSheet(1000 + STUCK_SHEET_MS)).toBe(false);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(openSheetCount()).toBe(0);
   });
 });
