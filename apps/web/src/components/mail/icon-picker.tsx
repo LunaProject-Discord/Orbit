@@ -58,6 +58,7 @@ export function IconPicker({
   colorStyle,
   emptyIcon,
   emptyLabel = "なし (色の点)",
+  compact = false,
 }: {
   /** 選んでいるアイコンの名前か絵文字。null なら、アイコンなし (色の点)。 */
   value: string | null;
@@ -73,6 +74,8 @@ export function IconPicker({
   /** アイコンなしのときに、点の代わりに出すもの (既定のアイコン) と、その呼び名。 */
   emptyIcon?: ReactNode;
   emptyLabel?: string;
+  /** ボタンをアイコンだけの正方形にする (文字と下矢印を出さない)。 */
+  compact?: boolean;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -122,7 +125,11 @@ export function IconPicker({
             id={`${id}-trigger`}
             aria-labelledby={`${labelledBy} ${id}-trigger`}
             style={colorStyle}
-            className="max-w-full justify-start gap-2 font-normal"
+            className={
+              compact
+                ? "size-8 shrink-0 p-0 font-normal pointer-coarse:size-11"
+                : "max-w-full justify-start gap-2 font-normal"
+            }
           />
         }
       >
@@ -148,10 +155,15 @@ export function IconPicker({
             ))
           )}
         </span>
-        <span className="truncate">
+        <span className={compact ? "sr-only" : "truncate"}>
           {emoji ? "絵文字" : value ? "アイコン" : emptyLabel}
         </span>
-        <ChevronDownIcon className="text-muted-foreground" aria-hidden="true" />
+        {!compact && (
+          <ChevronDownIcon
+            className="text-muted-foreground"
+            aria-hidden="true"
+          />
+        )}
       </PopoverTrigger>
       <PopoverContent
         align="start"

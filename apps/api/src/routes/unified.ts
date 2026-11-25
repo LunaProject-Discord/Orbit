@@ -8,11 +8,16 @@ import {
   sidebarLayouts,
   unifiedFolders,
 } from "@orbit/db";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { accountIcon } from "../lib/account-icon.js";
+import {
+  listOrderQuery,
+  listOrderSql,
+  nextListCursor,
+} from "../lib/list-order.js";
 import { threadCount } from "../lib/threads.js";
 import {
   BUILTIN_VIEWS,
@@ -65,11 +70,8 @@ const builtinBody = z.object({
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  /** 前のページの nextCursor。 */
-  cursor: z.string().max(100).optional(),
+  ...listOrderQuery,
 });
-
-const cursorPattern = /^(\d{4}-[0-9T:.-]+Z)_([0-9a-f-]{36})$/;
 
 const publicColumns = {
   id: unifiedFolders.id,
@@ -306,15 +308,11 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
         return c.json({ error: "not_found" }, 404);
       }
       const conditions = [sql`heads.rn = 1`];
-      if (query.cursor) {
-        const match = cursorPattern.exec(query.cursor);
-        if (!match) {
-          return c.json({ error: "invalid_cursor" }, 400);
-        }
-        conditions.push(
-          sql`(${messages.receivedAt}, ${messages.id}) < (${match[1]}::timestamptz, ${match[2]}::uuid)`,
-        );
+      const order = listOrderSql(query, query.cursor);
+      if (!order) {
+        return c.json({ error: "invalid_cursor" }, 400);
       }
+      if (order.after) conditions.push(order.after);
       const rows = await db
         .select({
           id: messages.id,
@@ -341,20 +339,21 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
                 or d.remote_provider_id = ${messages.providerMessageId})
             limit 1
           )`,
+          sortKey: order.key,
         })
         .from(messages)
         .innerJoin(unifiedHeads(userId, folder), sql`heads.id = ${messages.id}`)
         .innerJoin(mailboxes, sql`${mailboxes.id} = heads.mailbox_id`)
         .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
         .where(and(...conditions))
-        .orderBy(desc(messages.receivedAt), desc(messages.id))
+        .orderBy(...order.orderBy)
         .limit(query.limit + 1);
-      const page = rows.slice(0, query.limit);
-      const last = page.at(-1);
+      const page = rows
+        .slice(0, query.limit)
+        .map(({ sortKey: _, ...row }) => row);
+      const last = rows[query.limit - 1];
       const nextCursor =
-        rows.length > query.limit && last
-          ? `${last.receivedAt.toISOString()}_${last.id}`
-          : null;
+        rows.length > query.limit && last ? nextListCursor(query, last) : null;
       return c.json({ messages: page, nextCursor });
     },
   );

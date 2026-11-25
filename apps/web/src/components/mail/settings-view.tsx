@@ -692,6 +692,16 @@ function ListPage() {
       <Section title="行の表示">
         <SettingGroup>
           <SelectRow
+            label="一覧の表示"
+            description="テーブル表示では、件名・差出人・日時などを列に分けて並べます。見出しを押すと並べ替え、ドラッグで列の入れ替えや幅の変更ができます。幅の狭い画面ではカード表示になります。"
+            value={preferences.listLayout}
+            onChange={(listLayout) => set({ listLayout })}
+            options={[
+              ["cards", "カード (標準)"],
+              ["table", "テーブル"],
+            ]}
+          />
+          <SelectRow
             label="行の間隔"
             value={preferences.density}
             onChange={(density) => set({ density })}
@@ -703,7 +713,7 @@ function ListPage() {
           />
           <SelectRow
             label="本文のプレビュー"
-            description="件名の下に表示する本文の行数です。"
+            description="カード表示で、件名の下に表示する本文の行数です。"
             value={preferences.previewLines}
             onChange={(previewLines) => set({ previewLines })}
             options={[
@@ -1302,8 +1312,23 @@ function AccountCard({
         </div>
       </div>
 
-      <div className="grid gap-x-4 gap-y-3 sm:grid-cols-[1fr_auto]">
+      {/* スマホ幅は 1 行目に表示名、2 行目にアイコンと色。広い画面ではアイコン・表示名・色を 1 行に。 */}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-3">
         <div className="flex flex-col gap-1.5">
+          <span id={`${id}-icon`} className="font-medium text-sm">
+            アイコン
+          </span>
+          <IconPicker
+            compact
+            value={account.icon}
+            onChange={chooseIcon}
+            labelledBy={`${id}-icon`}
+            colorClass={ACCOUNT_TEXT_CLASS}
+            dotClass={ACCOUNT_DOT_CLASS}
+            colorStyle={accountColorStyle(color)}
+          />
+        </div>
+        <div className="order-first flex min-w-0 basis-full flex-col gap-1.5 sm:order-none sm:flex-1 sm:basis-0">
           <Label htmlFor={`${id}-name`}>表示名</Label>
           <Input
             id={`${id}-name`}
@@ -1332,20 +1357,6 @@ function AccountCard({
             labelledBy={`${id}-color`}
           />
         </div>
-      </div>
-
-      <div className="flex flex-col items-start gap-1.5">
-        <span id={`${id}-icon`} className="font-medium text-sm">
-          アイコン
-        </span>
-        <IconPicker
-          value={account.icon}
-          onChange={chooseIcon}
-          labelledBy={`${id}-icon`}
-          colorClass={ACCOUNT_TEXT_CLASS}
-          dotClass={ACCOUNT_DOT_CLASS}
-          colorStyle={accountColorStyle(color)}
-        />
       </div>
 
       {/* 接続先を手で設定したアカウントだけ。Gmail や iCloud は新しい TLS に対応している。 */}
@@ -1429,16 +1440,18 @@ function AccountCard({
             ? "署名を編集"
             : "署名を設定"}
         </Button>
-        {canEditServer(account) && (
+        {
           <Button
-            variant={problem ? "default" : "outline"}
+            variant={problem && canEditServer(account) ? "default" : "outline"}
             size="sm"
             onClick={() => setEditingServer(true)}
           >
             <ServerIcon />
-            {problem ? "サーバー設定を確認" : "サーバー設定"}
+            {problem && canEditServer(account)
+              ? "サーバー設定を確認"
+              : "サーバー設定"}
           </Button>
-        )}
+        }
         {account.status === "auth_required" && provider && (
           <Button variant="outline" size="sm" onClick={() => onReauth(account)}>
             {provider === "google"
@@ -1462,6 +1475,7 @@ function AccountCard({
         account={editingServer ? account : null}
         onOpenChange={setEditingServer}
         onUpdated={onUpdated}
+        onReauth={onReauth}
       />
     </li>
   );

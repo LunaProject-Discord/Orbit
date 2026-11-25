@@ -7,6 +7,7 @@ import {
   CalendarIcon,
   ClockIcon,
   FileSearchIcon,
+  FolderIcon,
   PaperclipIcon,
   SearchIcon,
   TagIcon,
@@ -20,6 +21,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -29,17 +31,19 @@ import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { formatDateValue, parseDateValue } from "@/components/ui/date-picker";
-import type { SearchParams } from "@/lib/api";
+import type { Account, MailboxSummary, SearchParams } from "@/lib/api";
 import {
   type ContactSuggestion,
   useSearchContacts,
 } from "@/lib/search-contacts";
+import { type FolderSuggestion, folderSuggestions } from "@/lib/search-folders";
 import {
   ADDRESS_OPERATORS,
   addSearchHistory,
   chipLabel,
   completeQuery,
   DATE_OPERATORS,
+  FOLDER_OPERATORS,
   hasOpenSpace,
   type InPlaceDraft,
   type InputToken,
@@ -48,6 +52,7 @@ import {
   joinSearchInput,
   normalizeQuery,
   OPERATOR_VALUES,
+  quoteValue,
   readSearchHistory,
   removeSearchHistory,
   replaceToken,
@@ -82,6 +87,7 @@ const operatorIcons: Record<SearchOperator["key"], ReactNode> = {
   to: <AtSignIcon />,
   subject: <TagIcon />,
   body: <TextIcon />,
+  folder: <FolderIcon />,
   has: <PaperclipIcon />,
   is: <SearchIcon />,
   after: <CalendarIcon />,
@@ -113,6 +119,11 @@ type Props = {
   /** screen のとき、検索画面を開いた直後に欄へ入力できるようにする。 */
   autoFocus?: boolean;
   className?: string;
+  /** folder: の候補に出すフォルダ (全アカウント分) と、その持ち主のアカウント。 */
+  folders?: {
+    mailboxes: readonly MailboxSummary[];
+    accounts: readonly Account[];
+  };
 };
 
 /**
@@ -129,6 +140,7 @@ export function SearchBox({
   onClose,
   autoFocus,
   className,
+  folders,
 }: Props) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -203,6 +215,16 @@ export function SearchBox({
     : token.key === "" && token.value.length >= 1
       ? token.value
       : null;
+  const isFolderKey = FOLDER_OPERATORS.includes(
+    token.key as (typeof FOLDER_OPERATORS)[number],
+  );
+  const folderOptions = useMemo(
+    () =>
+      isFolderKey && folders
+        ? folderSuggestions(folders.mailboxes, folders.accounts, token.value, 8)
+        : [],
+    [isFolderKey, folders, token.value],
+  );
   const contacts = useSearchContacts(
     contactQuery ?? "",
     contactQuery === null ? 0 : token.key ? 8 : 4,
@@ -431,6 +453,7 @@ export function SearchBox({
     text: full,
     token,
     contacts: contactQuery === null ? [] : contacts,
+    folders: folderOptions,
     history,
     onFindInMessage: onFindInMessage
       ? (query) => {
@@ -1134,6 +1157,7 @@ const SLOT_ORDER = 10000;
 const chipIcons: Record<string, ReactNode> = {
   ...operatorIcons,
   cc: operatorIcons.to,
+  in: operatorIcons.folder,
   since: operatorIcons.after,
   until: operatorIcons.before,
 };
@@ -1194,6 +1218,7 @@ function buildSections({
   text,
   token,
   contacts,
+  folders,
   history,
   onFindInMessage,
   replace,
@@ -1204,6 +1229,7 @@ function buildSections({
   text: string;
   token: InputToken;
   contacts: ContactSuggestion[];
+  folders: FolderSuggestion[];
   history: string[];
   onFindInMessage: ((query: string) => void) | undefined;
   replace: (token: InputToken, replacement: string) => void;
@@ -1271,6 +1297,25 @@ function buildSections({
       sections.push({
         title: token.key === "from" ? "差出人" : "宛先",
         items: contacts.map((contact) => contactItem(contact, token.key, "")),
+      });
+    }
+    return sections;
+  }
+
+  if (
+    FOLDER_OPERATORS.includes(token.key as (typeof FOLDER_OPERATORS)[number])
+  ) {
+    if (folders.length > 0) {
+      sections.push({
+        title: "フォルダ",
+        items: folders.map((folder) => ({
+          id: `folder-${folder.label}`,
+          icon: <FolderIcon />,
+          label: folder.label,
+          detail: folder.detail,
+          apply: () =>
+            replace(token, `${sign}${token.key}:${quoteValue(folder.label)}`),
+        })),
       });
     }
     return sections;

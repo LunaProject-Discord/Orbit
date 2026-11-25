@@ -12,6 +12,7 @@ import {
   clearAuthState,
 } from "@/lib/auth-state";
 import type { DateStyle } from "@/lib/format";
+import { isDefaultSort, type ListSort } from "@/lib/list-sort";
 import { usesAppOAuth } from "@/lib/native/oauth";
 import { reportReachable } from "@/lib/offline/network";
 import { apiUrl } from "@/lib/server-url";
@@ -880,9 +881,18 @@ export async function createAccount(
  * Google または Microsoft のログイン画面の URL を取得する。
  * accountId を渡すと、そのアカウントの再ログインになる。
  */
+/** OAuth のログインから戻ってきたときに付ける名前 (追加画面で入力したもの)。 */
+const PENDING_OAUTH_NAME_KEY = "orbit.oauth-display-name.v1";
+
+/**
+ * Google または Microsoft のログイン画面の URL を取得する。
+ * accountId を渡すと、そのアカウントの再ログインになる。
+ * email を渡すと、ログイン画面にそのアドレスを入れておく。
+ */
 export async function startOAuthLogin(
   provider: OAuthProvider,
   accountId?: string,
+  options: { email?: string; displayName?: string } = {},
 ): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
     `/v1/accounts/${provider}/authorize`,
@@ -890,11 +900,21 @@ export async function startOAuthLogin(
       method: "POST",
       body: {
         ...(accountId ? { accountId } : {}),
+        ...(!accountId && options.email ? { email: options.email } : {}),
         // スマホアプリとデスクトップ版では、ログイン後に Web 版のページからアプリへ戻してもらう。
         ...(usesAppOAuth() ? { app: true } : {}),
       },
     },
   );
+  try {
+    if (!accountId && options.displayName) {
+      sessionStorage.setItem(PENDING_OAUTH_NAME_KEY, options.displayName);
+    } else {
+      sessionStorage.removeItem(PENDING_OAUTH_NAME_KEY);
+    }
+  } catch {
+    // 保存できなくても、名前を付けずに追加できる。
+  }
   return url;
 }
 
@@ -906,9 +926,19 @@ export async function completeOAuthLogin(
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
     `/v1/accounts/${provider}/complete`,
-    { method: "POST", body: { code, state } },
+    { method: "POST", body: { code, state, ...pendingOAuthName() } },
   );
   return account;
+}
+
+function pendingOAuthName(): { displayName?: string } {
+  try {
+    const name = sessionStorage.getItem(PENDING_OAUTH_NAME_KEY);
+    sessionStorage.removeItem(PENDING_OAUTH_NAME_KEY);
+    return name ? { displayName: name } : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -1161,6 +1191,13 @@ export async function deleteAccount(id: string): Promise<void> {
   await apiFetch(`/v1/accounts/${id}`, { method: "DELETE" });
 }
 
+/** 一覧の並び順を問い合わせに加える。新しい順 (標準) なら何も付けない。 */
+function setSortQuery(query: URLSearchParams, sort: ListSort | undefined) {
+  if (!sort || isDefaultSort(sort)) return;
+  query.set("sort", sort.key);
+  query.set("order", sort.order);
+}
+
 export async function listMessages(
   params: {
     accountId?: string | null;
@@ -1168,6 +1205,8 @@ export async function listMessages(
     mailboxId?: string | null;
     cursor?: string | null;
     limit?: number;
+    /** 並び順。省略すると新しい順。 */
+    sort?: ListSort;
   },
   signal?: AbortSignal,
 ): Promise<MessagePage> {
@@ -1175,6 +1214,7 @@ export async function listMessages(
   if (params.accountId) query.set("accountId", params.accountId);
   if (params.mailboxId) query.set("mailboxId", params.mailboxId);
   if (params.cursor) query.set("cursor", params.cursor);
+  setSortQuery(query, params.sort);
   return apiJson<MessagePage>(`/v1/messages?${query}`, { signal });
 }
 
@@ -1214,6 +1254,8 @@ export async function searchMessages(
     unifiedId?: string | null;
     cursor?: string | null;
     limit?: number;
+    /** 並び順。省略すると新しい順。 */
+    sort?: ListSort;
   },
   signal?: AbortSignal,
 ): Promise<SearchPage> {
@@ -1227,6 +1269,7 @@ export async function searchMessages(
   if (params.mailboxId) query.set("mailboxId", params.mailboxId);
   if (params.unifiedId) query.set("unifiedId", params.unifiedId);
   if (params.cursor) query.set("cursor", params.cursor);
+  setSortQuery(query, params.sort);
   if (filters.from.trim()) query.set("from", filters.from.trim());
   if (filters.to.trim()) query.set("to", filters.to.trim());
   if (filters.subject.trim()) query.set("subject", filters.subject.trim());
@@ -1448,11 +1491,12 @@ export async function saveSidebarCategories(
 /** 統合フォルダのメールの一覧。フォルダの一覧と同じ形で、会話ごとに 1 行。 */
 export async function listUnifiedMessages(
   id: string,
-  params: { cursor?: string | null; limit?: number },
+  params: { cursor?: string | null; limit?: number; sort?: ListSort },
   signal?: AbortSignal,
 ): Promise<MessagePage> {
   const query = new URLSearchParams({ limit: String(params.limit ?? 50) });
   if (params.cursor) query.set("cursor", params.cursor);
+  setSortQuery(query, params.sort);
   return apiJson<MessagePage>(`/v1/unified/${id}/messages?${query}`, {
     signal,
   });

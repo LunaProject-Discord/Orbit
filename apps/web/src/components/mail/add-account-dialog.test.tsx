@@ -16,12 +16,21 @@ const mocks = vi.hoisted(() => ({
   /** 自動で見つかる設定。null なら見つからない。 */
   discovered: null as DiscoveredSettings | null,
   discoverCalls: [] as string[],
+  oauth: [] as { provider: string; options: unknown }[],
 }));
 
 vi.mock("@/lib/api", async (original) => {
   const actual = await original<typeof import("@/lib/api")>();
   return {
     ...actual,
+    startOAuthLogin: async (
+      provider: string,
+      _accountId: string | undefined,
+      options: unknown,
+    ) => {
+      mocks.oauth.push({ provider, options });
+      return "#oauth";
+    },
     discoverAccountSettings: async (email: string) => {
       mocks.discoverCalls.push(email);
       return mocks.discovered;
@@ -45,10 +54,6 @@ describe("AddAccountDialog の古い TLS のサーバー", () => {
 
   const query = <T extends Element>(selector: string) =>
     document.body.querySelector<T>(selector);
-  const button = (text: string) =>
-    [...document.body.querySelectorAll("button")].find((item) =>
-      item.textContent?.includes(text),
-    );
   const legacySwitch = () => query<HTMLElement>('[role="switch"]');
 
   async function type(selector: string, value: string) {
@@ -89,13 +94,10 @@ describe("AddAccountDialog の古い TLS のサーバー", () => {
         <AddAccountDialog open onOpenChange={() => {}} onCreated={created} />,
       );
     });
-    await act(async () => {
-      button("その他のメール")?.click();
-    });
     await type('input[type="email"]', "me@example.test");
+    await submit();
     await type('input[type="password"]', "secret");
     // 設定が見つからないので、推し量った値の入った入力欄になる。
-    await submit();
   });
 
   afterEach(async () => {
@@ -216,12 +218,9 @@ describe("AddAccountDialog の設定の自動検出", () => {
         <AddAccountDialog open onOpenChange={() => {}} onCreated={created} />,
       );
     });
-    await act(async () => {
-      button("その他のメール")?.click();
-    });
     await type('input[type="email"]', "comugi@work.example");
-    await type('input[type="password"]', "secret");
     await submit();
+    await type('input[type="password"]', "secret");
   });
 
   afterEach(async () => {
@@ -290,5 +289,110 @@ describe("AddAccountDialog の設定の自動検出", () => {
         'input[placeholder="imap.example.com"]',
       )?.value,
     ).toBe("imap2.shin.example");
+  });
+});
+
+describe("AddAccountDialog の Google / Microsoft への振り分け", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const button = (text: string) =>
+    [...document.body.querySelectorAll("button")].find((item) =>
+      item.textContent?.includes(text),
+    );
+
+  async function type(selector: string, value: string) {
+    const input = document.body.querySelector<HTMLInputElement>(selector);
+    if (!input) throw new Error(`入力欄が見つかりません: ${selector}`);
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  beforeEach(async () => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    mocks.calls.length = 0;
+    mocks.oauth.length = 0;
+    mocks.legacyServer = false;
+    mocks.discovered = {
+      source: "mx",
+      provider: "gmail",
+      imap: {
+        host: "imap.gmail.com",
+        port: 993,
+        security: "ssl",
+        username: "me@corp.example",
+        auth: "oauth2",
+      },
+      smtp: {
+        host: "smtp.gmail.com",
+        port: 465,
+        security: "ssl",
+        username: "me@corp.example",
+        auth: "oauth2",
+      },
+    };
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AddAccountDialog open onOpenChange={() => {}} onCreated={() => {}} />,
+      );
+    });
+    await type('input[placeholder="仕事、個人 など"]', "会社");
+    await type('input[type="email"]', "me@corp.example");
+    await act(async () => {
+      document.body
+        .querySelector<HTMLFormElement>("form")
+        ?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("Gmail と分かったら、パスワードを聞かずに Google のログインへ進める", async () => {
+    expect(document.body.querySelector('input[type="password"]')).toBeNull();
+    await act(async () => {
+      button("Google でログイン")?.click();
+    });
+    expect(mocks.oauth).toEqual([
+      {
+        provider: "google",
+        options: { email: "me@corp.example", displayName: "会社" },
+      },
+    ]);
+  });
+
+  it("アプリ パスワードで追加することもできる", async () => {
+    await act(async () => {
+      button("アプリ パスワードで追加する")?.click();
+    });
+    await type('input[type="password"]', "abcd efgh ijkl mnop");
+    await act(async () => {
+      document.body
+        .querySelector<HTMLFormElement>("form")
+        ?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+    });
+    expect(mocks.calls[0]).toMatchObject({
+      email: "me@corp.example",
+      displayName: "会社",
+      imap: { host: "imap.gmail.com", port: 993, secure: true },
+      password: "abcdefghijklmnop",
+    });
   });
 });

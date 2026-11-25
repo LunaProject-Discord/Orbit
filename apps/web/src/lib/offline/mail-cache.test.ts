@@ -295,6 +295,14 @@ describe("MailCache の検索", () => {
     );
   });
 
+  it("folder: でフォルダを指定すると、ごみ箱でも探す", async () => {
+    expect(ids(await search("定例 folder:ごみ箱"))).toEqual(["t"]);
+    expect(ids(await search("定例 in:trash"))).toEqual(["t"]);
+    expect(ids(await search("定例 folder:受信トレイ"))).toEqual(["b"]);
+    expect(ids(await search("見積書 -folder:受信トレイ"))).toEqual(["a"]);
+    expect(ids(await search("folder:存在しない"))).toEqual([]);
+  });
+
   it("件名と差出人から探し、ごみ箱は除く", async () => {
     expect(ids(await search("定例"))).toEqual(["b"]);
     expect(ids(await search("from:sato"))).toEqual(["b", "a"]);

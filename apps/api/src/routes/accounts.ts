@@ -68,6 +68,8 @@ const microsoftAuthorizeBody = z.object({
   accountId: z.uuid().optional(),
   /** スマホアプリから始めるログイン。戻ってきた Web のページが、アプリへ引き渡す。 */
   app: z.boolean().optional(),
+  /** 新しく追加するアカウントのメールアドレス。ログイン画面に入れておく。 */
+  email: z.email().max(320).optional(),
 });
 
 /**
@@ -96,6 +98,8 @@ const oauthAuthorizeBody = microsoftAuthorizeBody;
 const microsoftCompleteBody = z.object({
   code: z.string().min(1).max(8192),
   state: z.string().min(1).max(4096),
+  /** 追加画面で入力した名前。新しく追加したときだけ使う (再ログインでは変えない)。 */
+  displayName: z.string().trim().max(200).optional(),
 });
 
 const idParam = z.object({ id: z.uuid() });
@@ -436,9 +440,9 @@ export function accountRoutes(
       if (!microsoft) {
         return c.json({ error: "microsoft_not_configured" }, 503);
       }
-      const { accountId, app: fromApp } = c.req.valid("json");
+      const { accountId, app: fromApp, email } = c.req.valid("json");
       const user = c.var.user;
-      let loginHint: string | undefined;
+      let loginHint: string | undefined = email;
       if (accountId) {
         const [row] = await db
           .select({ email: mailAccounts.email })
@@ -544,7 +548,7 @@ export function accountRoutes(
               .values({
                 userId: user.id,
                 email: profile.email,
-                displayName: profile.displayName,
+                displayName: body.displayName || profile.displayName,
                 provider: "microsoft",
                 authType: "oauth2",
                 protocol: "graph",
@@ -579,9 +583,9 @@ export function accountRoutes(
       if (!google) {
         return c.json({ error: "google_not_configured" }, 503);
       }
-      const { accountId, app: fromApp } = c.req.valid("json");
+      const { accountId, app: fromApp, email } = c.req.valid("json");
       const user = c.var.user;
-      let loginHint: string | undefined;
+      let loginHint: string | undefined = email;
       if (accountId) {
         const [row] = await db
           .select({ email: mailAccounts.email })
@@ -720,6 +724,7 @@ export function accountRoutes(
                 ...settings,
                 userId: user.id,
                 email,
+                displayName: body.displayName || null,
                 provider: "gmail",
               })
               .onConflictDoNothing()
@@ -837,9 +842,13 @@ export function accountRoutes(
       .from(mailAccounts)
       .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, userId)));
     if (!account) return { error: "not_found" as const };
-    // Google / Microsoft でログインしたアカウントは、接続先が決まっている。
-    if (account.protocol !== "imap" || account.authType !== "password") {
+    // Microsoft Graph でつなぐアカウントは IMAP / SMTP を使わない (ログインし直しだけ)。
+    if (account.protocol !== "imap") {
       return { error: "not_editable" as const };
+    }
+    // Google でログインした Gmail は、アプリ パスワードを入れればパスワードでの接続に切り替えられる。
+    if (account.authType !== "password" && body.password === undefined) {
+      return { error: "password_required" as const };
     }
     let password = body.password;
     if (password === undefined) {
@@ -932,6 +941,7 @@ export function accountRoutes(
             smtpSecure: settings.smtp.secure,
             username: settings.username,
             provider: settings.provider,
+            authType: "password",
             allowLegacyTls: settings.allowLegacyTls,
             credentialsEncrypted: encryptCredentials(
               { type: "password", password: settings.password },
@@ -947,7 +957,6 @@ export function accountRoutes(
               eq(mailAccounts.id, id),
               eq(mailAccounts.userId, user.id),
               eq(mailAccounts.protocol, "imap"),
-              eq(mailAccounts.authType, "password"),
             ),
           )
           .returning(publicColumns);

@@ -7,6 +7,9 @@
  * - from: / to: / subject: / body: を付けると、探す場所を限定する (cc: は to: と同じ)。
  * - has:attachment、is:unread、is:read、is:starred で状態を絞り込む。
  * - after:2026-11-01 (その日以降)、before:2026-12-01 (その日より前) で期間を絞り込む。
+ * - folder:受信トレイ (in: でも可) で、そのフォルダにあるメールに絞り込む。名前は、アプリでの
+ *   表示名・受信トレイなどの役割の名前・メールサーバー上の名前やパスのどれかと一致すればよく、
+ *   アカウントはまたぐ (どのアカウントの受信トレイでもよい)。
  */
 
 export type SearchField = "any" | "from" | "to" | "subject" | "body";
@@ -18,8 +21,17 @@ export type SearchTerm = {
   negated: boolean;
 };
 
+/** folder: で指定したフォルダ。 */
+export type FolderTerm = {
+  /** 小文字にそろえた名前。 */
+  name: string;
+  /** true なら、そのフォルダに無いメールを探す。 */
+  negated: boolean;
+};
+
 export type ParsedSearch = {
   terms: SearchTerm[];
+  folders?: FolderTerm[];
   hasAttachment?: boolean;
   seen?: boolean;
   flagged?: boolean;
@@ -111,6 +123,13 @@ export function parseSearchQuery(input: string): ParsedSearch {
       addTerm(fieldOperators[key] as SearchField, value, negated);
       continue;
     }
+    if ((key === "folder" || key === "in") && value.trim() !== "") {
+      result.folders ??= [];
+      if (result.folders.length < MAX_SEARCH_TERMS) {
+        result.folders.push({ name: value.trim().toLowerCase(), negated });
+      }
+      continue;
+    }
     if (key === "has" && /^(attachment|attachments|添付)$/i.test(value)) {
       result.hasAttachment = !negated;
       continue;
@@ -154,6 +173,7 @@ export function parseSearchQuery(input: string): ParsedSearch {
 export function isEmptySearch(search: ParsedSearch): boolean {
   return (
     search.terms.length === 0 &&
+    (search.folders?.length ?? 0) === 0 &&
     search.hasAttachment === undefined &&
     search.seen === undefined &&
     search.flagged === undefined &&
@@ -175,4 +195,24 @@ export function highlightTerms(search: ParsedSearch): string[] {
     )
     .map((term) => term.text);
   return [...new Set(terms)];
+}
+
+/** 受信トレイなどの役割の、アプリでの名前 (apps/web の specialLabels と揃える)。 */
+const ROLE_LABELS: Record<string, string> = {
+  inbox: "受信トレイ",
+  flagged: "スター付き",
+  drafts: "下書き",
+  sent: "送信済み",
+  archive: "アーカイブ",
+  all: "すべてのメール",
+  junk: "迷惑メール",
+  trash: "ごみ箱",
+};
+
+/** folder: の名前に当てはまる役割 (「受信トレイ」でも「inbox」でもよい)。 */
+export function rolesNamed(name: string): string[] {
+  const target = name.toLowerCase();
+  return Object.entries(ROLE_LABELS)
+    .filter(([role, label]) => role === target || label === target)
+    .map(([role]) => role);
 }
