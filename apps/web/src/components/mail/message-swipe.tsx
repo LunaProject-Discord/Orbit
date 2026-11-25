@@ -19,6 +19,8 @@ import {
   swipeAxis,
   swipeThreshold,
 } from "@/lib/swipe";
+import { eventTime, WheelStream } from "@/lib/wheel-gesture";
+import { logWheel } from "@/lib/wheel-log";
 
 /** 開いているメールを、ある向きへスワイプしたときに行うこと。 */
 export type MessageSwipeSide = {
@@ -47,12 +49,6 @@ export const SwipeSurfaceContext = createContext<
 const SETTLE_MS = 180;
 /** トラックパッドの横スクロールが止まったとみなすまでの時間 (ms)。 */
 const WHEEL_END_MS = 110;
-/**
- * 操作のあと、指を離したあとも続く慣性のスクロールは無視する。横の動きがこれだけ
- * 途切れたら、慣性は終わったとみなし、次の動きを新しいスワイプとして受け付ける (ms)。
- * 慣性の動きは毎フレーム (約 16 ms ごと) 届くので、途切れれば新しく払い始めた動き。
- */
-const WHEEL_GESTURE_GAP_MS = 100;
 /** 横のスクロールに任せたあと、これだけ動きが途切れるまではスワイプを始めない (ms)。 */
 const WHEEL_SCROLL_GAP_MS = 300;
 /** 画面の端から始めた動きは、端末の「戻る」などの操作に任せる (px)。 */
@@ -128,8 +124,8 @@ export function MessageSwipe({
     endTimer: null as ReturnType<typeof setTimeout> | null,
     /** 操作のあと、慣性の残りを無視しているか。 */
     cooling: false,
-    /** 直前に届いた横の動きが作られた時刻 (eventTime)。 */
-    lastAt: Number.NEGATIVE_INFINITY,
+    /** 届いた横の動きの流れ (慣性と新しいスワイプを見分ける)。 */
+    stream: new WheelStream(),
     /** 最後に、横の動きを枠のスクロールに任せた時刻。 */
     scrolledAt: 0,
   });
@@ -312,6 +308,83 @@ export function MessageSwipe({
     };
   };
 
+  /** トラックパッドの横の動きを 1 つ処理する。戻り値は記録用の判定の結果。 */
+  const handleWheel = (event: WheelEvent): string => {
+    const state = latest.current;
+    const wheeling = wheelState.current;
+    if (!state.wheel || state.disabled) return "off";
+    if (event.ctrlKey || event.deltaMode !== 0) return "not-trackpad";
+    const finish = (): string => {
+      if (wheeling.endTimer) clearTimeout(wheeling.endTimer);
+      wheeling.endTimer = null;
+      if (!wheeling.active) return "idle";
+      wheeling.active = false;
+      wheeling.cooling = true;
+      const offset = offsetRef.current;
+      const direction: Direction = offset < 0 ? "left" : "right";
+      if (latest.current[direction] && shouldCommit(offset, width())) {
+        commit(direction);
+        return "commit";
+      }
+      settle();
+      return "settle";
+    };
+    const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.5;
+    if (horizontal && event.deltaX !== 0) {
+      wheeling.stream.add(eventTime(event), event.deltaX);
+    }
+    if (!wheeling.active) {
+      if (!horizontal || Math.abs(event.deltaX) < 2) return "small";
+      // 操作の直後に続く慣性の分は、次の操作を始めない。新しく払い始めた動き
+      // (途切れのあと、速さが続けて上がった、向きが変わった) なら受け付ける。
+      if (wheeling.cooling) {
+        if (!wheeling.stream.restarted()) {
+          event.preventDefault();
+          return "momentum";
+        }
+        wheeling.cooling = false;
+      }
+      // その向きに行うことが無ければ、ブラウザーの動作 (戻る / 進むなど) に任せる。
+      if (!(event.deltaX > 0 ? state.left : state.right)) return "no-action";
+      if (insideTextField(event.target)) return "text-field";
+      if (
+        insideSidewaysScroller(
+          event.target,
+          rootRef.current,
+          event.deltaX > 0 ? "left" : "right",
+        )
+      ) {
+        wheeling.scrolledAt = Date.now();
+        return "scroller";
+      }
+      // 横のスクロールが端に着いたあとも続く動き (慣性) では、スワイプを始めない。
+      if (Date.now() - wheeling.scrolledAt < WHEEL_SCROLL_GAP_MS) {
+        wheeling.scrolledAt = Date.now();
+        return "scroller-momentum";
+      }
+      // 前のスワイプの送り出しの途中なら、その場で移ってから始める。
+      interrupt();
+      wheeling.active = true;
+      wheeling.stream.begin();
+    }
+    event.preventDefault();
+    const rowWidth = width();
+    const armedBefore = Math.abs(offsetRef.current) >= swipeThreshold(rowWidth);
+    // 指を左へ動かすと deltaX は正。中身は指と同じ向きへ動かす。
+    // 慣性で画面の外まで飛んでいかないよう、幅の 6 割までにする。
+    const offset = offsetFor(offsetRef.current - event.deltaX, rowWidth * 0.6);
+    // 行うことの無い向きへ戻ってきたら、そこで止める。
+    const next = (offset < 0 ? state.left : state.right) === null ? 0 : offset;
+    place(next, false);
+    show(next, false);
+    // 操作を行う位置を越えたあと、指を離して慣性に移った (速さが落ちた) ら、
+    // 慣性が終わるのを待たずにそこで決める (反応を速くする)。
+    if (armedBefore && wheeling.stream.slowedDown()) return finish();
+    if (wheeling.endTimer) clearTimeout(wheeling.endTimer);
+    wheeling.endTimer = setTimeout(finish, WHEEL_END_MS);
+    return "move";
+  };
+
   // 中で使う値や関数は、ref 経由で最新のものを読む。
   const handlers = useRef({
     touchStart: (_event: TouchEvent) => {},
@@ -425,85 +498,19 @@ export function MessageSwipe({
       }
     },
     wheel: (event) => {
-      const state = latest.current;
-      const wheeling = wheelState.current;
-      if (!state.wheel || state.disabled) return;
-      if (event.ctrlKey || event.deltaMode !== 0) return;
-      const finish = () => {
-        if (wheeling.endTimer) clearTimeout(wheeling.endTimer);
-        wheeling.endTimer = null;
-        if (!wheeling.active) return;
-        wheeling.active = false;
-        wheeling.cooling = true;
-        const offset = offsetRef.current;
-        const direction: Direction = offset < 0 ? "left" : "right";
-        if (latest.current[direction] && shouldCommit(offset, width())) {
-          commit(direction);
-        } else {
-          settle();
-        }
-      };
-      const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.5;
-      // 動きの途切れは、届いて処理した時刻ではなく、動きが作られた時刻で測る。
-      // 別のメールを描くあいだ画面が固まると、溜まった動きがまとめて (1 つに合わさって)
-      // 届くが、それを途切れたあとの新しいスワイプと取り違えないため。
-      const at = eventTime(event);
-      const gap = at - wheeling.lastAt;
-      if (horizontal && Math.abs(event.deltaX) >= 2) wheeling.lastAt = at;
-      if (!wheeling.active) {
-        if (!horizontal || Math.abs(event.deltaX) < 2) return;
-        // 操作の直後に続く慣性の分は、次の操作を始めない。動きが途切れたあとなら、
-        // 新しく払い始めた動きなので受け付ける (続けて払えるように)。
-        if (wheeling.cooling) {
-          if (gap < WHEEL_GESTURE_GAP_MS) {
-            event.preventDefault();
-            return;
-          }
-          wheeling.cooling = false;
-        }
-        // その向きに行うことが無ければ、ブラウザーの動作 (戻る / 進むなど) に任せる。
-        if (!(event.deltaX > 0 ? state.left : state.right)) return;
-        if (insideTextField(event.target)) return;
-        if (
-          insideSidewaysScroller(
-            event.target,
-            rootRef.current,
-            event.deltaX > 0 ? "left" : "right",
-          )
-        ) {
-          wheeling.scrolledAt = Date.now();
-          return;
-        }
-        // 横のスクロールが端に着いたあとも続く動き (慣性) では、スワイプを始めない。
-        if (Date.now() - wheeling.scrolledAt < WHEEL_SCROLL_GAP_MS) {
-          wheeling.scrolledAt = Date.now();
-          return;
-        }
-        // 前のスワイプの送り出しの途中なら、その場で移ってから始める。
-        interrupt();
-        wheeling.active = true;
+      let result = "ignored";
+      try {
+        result = handleWheel(event);
+      } finally {
+        logWheel({
+          at: eventTime(event),
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+          deltaMode: event.deltaMode,
+          inFrame: (event.view ?? window) !== window,
+          result,
+        });
       }
-      event.preventDefault();
-      const rowWidth = width();
-      const armedBefore =
-        Math.abs(offsetRef.current) >= swipeThreshold(rowWidth);
-      // 指を左へ動かすと deltaX は正。中身は指と同じ向きへ動かす。
-      // 慣性で画面の外まで飛んでいかないよう、幅の 6 割までにする。
-      const offset = offsetFor(
-        offsetRef.current - event.deltaX,
-        rowWidth * 0.6,
-      );
-      // 行うことの無い向きへ戻ってきたら、そこで止める。
-      const next =
-        (offset < 0 ? state.left : state.right) === null ? 0 : offset;
-      place(next, false);
-      show(next, false);
-      if (armedBefore && Math.abs(event.deltaX) < 3) {
-        finish();
-        return;
-      }
-      if (wheeling.endTimer) clearTimeout(wheeling.endTimer);
-      wheeling.endTimer = setTimeout(finish, WHEEL_END_MS);
     },
   };
 
@@ -585,14 +592,4 @@ function hasSelection(target: EventTarget | null): boolean {
   const doc = (target as Node | null)?.ownerDocument;
   const selection = doc?.getSelection?.();
   return selection != null && !selection.isCollapsed;
-}
-
-/**
- * イベントが作られた時刻 (ms)。iframe の中の文書とは時刻の基準が違うので、
- * それぞれの文書の基準 (timeOrigin) を足して揃える。
- */
-function eventTime(event: Event): number {
-  const view = (event as UIEvent).view ?? window;
-  const origin = view?.performance?.timeOrigin ?? performance.timeOrigin;
-  return origin + event.timeStamp;
 }

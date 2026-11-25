@@ -292,4 +292,36 @@ describe("MessageSwipe", () => {
     act(() => vi.advanceTimersByTime(1000));
     expect(shown).toBe(2);
   });
+
+  it("トラックパッドで払うと、慣性が終わるのを待たずに移る", () => {
+    let shown = -1;
+    act(() =>
+      root.render(
+        <Viewer count={5} wheel onShow={(index) => (shown = index)} />,
+      ),
+    );
+    for (const delta of [2, 6, 14, 24, 30, 30, 26]) wheel(delta);
+    // まだ慣性が強く続いている (1 コマ 4 px 以上) うちに移る。
+    for (const delta of inertia(16)) wheel(delta);
+    expect(shown).toBe(1);
+  });
+
+  it("トラックパッドで、慣性が続いている上から間を空けずに払い直しても受け付ける", () => {
+    let shown = -1;
+    act(() =>
+      root.render(
+        <Viewer count={5} wheel onShow={(index) => (shown = index)} />,
+      ),
+    );
+    trackpadSwipeLeft(14);
+    // 慣性 (まだ 1 コマ 5 px ほど) に重なって、次の指の動きが届く。
+    const tail = inertia(30, 5);
+    const stroke = [2, 6, 14, 24, 30, 30, 26];
+    stroke.forEach((delta, index) => {
+      wheel(delta + (tail[index] ?? 0));
+    });
+    for (const delta of inertia(40)) wheel(delta);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shown).toBe(2);
+  });
 });

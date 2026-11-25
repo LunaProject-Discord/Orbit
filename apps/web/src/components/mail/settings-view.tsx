@@ -44,6 +44,7 @@ import { IconPicker } from "@/components/mail/icon-picker";
 import { InvitationSettings } from "@/components/mail/invitation-settings";
 import { SecuritySettings } from "@/components/mail/security-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
+import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -112,6 +113,12 @@ import {
   useSwipeSettings,
 } from "@/lib/swipe";
 import type { SyncStatus } from "@/lib/sync-status";
+import {
+  clearWheelLog,
+  setWheelLogEnabled,
+  useWheelLog,
+  wheelLogText,
+} from "@/lib/wheel-log";
 
 const notificationDescriptions: Record<NotificationStatus, string> = {
   unsupported: "このブラウザーでは、新着メールを通知できません。",
@@ -951,6 +958,7 @@ function ActionsPage() {
             checked={preferences.trackpadSwipe}
             onChange={(trackpadSwipe) => set({ trackpadSwipe })}
           />
+          <WheelLogRow />
         </SettingGroup>
       </Section>
 
@@ -1797,6 +1805,56 @@ const PUSH_CONNECTION_OPTIONS = [
     label: `${count} 本まで`,
   })),
 ];
+
+/**
+ * トラックパッドの動きの記録 (スワイプの反応の調査用)。オンにしてからスワイプし、
+ * 記録をコピーして送ってもらう。記録はこの端末のメモリーにだけ残る。
+ */
+function WheelLogRow() {
+  const log = useWheelLog();
+  const id = useId();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(wheelLogText());
+      showNotice(`${log.count} 件の記録をコピーしました。`, "info");
+    } catch {
+      showNotice("記録をコピーできませんでした。");
+    }
+  };
+  return (
+    <SettingRow
+      label="トラックパッドの動きを記録"
+      labelId={id}
+      description="スワイプの反応を調べるためのものです。オンにしてスワイプしたあと「コピー」を押し、内容を送ってください。最新の 3000 件だけをこの端末に残し、ほかへは送りません。"
+    >
+      <div className="flex items-center gap-2">
+        {log.enabled && (
+          <>
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {log.count} 件
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={log.count === 0}
+              onClick={copy}
+            >
+              コピー
+            </Button>
+            <Button variant="ghost" size="sm" onClick={clearWheelLog}>
+              消去
+            </Button>
+          </>
+        )}
+        <Switch
+          aria-labelledby={id}
+          checked={log.enabled}
+          onCheckedChange={(checked) => setWheelLogEnabled(checked)}
+        />
+      </div>
+    </SettingRow>
+  );
+}
 
 /** オンとオフを切り替える行。 */
 function SwitchRow(props: {
