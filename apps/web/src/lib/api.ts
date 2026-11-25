@@ -880,9 +880,18 @@ export async function createAccount(
  * Google または Microsoft のログイン画面の URL を取得する。
  * accountId を渡すと、そのアカウントの再ログインになる。
  */
+/** OAuth のログインから戻ってきたときに付ける名前 (追加画面で入力したもの)。 */
+const PENDING_OAUTH_NAME_KEY = "orbit.oauth-display-name.v1";
+
+/**
+ * Google または Microsoft のログイン画面の URL を取得する。
+ * accountId を渡すと、そのアカウントの再ログインになる。
+ * email を渡すと、ログイン画面にそのアドレスを入れておく。
+ */
 export async function startOAuthLogin(
   provider: OAuthProvider,
   accountId?: string,
+  options: { email?: string; displayName?: string } = {},
 ): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
     `/v1/accounts/${provider}/authorize`,
@@ -890,11 +899,21 @@ export async function startOAuthLogin(
       method: "POST",
       body: {
         ...(accountId ? { accountId } : {}),
+        ...(!accountId && options.email ? { email: options.email } : {}),
         // スマホアプリとデスクトップ版では、ログイン後に Web 版のページからアプリへ戻してもらう。
         ...(usesAppOAuth() ? { app: true } : {}),
       },
     },
   );
+  try {
+    if (!accountId && options.displayName) {
+      sessionStorage.setItem(PENDING_OAUTH_NAME_KEY, options.displayName);
+    } else {
+      sessionStorage.removeItem(PENDING_OAUTH_NAME_KEY);
+    }
+  } catch {
+    // 保存できなくても、名前を付けずに追加できる。
+  }
   return url;
 }
 
@@ -906,9 +925,19 @@ export async function completeOAuthLogin(
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
     `/v1/accounts/${provider}/complete`,
-    { method: "POST", body: { code, state } },
+    { method: "POST", body: { code, state, ...pendingOAuthName() } },
   );
   return account;
+}
+
+function pendingOAuthName(): { displayName?: string } {
+  try {
+    const name = sessionStorage.getItem(PENDING_OAUTH_NAME_KEY);
+    sessionStorage.removeItem(PENDING_OAUTH_NAME_KEY);
+    return name ? { displayName: name } : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
