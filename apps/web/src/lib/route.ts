@@ -55,6 +55,7 @@ export const SETTINGS_CATEGORIES = [
   "security",
   "users",
   "system",
+  "about",
 ] as const;
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 

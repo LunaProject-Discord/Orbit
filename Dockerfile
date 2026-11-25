@@ -38,7 +38,11 @@ ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_TELEMETRY_DISABLED=1
 RUN test -n "$NEXT_PUBLIC_API_URL" || (echo "NEXT_PUBLIC_API_URL を --build-arg で渡してください。" >&2; exit 1)
-RUN pnpm --filter @orbit/web build
+# アプリの画面の自動更新の一覧 (app-update/manifest.json) に署名する鍵。ビルドの間だけ読み、イメージには残さない。
+# 無ければ一覧を作らない (アプリは同梱の画面を使い続ける)。
+RUN --mount=type=secret,id=app_update_signing_key,required=false \
+    APP_UPDATE_SIGNING_KEY="$(cat /run/secrets/app_update_signing_key 2>/dev/null || true)" \
+    pnpm --filter @orbit/web build
 
 FROM manifests AS server
 ENV NODE_ENV=production

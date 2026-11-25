@@ -36,6 +36,10 @@
 		@immutable path /_next/static/*
 		header @immutable Cache-Control "public, max-age=31536000, immutable"
 
+		# アプリの画面の自動更新の一覧 (docs/app-update.md)。配置のたびに変わるので、毎回確かめさせる。
+		@appUpdate path /app-update/*
+		header @appUpdate Cache-Control "no-cache"
+
 		@page {
 			not path_regexp \.[A-Za-z0-9]+$
 			file {

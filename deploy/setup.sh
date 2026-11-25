@@ -107,6 +107,9 @@ if grep -Eq "^VAPID_(PUBLIC|PRIVATE)_KEY=[[:space:]]*$" .env; then
   echo "生成した値: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY"
 fi
 
+# アプリの画面の自動更新に使う署名の鍵 (docs/app-update.md)。既にあれば触らず、公開鍵だけを表示する。
+bash ./app-update-key.sh
+
 # 中継用のサーバーとの間を HTTPS にするための証明書 (自己署名、10 年)。中継用のサーバーには relay.crt を置き、
 # その証明書の相手にだけ繋ぐようにする。作り直すと中継用のサーバーの側も置き換えが要るので、既にあれば触らない
 # (作り直すときは deploy/certs/ を消してから、もう一度実行する)。

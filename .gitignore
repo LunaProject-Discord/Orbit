@@ -17,3 +17,6 @@ next-env.d.ts
 
 # 中継用のサーバーとの間の HTTPS に使う証明書と秘密鍵 (deploy/setup.sh が作る)
 /deploy/certs
+
+# 画面の自動更新の署名の秘密鍵 (deploy/app-update-key.sh が作る)
+/deploy/secrets

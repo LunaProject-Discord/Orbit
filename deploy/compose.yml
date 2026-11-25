@@ -101,6 +101,9 @@ services:
       target: web
       args:
         NEXT_PUBLIC_API_URL: https://${DOMAIN}
+      # アプリの画面の自動更新の一覧に署名する鍵 (deploy/app-update-key.sh が作る)。イメージには残らない。
+      secrets:
+        - app_update_signing_key
     restart: unless-stopped
     logging: *logging
     # 待ち受けるアドレスとポートは、重ねるファイル (compose.relay.yml / compose.proxy.yml / compose.caddy.yml) が決める。
@@ -135,3 +138,7 @@ services:
 volumes:
   postgres-data:
   attachments:
+
+secrets:
+  app_update_signing_key:
+    file: ./secrets/app-update-signing-key

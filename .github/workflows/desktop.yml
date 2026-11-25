@@ -66,6 +66,8 @@ jobs:
       TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
       # 更新の確認先。既定はこのリポジトリの GitHub Releases (リポジトリが公開のときだけ届く)。
       TAURI_UPDATER_ENDPOINT: ${{ vars.TAURI_UPDATER_ENDPOINT || format('https://github.com/{0}/releases/latest/download/latest.json', github.repository) }}
+      # 画面の自動更新の一覧の署名を確かめる公開鍵 (docs/app-update.md)。無ければ画面を更新しないアプリになる。
+      ORBIT_APP_UPDATE_PUBLIC_KEY: ${{ vars.APP_UPDATE_PUBLIC_KEY }}
       HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
       HAS_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
     steps:

@@ -31,6 +31,8 @@ main() {
     echo "(手順は docs/deploy-oracle-cloud.md の「名前を mail から orbit に変える」)。" >&2
     exit 1
   fi
+  # 画面の自動更新の署名の鍵。この仕組みより前に setup.sh を実行したサーバーでは、ここで作る。
+  bash ./app-update-key.sh
   docker compose build
   # 未適用のマイグレーションは、API とワーカーの起動前に migrate サービスが流す。
   docker compose up -d --remove-orphans

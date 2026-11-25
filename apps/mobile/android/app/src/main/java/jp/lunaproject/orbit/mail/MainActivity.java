@@ -14,8 +14,12 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // 画面の自動更新で取得した画面があれば、どれを使うか決めて Capacitor の設定に書く (WebBundles)。
+        // Capacitor は super.onCreate の中でこの設定を読むので、先に行う。
+        WebBundles.prepare(this);
         // このアプリ専用のプラグインは、画面を作る前に登録する。
         registerPlugin(AppShellPlugin.class);
+        registerPlugin(AppUpdatePlugin.class);
         super.onCreate(savedInstanceState);
     }
 

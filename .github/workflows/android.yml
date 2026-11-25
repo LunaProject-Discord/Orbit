@@ -38,6 +38,8 @@ jobs:
       HAS_FIREBASE: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON != '' }}
       # Google Play は、出すたびに大きい番号を求める。実行番号をそのまま使う。
       ANDROID_VERSION_CODE: ${{ github.run_number }}
+      # 画面の自動更新の一覧の署名を確かめる公開鍵 (docs/app-update.md)。無ければ画面を更新しないアプリになる。
+      APP_UPDATE_PUBLIC_KEY: ${{ vars.APP_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6

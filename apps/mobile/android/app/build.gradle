@@ -12,11 +12,16 @@ android {
         versionCode((System.getenv("ANDROID_VERSION_CODE") ?: "1") as Integer)
         versionName System.getenv("ANDROID_VERSION_NAME") ?: "0.1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // 画面の自動更新の一覧の署名を確かめる公開鍵 (docs/app-update.md)。無ければ画面を更新しない。
+        buildConfigField "String", "APP_UPDATE_PUBLIC_KEY", "\"${(System.getenv("APP_UPDATE_PUBLIC_KEY") ?: "").trim()}\""
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
     // 配布用の署名。鍵は環境変数で渡す (リポジトリには入れない)。
     // 渡されていなければ、配布用のビルドは署名なしで作られる。
