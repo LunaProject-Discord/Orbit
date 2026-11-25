@@ -25,9 +25,9 @@ jobs:
     env:
       DATABASE_URL: postgres://orbit:orbit@localhost:5432/orbit
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -56,7 +56,7 @@ jobs:
       run:
         working-directory: deploy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 設定ファイルを用意 (別のサーバーから逆プロキシする構成)
         run: |
           bash setup.sh orbit.example.com relay
