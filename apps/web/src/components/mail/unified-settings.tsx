@@ -89,27 +89,30 @@ export function UnifiedSettings({
               key={entry.key}
               className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5"
             >
-              <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
-                {folder ? (
-                  <UnifiedMark folder={folder} />
-                ) : (
-                  <BuiltinMark
-                    view={entry.builtin}
-                    style={builtinStyle(unified, entry.builtin)}
-                  />
-                )}
-              </span>
-              <div className="min-w-0 flex-1 basis-40">
-                <p id={labelId} className="truncate font-medium text-sm">
-                  {label}
-                </p>
-                <p className="truncate text-muted-foreground text-xs">
-                  {folder
-                    ? describeUnified(folder, mailboxes)
-                    : label === BUILTIN_LABELS[entry.builtin]
-                      ? BUILTIN_DESCRIPTIONS[entry.builtin]
-                      : `${BUILTIN_LABELS[entry.builtin]} (${BUILTIN_DESCRIPTIONS[entry.builtin]})`}
-                </p>
+              {/* アイコンは説明の行ではなく名前の行にそろえる (アカウントの行と同じ)。 */}
+              <div className="flex min-w-0 flex-1 basis-40 items-start gap-3">
+                <span className="flex h-5 w-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
+                  {folder ? (
+                    <UnifiedMark folder={folder} />
+                  ) : (
+                    <BuiltinMark
+                      view={entry.builtin}
+                      style={builtinStyle(unified, entry.builtin)}
+                    />
+                  )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p id={labelId} className="truncate font-medium text-sm">
+                    {label}
+                  </p>
+                  <p className="truncate text-muted-foreground text-xs">
+                    {folder
+                      ? describeUnified(folder, mailboxes)
+                      : label === BUILTIN_LABELS[entry.builtin]
+                        ? BUILTIN_DESCRIPTIONS[entry.builtin]
+                        : `${BUILTIN_LABELS[entry.builtin]} (${BUILTIN_DESCRIPTIONS[entry.builtin]})`}
+                  </p>
+                </div>
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
                 <Hint label={folder ? "編集" : "名前・アイコン・色を変更"}>

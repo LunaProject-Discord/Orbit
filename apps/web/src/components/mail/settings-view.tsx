@@ -1020,14 +1020,17 @@ function NotificationsPage({
     <>
       <Section title="新着メールの通知">
         <div className="flex items-center gap-3 rounded-lg border p-3">
-          {notifying ? (
-            <BellIcon className="size-4 shrink-0" aria-hidden="true" />
-          ) : (
-            <BellOffIcon
-              className="size-4 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
-          )}
+          {/* アイコンは説明の行ではなく、1 行目 (オン / オフ) の高さにそろえる。 */}
+          <span className="flex h-5 shrink-0 items-center self-start">
+            {notifying ? (
+              <BellIcon className="size-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <BellOffIcon
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            )}
+          </span>
           <div className="min-w-0 flex-1">
             <p className="font-medium text-sm">
               この端末の通知: {notifying ? "オン" : "オフ"}

@@ -2,6 +2,7 @@
 
 import { RefreshCwIcon } from "lucide-react";
 import { type RefObject, useEffect, useRef } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import { pullDistance, pullIntent, shouldRefresh } from "@/lib/pull-to-refresh";
 
 /** 更新中の印を出しておく、いちばん短い時間 (一瞬で消えると、更新されたか分からない)。 */
@@ -169,7 +170,12 @@ export function PullToRefresh({
       className="group pointer-events-none absolute top-0 left-1/2 z-20 flex size-9 items-center justify-center rounded-full border bg-background text-muted-foreground opacity-0 shadow-md data-[ready=true]:text-primary data-[state=refreshing]:text-primary"
       style={{ transform: `translate(-50%, -44px)` }}
     >
-      <RefreshCwIcon className="size-4 group-data-[state=refreshing]:animate-spin" />
+      {/* 引いている間は引いた長さに合わせて回す (turn)。更新中は揺れない Spinner に替える。 */}
+      <RefreshCwIcon className="size-4 group-data-[state=refreshing]:hidden" />
+      <Spinner
+        icon="refresh"
+        className="hidden size-4 group-data-[state=refreshing]:block"
+      />
     </div>
   );
 }
