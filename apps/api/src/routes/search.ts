@@ -10,16 +10,14 @@ import {
   nextListCursor,
 } from "../lib/list-order.js";
 import {
+  addSearchCondition,
   highlightTerms,
   isEmptySearch,
   normalizeDate,
   parseSearchQuery,
+  searchLeaves,
 } from "../lib/search-query.js";
-import {
-  folderCondition,
-  hasPositiveFolder,
-  termCondition,
-} from "../lib/search-sql.js";
+import { hasPositiveFolder, searchCondition } from "../lib/search-sql.js";
 import {
   filterConditions,
   loadUnifiedFolder,
@@ -97,13 +95,26 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
       ["subject", query.subject],
     ] as const) {
       if (value?.trim()) {
-        search.terms.push({ field, text: value.trim(), negated: false });
+        addSearchCondition(search, {
+          kind: "text",
+          field,
+          text: value.trim(),
+          negated: false,
+        });
       }
     }
-    if (query.hasAttachment === "true") search.hasAttachment = true;
-    if (query.unread === "true") search.seen = false;
-    if (query.flagged === "true") search.flagged = true;
-    if (query.since) search.since = query.since;
+    if (query.hasAttachment === "true") {
+      addSearchCondition(search, { kind: "attachment", value: true });
+    }
+    if (query.unread === "true") {
+      addSearchCondition(search, { kind: "seen", value: false });
+    }
+    if (query.flagged === "true") {
+      addSearchCondition(search, { kind: "flagged", value: true });
+    }
+    if (query.since) {
+      addSearchCondition(search, { kind: "since", date: query.since });
+    }
 
     const terms = highlightTerms(search);
     const unified =
@@ -121,32 +132,11 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
     if (query.accountId) {
       conditions.push(eq(messages.accountId, query.accountId));
     }
-    for (const term of search.terms) conditions.push(termCondition(term));
-    for (const folder of search.folders ?? []) {
-      conditions.push(folderCondition(folder));
-    }
-    if (search.hasAttachment !== undefined) {
-      conditions.push(eq(messages.hasAttachments, search.hasAttachment));
-    }
-    if (search.seen !== undefined) {
-      conditions.push(eq(messages.seen, search.seen));
-    }
-    if (search.flagged !== undefined) {
-      conditions.push(eq(messages.flagged, search.flagged));
-    }
+    const matches = searchCondition(search, { timeZone: query.timeZone });
+    if (matches) conditions.push(matches);
     // 日付は、利用者のタイムゾーンでの 0 時を区切りにする。
     const startOfDay = (date: string, addDays = 0) =>
       sql`((${date}::date + ${addDays}::int)::timestamp at time zone ${query.timeZone})`;
-    if (search.since) {
-      conditions.push(
-        sql`${messages.receivedAt} >= ${startOfDay(search.since)}`,
-      );
-    }
-    if (search.before) {
-      conditions.push(
-        sql`${messages.receivedAt} < ${startOfDay(search.before)}`,
-      );
-    }
     if (query.until) {
       conditions.push(
         sql`${messages.receivedAt} < ${startOfDay(query.until, 1)}`,
@@ -199,10 +189,15 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
     )`;
 
     // 語が件名にも冒頭の抜粋にも現れないときは、本文の該当箇所を抜き出して返す。
-    const excerptTerm = search.terms.find(
-      (term) =>
-        !term.negated && (term.field === "any" || term.field === "body"),
-    );
+    // 抜粋に使う語。OR の中の語でもよい (当てはまった方とは限らないが、無ければ抜粋を出さないだけ)。
+    const excerptTerm = [...searchLeaves(search.nodes)]
+      .map(({ leaf, inverted }) =>
+        leaf.kind === "text" && leaf.negated === inverted ? leaf : null,
+      )
+      .find(
+        (term) =>
+          term !== null && (term.field === "any" || term.field === "body"),
+      );
     const position = excerptTerm
       ? sql<number>`position(lower(${excerptTerm.text}) in lower(${messages.searchBody}))`
       : sql<number>`0`;

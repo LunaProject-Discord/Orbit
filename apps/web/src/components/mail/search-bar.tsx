@@ -1245,9 +1245,10 @@ function buildSections({
   // メールの中では、演算子 (from: など) と除外の語 (-語) を除いた語をそのまま探す。
   const findText = query
     .split(" ")
-    .filter((word) => !/^-|^[a-z]+[:：]/iu.test(word))
+    .filter((word) => !/^-|^[a-z]+[:：]/iu.test(word) && word !== "OR")
     .join(" ")
-    .replace(/["“”]/gu, "");
+    .replace(/["“”()]/gu, "")
+    .trim();
   if (onFindInMessage && findText !== "" && token.key === "") {
     sections.push({
       title: "開いているメール",

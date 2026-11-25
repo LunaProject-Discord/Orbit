@@ -295,6 +295,13 @@ describe("MailCache の検索", () => {
     );
   });
 
+  it("OR とかっこで、どれかに当てはまるメールを探す", async () => {
+    expect(ids(await search("定例 OR 見積書"))).toEqual(["b", "a"]);
+    expect(ids(await search("(定例 OR 見積書) has:attachment"))).toEqual(["a"]);
+    expect(ids(await search("from:sato -(定例 OR is:read)"))).toEqual(["a"]);
+    expect(ids(await search("定例 OR folder:ごみ箱"))).toEqual(["t", "b"]);
+  });
+
   it("folder: でフォルダを指定すると、ごみ箱でも探す", async () => {
     expect(ids(await search("定例 folder:ごみ箱"))).toEqual(["t"]);
     expect(ids(await search("定例 in:trash"))).toEqual(["t"]);
