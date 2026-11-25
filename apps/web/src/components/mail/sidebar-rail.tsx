@@ -4,10 +4,7 @@ import { cn } from "cn";
 import {
   ChevronRightIcon,
   CircleAlertIcon,
-  LayersPlusIcon,
-  ListPlusIcon,
   MenuIcon,
-  PlusIcon,
   SettingsIcon,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -90,9 +87,6 @@ type RailProps = {
   unified: UnifiedState;
   selectedUnifiedId: string | null;
   onSelectUnified: (id: string) => void;
-  onCreateUnified: () => void;
-  onAddAccount: () => void;
-  onCreateCategory: () => void;
   onCompose: ComposeHandler | null;
   onToggleFold: () => void;
   /** サイドバーが上に重なっている間は true。隠れている帯を操作や読み上げの対象から外す。 */
@@ -121,9 +115,6 @@ export function SidebarRail({
   unified,
   selectedUnifiedId,
   onSelectUnified,
-  onCreateUnified,
-  onAddAccount,
-  onCreateCategory,
   onCompose,
   onToggleFold,
   inert,
@@ -317,33 +308,6 @@ export function SidebarRail({
             </div>
           );
         })}
-        {/* サイドバーと同じく、追加のボタンは一覧の最後に、同じ並びと高さで置く。 */}
-        <div className="mt-1 flex shrink-0 flex-col items-center gap-0.5">
-          <RailItem
-            label="アカウントを追加"
-            selected={false}
-            onClick={onAddAccount}
-            className="h-9"
-          >
-            <PlusIcon className="text-muted-foreground" />
-          </RailItem>
-          <RailItem
-            label="統合フォルダを追加"
-            selected={false}
-            onClick={onCreateUnified}
-            className="h-9"
-          >
-            <LayersPlusIcon className="text-muted-foreground" />
-          </RailItem>
-          <RailItem
-            label="カテゴリを追加"
-            selected={false}
-            onClick={onCreateCategory}
-            className="h-9"
-          >
-            <ListPlusIcon className="text-muted-foreground" />
-          </RailItem>
-        </div>
       </nav>
       <div className="shrink-0 py-2">
         <RailItem
