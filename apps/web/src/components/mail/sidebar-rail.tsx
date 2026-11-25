@@ -7,11 +7,14 @@ import {
   LayersPlusIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
-  PenSquareIcon,
   SettingsIcon,
 } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
+import {
+  type ComposeHandler,
+  RailComposeButton,
+} from "@/components/mail/compose-button";
 import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
 import { ACCOUNT_ON_CLASS } from "@/lib/account-colors";
@@ -84,7 +87,7 @@ type RailProps = {
   selectedUnifiedId: string | null;
   onSelectUnified: (id: string) => void;
   onCreateUnified: () => void;
-  onCompose: (() => void) | null;
+  onCompose: ComposeHandler | null;
   onToggleFold: () => void;
   /** サイドバーが上に重なっている間は true。隠れている帯を操作や読み上げの対象から外す。 */
   inert: boolean;
@@ -248,11 +251,7 @@ export function SidebarRail({
       </div>
       {onCompose && (
         <div className="shrink-0 pb-2 in-[[data-desktop]]:pt-2">
-          <Hint label="新規作成" shortcut="C" side="right">
-            <Button size="icon" onClick={onCompose} aria-label="新規作成">
-              <PenSquareIcon />
-            </Button>
-          </Hint>
+          <RailComposeButton accounts={accounts ?? []} onCompose={onCompose} />
         </div>
       )}
       <nav
@@ -260,13 +259,6 @@ export function SidebarRail({
         className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden py-1 [scrollbar-width:none]"
       >
         {groups.views.map(renderView)}
-        <RailItem
-          label="統合フォルダを作成"
-          selected={false}
-          onClick={onCreateUnified}
-        >
-          <LayersPlusIcon className="text-muted-foreground" />
-        </RailItem>
         <span className="h-2 shrink-0" aria-hidden="true" />
         {orderSections(groups, unified.sectionOrder).map((section) => {
           if (section.account) return renderAccount(section.account);
@@ -313,6 +305,15 @@ export function SidebarRail({
             </div>
           );
         })}
+        {/* サイドバーと同じく、追加のボタンは一覧の最後に置く。 */}
+        <RailItem
+          label="統合フォルダを追加"
+          selected={false}
+          onClick={onCreateUnified}
+          className="mt-1"
+        >
+          <LayersPlusIcon className="text-muted-foreground" />
+        </RailItem>
       </nav>
       <div className="shrink-0 py-2">
         <RailItem

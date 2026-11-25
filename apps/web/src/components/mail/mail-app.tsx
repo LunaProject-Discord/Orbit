@@ -1974,8 +1974,9 @@ const MailView = memo(function MailView({
     }
   }, [standaloneMessage, selectedMessageId]);
 
-  function handleNewMail() {
-    const accountId = selectedAccountId ?? accounts?.[0]?.id;
+  /** 新しいメールを書き始める。from を省くと、いま選んでいるアカウント (無ければ先頭) から。 */
+  function handleNewMail(from?: string) {
+    const accountId = from ?? selectedAccountId ?? accounts?.[0]?.id;
     if (!accountId) return;
     const account = accounts?.find((item) => item.id === accountId);
     showInCompose(newDraft(accountId, account?.signatureHtml), false);
@@ -3329,9 +3330,9 @@ const MailView = memo(function MailView({
             }
             onCompose={
               canCompose
-                ? () => {
+                ? (accountId) => {
                     setSidebarOpen(false);
-                    handleNewMail();
+                    handleNewMail(accountId);
                   }
                 : null
             }
@@ -3761,7 +3762,7 @@ const MailView = memo(function MailView({
             </div>
             {canCompose && !composeOpen && !selecting && (
               <Button
-                onClick={handleNewMail}
+                onClick={() => handleNewMail()}
                 className="absolute right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg md:hidden [&_svg]:size-5"
               >
                 <PenSquareIcon />
