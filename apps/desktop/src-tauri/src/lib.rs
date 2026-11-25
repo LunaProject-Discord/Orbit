@@ -280,8 +280,7 @@ pub fn run() {
             web_bundle::app_update_fetch_manifest,
             web_bundle::app_update_download,
             web_bundle::app_update_ready,
-            web_bundle::app_update_apply,
-            web_bundle::app_update_reset
+            web_bundle::app_update_apply
         ])
         .setup(|app| {
             let handle = app.handle().clone();

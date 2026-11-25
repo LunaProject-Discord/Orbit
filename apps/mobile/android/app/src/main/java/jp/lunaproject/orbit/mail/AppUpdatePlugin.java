@@ -233,22 +233,4 @@ public class AppUpdatePlugin extends Plugin {
             call.reject(e.getMessage());
         }
     }
-
-    /** 取得した画面を消し、次に起動したときから同梱の画面を使う。 */
-    @PluginMethod
-    public void reset(PluginCall call) {
-        Context context = getContext();
-        try {
-            WebBundles.State state = WebBundles.load(context);
-            state.current = null;
-            state.pending = null;
-            state.trying = null;
-            WebBundles.save(context, state);
-            WebBundles.setServerPath(context, null);
-            WebBundles.clean(context, state);
-            call.resolve();
-        } catch (Exception e) {
-            call.reject(e.getMessage());
-        }
-    }
 }

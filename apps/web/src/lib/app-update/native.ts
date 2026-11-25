@@ -37,8 +37,6 @@ export type NativeUpdater = {
   ready(): Promise<void>;
   /** 取得済みの版にすぐ切り替える (デスクトップ版は再起動、スマホアプリは画面を読み込み直す)。 */
   apply(): Promise<void>;
-  /** 取得した画面を消し、同梱の画面に戻す (次に起動したときから)。 */
-  reset(): Promise<void>;
 };
 
 function isInfo(value: unknown): value is NativeUpdateInfo {
@@ -91,7 +89,6 @@ const desktopUpdater: NativeUpdater = {
   download: (options) => desktop("app_update_download", options),
   ready: () => desktop("app_update_ready"),
   apply: () => desktop("app_update_apply"),
-  reset: () => desktop("app_update_reset"),
 };
 
 type AppUpdatePlugin = {
@@ -104,7 +101,6 @@ type AppUpdatePlugin = {
   }): Promise<void>;
   ready(): Promise<void>;
   apply(): Promise<void>;
-  reset(): Promise<void>;
 };
 
 // Capacitor のプラグインは Proxy なので、Promise の結果として直接返さずオブジェクトに包む (lib/native/app.ts と同じ)。
@@ -124,7 +120,6 @@ const androidUpdater: NativeUpdater = {
   download: async (options) => (await loadPlugin()).AppUpdate.download(options),
   ready: async () => (await loadPlugin()).AppUpdate.ready(),
   apply: async () => (await loadPlugin()).AppUpdate.apply(),
-  reset: async () => (await loadPlugin()).AppUpdate.reset(),
 };
 
 function nativePlatform(): string | null {
