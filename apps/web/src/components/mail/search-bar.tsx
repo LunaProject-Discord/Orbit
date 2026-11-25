@@ -7,6 +7,7 @@ import {
   CalendarIcon,
   ClockIcon,
   FileSearchIcon,
+  FolderIcon,
   PaperclipIcon,
   SearchIcon,
   TagIcon,
@@ -20,6 +21,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -29,28 +31,35 @@ import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { formatDateValue, parseDateValue } from "@/components/ui/date-picker";
-import type { SearchParams } from "@/lib/api";
+import type { Account, MailboxSummary, SearchParams } from "@/lib/api";
 import {
   type ContactSuggestion,
   useSearchContacts,
 } from "@/lib/search-contacts";
+import { type FolderSuggestion, folderSuggestions } from "@/lib/search-folders";
 import {
   ADDRESS_OPERATORS,
   addSearchHistory,
   chipLabel,
   completeQuery,
   DATE_OPERATORS,
+  FOLDER_OPERATORS,
   hasOpenSpace,
+  type InPlaceDraft,
   type InputToken,
+  inPlaceText,
   joinChips,
   joinSearchInput,
   normalizeQuery,
   OPERATOR_VALUES,
+  quoteValue,
   readSearchHistory,
   removeSearchHistory,
   replaceToken,
   SEARCH_OPERATORS,
+  type SearchChip,
   type SearchOperator,
+  splitChipRaw,
   splitSearchInput,
   tokenAt,
   writeSearchHistory,
@@ -78,6 +87,7 @@ const operatorIcons: Record<SearchOperator["key"], ReactNode> = {
   to: <AtSignIcon />,
   subject: <TagIcon />,
   body: <TextIcon />,
+  folder: <FolderIcon />,
   has: <PaperclipIcon />,
   is: <SearchIcon />,
   after: <CalendarIcon />,
@@ -109,6 +119,11 @@ type Props = {
   /** screen のとき、検索画面を開いた直後に欄へ入力できるようにする。 */
   autoFocus?: boolean;
   className?: string;
+  /** folder: の候補に出すフォルダ (全アカウント分) と、その持ち主のアカウント。 */
+  folders?: {
+    mailboxes: readonly MailboxSummary[];
+    accounts: readonly Account[];
+  };
 };
 
 /**
@@ -125,12 +140,13 @@ export function SearchBox({
   onClose,
   autoFocus,
   className,
+  folders,
 }: Props) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const chipsRef = useRef<HTMLUListElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   // 条件の並びが左右に隠れているか (端を薄くするため)。
   const [chipsOverflow, setChipsOverflow] = useState({
     start: false,
@@ -150,17 +166,46 @@ export function SearchBox({
    * チップの中で値を入力する。欄 (input) には、入力中の条件の値か、条件以外の語を出す。
    */
   const full = value.text;
-  const { chips, rest, editing } = splitSearchInput(full);
-  const text = editing ? editing.value : rest;
-  const token: InputToken = editing
+  const parts = splitSearchInput(full);
+  /**
+   * 確定したチップをその場で編集しているとき (押すか、矢印キーで入ったとき)。
+   * 編集中の値は検索の書き方として成り立たないこともあるので、入力の全体からは読み直さず、
+   * ここに持つ。入力が外から変わったら (最近の検索を選んだなど) やめる。
+   */
+  const [inPlaceState, setInPlace] = useState<
+    | (InPlaceDraft & {
+        at: number;
+        others: SearchChip[];
+        rest: string;
+        text: string;
+      })
+    | null
+  >(null);
+  const inPlace =
+    inPlaceState && inPlaceState.text === full ? inPlaceState : null;
+  const chips = inPlace ? inPlace.others : parts.chips;
+  const rest = inPlace ? inPlace.rest : parts.rest;
+  const editing = inPlace ? null : parts.editing;
+  const text = inPlace ? inPlace.value : editing ? editing.value : rest;
+  /** 欄 (input) を包むチップ。その場で編集しているチップか、末尾の入力中の条件。 */
+  const slot = inPlace ?? editing;
+  const token: InputToken = inPlace
     ? {
-        start: full.length - editing.prefix.length - editing.value.length,
-        end: full.length,
-        negated: editing.negated,
-        key: editing.key,
-        value: editing.value.replace(/["“”]/gu, ""),
+        start: 0,
+        end: 0,
+        negated: inPlace.negated,
+        key: inPlace.key,
+        value: inPlace.value.replace(/["“”]/gu, ""),
       }
-    : tokenAt(rest, Math.min(caret, rest.length));
+    : editing
+      ? {
+          start: full.length - editing.prefix.length - editing.value.length,
+          end: full.length,
+          negated: editing.negated,
+          key: editing.key,
+          value: editing.value.replace(/["“”]/gu, ""),
+        }
+      : tokenAt(rest, Math.min(caret, rest.length));
   const screen = variant === "screen";
 
   const contactQuery = ADDRESS_OPERATORS.includes(
@@ -170,6 +215,16 @@ export function SearchBox({
     : token.key === "" && token.value.length >= 1
       ? token.value
       : null;
+  const isFolderKey = FOLDER_OPERATORS.includes(
+    token.key as (typeof FOLDER_OPERATORS)[number],
+  );
+  const folderOptions = useMemo(
+    () =>
+      isFolderKey && folders
+        ? folderSuggestions(folders.mailboxes, folders.accounts, token.value, 8)
+        : [],
+    [isFolderKey, folders, token.value],
+  );
   const contacts = useSearchContacts(
     contactQuery ?? "",
     contactQuery === null ? 0 : token.key ? 8 : 4,
@@ -207,6 +262,10 @@ export function SearchBox({
   };
   /** 欄の文字が変わった。入力中の条件の値なら、空白で区切った時点でチップにする。 */
   const setText = (next: string, nextCaret?: number) => {
+    if (inPlace) {
+      setInPlaceValue(next, nextCaret);
+      return;
+    }
     if (!editing) {
       apply(joinSearchInput({ chips, rest: next, editing: null }), nextCaret);
       return;
@@ -234,6 +293,15 @@ export function SearchBox({
     );
   };
   const removeChip = (index: number) => {
+    if (inPlace) {
+      // その場で編集しているチップはそのままにして、ほかのチップを外す。
+      const others = inPlace.others.filter((_, item) => item !== index);
+      const at = index < inPlace.at ? inPlace.at - 1 : inPlace.at;
+      const nextText = inPlaceText(others, at, inPlace, inPlace.rest);
+      onChange({ ...value, text: nextText });
+      setInPlace({ ...inPlace, others, at, text: nextText });
+      return;
+    }
     apply(
       joinSearchInput({
         chips: chips.filter((_, item) => item !== index),
@@ -243,7 +311,125 @@ export function SearchBox({
       Math.min(caret, text.length),
     );
   };
+  /**
+   * いまの入力を、チップと条件以外の語に分け直す。入力中の条件は、値があれば確定し、
+   * 空なら捨てる。その場で編集しているチップも元の位置に確定する。
+   */
+  const settledParts = (): { chips: SearchChip[]; rest: string } => {
+    if (inPlace) return splitSearchInput(inPlace.text);
+    if (editing && editing.value.trim() !== "") {
+      return splitSearchInput(`${full} `);
+    }
+    return splitSearchInput(joinSearchInput({ chips, rest, editing: null }));
+  };
+  /** index 番目の確定したチップを、その場で編集する。 */
+  const enterChip = (
+    settled: { chips: SearchChip[]; rest: string },
+    index: number,
+    caretAt: "start" | "end",
+  ) => {
+    const target = settled.chips[index];
+    const split = target ? splitChipRaw(target.raw) : null;
+    if (!target || !split) return;
+    const others = settled.chips.filter((_, item) => item !== index);
+    const draft: InPlaceDraft = {
+      key: target.key,
+      negated: target.negated,
+      prefix: split.prefix,
+      value: split.value,
+    };
+    const nextText = inPlaceText(others, index, draft, settled.rest);
+    if (nextText !== full) onChange({ ...value, text: nextText });
+    setInPlace({
+      ...draft,
+      at: index,
+      others,
+      rest: settled.rest,
+      text: nextText,
+    });
+    placeCaret(caretAt === "end" ? split.value.length : 0);
+  };
+  /** 確定したチップを押したら、その場で値を直せるようにする。 */
+  const editChip = (index: number) => {
+    const settled = settledParts();
+    // その場で編集しているチップがあれば、それを確定した後の位置に直す。
+    const shift =
+      inPlace &&
+      index >= inPlace.at &&
+      settled.chips.length > inPlace.others.length
+        ? 1
+        : 0;
+    enterChip(settled, index + shift, "end");
+    openPanel();
+  };
+  /**
+   * その場での編集を終える。next: 次のチップへ、prev: 前のチップへ、
+   * end: 普通の入力 (条件以外の語の末尾) へ、start: 普通の入力の先頭へ、none: フォーカスは動かさない。
+   */
+  const leaveChip = (to: "next" | "prev" | "end" | "start" | "none") => {
+    if (!inPlace) return;
+    const settled = splitSearchInput(inPlace.text);
+    const kept = settled.chips.length > inPlace.others.length;
+    if (to === "prev" && inPlace.at > 0) {
+      enterChip(settled, inPlace.at - 1, "end");
+      return;
+    }
+    if (to === "next") {
+      const index = kept ? inPlace.at + 1 : inPlace.at;
+      if (index < settled.chips.length) {
+        enterChip(settled, index, "start");
+        return;
+      }
+    }
+    setInPlace(null);
+    if (to === "none") {
+      setCaret(settled.rest.length);
+      return;
+    }
+    placeCaret(to === "end" ? settled.rest.length : 0);
+  };
+  /** その場で編集しているチップの値が変わった。空白で区切ったら確定する。 */
+  const setInPlaceValue = (next: string, nextCaret?: number) => {
+    if (!inPlace) return;
+    let draftValue = next;
+    let nextRest = inPlace.rest;
+    let done = false;
+    if (hasOpenSpace(next)) {
+      // 値を入力し終えた。空白の後ろ (貼り付けた文字など) は、条件以外の語にする。
+      const trimmed = next.trimStart();
+      const space = trimmed.search(/\s/u);
+      draftValue = space === -1 ? trimmed : trimmed.slice(0, space);
+      const tail = space === -1 ? "" : trimmed.slice(space).trim();
+      if (tail) nextRest = nextRest ? `${nextRest} ${tail}` : tail;
+      done = true;
+    }
+    const draft = { ...inPlace, value: draftValue, rest: nextRest };
+    const nextText = inPlaceText(inPlace.others, inPlace.at, draft, nextRest);
+    onChange({ ...value, text: nextText });
+    if (done) {
+      setInPlace(null);
+      placeCaret(splitSearchInput(nextText).rest.length);
+      return;
+    }
+    setInPlace({ ...draft, text: nextText });
+    if (nextCaret !== undefined) setCaret(nextCaret);
+  };
   const replace = (target: InputToken, replacement: string) => {
+    if (inPlace) {
+      // その場で編集しているチップの値を、選んだ候補にして確定する。
+      const split = splitChipRaw(replacement);
+      const draft = split
+        ? { ...inPlace, prefix: split.prefix, value: split.value }
+        : { ...inPlace, value: "" };
+      const nextRest = split
+        ? inPlace.rest
+        : [inPlace.rest, replacement].filter(Boolean).join(" ");
+      const nextText = inPlaceText(inPlace.others, inPlace.at, draft, nextRest);
+      onChange({ ...value, text: nextText });
+      setInPlace(null);
+      placeCaret(splitSearchInput(nextText).rest.length);
+      return;
+    }
     if (editing) {
       apply(replaceToken(full, target, replacement).text);
       return;
@@ -267,6 +453,7 @@ export function SearchBox({
     text: full,
     token,
     contacts: contactQuery === null ? [] : contacts,
+    folders: folderOptions,
     history,
     onFindInMessage: onFindInMessage
       ? (query) => {
@@ -353,24 +540,40 @@ export function SearchBox({
       document.removeEventListener("pointerdown", onPointerDown, true);
   }, [open]);
 
-  // チップが増えたら、最後のチップ (入力したばかりのもの) が見えるようにする。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: チップの数が変わったときだけ動かす
+  // 欄 (チップと入力欄) は全体で横にスクロールする。入力すると、カーソルのある入力欄が
+  // 見えるところまで送る (input の中のスクロールは、外側の枠までは動かさないため)。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 入力が変わったときだけ動かす
   useEffect(() => {
-    const list = chipsRef.current;
-    if (!list) return;
-    list.scrollLeft = list.scrollWidth;
-    measureChips(list);
-  }, [chips.length]);
+    const scroller = scrollRef.current;
+    const input = inputRef.current;
+    if (!scroller) return;
+    if (input && document.activeElement === input) revealInput(scroller, input);
+    measureChips(scroller);
+  }, [full, chips.length]);
 
-  // 入力中のチップが伸びて並びの幅が変わったときも、端の薄さを付け直す。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 並び (ul) が出たり消えたりしたときだけ付け直す
+  // 欄の幅が変わったときも、端の薄さを付け直す。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 初めに一度だけ付ける
   useEffect(() => {
-    const list = chipsRef.current;
-    if (!list || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => measureChips(list));
-    observer.observe(list);
+    const scroller = scrollRef.current;
+    if (!scroller || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureChips(scroller));
+    observer.observe(scroller);
     return () => observer.disconnect();
-  }, [chips.length > 0]);
+  }, []);
+
+  /** 入力欄 (のカーソルの辺り) が見えるよう、欄を横に送る。 */
+  function revealInput(scroller: HTMLElement, input: HTMLInputElement) {
+    const view = scroller.getBoundingClientRect();
+    const box = input.getBoundingClientRect();
+    // 入力欄の中のカーソルの位置は測れないので、末尾にあるときは欄の右端、それ以外は左端を見せる。
+    const atEnd =
+      (input.selectionEnd ?? input.value.length) >= input.value.length;
+    if (atEnd && box.right > view.right) {
+      scroller.scrollLeft += box.right - view.right;
+    } else if (box.left < view.left) {
+      scroller.scrollLeft -= view.left - box.left;
+    }
+  }
 
   function measureChips(list: HTMLElement) {
     const start = list.scrollLeft > 1;
@@ -431,6 +634,11 @@ export function SearchBox({
           item.apply();
           return;
         }
+        if (inPlace) {
+          setInPlace(null);
+          submit();
+          return;
+        }
         // 入力中の条件は、チップにしてから検索する。
         if (editing && editing.value.trim() !== "") {
           const committed = `${full} `;
@@ -456,9 +664,55 @@ export function SearchBox({
         item.remove();
         return;
       }
+      case "ArrowLeft":
+      case "ArrowRight": {
+        // カーソルが欄の端にあれば、隣のチップの中へ移る。
+        if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) {
+          return;
+        }
+        const input = event.currentTarget;
+        if (input.selectionStart !== input.selectionEnd) return;
+        const at = input.selectionStart ?? 0;
+        if (event.key === "ArrowRight") {
+          if (!inPlace || at < input.value.length) return;
+          event.preventDefault();
+          leaveChip("next");
+          return;
+        }
+        if (at !== 0) return;
+        if (inPlace) {
+          if (inPlace.at === 0) return;
+          event.preventDefault();
+          leaveChip("prev");
+          return;
+        }
+        if (editing) {
+          event.preventDefault();
+          const settled = settledParts();
+          if (rest !== "") {
+            // 入力中の条件を確定し、条件以外の語の末尾へ戻る。
+            setFull(joinSearchInput({ ...settled, editing: null }));
+            return;
+          }
+          if (chips.length > 0) enterChip(settled, chips.length - 1, "end");
+          else setFull(joinSearchInput({ ...settled, editing: null }));
+          return;
+        }
+        if (chips.length === 0) return;
+        event.preventDefault();
+        enterChip(settledParts(), chips.length - 1, "end");
+        return;
+      }
       case "Backspace": {
         const input = event.currentTarget;
         if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
+        if (inPlace) {
+          // 値を消し終えたチップで押したら、チップごと消して前へ移る。
+          if (inPlace.value !== "") return;
+          event.preventDefault();
+          leaveChip(inPlace.at > 0 ? "prev" : "start");
+          return;
+        }
         if (editing) {
           // 値の無い条件で押したら、条件をやめて普通の入力に戻る。
           if (editing.value !== "") return;
@@ -481,6 +735,11 @@ export function SearchBox({
         if (showPanel && !screen) {
           event.preventDefault();
           setOpen(false);
+          return;
+        }
+        if (inPlace) {
+          event.preventDefault();
+          leaveChip("end");
           return;
         }
         // 入力があれば消し、無ければ検索欄から抜ける。
@@ -666,177 +925,204 @@ export function SearchBox({
               aria-hidden="true"
             />
           )}
-          {chips.length > 0 && (
-            <ul
-              ref={chipsRef}
-              aria-label="検索の条件"
-              onScroll={(event) => measureChips(event.currentTarget)}
-              className={cn(
-                "flex min-w-0 shrink items-center gap-1 overflow-x-auto [scrollbar-width:none]",
-                // 隠れている側の端は、欄の端で切れて見えないよう薄くする。
-                chipsOverflow.start &&
-                  chipsOverflow.end &&
-                  "[mask-image:linear-gradient(to_right,transparent,#000_1rem,#000_calc(100%-1rem),transparent)]",
-                chipsOverflow.start &&
-                  !chipsOverflow.end &&
-                  "[mask-image:linear-gradient(to_right,transparent,#000_1rem)]",
-                !chipsOverflow.start &&
-                  chipsOverflow.end &&
-                  "[mask-image:linear-gradient(to_right,#000_calc(100%-1rem),transparent)]",
-                // 虫めがねだけの狭い表示では、広げている間だけ出す。
-                !screen &&
-                  "hidden group-focus-within/search:flex @3xl/pane:flex",
-              )}
-            >
-              {chips.map((chip, index) => {
-                const { label, value: chipValue } = chipLabel(chip);
-                return (
-                  <li
-                    // 同じ条件を 2 回書くこともあるので、位置も含める。
-                    key={`${index}:${chip.raw}`}
-                    className={chipClass(chip.negated, screen, false)}
-                  >
-                    <ChipHead
-                      chipKey={chip.key}
-                      label={label}
-                      negated={chip.negated}
-                    />
-                    <span
-                      className={cn(
-                        "truncate font-semibold",
-                        screen ? "max-w-32" : "max-w-28",
-                      )}
-                    >
-                      {chipValue}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`${chip.negated ? "除外の条件 " : ""}${label} ${chipValue} を外す`}
-                      onClick={() => removeChip(index)}
-                      className={cn(
-                        "relative flex shrink-0 items-center justify-center rounded-sm opacity-60 outline-none transition after:absolute after:-inset-1 hover:bg-current/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5",
-                        // 押せる範囲の右側はチップの端で止める (はみ出すと並びの幅が伸び、余白ができる)。
-                        screen
-                          ? "size-5 [&_svg]:size-3.5 after:-right-1 pointer-coarse:after:-right-1"
-                          : "size-4 [&_svg]:size-3 after:-right-0.5 pointer-coarse:after:-right-0.5",
-                      )}
-                    >
-                      <XIcon />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {editing && rest !== "" && (
-            <span
-              className={cn(
-                "max-w-32 shrink truncate",
-                screen ? "text-base" : "text-sm",
-                !screen &&
-                  "hidden group-focus-within/search:inline @3xl/pane:inline",
-              )}
-            >
-              {rest}
-            </span>
-          )}
-          {/* 入力中の条件は、欄 (input) ごとチップに包む。欄は作り直さない (フォーカスを保つ) よう、
-              包みは常に置き、入力中でなければ display: contents にする。 */}
-          <span
-            className={
-              editing
-                ? cn(
-                    chipClass(editing.negated, screen, true),
-                    !screen &&
-                      "hidden group-focus-within/search:flex @3xl/pane:flex",
-                  )
-                : "contents"
-            }
-          >
-            {editing && (
-              <ChipHead
-                chipKey={editing.key}
-                label={
-                  chipLabel({
-                    raw: "",
-                    key: editing.key,
-                    value: "",
-                    negated: editing.negated,
-                  }).label
-                }
-                negated={editing.negated}
-              />
+          {/* チップと入力欄は、ひとまとまりで横にスクロールする。 */}
+          <div
+            ref={scrollRef}
+            onScroll={(event) => measureChips(event.currentTarget)}
+            className={cn(
+              "flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+              // 隠れている側の端は、欄の端で切れて見えないよう薄くする。
+              chipsOverflow.start &&
+                chipsOverflow.end &&
+                "[mask-image:linear-gradient(to_right,transparent,#000_1rem,#000_calc(100%-1rem),transparent)]",
+              chipsOverflow.start &&
+                !chipsOverflow.end &&
+                "[mask-image:linear-gradient(to_right,transparent,#000_1rem)]",
+              !chipsOverflow.start &&
+                chipsOverflow.end &&
+                "[mask-image:linear-gradient(to_right,#000_calc(100%-1rem),transparent)]",
             )}
-            <input
-              ref={inputRef}
-              id={SEARCH_INPUT_ID}
-              type="text"
-              role="combobox"
-              aria-expanded={showPanel}
-              aria-controls={`${id}-listbox`}
-              aria-autocomplete="list"
-              aria-activedescendant={
-                showPanel && activeIndex >= 0
-                  ? `${id}-option-${activeIndex}`
-                  : undefined
-              }
-              enterKeyHint="search"
-              autoComplete="off"
-              spellCheck={false}
-              aria-label="メールを検索"
-              placeholder={
-                editing
-                  ? (SEARCH_OPERATORS.find(
-                      (operator) =>
-                        operator.key ===
-                        (editing.key === "cc" ? "to" : editing.key),
-                    )?.example ?? "")
-                  : chips.length > 0
-                    ? undefined
-                    : placeholder
-              }
-              value={text}
-              onChange={(event) =>
-                setText(
-                  event.target.value,
-                  event.target.selectionStart ?? event.target.value.length,
-                )
-              }
-              onSelect={(event) =>
-                setCaret(event.currentTarget.selectionStart ?? text.length)
-              }
-              onFocus={() => {
-                if (!open) openPanel();
-              }}
-              onClick={() => {
-                if (!open) openPanel();
-              }}
-              onBlur={(event) => {
-                // 候補 (カレンダーなど) へ移ったときは閉じない。
-                if (panelRef.current?.contains(event.relatedTarget as Node))
-                  return;
-                setOpen(false);
-              }}
-              onKeyDown={onKeyDown}
-              className={cn(
-                "bg-transparent outline-none placeholder:text-muted-foreground",
-                // 入力中のチップの中ではチップと同じ大きさにする。スマホは iOS が 16px 未満の欄で
-                // 画面を拡大してしまうので、text-base のまま。
-                screen ? "text-base" : editing ? "text-xs" : "text-sm",
-                editing
-                  ? // 入力中の条件のチップの中の欄。中身の幅に合わせる (対応していないブラウザーでは広がる)。
-                    cn(
-                      "field-sizing-content min-w-[2ch] max-w-48 flex-none rounded-sm bg-background/85 font-semibold text-inherit shadow-xs ring-1 ring-current/10 placeholder:font-normal placeholder:text-current/45 dark:bg-background/60",
-                      // 値を入れる部分は、チップの中で背景を変えて欄だとわかるようにする。
-                      screen ? "h-6 px-1.5" : "h-4.5 px-1",
+          >
+            {chips.length > 0 && (
+              <ul
+                aria-label="検索の条件"
+                className={cn(
+                  // チップは欄 (スクロールする枠) の中に直接並べる。その場で編集しているチップの
+                  // 欄 (input) は、order でチップの間に置く (欄を作り直すとフォーカスが外れるため)。
+                  "contents",
+                  // 虫めがねだけの狭い表示では、広げている間だけ出す。
+                  !screen &&
+                    "hidden group-focus-within/search:contents @3xl/pane:contents",
+                )}
+              >
+                {chips.map((chip, index) => {
+                  const { label, value: chipValue } = chipLabel(chip);
+                  return (
+                    <li
+                      // 同じ条件を 2 回書くこともあるので、位置も含める。
+                      key={`${index}:${chip.raw}`}
+                      className={chipClass(chip.negated, screen, false)}
+                      style={{
+                        order:
+                          inPlace && index >= inPlace.at ? index + 1 : index,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        // 欄からフォーカスを外さない (その場での編集を続けたまま切り替える)。
+                        onMouseDown={(event) => event.preventDefault()}
+                        aria-label={`${chip.negated ? "除外の条件 " : ""}${label} ${chipValue} を編集`}
+                        onClick={() => editChip(index)}
+                        className="-ml-1 flex min-w-0 cursor-pointer items-center gap-1 self-stretch rounded-sm pl-1 outline-none transition-colors hover:bg-current/5 focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <ChipHead
+                          chipKey={chip.key}
+                          label={label}
+                          negated={chip.negated}
+                        />
+                        <span
+                          className={cn(
+                            "truncate font-semibold",
+                            screen ? "max-w-32" : "max-w-28",
+                          )}
+                        >
+                          {chipValue}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`${chip.negated ? "除外の条件 " : ""}${label} ${chipValue} を外す`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => removeChip(index)}
+                        className={cn(
+                          "relative flex shrink-0 items-center justify-center rounded-sm opacity-60 outline-none transition after:absolute after:-inset-1 hover:bg-current/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:after:-inset-2.5",
+                          // 押せる範囲の右側はチップの端で止める (はみ出すと並びの幅が伸び、余白ができる)。
+                          screen
+                            ? "size-5 [&_svg]:size-3.5 after:-right-1 pointer-coarse:after:-right-1"
+                            : "size-4 [&_svg]:size-3 after:-right-0.5 pointer-coarse:after:-right-0.5",
+                        )}
+                      >
+                        <XIcon />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {(editing || inPlace) && rest !== "" && (
+              <span
+                style={{ order: SLOT_ORDER - 1 }}
+                className={cn(
+                  "shrink-0 whitespace-pre",
+                  screen ? "text-base" : "text-sm",
+                  !screen &&
+                    "hidden group-focus-within/search:inline @3xl/pane:inline",
+                )}
+              >
+                {rest}
+              </span>
+            )}
+            {/* 入力中の条件は、欄 (input) ごとチップに包む。欄は作り直さない (フォーカスを保つ) よう、
+              包みは常に置き、入力中でなければ display: contents にする。 */}
+            <span
+              style={{ order: inPlace ? inPlace.at : SLOT_ORDER }}
+              className={
+                slot
+                  ? cn(
+                      chipClass(slot.negated, screen, true),
+                      !screen &&
+                        "hidden group-focus-within/search:flex @3xl/pane:flex",
                     )
-                  : cn(
-                      "h-full w-full flex-1",
-                      screen ? "min-w-24" : "min-w-20",
-                    ),
+                  : "contents"
+              }
+            >
+              {slot && (
+                <ChipHead
+                  chipKey={slot.key}
+                  label={
+                    chipLabel({
+                      raw: "",
+                      key: slot.key,
+                      value: "",
+                      negated: slot.negated,
+                    }).label
+                  }
+                  negated={slot.negated}
+                />
               )}
-            />
-          </span>
+              <input
+                ref={inputRef}
+                id={SEARCH_INPUT_ID}
+                type="text"
+                role="combobox"
+                aria-expanded={showPanel}
+                aria-controls={`${id}-listbox`}
+                aria-autocomplete="list"
+                aria-activedescendant={
+                  showPanel && activeIndex >= 0
+                    ? `${id}-option-${activeIndex}`
+                    : undefined
+                }
+                enterKeyHint="search"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="メールを検索"
+                style={{ order: SLOT_ORDER }}
+                placeholder={
+                  slot
+                    ? (SEARCH_OPERATORS.find(
+                        (operator) =>
+                          operator.key ===
+                          (slot.key === "cc" ? "to" : slot.key),
+                      )?.example ?? "")
+                    : chips.length > 0
+                      ? undefined
+                      : placeholder
+                }
+                value={text}
+                onChange={(event) =>
+                  setText(
+                    event.target.value,
+                    event.target.selectionStart ?? event.target.value.length,
+                  )
+                }
+                onSelect={(event) =>
+                  setCaret(event.currentTarget.selectionStart ?? text.length)
+                }
+                onFocus={() => {
+                  if (!open) openPanel();
+                }}
+                onClick={() => {
+                  if (!open) openPanel();
+                }}
+                onBlur={(event) => {
+                  if (inPlace) leaveChip("none");
+                  // 候補 (カレンダーなど) へ移ったときは閉じない。
+                  if (panelRef.current?.contains(event.relatedTarget as Node))
+                    return;
+                  setOpen(false);
+                }}
+                onKeyDown={onKeyDown}
+                className={cn(
+                  "bg-transparent outline-none placeholder:text-muted-foreground",
+                  // 入力中のチップの中ではチップと同じ大きさにする。スマホは iOS が 16px 未満の欄で
+                  // 画面を拡大してしまうので、text-base のまま。
+                  screen ? "text-base" : slot ? "text-xs" : "text-sm",
+                  slot
+                    ? // 入力中の条件のチップの中の欄。中身の幅に合わせる (対応していないブラウザーでは広がる)。
+                      cn(
+                        "field-sizing-content min-w-[2ch] max-w-48 flex-none rounded-sm bg-background/85 font-semibold text-inherit shadow-xs ring-1 ring-current/10 placeholder:font-normal placeholder:text-current/45 dark:bg-background/60",
+                        // 値を入れる部分は、チップの中で背景を変えて欄だとわかるようにする。
+                        screen ? "h-6 px-1.5" : "h-4.5 px-1",
+                      )
+                    : cn(
+                        "h-full w-full flex-1",
+                        screen ? "min-w-24" : "min-w-20",
+                      ),
+                )}
+              />
+            </span>
+          </div>
           {full && (
             <Button
               variant="ghost"
@@ -864,10 +1150,14 @@ export function SearchBox({
   );
 }
 
+/** 末尾の入力欄 (と条件以外の語) の並び順。チップ (0, 1, 2…) より後ろに置く。 */
+const SLOT_ORDER = 10000;
+
 /** チップのアイコン (演算子ごと)。 */
 const chipIcons: Record<string, ReactNode> = {
   ...operatorIcons,
   cc: operatorIcons.to,
+  in: operatorIcons.folder,
   since: operatorIcons.after,
   until: operatorIcons.before,
 };
@@ -928,6 +1218,7 @@ function buildSections({
   text,
   token,
   contacts,
+  folders,
   history,
   onFindInMessage,
   replace,
@@ -938,6 +1229,7 @@ function buildSections({
   text: string;
   token: InputToken;
   contacts: ContactSuggestion[];
+  folders: FolderSuggestion[];
   history: string[];
   onFindInMessage: ((query: string) => void) | undefined;
   replace: (token: InputToken, replacement: string) => void;
@@ -1005,6 +1297,25 @@ function buildSections({
       sections.push({
         title: token.key === "from" ? "差出人" : "宛先",
         items: contacts.map((contact) => contactItem(contact, token.key, "")),
+      });
+    }
+    return sections;
+  }
+
+  if (
+    FOLDER_OPERATORS.includes(token.key as (typeof FOLDER_OPERATORS)[number])
+  ) {
+    if (folders.length > 0) {
+      sections.push({
+        title: "フォルダ",
+        items: folders.map((folder) => ({
+          id: `folder-${folder.label}`,
+          icon: <FolderIcon />,
+          label: folder.label,
+          detail: folder.detail,
+          apply: () =>
+            replace(token, `${sign}${token.key}:${quoteValue(folder.label)}`),
+        })),
       });
     }
     return sections;

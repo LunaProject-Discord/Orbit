@@ -274,7 +274,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     ).toEqual({ type: "password", password: "new-password" });
   });
 
-  it("ほかの利用者のアカウントと、ログインで追加したアカウントは変えられない", async () => {
+  it("ほかの利用者のアカウントは変えられず、ログインで追加した Gmail はパスワードが要る", async () => {
     const theirs = await request(
       "PUT",
       `/accounts/${otherAccountId}/server`,
@@ -287,6 +287,35 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
       body,
     );
     expect(oauth.status).toBe(400);
+    expect(await oauth.json()).toEqual({ error: "password_required" });
     expect(seen.imap).toHaveLength(0);
+  });
+
+  it("Google でログインした Gmail を、アプリ パスワードでの接続に切り替えられる", async () => {
+    const response = await request(
+      "PUT",
+      `/accounts/${oauthAccountId}/server`,
+      {
+        imap: { host: "imap.gmail.com", port: 993, secure: true },
+        smtp: { host: "smtp.gmail.com", port: 465, secure: true },
+        username: "me@gmail.com",
+        password: "app-password",
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      account: { authType: "password", provider: "gmail" },
+    });
+    const [row] = await db
+      .select()
+      .from(mailAccounts)
+      .where(eq(mailAccounts.id, oauthAccountId));
+    expect(
+      decryptCredentials(
+        row?.credentialsEncrypted as string,
+        encryptionKey,
+        userId,
+      ),
+    ).toEqual({ type: "password", password: "app-password" });
   });
 });

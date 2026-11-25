@@ -7,7 +7,16 @@ import type { SearchFilters } from "@/lib/api";
 
 /** 候補に出す演算子。key は入力する文字 (コロンの前)。 */
 export type SearchOperator = {
-  key: "from" | "to" | "subject" | "body" | "has" | "is" | "after" | "before";
+  key:
+    | "from"
+    | "to"
+    | "subject"
+    | "body"
+    | "folder"
+    | "has"
+    | "is"
+    | "after"
+    | "before";
   /** 何を指定するか (候補の行に出す)。 */
   label: string;
   /** 入力例 (候補の行の右に出す)。 */
@@ -19,6 +28,7 @@ export const SEARCH_OPERATORS: readonly SearchOperator[] = [
   { key: "to", label: "宛先 (Cc を含む)", example: "名前やアドレス" },
   { key: "subject", label: "件名", example: "語句" },
   { key: "body", label: "本文", example: "語句" },
+  { key: "folder", label: "フォルダ", example: "受信トレイ" },
   { key: "has", label: "添付ファイルあり", example: "attachment" },
   { key: "is", label: "未読・既読・スター付き", example: "unread" },
   { key: "after", label: "この日以降", example: "2026-11-01" },
@@ -37,6 +47,8 @@ export const OPERATOR_VALUES: Partial<
   ],
 };
 
+/** フォルダの名前を候補に出す演算子 (in: は Gmail と同じ書き方)。 */
+export const FOLDER_OPERATORS = ["folder", "in"] as const;
 /** 相手のアドレスを候補に出す演算子。 */
 export const ADDRESS_OPERATORS = ["from", "to", "cc"] as const;
 /** 日付を指定する演算子。 */
@@ -103,7 +115,7 @@ export type SearchChip = {
   negated: boolean;
 };
 
-const TEXT_KEYS = ["from", "to", "cc", "subject", "body"];
+const TEXT_KEYS = ["from", "to", "cc", "subject", "body", "folder", "in"];
 const HAS_VALUES = /^(attachment|attachments|添付)$/iu;
 const IS_VALUES = /^(unread|read|starred|flagged|未読|既読|スター)$/iu;
 const DATE_VALUE = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/u;
@@ -164,6 +176,8 @@ const CHIP_KEYS = [
   "cc",
   "subject",
   "body",
+  "folder",
+  "in",
   "has",
   "is",
   "after",
@@ -243,6 +257,8 @@ const CHIP_LABELS: Record<string, string> = {
   cc: "宛先",
   subject: "件名",
   body: "本文",
+  folder: "フォルダ",
+  in: "フォルダ",
   has: "添付",
   is: "状態",
   after: "以降",
@@ -293,7 +309,7 @@ export function replaceToken(
 }
 
 const INCOMPLETE_OPERATOR =
-  /^-?(from|to|cc|subject|body|has|is|after|since|before|until)[:：]$/iu;
+  /^-?(from|to|cc|subject|body|folder|in|has|is|after|since|before|until)[:：]$/iu;
 
 /**
  * 入力の途中の、値をまだ入れていない演算子 (「from:」だけなど) を除いた検索の語。
@@ -380,4 +396,45 @@ export function writeSearchHistory(history: string[]): void {
   } catch {
     // 保存できなくても検索はできる。
   }
+}
+
+/** チップを「from:」などのコロンまでと、その後ろ (値) に分ける。 */
+export function splitChipRaw(
+  raw: string,
+): { prefix: string; value: string } | null {
+  const match = /^(-?[a-z]+[:：])(.*)$/iu.exec(raw);
+  return match ? { prefix: match[1] ?? "", value: match[2] ?? "" } : null;
+}
+
+/** その場で編集しているチップ。 */
+export type InPlaceDraft = {
+  key: string;
+  negated: boolean;
+  prefix: string;
+  value: string;
+};
+
+/**
+ * 確定したチップのうち 1 つをその場で編集しているときの、入力の全体。
+ * others は編集中のもの以外のチップ、at は編集中のチップの位置。値が空なら条件ごと除き、
+ * 引用符を閉じ忘れていれば閉じる。
+ */
+export function inPlaceText(
+  others: readonly SearchChip[],
+  at: number,
+  draft: InPlaceDraft,
+  rest: string,
+): string {
+  const value = draft.value.trim();
+  if (value === "") return joinChips(others, rest);
+  const quotes = (value.match(/["“”]/gu) ?? []).length;
+  const raw = `${draft.prefix}${value}${quotes % 2 === 1 ? '"' : ""}`;
+  const chips = [...others];
+  chips.splice(Math.min(at, chips.length), 0, {
+    raw,
+    key: draft.key,
+    value: value.replace(/["“”]/gu, ""),
+    negated: draft.negated,
+  });
+  return joinChips(chips, rest);
 }

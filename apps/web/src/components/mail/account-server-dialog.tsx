@@ -5,6 +5,7 @@ import { type FormEvent, useId, useState } from "react";
 import {
   ServerFields,
   type ServerForm,
+  ServerSummary,
   serverFormFromSaved,
   toServerSettings,
 } from "@/components/mail/server-settings";
@@ -31,7 +32,10 @@ import {
   updateAccountServer,
 } from "@/lib/api";
 
-/** IMAP / SMTP をパスワードでつなぐアカウントだけが、接続先を変えられる。 */
+/**
+ * 接続先を入力欄で変えられるか。Google でログインした Gmail は、アプリ パスワードへ
+ * 切り替えるときだけ変えられる。Microsoft Graph のアカウントは IMAP / SMTP を使わない。
+ */
 export function canEditServer(account: Account): boolean {
   return account.protocol === "imap" && account.authType === "password";
 }
@@ -40,6 +44,8 @@ type Props = {
   account: Account | null;
   onOpenChange: (open: boolean) => void;
   onUpdated: (account: Account) => void;
+  /** Google / Microsoft のログインをやり直す。 */
+  onReauth: (account: Account) => void;
 };
 
 /**
@@ -50,6 +56,7 @@ export function AccountServerDialog({
   account,
   onOpenChange,
   onUpdated,
+  onReauth,
 }: Props) {
   return (
     <Dialog
@@ -59,14 +66,111 @@ export function AccountServerDialog({
       }}
     >
       {account && (
-        <AccountServerForm
+        <AccountServerContent
           key={account.id}
           account={account}
           onClose={() => onOpenChange(false)}
           onUpdated={onUpdated}
+          onReauth={onReauth}
         />
       )}
     </Dialog>
+  );
+}
+
+/** アカウントの種類に合わせて、入力欄か、ログインの案内を出す。 */
+function AccountServerContent(props: {
+  account: Account;
+  onClose: () => void;
+  onUpdated: (account: Account) => void;
+  onReauth: (account: Account) => void;
+}) {
+  const { account } = props;
+  /** Google でログインした Gmail を、アプリ パスワードでの接続に切り替える。 */
+  const [switching, setSwitching] = useState(false);
+  if (canEditServer(account) || switching) {
+    return (
+      <AccountServerForm
+        account={account}
+        onClose={props.onClose}
+        onUpdated={props.onUpdated}
+        requirePassword={!canEditServer(account)}
+      />
+    );
+  }
+  const graph = account.protocol === "graph";
+  const providerName = graph ? "Microsoft" : "Google";
+  return (
+    <DialogContent
+      showCloseButton={false}
+      className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-[560px]"
+    >
+      <DialogHeader>
+        <DialogTitle className="font-semibold text-lg">
+          サーバー設定
+        </DialogTitle>
+        <DialogDescription className="break-all">
+          {account.email} は {providerName}{" "}
+          でログインして接続しています。サーバーは自動で決まるので、変更するものはありません。うまく同期できないときは、ログインし直してください。
+        </DialogDescription>
+      </DialogHeader>
+      {graph ? (
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-lg border bg-muted/30 p-3 text-sm">
+          <dt className="text-muted-foreground">接続方法</dt>
+          <dd>Microsoft Graph (Exchange Online / Outlook.com)</dd>
+          <dt className="text-muted-foreground">サーバー</dt>
+          <dd className="truncate">graph.microsoft.com</dd>
+          <dt className="text-muted-foreground">ユーザー名</dt>
+          <dd className="truncate">{account.username}</dd>
+          <dt className="text-muted-foreground">認証</dt>
+          <dd>OAuth2 (Microsoft でログイン)</dd>
+        </dl>
+      ) : (
+        <ServerSummary
+          imap={serverFormFromSaved(
+            account.imapHost,
+            account.imapPort,
+            account.imapSecure,
+          )}
+          smtp={serverFormFromSaved(
+            account.smtpHost,
+            account.smtpPort,
+            account.smtpSecure,
+          )}
+          username={account.username}
+          auth={{ imap: "oauth2", smtp: "oauth2" }}
+        />
+      )}
+      <DialogFooter className="gap-2 sm:justify-between">
+        {graph ? (
+          <span />
+        ) : (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="px-0"
+            onClick={() => setSwitching(true)}
+          >
+            アプリ パスワードでの接続に切り替える
+          </Button>
+        )}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row">
+          <Button type="button" variant="ghost" onClick={props.onClose}>
+            閉じる
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              props.onClose();
+              props.onReauth(account);
+            }}
+          >
+            {providerName} にログインし直す
+          </Button>
+        </div>
+      </DialogFooter>
+    </DialogContent>
   );
 }
 
@@ -74,10 +178,13 @@ function AccountServerForm({
   account,
   onClose,
   onUpdated,
+  requirePassword,
 }: {
   account: Account;
   onClose: () => void;
   onUpdated: (account: Account) => void;
+  /** 保存済みのパスワードが無い (Google のログインから切り替える) ので、入力を必須にする。 */
+  requirePassword: boolean;
 }) {
   const id = useId();
   const [username, setUsername] = useState(account.username);
@@ -105,7 +212,10 @@ function AccountServerForm({
     imap: toServerSettings(imap),
     smtp: toServerSettings(smtp),
     username: username.trim(),
-    ...(password ? { password } : {}),
+    // Google のアプリ パスワードは 4 文字ごとの空白入りで表示される。
+    ...(password
+      ? { password: requirePassword ? password.replace(/\s+/g, "") : password }
+      : {}),
     ...(account.provider === "generic" ? { allowLegacyTls } : {}),
   });
 
@@ -164,8 +274,9 @@ function AccountServerForm({
           サーバー設定
         </DialogTitle>
         <DialogDescription className="break-all">
-          {account.email}{" "}
-          の受信と送信のサーバーを変更します。保存する前に、両方のサーバーへ接続できるかを確認します。
+          {requirePassword
+            ? `${account.email} を、Google のログインの代わりにアプリ パスワードで接続します。保存する前に、受信と送信のサーバーへ接続できるかを確認します。`
+            : `${account.email} の受信と送信のサーバーを変更します。保存する前に、両方のサーバーへ接続できるかを確認します。`}
         </DialogDescription>
       </DialogHeader>
       <form onSubmit={handleSubmit} className="flex flex-col gap-5">
@@ -184,12 +295,17 @@ function AccountServerForm({
             />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor={`${id}-password`}>パスワード</Label>
+            <Label htmlFor={`${id}-password`}>
+              {requirePassword ? "アプリ パスワード" : "パスワード"}
+            </Label>
             <Input
               id={`${id}-password`}
               type="password"
+              required={requirePassword}
               autoComplete="new-password"
-              placeholder="変更しない場合は空欄"
+              placeholder={
+                requirePassword ? "xxxx xxxx xxxx xxxx" : "変更しない場合は空欄"
+              }
               value={password}
               onChange={(event) => setPassword(event.target.value)}
             />

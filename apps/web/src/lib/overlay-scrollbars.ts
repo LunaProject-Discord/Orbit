@@ -96,6 +96,8 @@ function isScroller(element: Element): element is HTMLElement {
   }
   const style = getComputedStyle(element);
   if (!scrollsOn(style, "x") && !scrollsOn(style, "y")) return false;
+  // バーをわざと隠している要素 (検索欄のチップの並びなど) には、重ねるバーも出さない。
+  if (style.scrollbarWidth === "none") return false;
   return element.closest(NATIVE_SCOPE) === null;
 }
 

@@ -15,7 +15,11 @@ import {
   normalizeDate,
   parseSearchQuery,
 } from "../lib/search-query.js";
-import { termCondition } from "../lib/search-sql.js";
+import {
+  folderCondition,
+  hasPositiveFolder,
+  termCondition,
+} from "../lib/search-sql.js";
 import {
   filterConditions,
   loadUnifiedFolder,
@@ -118,6 +122,9 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
       conditions.push(eq(messages.accountId, query.accountId));
     }
     for (const term of search.terms) conditions.push(termCondition(term));
+    for (const folder of search.folders ?? []) {
+      conditions.push(folderCondition(folder));
+    }
     if (search.hasAttachment !== undefined) {
       conditions.push(eq(messages.hasAttachments, search.hasAttachment));
     }
@@ -154,7 +161,10 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
         ? query.mailboxId
           ? eq(mailboxes.id, query.mailboxId)
           : eq(mailboxes.specialUse, "inbox")
-        : sql`${mailboxes.specialUse} is distinct from 'trash' and ${mailboxes.specialUse} is distinct from 'junk'`;
+        : hasPositiveFolder(search)
+          ? // folder: で選んだフォルダは、ごみ箱や迷惑メールでも探す。
+            sql`true`
+          : sql`${mailboxes.specialUse} is distinct from 'trash' and ${mailboxes.specialUse} is distinct from 'junk'`;
     conditions.push(
       sql`exists (
         select 1 from ${messageMailboxes}

@@ -6,6 +6,7 @@ import {
   MAX_SEARCH_TERMS,
   normalizeDate,
   parseSearchQuery,
+  rolesNamed,
 } from "./search-query.js";
 
 describe("parseSearchQuery", () => {
@@ -117,5 +118,25 @@ describe("highlightTerms", () => {
         parseSearchQuery("日程 日程 subject:定例 from:佐藤 -不要 body:議題"),
       ),
     ).toEqual(["日程", "定例", "議題"]);
+  });
+});
+
+describe("folder:", () => {
+  it("フォルダの名前を小文字で受け取り、in: も同じに扱う", () => {
+    expect(
+      parseSearchQuery('folder:受信トレイ -in:Trash folder:"仕事 2026"')
+        .folders,
+    ).toEqual([
+      { name: "受信トレイ", negated: false },
+      { name: "trash", negated: true },
+      { name: "仕事 2026", negated: false },
+    ]);
+    expect(isEmptySearch(parseSearchQuery("folder:受信トレイ"))).toBe(false);
+  });
+
+  it("役割は日本語の名前でも英語でも当てはまる", () => {
+    expect(rolesNamed("受信トレイ")).toEqual(["inbox"]);
+    expect(rolesNamed("trash")).toEqual(["trash"]);
+    expect(rolesNamed("仕事")).toEqual([]);
   });
 });
