@@ -23,8 +23,16 @@ export type SearchTerm = {
   negated: boolean;
 };
 
+/** folder: で指定したフォルダ (サーバーの検索と同じ決まり)。 */
+export type FolderTerm = {
+  /** 小文字にそろえた名前。 */
+  name: string;
+  negated: boolean;
+};
+
 export type ParsedSearch = {
   terms: SearchTerm[];
+  folders?: FolderTerm[];
   hasAttachment?: boolean;
   seen?: boolean;
   flagged?: boolean;
@@ -116,6 +124,13 @@ export function parseSearchQuery(input: string): ParsedSearch {
       addTerm(fieldOperators[key] as SearchField, value, negated);
       continue;
     }
+    if ((key === "folder" || key === "in") && value.trim() !== "") {
+      result.folders ??= [];
+      if (result.folders.length < MAX_SEARCH_TERMS) {
+        result.folders.push({ name: value.trim().toLowerCase(), negated });
+      }
+      continue;
+    }
     if (key === "has" && /^(attachment|attachments|添付)$/i.test(value)) {
       result.hasAttachment = !negated;
       continue;
@@ -184,6 +199,7 @@ export function buildSearch(
 export function isEmptySearch(search: ParsedSearch): boolean {
   return (
     search.terms.length === 0 &&
+    (search.folders?.length ?? 0) === 0 &&
     search.hasAttachment === undefined &&
     search.seen === undefined &&
     search.flagged === undefined &&
@@ -216,7 +232,44 @@ export type SearchDoc = {
   hasAttachments: boolean;
   seen: boolean;
   flagged: boolean;
+  /** メールのあるフォルダの、folder: で当てはまる名前 (小文字。folderNames で作る)。 */
+  folderNames?: readonly string[];
 };
+
+/** 受信トレイなどの役割の、アプリでの名前 (lib/mailboxes.ts の specialLabels と揃える)。 */
+const ROLE_LABELS: Record<string, string> = {
+  inbox: "受信トレイ",
+  flagged: "スター付き",
+  drafts: "下書き",
+  sent: "送信済み",
+  archive: "アーカイブ",
+  all: "すべてのメール",
+  junk: "迷惑メール",
+  trash: "ごみ箱",
+};
+
+/**
+ * folder: で当てはまるフォルダの名前。アプリでの表示名、役割の名前 (表示名が無いとき)、
+ * メールサーバー上の名前とパス (サーバーの検索と同じ決まり)。
+ */
+export function folderNames(mailbox: {
+  name: string;
+  path: string;
+  specialUse: string | null;
+  displayName?: string | null;
+}): string[] {
+  const names = [mailbox.name, mailbox.path];
+  if (mailbox.displayName) names.push(mailbox.displayName);
+  else if (mailbox.specialUse) {
+    names.push(mailbox.specialUse, ROLE_LABELS[mailbox.specialUse] ?? "");
+  }
+  return names.filter(Boolean).map((name) => name.toLowerCase());
+}
+
+/** folder: で、そのフォルダにあるメールを探しているか (ごみ箱なども探す範囲に入れる)。 */
+export function hasPositiveFolder(search: ParsedSearch): boolean {
+  return search.folders?.some((folder) => !folder.negated) ?? false;
+}
 
 function addressText(list: Address[]): string {
   return list
@@ -255,6 +308,10 @@ export function matchSearch(
   if (search.seen !== undefined && doc.seen !== search.seen) return null;
   if (search.flagged !== undefined && doc.flagged !== search.flagged) {
     return null;
+  }
+  for (const folder of search.folders ?? []) {
+    const found = doc.folderNames?.includes(folder.name) ?? false;
+    if (found === folder.negated) return null;
   }
   const received = Date.parse(doc.receivedAt);
   if (search.since && received < startOfDay(search.since)) return null;

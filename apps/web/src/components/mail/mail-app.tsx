@@ -2707,6 +2707,7 @@ const MailView = memo(function MailView({
     <SearchBox
       key={variant}
       variant={variant}
+      folders={mailboxes && accounts ? { mailboxes, accounts } : undefined}
       value={searchInput}
       onChange={setSearchInput}
       onSubmit={(text) => {
