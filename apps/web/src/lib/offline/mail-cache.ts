@@ -14,6 +14,8 @@ import type {
 } from "@/lib/api";
 import {
   buildSearch,
+  folderNames,
+  hasPositiveFolder,
   highlightTerms,
   isEmptySearch,
   matchSearch,
@@ -484,8 +486,16 @@ export class MailCache {
           ? row.mailboxId === params.mailboxId
           : mailbox?.specialUse === "inbox";
       }
+      // folder: で選んだフォルダは、ごみ箱や迷惑メールでも探す。
+      if (hasPositiveFolder(search)) return true;
       return mailbox?.specialUse !== "trash" && mailbox?.specialUse !== "junk";
     };
+    const namesOf = new Map(
+      [...mailboxes.values()].map((mailbox) => [
+        mailbox.id,
+        folderNames(mailbox),
+      ]),
+    );
     const preferred = params.scope === "folder" ? params.mailboxId : null;
     const rank = (mailboxId: string) =>
       mailboxId === preferred ? -1 : mailboxRank(mailboxes.get(mailboxId));
@@ -514,6 +524,7 @@ export class MailCache {
             hasAttachments: source.hasAttachments,
             seen: source.seen,
             flagged: source.flagged,
+            folderNames: namesOf.get(row.mailboxId) ?? [],
           },
           search,
         );
