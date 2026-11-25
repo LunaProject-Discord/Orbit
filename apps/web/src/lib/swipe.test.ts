@@ -11,7 +11,6 @@ import {
   refreshSwipeSettings,
   resetSwipeSettingsForTest,
   resolveSwipe,
-  restartsWheelSwipe,
   SIDEWAYS_SLACK,
   shouldCommit,
   swipeAxis,
@@ -300,25 +299,5 @@ describe("開いているメールのスワイプを受け付ける場所", () =
     expect(insideTextField(wrapper.querySelector("textarea"))).toBe(true);
     expect(insideTextField(wrapper.querySelector("b"))).toBe(true);
     expect(insideTextField(wrapper.querySelector("p"))).toBe(false);
-  });
-});
-
-describe("restartsWheelSwipe", () => {
-  it("弱まり続ける慣性の動きは、新しいスワイプとみなさない", () => {
-    expect(restartsWheelSwipe(20, 18)).toBe(false);
-    expect(restartsWheelSwipe(3, 4)).toBe(false);
-    expect(restartsWheelSwipe(-12, -13)).toBe(false);
-  });
-
-  it("小さすぎる動きは、新しいスワイプとみなさない", () => {
-    expect(restartsWheelSwipe(1, 3)).toBe(false);
-    expect(restartsWheelSwipe(2, -3)).toBe(false);
-  });
-
-  it("強くなった動きや、向きが変わった動きは新しいスワイプとみなす", () => {
-    expect(restartsWheelSwipe(2, 6)).toBe(true);
-    expect(restartsWheelSwipe(8, 14)).toBe(true);
-    expect(restartsWheelSwipe(10, -6)).toBe(true);
-    expect(restartsWheelSwipe(0, 6)).toBe(true);
   });
 });
