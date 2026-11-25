@@ -3213,9 +3213,6 @@ const MailView = memo(function MailView({
             unified={unified}
             selectedUnifiedId={unifiedId}
             onSelectUnified={handleSelectUnified}
-            onCreateUnified={() => openUnifiedDialog({ kind: "create" })}
-            onAddAccount={() => setAddOpen(true)}
-            onCreateCategory={() => categoryActions.onCreate()}
             outgoingCount={outgoing.length + queuedSends.length}
             outgoingFailed={
               outgoing.some((mail) => mail.status === "failed") ||
