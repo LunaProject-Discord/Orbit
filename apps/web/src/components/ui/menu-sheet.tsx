@@ -150,13 +150,16 @@ export function useSheetSwipe(onDismiss?: () => void, enabled = true) {
   useEffect(() => {
     if (!sheet || !enabled) return;
     let unregister: (() => void) | null = null;
+    const isOpen = () => sheet.isConnected && sheet.hasAttribute("data-open");
     const update = () => {
-      const open =
-        sheet.hasAttribute("data-open") &&
-        window.matchMedia(SHEET_QUERY).matches;
+      const open = isOpen() && window.matchMedia(SHEET_QUERY).matches;
       if (open && !unregister) {
         // アプリでは戻るボタンを listenBackButton が受け取るので、CloseWatcher は使わない。
-        unregister = registerSheetBack(() => back.current?.(), !isNativeApp());
+        unregister = registerSheetBack(
+          () => back.current?.(),
+          !isNativeApp(),
+          isOpen,
+        );
       } else if (!open && unregister) {
         unregister();
         unregister = null;

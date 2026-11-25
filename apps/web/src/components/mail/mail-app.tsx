@@ -226,6 +226,7 @@ import {
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { completeQuery } from "@/lib/search-input";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
+import { registerSheetBack } from "@/lib/sheet-back";
 import {
   isSelectAllKey,
   isTypingTarget,
@@ -307,6 +308,10 @@ const PAGE_SIZE = 50;
 const FOCUS_INTERVAL_MS = 30_000;
 /** 検索欄の入力が止まってから検索を始めるまでの時間。 */
 const SEARCH_DELAY_MS = 300;
+/** 表示を閉じて履歴を戻したあと、戻り終えた知らせ (popstate) を待つ長さ (ミリ秒)。 */
+const BACK_PENDING_TIMEOUT_MS = 1000;
+/** サイドバーを引き出して重ねる幅 (Tailwind の md 未満)。 */
+const DRAWER_QUERY = "(max-width: 767px)";
 const LIST_ERROR = "メールを読み込めませんでした。";
 const SEARCH_ERROR = "検索できませんでした。";
 const OFFLINE_LIST_ERROR =
@@ -755,8 +760,11 @@ const MailView = memo(function MailView({
   );
   /** true にすると、次の URL の更新は履歴に積まずに書き換える (無くなった表示の後始末など)。 */
   const replaceNextRef = useRef(false);
-  /** 履歴を 1 つ戻している途中。戻り終えるまで URL には触らない。 */
-  const backPendingRef = useRef(false);
+  /**
+   * 表示を閉じたので履歴を 1 つ戻している途中 (戻り先の URL)。戻り終えるまで URL には触らない。
+   * 戻り先と違う URL へ戻ったとき (利用者が戻るボタンを押したなど) は、その URL の表示に切り替える。
+   */
+  const backPendingRef = useRef<string | null>(null);
   /** 増やすと、表示と URL を照らし合わせ直す。 */
   const [routeSync, setRouteSync] = useState(0);
 
@@ -2303,6 +2311,13 @@ const MailView = memo(function MailView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sidebarOpen]);
 
+  // スマホ幅で引き出したサイドバーは、戻る操作 (Android の戻るボタンなど) で閉じる。
+  // 開いたままだと、後ろの画面が戻ってしまう。
+  useEffect(() => {
+    if (!sidebarOpen || !window.matchMedia(DRAWER_QUERY).matches) return;
+    return registerSheetBack(() => setSidebarOpen(false), !isNativeApp());
+  }, [sidebarOpen]);
+
   async function handleLoadMore() {
     if (!nextCursor || loadingMore) return;
     const request = listRequest.current;
@@ -2430,7 +2445,7 @@ const MailView = memo(function MailView({
   // 表示が変わったら URL に反映する。
   // biome-ignore lint/correctness/useExhaustiveDependencies: routeSync は照らし合わせ直すきっかけとして使う
   useEffect(() => {
-    if (backPendingRef.current) return;
+    if (backPendingRef.current !== null) return;
     const currentUrl = `${window.location.pathname}${window.location.search}`;
     const forceReplace = replaceNextRef.current;
     replaceNextRef.current = false;
@@ -2442,8 +2457,15 @@ const MailView = memo(function MailView({
     if (mode === "close") {
       if (from === routeUrl) {
         // 開く前の表示が 1 つ前の履歴にあるので、そこへ戻る。
-        backPendingRef.current = true;
+        backPendingRef.current = routeUrl;
         window.history.back();
+        // 戻り終えた知らせ (popstate) が来なければ、待つのをやめて照らし合わせ直す。
+        // 待ったままだと URL が更新されず、次に戻るボタンを押しても戻れなくなる。
+        window.setTimeout(() => {
+          if (backPendingRef.current !== routeUrl) return;
+          backPendingRef.current = null;
+          setRouteSync((count) => count + 1);
+        }, BACK_PENDING_TIMEOUT_MS);
         return;
       }
       mode = "replace";
@@ -2503,15 +2525,15 @@ const MailView = memo(function MailView({
   };
   useEffect(() => {
     const onPopState = () => {
-      if (backPendingRef.current) {
+      const url = `${window.location.pathname}${window.location.search}`;
+      const pending = backPendingRef.current;
+      backPendingRef.current = null;
+      if (pending === url) {
         // 自分で戻した分。表示はすでに変えてあるので、URL と合っているかだけ確かめる。
-        backPendingRef.current = false;
         setRouteSync((count) => count + 1);
         return;
       }
-      applyRouteRef.current(
-        parseRoute(`${window.location.pathname}${window.location.search}`),
-      );
+      applyRouteRef.current(parseRoute(url));
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
