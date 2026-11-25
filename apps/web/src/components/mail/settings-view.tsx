@@ -9,6 +9,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   Clock3Icon,
+  InfoIcon,
   ListIcon,
   LogOutIcon,
   type LucideIcon,
@@ -32,6 +33,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
+import { AboutSettings } from "@/components/mail/about-settings";
 import {
   AccountServerDialog,
   canEditServer,
@@ -257,6 +259,13 @@ const CATEGORIES: Record<
       "メールはサーバーが常に同期し、既読や移動などの操作はすべての端末に反映されます。",
     icon: RefreshCwIcon,
   },
+  about: {
+    label: "バージョン情報",
+    summary: "アプリと画面の版、画面の更新",
+    description:
+      "アプリと画面の版、接続先のサーバーを確認します。アプリでは、新しい画面の取得もここで確認できます。",
+    icon: InfoIcon,
+  },
 };
 
 /** 広い画面で、ページを選んでいないときに出すページ。 */
@@ -451,6 +460,8 @@ function SettingsPage({
       return <InvitationSettings user={props.user} />;
     case "system":
       return <SystemPage {...props} />;
+    case "about":
+      return <AboutSettings />;
   }
 }
 

@@ -11,6 +11,7 @@ mod toast;
 mod toast_xml;
 mod tray;
 mod updater;
+mod web_bundle;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -274,7 +275,13 @@ pub fn run() {
             set_unread_count,
             open_window,
             fonts::list_fonts,
-            system_menu::show_system_menu
+            system_menu::show_system_menu,
+            web_bundle::app_update_info,
+            web_bundle::app_update_fetch_manifest,
+            web_bundle::app_update_download,
+            web_bundle::app_update_ready,
+            web_bundle::app_update_apply,
+            web_bundle::app_update_reset
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -345,7 +352,13 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build({
+            // 画面は、取得した新しい版があればそちらから配信する (src/web_bundle.rs)。
+            let mut context = tauri::generate_context!();
+            let embedded = context.set_assets(Box::new(web_bundle::Empty));
+            context.set_assets(Box::new(web_bundle::OverlayAssets::new(embedded)));
+            context
+        })
         .expect("Orbit Mail を起動できませんでした");
 
     app.run(|app, event| match event {

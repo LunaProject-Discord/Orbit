@@ -3,7 +3,8 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**", "out/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**", "out/**"],
+      "env": ["BUILD_VERSION", "APP_UPDATE_SIGNING_KEY"]
     },
     "typecheck": {
       "dependsOn": ["^build"]

@@ -6,6 +6,7 @@ import "gen-interface-jp/700.css";
 import "gen-interface-jp/display-600.css";
 import "gen-interface-jp/display-700.css";
 import "./globals.css";
+import { AppUpdateBoot } from "@/components/app-update-boot";
 import { AuthGate, AuthProvider } from "@/components/auth-provider";
 import { DesktopBoot } from "@/components/desktop/desktop-boot";
 import { DesktopTextContextMenu } from "@/components/desktop/text-context-menu";
@@ -58,6 +59,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Toaster />
           </AuthProvider>
         </ThemeProvider>
+        <AppUpdateBoot />
       </body>
     </html>
   );

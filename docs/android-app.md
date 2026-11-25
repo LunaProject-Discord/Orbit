@@ -39,6 +39,8 @@ Orbit Mail の Android アプリ (`apps/mobile`) のビルド、プッシュ通�
 
 接続先を変えたいときは、リポジトリの **Settings → Secrets and variables → Actions → Variables** に `MOBILE_SERVER_URL` (例: `https://orbit.lunaproject.jp`) を登録します。
 
+画面 (Web の部分) だけの変更は、[画面の自動更新](app-update.md) を準備しておけば、サーバーを更新するだけでアプリにも届きます。
+
 ## 2. プッシュ通知 (Firebase) の準備
 
 Firebase のプロジェクトは無料で作れます。作業は Google アカウントでログインして行います。
