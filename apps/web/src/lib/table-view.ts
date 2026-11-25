@@ -32,6 +32,8 @@ export type TableViewSettings = {
   sort: ListSort;
   /** 広い画面で、一覧 (左) とメールの表示 (右) を並べるときの一覧の幅 (px)。 */
   paneWidth: number;
+  /** メールの表示を一覧の下に置くときの一覧の高さ (px)。 */
+  paneHeight: number;
 };
 
 /** 列の名前と、幅の下限・上限。 */
@@ -92,11 +94,14 @@ export const DEFAULT_COLUMNS: TableColumn[] = [
 
 export const MIN_PANE_WIDTH = 420;
 export const DEFAULT_PANE_WIDTH = 800;
+export const MIN_PANE_HEIGHT = 160;
+export const DEFAULT_PANE_HEIGHT = 360;
 
 export const DEFAULT_TABLE_VIEW: TableViewSettings = {
   columns: DEFAULT_COLUMNS,
   sort: DEFAULT_SORT,
   paneWidth: DEFAULT_PANE_WIDTH,
+  paneHeight: DEFAULT_PANE_HEIGHT,
 };
 
 const KEY = "mail.table-view.v1";
@@ -169,7 +174,12 @@ export function parseTableView(raw: string | null): TableViewSettings {
       ? clamp(value.paneWidth, MIN_PANE_WIDTH, 4000)
       : DEFAULT_PANE_WIDTH;
 
-  return { columns, sort, paneWidth };
+  const paneHeight =
+    typeof value.paneHeight === "number" && Number.isFinite(value.paneHeight)
+      ? clamp(value.paneHeight, MIN_PANE_HEIGHT, 4000)
+      : DEFAULT_PANE_HEIGHT;
+
+  return { columns, sort, paneWidth, paneHeight };
 }
 
 const listeners = new Set<() => void>();

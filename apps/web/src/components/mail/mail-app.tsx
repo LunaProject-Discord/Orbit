@@ -6,6 +6,8 @@ import {
   LayoutListIcon,
   ListChecksIcon,
   MenuIcon,
+  PanelBottomIcon,
+  PanelRightIcon,
   PenSquareIcon,
   PlusIcon,
   SearchIcon,
@@ -261,6 +263,7 @@ import {
 } from "@/lib/swipe";
 import { deviceId, syncStatusOf } from "@/lib/sync-status";
 import {
+  MIN_PANE_HEIGHT,
   MIN_PANE_WIDTH,
   updateTableView,
   useTableView,
@@ -579,6 +582,8 @@ const MailView = memo(function MailView({
   } | null>(null);
   /** 検索欄を置く場所を決める画面の幅。 */
   const wide = useMediaQuery("(min-width: 1024px)");
+  /** 開いたメールを一覧の下に表示する (広い画面で、設定で「下」を選んだとき)。 */
+  const messageBelow = wide && preferences.readingPane === "bottom";
   const medium = useMediaQuery("(min-width: 768px)");
   const tableView = useTableView();
   /** 一覧をテーブル表示で出しているか。狭い画面 (幅 768px 未満) ではカード表示にする。 */
@@ -3423,378 +3428,446 @@ const MailView = memo(function MailView({
             }
           />
         )}
-        <section
-          aria-label="メール一覧"
-          {...{ [SELECT_ALL_SCOPE_ATTRIBUTE]: "" }}
+        {/* 一覧とメールの表示。広い画面では横に並べるか、設定で上下に並べる。 */}
+        <div
           className={cn(
-            "@container/pane relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:w-96 lg:flex-none lg:border-r",
-            selectedMessageId ? "hidden" : "flex",
-            (settingsOpen || standaloneMessage) && "hidden!",
+            "flex min-h-0 min-w-0 flex-1",
+            messageBelow && "flex-col",
+            settingsOpen && "hidden",
           )}
-          // テーブル表示では、一覧の幅を右端のつまみで変えられる (メールの表示と並べる広い画面)。
-          style={
-            tableShown && wide
-              ? {
-                  width: tableView.paneWidth,
-                  minWidth: MIN_PANE_WIDTH,
-                  maxWidth: "calc(100vw - 40rem)",
-                }
-              : undefined
-          }
         >
-          {tableShown && wide && (
-            <PaneResizer
-              width={tableView.paneWidth}
-              onChange={(paneWidth) => updateTableView({ paneWidth })}
-            />
-          )}
-          <div className="flex shrink-0 flex-col">
-            {selecting ? (
-              <SelectionToolbar
-                rows={checkedRows}
-                total={messages?.length ?? 0}
-                mailbox={selectedMailbox}
-                junkAvailable={junkAvailable(checkedRows)}
-                moveRequest={bulkMoveRequest}
-                onAction={performBulk}
-                permanentDelete={
-                  checkedRows.length > 0 &&
-                  splitForDelete(checkedRows, mailboxes ?? []).toTrash
-                    .length === 0
-                }
-                onDelete={(skipConfirm) => deleteRows(checkedRows, skipConfirm)}
-                onSelectAll={(checked) =>
-                  setCheckedIds(
-                    new Set(
-                      checked
-                        ? (messages ?? []).map((message) => message.id)
-                        : [],
-                    ),
-                  )
-                }
-                onClose={clearSelection}
-              />
-            ) : showSearch && !medium && (searchScreen || searching) ? (
-              // スマホの検索画面。アプリバーを検索欄にする。
-              <header className="flex h-14 shrink-0 items-center border-b px-4">
-                {searchBox("screen")}
-              </header>
-            ) : (
-              <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-                {menuButton("-ml-2 pointer-coarse:-ml-2.5")}
-                <h1 className="min-w-0 shrink truncate font-semibold text-lg">
-                  {heading}
-                </h1>
-                <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-                  {headingNote}
-                </p>
-                <SyncIndicator
-                  status={syncStatus}
-                  short
-                  className="shrink-0 md:hidden"
-                />
-                {/* 一覧だけを出す幅では、検索欄を一覧の見出しの右に置く。 */}
-                {showSearch &&
-                  medium &&
-                  !wide &&
-                  !selectedMessageId &&
-                  searchBox("popup")}
-                {medium && !draftsSelected && special !== "outgoing" && (
-                  <Hint
-                    label={
-                      tableShown
-                        ? "カード表示に切り替え"
-                        : "テーブル表示に切り替え"
+          <section
+            aria-label="メール一覧"
+            {...{ [SELECT_ALL_SCOPE_ATTRIBUTE]: "" }}
+            className={cn(
+              "@container/pane relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:flex-none",
+              messageBelow ? "lg:border-b" : "lg:w-96 lg:border-r",
+              selectedMessageId ? "hidden" : "flex",
+              (settingsOpen || standaloneMessage) && "hidden!",
+            )}
+            // 一覧の大きさは、メールの表示との境目のつまみで変えられる。右に並べるときは
+            // テーブル表示のときだけ幅を、下に並べるときは高さを変える。
+            style={
+              messageBelow
+                ? {
+                    height: tableView.paneHeight,
+                    minHeight: MIN_PANE_HEIGHT,
+                    maxHeight: "calc(100% - 10rem)",
+                  }
+                : tableShown && wide
+                  ? {
+                      width: tableView.paneWidth,
+                      minWidth: MIN_PANE_WIDTH,
+                      maxWidth: "calc(100vw - 40rem)",
                     }
-                  >
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={
+                  : undefined
+            }
+          >
+            {messageBelow ? (
+              <PaneResizer
+                direction="vertical"
+                size={tableView.paneHeight}
+                min={MIN_PANE_HEIGHT}
+                onChange={(paneHeight) => updateTableView({ paneHeight })}
+              />
+            ) : (
+              tableShown &&
+              wide && (
+                <PaneResizer
+                  direction="horizontal"
+                  size={tableView.paneWidth}
+                  min={MIN_PANE_WIDTH}
+                  onChange={(paneWidth) => updateTableView({ paneWidth })}
+                />
+              )
+            )}
+            <div className="flex shrink-0 flex-col">
+              {selecting ? (
+                <SelectionToolbar
+                  rows={checkedRows}
+                  total={messages?.length ?? 0}
+                  mailbox={selectedMailbox}
+                  junkAvailable={junkAvailable(checkedRows)}
+                  moveRequest={bulkMoveRequest}
+                  onAction={performBulk}
+                  permanentDelete={
+                    checkedRows.length > 0 &&
+                    splitForDelete(checkedRows, mailboxes ?? []).toTrash
+                      .length === 0
+                  }
+                  onDelete={(skipConfirm) =>
+                    deleteRows(checkedRows, skipConfirm)
+                  }
+                  onSelectAll={(checked) =>
+                    setCheckedIds(
+                      new Set(
+                        checked
+                          ? (messages ?? []).map((message) => message.id)
+                          : [],
+                      ),
+                    )
+                  }
+                  onClose={clearSelection}
+                />
+              ) : showSearch && !medium && (searchScreen || searching) ? (
+                // スマホの検索画面。アプリバーを検索欄にする。
+                <header className="flex h-14 shrink-0 items-center border-b px-4">
+                  {searchBox("screen")}
+                </header>
+              ) : (
+                <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+                  {menuButton("-ml-2 pointer-coarse:-ml-2.5")}
+                  <h1 className="min-w-0 shrink truncate font-semibold text-lg">
+                    {heading}
+                  </h1>
+                  <p className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+                    {headingNote}
+                  </p>
+                  <SyncIndicator
+                    status={syncStatus}
+                    short
+                    className="shrink-0 md:hidden"
+                  />
+                  {/* 一覧だけを出す幅では、検索欄を一覧の見出しの右に置く。 */}
+                  {/* メールを下に表示するときも、検索欄は一覧の見出しに置く。 */}
+                  {showSearch &&
+                    medium &&
+                    (messageBelow || (!wide && !selectedMessageId)) &&
+                    searchBox("popup")}
+                  {wide && !draftsSelected && special !== "outgoing" && (
+                    <Hint
+                      label={
+                        messageBelow
+                          ? "メールを一覧の右に表示"
+                          : "メールを一覧の下に表示"
+                      }
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={
+                          messageBelow
+                            ? "メールを一覧の右に表示"
+                            : "メールを一覧の下に表示"
+                        }
+                        onClick={() =>
+                          updatePreferences({
+                            readingPane: messageBelow ? "right" : "bottom",
+                          })
+                        }
+                      >
+                        {messageBelow ? (
+                          <PanelRightIcon />
+                        ) : (
+                          <PanelBottomIcon />
+                        )}
+                      </Button>
+                    </Hint>
+                  )}
+                  {medium && !draftsSelected && special !== "outgoing" && (
+                    <Hint
+                      label={
                         tableShown
                           ? "カード表示に切り替え"
                           : "テーブル表示に切り替え"
                       }
-                      onClick={() =>
-                        updatePreferences({
-                          listLayout: tableShown ? "cards" : "table",
-                        })
-                      }
                     >
-                      {tableShown ? <LayoutListIcon /> : <Table2Icon />}
-                    </Button>
-                  </Hint>
-                )}
-                {!draftsSelected &&
-                  special !== "outgoing" &&
-                  (messages?.length ?? 0) > 0 && (
-                    <Hint label="メールを選択" shortcut="X">
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label="メールを選択"
-                        onClick={() => setSelectMode(true)}
-                        // タッチ操作ではボタンが大きくなるので、アイコンの右端が一覧の右端に揃うよう寄せる。
-                        className={cn(
-                          !(showSearch && !medium) &&
-                            "-mr-2 pointer-coarse:-mr-2.5",
-                        )}
+                        aria-label={
+                          tableShown
+                            ? "カード表示に切り替え"
+                            : "テーブル表示に切り替え"
+                        }
+                        onClick={() =>
+                          updatePreferences({
+                            listLayout: tableShown ? "cards" : "table",
+                          })
+                        }
                       >
-                        <ListChecksIcon />
+                        {tableShown ? <LayoutListIcon /> : <Table2Icon />}
                       </Button>
                     </Hint>
                   )}
-                {/* スマホでは、検索は別の画面で行う。 */}
-                {showSearch && !medium && (
-                  <Hint label="検索" shortcut="/">
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="検索"
-                      onClick={openSearchScreen}
-                      className="-mr-2 pointer-coarse:-mr-2.5"
-                    >
-                      <SearchIcon />
-                    </Button>
-                  </Hint>
-                )}
-              </header>
-            )}
-            {showSearch && searching && search && (
-              <SearchScope
-                value={search}
-                onChange={(next) => {
-                  setSearchInput(next);
-                  setSearch(next);
-                }}
-                folderLabel={
-                  selectedMailbox || selectedUnified ? title : "受信トレイ"
-                }
-                className="border-b px-4 py-2"
-              />
-            )}
-          </div>
-          {/* 送信できなかったメールは、どの一覧を見ていても知らせる。送信中のものは「送信待ち」に出す。 */}
-          {special !== "outgoing" && (
-            <OutgoingList
-              outgoing={outgoing.filter((mail) => mail.status === "failed")}
-              queued={queuedSends.filter((item) => item.error !== null)}
-              online={online}
-              onEdit={handleEditOutgoing}
-              onRemove={handleRemoveOutgoing}
-              onEditQueued={handleEditQueued}
-              onRemoveQueued={handleRemoveQueued}
-            />
-          )}
-          {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
-              枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
-          {/* 外側の枠は、引っ張って更新する印 (PullToRefresh) をスクロールさせずに置くためのもの。 */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            <PullToRefresh
-              scrollRef={listScrollRef}
-              onRefresh={handlePullRefresh}
-              disabled={noAccounts || selecting}
-            />
-            <div
-              ref={listScrollRef}
-              className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain"
-            >
-              {noAccounts ? (
-                <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-                  <InboxIcon
-                    className="size-10 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <div className="flex flex-col gap-1">
-                    <h2 className="font-semibold text-lg">
-                      メールアカウントを追加しましょう
-                    </h2>
-                    <p className="text-muted-foreground text-sm">
-                      アカウントを追加すると、ここに受信トレイが表示されます。
-                    </p>
-                  </div>
-                  <Button onClick={() => setAddOpen(true)}>
-                    <PlusIcon />
-                    アカウントを追加
-                  </Button>
-                </div>
-              ) : special === "outgoing" ? (
-                <OutgoingList
-                  full
-                  outgoing={outgoing}
-                  queued={queuedSends}
-                  online={online}
-                  onEdit={handleEditOutgoing}
-                  onRemove={handleRemoveOutgoing}
-                  onEditQueued={handleEditQueued}
-                  onRemoveQueued={handleRemoveQueued}
-                />
-              ) : draftsSelected ? (
-                <DraftList
-                  drafts={visibleDrafts}
-                  accounts={accounts ?? []}
-                  openId={draft?.idempotencyKey ?? null}
-                  onOpen={handleOpenDraft}
-                  onDiscard={(item) => handleDiscardDraft(item.id)}
-                />
-              ) : (
-                <MessageList
-                  ref={messageListRef}
-                  layout={tableShown ? "table" : "cards"}
-                  sort={listSort}
-                  scrollRef={listScrollRef}
-                  onPrefetch={handlePrefetch}
-                  onWarm={handleWarm}
-                  messages={messages}
-                  error={listError}
-                  selectedId={
-                    isSingle ? null : (selectedMessage?.id ?? selectedMessageId)
+                  {!draftsSelected &&
+                    special !== "outgoing" &&
+                    (messages?.length ?? 0) > 0 && (
+                      <Hint label="メールを選択" shortcut="X">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="メールを選択"
+                          onClick={() => setSelectMode(true)}
+                          // タッチ操作ではボタンが大きくなるので、アイコンの右端が一覧の右端に揃うよう寄せる。
+                          className={cn(
+                            !(showSearch && !medium) &&
+                              "-mr-2 pointer-coarse:-mr-2.5",
+                          )}
+                        >
+                          <ListChecksIcon />
+                        </Button>
+                      </Hint>
+                    )}
+                  {/* スマホでは、検索は別の画面で行う。 */}
+                  {showSearch && !medium && (
+                    <Hint label="検索" shortcut="/">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="検索"
+                        onClick={openSearchScreen}
+                        className="-mr-2 pointer-coarse:-mr-2.5"
+                      >
+                        <SearchIcon />
+                      </Button>
+                    </Hint>
+                  )}
+                </header>
+              )}
+              {showSearch && searching && search && (
+                <SearchScope
+                  value={search}
+                  onChange={(next) => {
+                    setSearchInput(next);
+                    setSearch(next);
+                  }}
+                  folderLabel={
+                    selectedMailbox || selectedUnified ? title : "受信トレイ"
                   }
-                  selectedChild={
-                    isSingle && selectedMessage && selectedMessageId
-                      ? { rowId: selectedMessage.id, id: selectedMessageId }
-                      : null
-                  }
-                  expandedIds={expandedIds}
-                  threadRows={threadRows}
-                  onToggleExpand={handleToggleExpand}
-                  onSelectChild={handleSelectChild}
-                  checkedIds={checkedIds}
-                  selecting={selecting}
-                  onToggleCheck={handleToggleCheck}
-                  onBandSelect={handleBandSelect}
-                  swipeFor={swipeFor}
-                  onSwipeMove={setMoveTarget}
-                  hasMore={nextCursor !== null}
-                  loadingMore={loadingMore}
-                  showRecipients={
-                    !searching &&
-                    (selectedUnified
-                      ? unifiedShowsRecipients
-                      : showsRecipients(selectedMailbox))
-                  }
-                  {...(accountMark ? { accountMark } : {})}
-                  {...(starred
-                    ? {
-                        emptyText:
-                          "スターを付けたメールはありません。スターを付けたメールは、どのフォルダにあってもここに表示されます。",
-                        locationLabel,
-                      }
-                    : searching
-                      ? {
-                          emptyText: "条件に合うメールは見つかりませんでした。",
-                          highlightTerms: searchTerms,
-                          locationLabel,
-                        }
-                      : selectedUnified
-                        ? {
-                            emptyText:
-                              "この統合フォルダの条件に当てはまるメールはありません。",
-                            locationLabel,
-                          }
-                        : selectedMailbox?.lastSyncedAt
-                          ? { emptyText: "このフォルダにメールはありません。" }
-                          : {})}
-                  onSelect={handleSelectMessage}
-                  onAction={requestAction}
-                  onSelectionAction={handleSelectionMenuAction}
-                  onOpenWindow={
-                    canOpenWindows() ? openMessageWindow : undefined
-                  }
-                  onLoadMore={() => void handleLoadMore()}
-                  onRetry={() => void loadFirstPage(selectionRef.current, true)}
+                  className="border-b px-4 py-2"
                 />
               )}
             </div>
-          </div>
-          {canCompose && !composeOpen && !selecting && (
-            <Button
-              onClick={handleNewMail}
-              className="absolute right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg md:hidden [&_svg]:size-5"
-            >
-              <PenSquareIcon />
-              作成
-            </Button>
-          )}
-        </section>
-
-        <section
-          aria-label="メールの内容"
-          className={cn(
-            "@container/pane relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
-            selectedMessageId ? "flex" : "hidden",
-            settingsOpen && "hidden!",
-          )}
-        >
-          {selectedMessageId ? (
-            <MessageView
-              standalone={standaloneMessage}
-              messageId={selectedMessageId}
-              refreshKey={refreshKey}
-              single={isSingle}
-              onShowThread={() =>
-                handleSelectMessage(selectedMessage?.id ?? selectedMessageId)
-              }
-              summary={selectedMessage}
-              accounts={accounts ?? []}
-              mailboxes={mailboxes ?? []}
-              onAction={requestAction}
-              moveRequest={moveRequest}
-              composeRequest={composeRequest}
-              onCompose={handleCompose}
-              onQuickReply={handleQuickReply}
-              onSearchAddress={handleSearchAddress}
-              onComposeTo={handleComposeTo}
-              signatureRules={signatureRules}
-              onContactSignature={(address, accountId) =>
-                setSignatureTarget({
-                  kind: "contact",
-                  address,
-                  rule: findContactRule(signatureRules, address.address),
-                  fallbackHtml: accountSignature(accountId),
-                })
-              }
-              onThreadSignature={(thread) =>
-                setSignatureTarget({
-                  kind: "thread",
-                  ...thread,
-                  rule: findThreadRule(
-                    signatureRules,
-                    thread.accountId,
-                    thread.threadKey,
-                  ),
-                  fallbackHtml: accountSignature(thread.accountId),
-                })
-              }
-              onBack={() => setSelectedMessageId(null)}
-              onStep={handleStep}
-              // メール専用のウィンドウでは、ほかのメールへは移らない (消したら閉じる)。
-              canStep={
-                standaloneMessage ? { previous: false, next: false } : canStep
-              }
-              onMissing={handleMissing}
-              toolbarEnd={
-                showSearch && medium && !standaloneMessage
-                  ? searchBox("popup")
-                  : undefined
-              }
-              findRequest={findRequest}
-            />
-          ) : (
-            <>
-              {showSearch && wide && (
-                <div className="flex h-14 shrink-0 items-center justify-end border-b px-4">
-                  {searchBox("popup")}
-                </div>
-              )}
-              <div className="flex flex-1 items-center justify-center p-8">
-                <p className="text-muted-foreground text-sm">
-                  メールを選ぶと、ここに内容が表示されます。
-                </p>
+            {/* 送信できなかったメールは、どの一覧を見ていても知らせる。送信中のものは「送信待ち」に出す。 */}
+            {special !== "outgoing" && (
+              <OutgoingList
+                outgoing={outgoing.filter((mail) => mail.status === "failed")}
+                queued={queuedSends.filter((item) => item.error !== null)}
+                online={online}
+                onEdit={handleEditOutgoing}
+                onRemove={handleRemoveOutgoing}
+                onEditQueued={handleEditQueued}
+                onRemoveQueued={handleRemoveQueued}
+              />
+            )}
+            {/* relative: 読み上げ専用の文言 (sr-only) は絶対配置なので、基準をこの枠にしないと
+              枠の外にはみ出した扱いになり、ページ全体がスクロールできてしまう。 */}
+            {/* 外側の枠は、引っ張って更新する印 (PullToRefresh) をスクロールさせずに置くためのもの。 */}
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+              <PullToRefresh
+                scrollRef={listScrollRef}
+                onRefresh={handlePullRefresh}
+                disabled={noAccounts || selecting}
+              />
+              <div
+                ref={listScrollRef}
+                className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain"
+              >
+                {noAccounts ? (
+                  <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+                    <InboxIcon
+                      className="size-10 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <div className="flex flex-col gap-1">
+                      <h2 className="font-semibold text-lg">
+                        メールアカウントを追加しましょう
+                      </h2>
+                      <p className="text-muted-foreground text-sm">
+                        アカウントを追加すると、ここに受信トレイが表示されます。
+                      </p>
+                    </div>
+                    <Button onClick={() => setAddOpen(true)}>
+                      <PlusIcon />
+                      アカウントを追加
+                    </Button>
+                  </div>
+                ) : special === "outgoing" ? (
+                  <OutgoingList
+                    full
+                    outgoing={outgoing}
+                    queued={queuedSends}
+                    online={online}
+                    onEdit={handleEditOutgoing}
+                    onRemove={handleRemoveOutgoing}
+                    onEditQueued={handleEditQueued}
+                    onRemoveQueued={handleRemoveQueued}
+                  />
+                ) : draftsSelected ? (
+                  <DraftList
+                    drafts={visibleDrafts}
+                    accounts={accounts ?? []}
+                    openId={draft?.idempotencyKey ?? null}
+                    onOpen={handleOpenDraft}
+                    onDiscard={(item) => handleDiscardDraft(item.id)}
+                  />
+                ) : (
+                  <MessageList
+                    ref={messageListRef}
+                    layout={tableShown ? "table" : "cards"}
+                    sort={listSort}
+                    scrollRef={listScrollRef}
+                    onPrefetch={handlePrefetch}
+                    onWarm={handleWarm}
+                    messages={messages}
+                    error={listError}
+                    selectedId={
+                      isSingle
+                        ? null
+                        : (selectedMessage?.id ?? selectedMessageId)
+                    }
+                    selectedChild={
+                      isSingle && selectedMessage && selectedMessageId
+                        ? { rowId: selectedMessage.id, id: selectedMessageId }
+                        : null
+                    }
+                    expandedIds={expandedIds}
+                    threadRows={threadRows}
+                    onToggleExpand={handleToggleExpand}
+                    onSelectChild={handleSelectChild}
+                    checkedIds={checkedIds}
+                    selecting={selecting}
+                    onToggleCheck={handleToggleCheck}
+                    onBandSelect={handleBandSelect}
+                    swipeFor={swipeFor}
+                    onSwipeMove={setMoveTarget}
+                    hasMore={nextCursor !== null}
+                    loadingMore={loadingMore}
+                    showRecipients={
+                      !searching &&
+                      (selectedUnified
+                        ? unifiedShowsRecipients
+                        : showsRecipients(selectedMailbox))
+                    }
+                    {...(accountMark ? { accountMark } : {})}
+                    {...(starred
+                      ? {
+                          emptyText:
+                            "スターを付けたメールはありません。スターを付けたメールは、どのフォルダにあってもここに表示されます。",
+                          locationLabel,
+                        }
+                      : searching
+                        ? {
+                            emptyText:
+                              "条件に合うメールは見つかりませんでした。",
+                            highlightTerms: searchTerms,
+                            locationLabel,
+                          }
+                        : selectedUnified
+                          ? {
+                              emptyText:
+                                "この統合フォルダの条件に当てはまるメールはありません。",
+                              locationLabel,
+                            }
+                          : selectedMailbox?.lastSyncedAt
+                            ? {
+                                emptyText: "このフォルダにメールはありません。",
+                              }
+                            : {})}
+                    onSelect={handleSelectMessage}
+                    onAction={requestAction}
+                    onSelectionAction={handleSelectionMenuAction}
+                    onOpenWindow={
+                      canOpenWindows() ? openMessageWindow : undefined
+                    }
+                    onLoadMore={() => void handleLoadMore()}
+                    onRetry={() =>
+                      void loadFirstPage(selectionRef.current, true)
+                    }
+                  />
+                )}
               </div>
-            </>
-          )}
-        </section>
+            </div>
+            {canCompose && !composeOpen && !selecting && (
+              <Button
+                onClick={handleNewMail}
+                className="absolute right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg md:hidden [&_svg]:size-5"
+              >
+                <PenSquareIcon />
+                作成
+              </Button>
+            )}
+          </section>
+
+          <section
+            aria-label="メールの内容"
+            className={cn(
+              "@container/pane relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
+              selectedMessageId ? "flex" : "hidden",
+              settingsOpen && "hidden!",
+            )}
+          >
+            {selectedMessageId ? (
+              <MessageView
+                standalone={standaloneMessage}
+                messageId={selectedMessageId}
+                refreshKey={refreshKey}
+                single={isSingle}
+                onShowThread={() =>
+                  handleSelectMessage(selectedMessage?.id ?? selectedMessageId)
+                }
+                summary={selectedMessage}
+                accounts={accounts ?? []}
+                mailboxes={mailboxes ?? []}
+                onAction={requestAction}
+                moveRequest={moveRequest}
+                composeRequest={composeRequest}
+                onCompose={handleCompose}
+                onQuickReply={handleQuickReply}
+                onSearchAddress={handleSearchAddress}
+                onComposeTo={handleComposeTo}
+                signatureRules={signatureRules}
+                onContactSignature={(address, accountId) =>
+                  setSignatureTarget({
+                    kind: "contact",
+                    address,
+                    rule: findContactRule(signatureRules, address.address),
+                    fallbackHtml: accountSignature(accountId),
+                  })
+                }
+                onThreadSignature={(thread) =>
+                  setSignatureTarget({
+                    kind: "thread",
+                    ...thread,
+                    rule: findThreadRule(
+                      signatureRules,
+                      thread.accountId,
+                      thread.threadKey,
+                    ),
+                    fallbackHtml: accountSignature(thread.accountId),
+                  })
+                }
+                onBack={() => setSelectedMessageId(null)}
+                onStep={handleStep}
+                // メール専用のウィンドウでは、ほかのメールへは移らない (消したら閉じる)。
+                canStep={
+                  standaloneMessage ? { previous: false, next: false } : canStep
+                }
+                onMissing={handleMissing}
+                toolbarEnd={
+                  showSearch && medium && !standaloneMessage && !messageBelow
+                    ? searchBox("popup")
+                    : undefined
+                }
+                findRequest={findRequest}
+              />
+            ) : (
+              <>
+                {showSearch && wide && !messageBelow && (
+                  <div className="flex h-14 shrink-0 items-center justify-end border-b px-4">
+                    {searchBox("popup")}
+                  </div>
+                )}
+                <div className="flex flex-1 items-center justify-center p-8">
+                  <p className="text-muted-foreground text-sm">
+                    メールを選ぶと、ここに内容が表示されます。
+                  </p>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
       </main>
 
       <AddAccountDialog

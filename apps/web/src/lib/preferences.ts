@@ -27,6 +27,11 @@ export type Preferences = {
    * table は一覧に十分な幅がある画面 (幅 768px 以上) でだけ使い、狭い画面ではカードにする。
    */
   listLayout: "cards" | "table";
+  /**
+   * 広い画面 (幅 1024px 以上) で、開いたメールを一覧の右と下のどちらに表示するか。
+   * 狭い画面では、どちらでも一覧と入れ替わる。
+   */
+  readingPane: "right" | "bottom";
   /** メール一覧の行の間隔。 */
   density: "compact" | "standard" | "comfortable";
   /** メール一覧に出す本文の行数。0 なら出さない。 */
@@ -85,6 +90,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   monoFont: "",
   fontSize: 100,
   listLayout: "cards",
+  readingPane: "right",
   density: "standard",
   previewLines: 2,
   showAccountMark: true,
@@ -118,6 +124,7 @@ const choices: {
   font: ["default", "system", "sans", "serif", "mono", "custom"],
   fontSize: FONT_SIZES,
   listLayout: ["cards", "table"],
+  readingPane: ["right", "bottom"],
   density: ["compact", "standard", "comfortable"],
   previewLines: [0, 1, 2, 3],
   accountMarkStyle: ["icon", "dot"],
