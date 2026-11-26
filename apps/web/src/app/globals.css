@@ -63,6 +63,11 @@
     --titlebar-height: 2.25rem;
   }
 
+  /* Windows 11 の枠のキャプションボタンと同じ高さ (32px)。 */
+  html[data-desktop="windows"] {
+    --titlebar-height: 2rem;
+  }
+
   /*
    * デスクトップ版では、端までスクロールしたときに画面全体が弾む (バウンスする) 動きを止める。
    * Windows (WebView2) はアプリ側でも ElasticOverscroll を切っている (apps/desktop/src-tauri/tauri.conf.json)。
