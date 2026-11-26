@@ -21,6 +21,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AppShellPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
         super.onCreate(savedInstanceState);
+        // ブラウザー標準の自動入力は出さない (パスワード欄がある間だけ、画面側から許す)。
+        AppAutofill.apply(getBridge().getWebView(), false);
     }
 
     @Override

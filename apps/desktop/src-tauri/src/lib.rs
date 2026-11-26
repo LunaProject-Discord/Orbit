@@ -243,6 +243,10 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
         // 右クリックメニューの「貼り付け」で、確認なしにクリップボードを読めるようにする
         // (WebView の標準のメニューは画面側で止め、アプリのメニューを出している)。
         .enable_clipboard_access()
+        // ブラウザー標準の自動入力 (以前に入力した値の候補) を出さない。WebView2 は autocomplete="off" を
+        // 守らないことがあるので、WebView ごと止める。パスワードの保存は WebView2 の既定で切れている。
+        // この設定が効くのは Windows のみ (macOS / Linux は Tauri が対応していない。入力欄の autocomplete="off" で止める)。
+        .general_autofill_enabled(false)
         // アプリの画面の外へは移動させず、外部の URL はブラウザーで開く
         // (Google / Microsoft のログイン画面もここを通る)。
         .on_navigation(move |url| {
