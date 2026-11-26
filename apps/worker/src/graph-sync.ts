@@ -610,7 +610,6 @@ export async function fetchGraphHeaders(
         if (
           list.listId !== null ||
           list.listUnsubscribe.length > 0 ||
-          list.authResults !== null ||
           list.senderCheck.warnings.length > 0 ||
           sender?.some((item) => !fromAddresses.has(item.address.toLowerCase()))
         ) {

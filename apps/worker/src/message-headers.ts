@@ -85,6 +85,20 @@ export const headersPending = or(
   isNull(messages.senderCheck),
 );
 
+/**
+ * 取り込み済みのメールにヘッダーを補うとき、1 回分 (数百通の書き換え) ごとに空ける間。
+ * 書き換えるたびに検索用の列と索引も作り直されるので、続けて流すと DB が重くなり、
+ * 画面の一覧の読み込みが遅くなる。急がない作業なので、間を空けて少しずつ進める。
+ */
+export const HEADER_BACKFILL_PAUSE_MS = 2_000;
+
+/** 補完 1 回分のあとに待つ。 */
+export function headerBackfillPause(): Promise<void> {
+  return new Promise((resolve) =>
+    setTimeout(resolve, HEADER_BACKFILL_PAUSE_MS),
+  );
+}
+
 /** メーリングリストの情報と、送信元の認証結果。 */
 export type HeaderInfo = ListInfo & {
   /** つなぎ先のサーバーが付けた認証結果。ヘッダーが無ければ null。 */

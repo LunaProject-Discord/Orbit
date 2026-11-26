@@ -19,6 +19,7 @@ import {
 } from "./attachment-fetch.js";
 import { recordChanges } from "./changes.js";
 import { isTemporaryLoginRefusal } from "./login-refusal.js";
+import { headerBackfillPause } from "./message-headers.js";
 import { processOutbox } from "./outbox.js";
 import { extractAttachment } from "./pop-parse.js";
 import {
@@ -414,7 +415,10 @@ export class PopAccountSync {
       while (
         !this.stopped &&
         (await backfillPopHeaders(this.db, this.account))
-      ) {}
+      ) {
+        // DB が重くならないよう、間を空けて少しずつ進める。
+        await headerBackfillPause();
+      }
       if (!healthy) {
         healthy = true;
         this.backoff = MIN_BACKOFF_MS;

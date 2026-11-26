@@ -470,7 +470,7 @@ export async function backfillPopHeaders(
         .update(messages)
         .set({ ...info, headersFetchedAt: new Date() })
         .where(eq(messages.id, row.id));
-      if (info.authResults || info.senderCheck.warnings.length > 0) {
+      if (info.senderCheck.warnings.length > 0) {
         changed.push(row.id);
       }
     }

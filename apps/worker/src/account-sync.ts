@@ -43,6 +43,7 @@ import {
   syncMailbox,
   syncMailboxList,
 } from "./mailbox-sync.js";
+import { headerBackfillPause } from "./message-headers.js";
 import { processOutbox } from "./outbox.js";
 import { applyImapOperation } from "./outbox-imap.js";
 import { processSends, type SendOutcome } from "./send.js";
@@ -799,6 +800,7 @@ export class AccountSync {
             this.account,
             mailbox.id,
           );
+          if (remaining) await headerBackfillPause();
         }
       } finally {
         lock.release();

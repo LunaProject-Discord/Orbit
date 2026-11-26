@@ -33,7 +33,7 @@ const resolved = new Map<string, SenderIcon | null>();
 const pending = new Map<string, Promise<SenderIcon | null>>();
 const MAX_ENTRIES = 1000;
 /** 同時に取りに行く数。一覧を開いた直後に、行の数だけ一度に問い合わせないようにする。 */
-const MAX_CONCURRENT = 4;
+const MAX_CONCURRENT = 2;
 let running = 0;
 const waiting: (() => void)[] = [];
 
