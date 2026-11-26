@@ -62,12 +62,16 @@ import { attachmentErrorMessage } from "@/lib/attachments";
 import {
   attachmentLimit,
   type ComposeDraft,
+  canSendFrom,
   draftSignature,
   htmlToText,
   MAX_ATTACHMENT_COUNT,
+  NO_SENDABLE_ACCOUNT,
+  RECEIVE_ONLY_SEND_ERROR,
   replaceSignature,
   resolveRecipients,
   sanitizeHtml,
+  senderAccount,
 } from "@/lib/compose";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
@@ -88,6 +92,8 @@ function sendErrorOf(error: unknown, limit: number): string {
         return "宛先が多すぎます。合計 100 件までにしてください。";
       case "account_not_found":
         return "差出人のアカウントが見つかりません。別のアカウントを選んでください。";
+      case "receive_only":
+        return RECEIVE_ONLY_SEND_ERROR;
       case "attachment_not_found":
         return "添付ファイルがサーバーに残っていません。外してから、もう一度添付してください。";
       case "attachments_too_large":
@@ -387,6 +393,19 @@ export function ComposeWindow({
     [accounts, commit],
   );
 
+  /** 差出人を変える処理。描画のたびに最新のものに差し替える (下の effect から呼ぶため)。 */
+  const changeAccountRef = useRef<(accountId: string) => void>(() => {});
+  const draftAccountId = draft?.accountId ?? null;
+  // 受信専用のアカウントが差出人になっていたら (送信サーバーを外す前に書いた下書きなど)、
+  // 送信できるアカウントに切り替える。署名もそのアカウントのものに入れ替わる。
+  useEffect(() => {
+    if (!open || !draftAccountId) return;
+    const current = accounts.find((item) => item.id === draftAccountId);
+    if (!current || canSendFrom(current)) return;
+    const next = senderAccount(accounts, draftAccountId);
+    if (next) changeAccountRef.current(next.id);
+  }, [open, draftAccountId, accounts]);
+
   // 作成専用のウィンドウでは、件名をタイトルバーに出す (「件名 ― Orbit Mail」)。
   const windowName = draft ? draft.subject.trim() || titles[draft.mode] : null;
   useEffect(() => {
@@ -416,6 +435,18 @@ export function ComposeWindow({
     commit((current) => ({ ...current, [key]: value }));
   const account = accounts.find((item) => item.id === draft.accountId);
   const limit = attachmentLimit(account ?? { protocol: "imap" });
+  /** 差出人に選べるアカウント。受信専用のアカウントは送信できないので除く。 */
+  const senders = accounts.filter(canSendFrom);
+  /** 今の差出人から送れるか。受信専用のアカウントのままなら送れない。 */
+  const canSend = !account || canSendFrom(account);
+  /** 送れないときの案内。送信できるアカウントが 1 つも無いか、差出人が受信専用か。 */
+  const senderProblem = canSend
+    ? null
+    : senders.length === 0
+      ? NO_SENDABLE_ACCOUNT
+      : RECEIVE_ONLY_SEND_ERROR;
+  // 差出人の選択肢。今の差出人が受信専用なら、選べない項目として残して表示だけする。
+  const fromChoices = canSend || !account ? senders : [...senders, account];
   const pendingFiles = draft.forwardAttachments?.files ?? [];
   const uploading = uploads.length > 0 || pendingFiles.length > 0;
 
@@ -439,6 +470,7 @@ export function ComposeWindow({
   function changeAccount(accountId: string) {
     changeWithSignature((current) => ({ ...current, accountId }));
   }
+  changeAccountRef.current = changeAccount;
 
   function removeAttachment(file: UploadedAttachment) {
     if (!draft) return;
@@ -452,6 +484,8 @@ export function ComposeWindow({
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (!draft || sending) return;
+    // 送れない理由は差出人の下に出しているので、ここでは送らないだけにする。
+    if (senderProblem) return;
     if (uploading) {
       setError(
         "添付ファイルをアップロードしています。完了してから送信してください。",
@@ -658,7 +692,7 @@ export function ComposeWindow({
           >
             <PaperclipIcon />
           </Button>
-          <Button type="submit" disabled={sending || uploading}>
+          <Button type="submit" disabled={sending || uploading || !canSend}>
             <SendIcon />
             {sending ? "送信中…" : "送信"}
           </Button>
@@ -740,11 +774,9 @@ export function ComposeWindow({
               className="pointer-events-none absolute top-1/2 left-3 z-10 size-2 -translate-y-1/2"
             />
             <Select
-              items={accounts.map((item) => ({
+              items={fromChoices.map((item) => ({
                 value: item.id,
-                label: item.displayName
-                  ? `${item.displayName} <${item.email}>`
-                  : item.email,
+                label: fromLabel(item),
               }))}
               value={draft.accountId}
               onValueChange={(next) => {
@@ -763,17 +795,19 @@ export function ComposeWindow({
                 align="start"
                 className="w-auto max-w-[calc(100vw-1rem)]"
               >
-                {accounts.map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
+                {fromChoices.map((item) => (
+                  <SelectItem
+                    key={item.id}
+                    value={item.id}
+                    disabled={!canSendFrom(item)}
+                  >
                     <span className="flex items-center gap-2">
                       <AccountDot
                         accounts={accounts}
                         accountId={item.id}
                         className="size-2"
                       />
-                      {item.displayName
-                        ? `${item.displayName} <${item.email}>`
-                        : item.email}
+                      {fromLabel(item)}
                     </span>
                   </SelectItem>
                 ))}
@@ -781,6 +815,15 @@ export function ComposeWindow({
             </Select>
           </div>
         </Row>
+
+        {senderProblem && (
+          <p
+            role="alert"
+            className="shrink-0 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs"
+          >
+            {senderProblem}
+          </p>
+        )}
 
         <Row label="宛先" htmlFor={`${id}-to`}>
           <RecipientInput
@@ -863,7 +906,7 @@ export function ComposeWindow({
             <div className="flex shrink-0 items-center gap-1 border-t px-3 py-2">
               <Button
                 type="submit"
-                disabled={sending || uploading}
+                disabled={sending || uploading || !canSend}
                 className="hidden sm:inline-flex"
               >
                 <SendIcon />
@@ -1033,6 +1076,14 @@ export function ComposeWindow({
       </form>
     </section>
   );
+}
+
+/** 差出人の選択肢に出す名前。受信専用のアカウントには、そのことを添える。 */
+function fromLabel(account: Account): string {
+  const name = account.displayName
+    ? `${account.displayName} <${account.email}>`
+    : account.email;
+  return canSendFrom(account) ? name : `${name} (受信専用)`;
 }
 
 function Row({

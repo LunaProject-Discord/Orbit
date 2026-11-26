@@ -71,6 +71,7 @@ import {
 import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
   type Account,
+  isReceiveOnly,
   type NotificationAction,
   oauthProviderOf,
   type SwipeSettings,
@@ -882,6 +883,31 @@ function ReadingPage() {
           />
         </SettingGroup>
       </Section>
+      <Section
+        title="差出人のアイコン"
+        description="送信元のロゴ (BIMI。送信元を確認できたメールだけ)、Gravatar、送信元のサイトのアイコンの順に探し、無ければ名前の頭文字を表示します。なりすましの疑いがあるメールでは、ロゴとサイトのアイコンを使いません。画像はサーバーが取得するので、メールを開いたことは相手に伝わりません。"
+      >
+        <SettingGroup>
+          <SwitchRow
+            label="メール一覧に表示"
+            description="カード表示の各行の左に表示します。"
+            checked={preferences.senderIconInList}
+            onChange={(senderIconInList) => set({ senderIconInList })}
+          />
+          <SwitchRow
+            label="メールの詳細に表示"
+            description="開いたメールの見出しと、会話の各メールに表示します。"
+            checked={preferences.senderIconInMessage}
+            onChange={(senderIconInMessage) => set({ senderIconInMessage })}
+          />
+          <SwitchRow
+            label="Gravatar を使う"
+            description="差出人のアドレスから作った値 (ハッシュ) を Gravatar に送って、登録された画像を探します。"
+            checked={preferences.senderIconGravatar}
+            onChange={(senderIconGravatar) => set({ senderIconGravatar })}
+          />
+        </SettingGroup>
+      </Section>
       <Section title="見出しと返信">
         <SettingGroup>
           <SwitchRow
@@ -1340,6 +1366,8 @@ function AccountCard({
           </p>
           <p className="truncate text-muted-foreground text-xs">
             受信: {RECEIVING_LABELS[account.protocol]}
+            {/* 送信サーバーを設定していないアカウントは、受信だけに使う。 */}
+            {isReceiveOnly(account) && " ・ 受信専用"}
           </p>
           {problem && (
             <p className="mt-1 flex items-start gap-1 text-destructive text-xs">

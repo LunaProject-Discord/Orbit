@@ -219,6 +219,17 @@ export type Account = {
 
 export type ServerSettings = { host: string; port: number; secure: boolean };
 
+/**
+ * 受信専用のアカウントか。IMAP / POP3 で受信するアカウントのうち、送信 (SMTP) サーバーを
+ * 設定していないもの。このアカウントを差出人にしてメールを送ることはできない。
+ */
+export function isReceiveOnly(
+  account: Partial<Pick<Account, "protocol" | "smtpHost">>,
+): boolean {
+  // 項目が無い (古い形の値) ときは、送信できるものとして扱う。
+  return account.protocol !== "graph" && account.smtpHost === null;
+}
+
 /** パスワードで追加するアカウントの受信方式。 */
 export type IncomingProtocol = "imap" | "pop3";
 
@@ -243,7 +254,11 @@ export type CreateAccountInput = {
    * IMAP で受信し provider が gmail か icloud なら省略でき、サーバーが決まった値を使う。
    */
   imap?: ServerSettings;
-  smtp?: ServerSettings;
+  /**
+   * 送信 (SMTP) サーバー。null にすると受信専用のアカウントになり、送信サーバーは確かめない。
+   * 省略したときは imap と同じく、provider が gmail か icloud ならサーバーが決まった値を使う。
+   */
+  smtp?: ServerSettings | null;
   /** 省略するとメールアドレスを使う。 */
   username?: string;
   password: string;
@@ -262,6 +277,8 @@ export type MessageSummary = {
   subject: string;
   from: Address[];
   to: Address[];
+  /** 差出人の確認結果。取り込みが終わる前や、端末に保存してあった古い内容には無い。 */
+  senderCheck?: SenderCheck | null;
   receivedAt: string;
   snippet: string;
   /** 本文をまだ取り込んでいない (フォルダの一覧でだけ入る)。 */
@@ -293,6 +310,8 @@ export type ThreadMessage = {
   from: Address[];
   to: Address[];
   cc: Address[];
+  /** 差出人の確認結果。端末に保存してあった古い内容には無いことがある。 */
+  senderCheck?: SenderCheck | null;
   receivedAt: string;
   snippet: string;
   hasAttachments: boolean;
@@ -302,6 +321,32 @@ export type ThreadMessage = {
   draft: boolean;
   /** このメッセージがあるフォルダ。 */
   mailboxIds: string[];
+};
+
+/** 認証の 1 つの方式 (SPF など) の結果。result は pass / fail / softfail / none など。 */
+export type AuthMethodResult = { result: string; domain: string | null };
+
+/** つなぎ先のメールサーバーが付けた、送信元の認証結果 (Authentication-Results)。 */
+export type AuthResults = {
+  /** 判定したサーバー。省かれていれば空。 */
+  authservId: string;
+  spf: AuthMethodResult | null;
+  dkim: AuthMethodResult[];
+  dmarc: AuthMethodResult | null;
+  /** Microsoft 365 / Outlook.com の総合判定。 */
+  compauth: AuthMethodResult | null;
+};
+
+/** 差出人について出す注意。 */
+export type SenderWarning = "dmarc_fail" | "auth_fail" | "name_mismatch";
+
+/** 差出人の確認結果 (サーバーが、認証結果と表示名から決める)。 */
+export type SenderCheck = {
+  /** DMARC に合格し、差出人のドメインと一致している。 */
+  verified: boolean;
+  warnings: SenderWarning[];
+  /** name_mismatch のとき、表示名が名乗っている相手。 */
+  claimed: string | null;
 };
 
 export type Attachment = {
@@ -330,6 +375,9 @@ export type MessageDetail = {
   sender?: Address[];
   listId?: string | null;
   listUnsubscribe?: string[];
+  /** つなぎ先のサーバーが付けた送信元の認証結果。ヘッダーが無ければ null。 */
+  authResults?: AuthResults | null;
+  senderCheck?: SenderCheck | null;
   sentAt: string | null;
   receivedAt: string;
   snippet: string;
@@ -1168,7 +1216,8 @@ export type AccountServerInput = {
   pop?: PopSettings;
   /** 受信サーバー (POP3 で受信するなら POP3 サーバー)。 */
   imap: ServerSettings;
-  smtp: ServerSettings;
+  /** 送信 (SMTP) サーバー。null にすると受信専用にする (送信サーバーは確かめない)。 */
+  smtp: ServerSettings | null;
   username: string;
   /** 省くと保存済みのパスワードを使う。 */
   password?: string;
@@ -1192,6 +1241,7 @@ export type ServerCheckResult = {
   ok: boolean;
   /** 受信サーバー (IMAP または POP3) の結果。 */
   imap: ServerCheck;
+  /** 送信サーバーの結果。受信専用 (smtp が null) のときは確かめず、ok になる。 */
   smtp: ServerCheck;
 };
 
@@ -1926,4 +1976,31 @@ export async function forwardAttachments(
     { method: "POST", body: { messageId, attachmentIds }, signal },
   );
   return attachments;
+}
+
+/** 差出人のアイコンを探す取得元 (探す順)。 */
+export type SenderIconSource = "bimi" | "gravatar" | "favicon";
+
+/**
+ * 差出人のアイコンを取得する。見つからなければ null。
+ * 取得はサーバーが行うので、端末から差出人側へ通信は出ない。
+ */
+export async function fetchSenderIcon(
+  address: string,
+  sources: SenderIconSource[],
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; source: SenderIconSource | null } | null> {
+  const params = new URLSearchParams({ address, sources: sources.join(",") });
+  const response = await apiFetch(`/v1/sender-icons?${params}`, {
+    signal,
+    handle401: false,
+  });
+  if (response.status === 204) return null;
+  const source = response.headers.get("x-icon-source");
+  return {
+    blob: await response.blob(),
+    source: sources.includes(source as SenderIconSource)
+      ? (source as SenderIconSource)
+      : null,
+  };
 }

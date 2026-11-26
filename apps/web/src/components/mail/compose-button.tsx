@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AccountMark } from "@/lib/account-icons";
 import type { Account } from "@/lib/api";
+import { sendableAccounts } from "@/lib/compose";
 
 /** 新しいメールを書き始める。accountId を省くと、いま選んでいるアカウント (無ければ先頭)。 */
 export type ComposeHandler = (accountId?: string) => void;
@@ -62,7 +63,8 @@ function ContextAccountItems({
   return (
     <ContextMenuGroup>
       <ContextMenuLabel>{MENU_TITLE}</ContextMenuLabel>
-      {accounts.map((account) => (
+      {/* 受信専用のアカウントからは送れないので、差出人の候補に出さない。 */}
+      {sendableAccounts(accounts).map((account) => (
         <ContextMenuItem key={account.id} onClick={() => onCompose(account.id)}>
           <AccountLabel account={account} accounts={accounts} />
         </ContextMenuItem>
@@ -82,7 +84,8 @@ export function ComposeButton({
   accounts: Account[];
   onCompose: ComposeHandler;
 }) {
-  const choosable = accounts.length > 1;
+  // 差出人を選べるのは、送信できる (受信専用ではない) アカウントが 2 つ以上あるとき。
+  const choosable = sendableAccounts(accounts).length > 1;
   const main = (
     <Hint label="新規作成" shortcut="C">
       <Button
@@ -121,7 +124,7 @@ export function ComposeButton({
           <DropdownMenuContent align="end" className="w-64">
             <DropdownMenuGroup>
               <DropdownMenuLabel>{MENU_TITLE}</DropdownMenuLabel>
-              {accounts.map((account) => (
+              {sendableAccounts(accounts).map((account) => (
                 <DropdownMenuItem
                   key={account.id}
                   onClick={() => onCompose(account.id)}
@@ -158,7 +161,7 @@ export function RailComposeButton({
       </Button>
     </Hint>
   );
-  if (accounts.length < 2) return button;
+  if (sendableAccounts(accounts).length < 2) return button;
   return (
     <ContextMenu>
       <ContextMenuTrigger render={<div className="flex" />}>

@@ -1,13 +1,14 @@
-import type {
-  Account,
-  Address,
-  MessageDetail,
-  OutgoingMail,
-  RecipientField,
-  SaveDraftInput,
-  ServerDraft,
-  SignatureRule,
-  UploadedAttachment,
+import {
+  type Account,
+  type Address,
+  isReceiveOnly,
+  type MessageDetail,
+  type OutgoingMail,
+  type RecipientField,
+  type SaveDraftInput,
+  type ServerDraft,
+  type SignatureRule,
+  type UploadedAttachment,
 } from "@/lib/api";
 import { splitAttachments } from "@/lib/attachments";
 import { currentDateStyle } from "@/lib/date-format-settings";
@@ -179,10 +180,50 @@ const EMPTY_LINE = "<div><br></div>";
 const EMPTY_LINES = `${EMPTY_LINE}${EMPTY_LINE}`;
 const field = (list: Address[] = []): RecipientField => ({ list, text: "" });
 
-/** 署名を持つアカウント (作成画面で使う分だけ)。 */
-type SignatureAccount = Pick<Account, "id" | "email"> & {
-  signatureHtml?: string | null;
-};
+/**
+ * 署名を持つアカウント (作成画面で使う分だけ)。protocol と smtpHost は、受信専用
+ * (送信できない) かを見分けるのに使う。無ければ送信できるアカウントとして扱う。
+ */
+type SignatureAccount = Pick<Account, "id" | "email"> &
+  Partial<Pick<Account, "protocol" | "smtpHost">> & {
+    signatureHtml?: string | null;
+  };
+
+/** 受信専用のアカウントから送ろうとして、サーバーに断られた (receive_only) ときの案内。 */
+export const RECEIVE_ONLY_SEND_ERROR =
+  "このアカウントは受信専用のため、送信できません。差出人を別のアカウントにしてください。";
+
+/** 送信できるアカウント (受信専用ではないもの) が 1 つも無いときの案内。 */
+export const NO_SENDABLE_ACCOUNT =
+  "送信できるアカウントがありません。送信サーバーを設定したアカウントを追加してください。";
+
+/** 差出人にできる (受信専用ではない) アカウントか。 */
+export function canSendFrom(
+  account: Partial<Pick<Account, "protocol" | "smtpHost">>,
+): boolean {
+  return !isReceiveOnly(account);
+}
+
+/** 差出人に選べるアカウント。受信専用のアカウントを除き、並びはそのまま。 */
+export function sendableAccounts<
+  T extends Partial<Pick<Account, "protocol" | "smtpHost">>,
+>(accounts: readonly T[]): T[] {
+  return accounts.filter(canSendFrom);
+}
+
+/**
+ * 差出人にするアカウントを決める。preferredId のアカウントから送れればそれを、
+ * 受信専用 (または見つからない) なら、送信できるアカウントのうち先頭のものを使う。
+ * 送信できるアカウントが 1 つも無ければ null。
+ */
+export function senderAccount<
+  T extends Pick<Account, "id"> &
+    Partial<Pick<Account, "protocol" | "smtpHost">>,
+>(accounts: readonly T[], preferredId?: string | null): T | null {
+  const preferred = accounts.find((entry) => entry.id === preferredId);
+  if (preferred && canSendFrom(preferred)) return preferred;
+  return accounts.find(canSendFrom) ?? null;
+}
 
 /**
  * 本文に入れる署名。data-signature は、差出人を変えたときに署名を入れ替える目印。
@@ -244,8 +285,12 @@ export function buildDraftFrom(
   /** 連絡先ごと、会話ごとの署名。アカウントの署名より優先して使う。 */
   rules: readonly SignatureRule[] = [],
 ): ComposeDraft {
+  // 受信したアカウントが受信専用なら、送信できるほかのアカウントから返信・転送する。
+  // 送信できるアカウントが無ければ、受信したアカウントのまま (作成画面で送れないことを知らせる)。
   const account =
-    accounts.find((entry) => entry.id === message.accountId) ?? accounts[0];
+    senderAccount(accounts, message.accountId) ??
+    accounts.find((entry) => entry.id === message.accountId) ??
+    accounts[0];
   const draft = newDraft(account?.id ?? message.accountId);
   draft.sourceMessageId = message.id;
   // 別のアカウントから送るときは、この会話の署名は当てはまらない。

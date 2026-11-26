@@ -221,11 +221,19 @@ export class DevicePushSender {
         ),
       );
     if (targets.length === 0) return;
+    // 受信専用のアカウント (送信サーバーが無い) のメールには、返信欄を付けない。
+    const [sender] = await this.db
+      .select({
+        protocol: mailAccounts.protocol,
+        smtpHost: mailAccounts.smtpHost,
+      })
+      .from(mailAccounts)
+      .where(eq(mailAccounts.id, notification.accountId));
     const signer = await actionSigner(
       this.db,
       this.actions,
       notification.userId,
-      true,
+      !sender || sender.protocol === "graph" || sender.smtpHost !== null,
     );
     const messages = toPushMessages(notification, signer);
     await Promise.all(

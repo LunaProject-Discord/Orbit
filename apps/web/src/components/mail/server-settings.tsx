@@ -133,6 +133,18 @@ export function switchIncomingServerForm(
   return { ...form, host, port };
 }
 
+/**
+ * 受信専用のアカウントに送信サーバーを設定し直すときの初めの値。送信サーバーは受信サーバーと
+ * 同じホストであることが多いので、受信サーバーのホストと SSL/TLS の決まったポート番号にする。
+ */
+export function smtpFormFromIncoming(incomingHost: string | null): ServerForm {
+  return {
+    host: incomingHost ?? "",
+    port: DEFAULT_PORTS.smtp.ssl,
+    security: "ssl",
+  };
+}
+
 export function serverFormOf(server: DiscoveredServer): ServerForm {
   // 暗号化しない設定 (plain) は持たない。STARTTLS として扱い、サーバーが対応していなければ接続できない。
   return {
@@ -343,7 +355,8 @@ const AUTH_LABELS: Record<DiscoveredServer["auth"], string> = {
 /** 見つかった設定の一覧 (受信と送信を並べる)。 */
 export function ServerSummary(props: {
   imap: ServerForm;
-  smtp: ServerForm;
+  /** 送信サーバー。null は受信専用 (送信サーバーを使わない)。 */
+  smtp: ServerForm | null;
   /** 受信方式。省略すると IMAP。 */
   incomingProtocol?: IncomingProtocol;
   username: string;
@@ -353,6 +366,26 @@ export function ServerSummary(props: {
     <div className="grid gap-3 sm:grid-cols-2">
       {(["imap", "smtp"] as const).map((kind) => {
         const server = props[kind];
+        if (!server) {
+          return (
+            <section
+              key={kind}
+              aria-label="送信サーバー"
+              className="flex min-w-0 flex-col gap-2 rounded-lg border border-dashed p-3"
+            >
+              <div className="flex items-center gap-2">
+                <ServerKindIcon kind={kind} />
+                <div className="leading-tight">
+                  <p className="font-medium text-sm">送信</p>
+                  <p className="text-muted-foreground text-xs">受信専用</p>
+                </div>
+              </div>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                {RECEIVE_ONLY_NOTE}
+              </p>
+            </section>
+          );
+        }
         return (
           <section
             key={kind}
@@ -420,6 +453,42 @@ function SummaryRow(props: {
         {props.value}
       </dd>
     </>
+  );
+}
+
+/** 受信専用にしたときの案内。 */
+const RECEIVE_ONLY_NOTE =
+  "送信サーバーを使いません。このアカウントからは送信できません。返信や新規作成は、ほかのアカウントから送ります。";
+
+/**
+ * 受信専用にする (送信サーバーを使わない) かのスイッチ。送信 (SMTP) の欄のすぐ上に置き、
+ * オンのあいだは送信の欄を隠す。送信サーバーにつながらないメールサービスでも、受信だけは使える。
+ */
+export function ReceiveOnlySwitch(props: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  return (
+    <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3">
+      <div className="min-w-0 flex-1">
+        <p id={`${id}-label`} className="font-medium text-sm">
+          受信専用にする (送信サーバーを使わない)
+        </p>
+        <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+          {props.checked
+            ? "このアカウントからは送信できません。返信や新規作成は、ほかのアカウントから送ります。"
+            : "送信サーバーにつながらない場合や、このアカウントから送ることがない場合はオンにしてください。"}
+        </p>
+      </div>
+      <Switch
+        aria-labelledby={`${id}-label`}
+        checked={props.checked}
+        disabled={props.disabled}
+        onCheckedChange={props.onCheckedChange}
+      />
+    </div>
   );
 }
 

@@ -12,6 +12,10 @@ import {
   withAuthStateHeader,
 } from "./lib/auth-state.js";
 import type { EventsHub } from "./lib/events-hub.js";
+import {
+  createSenderIconService,
+  defaultIconDeps,
+} from "./lib/sender-icons.js";
 import type { SystemMailer } from "./lib/system-mail.js";
 import type { BuildInfo, UpdatePolicy } from "./lib/update-policy.js";
 import { accountRoutes } from "./routes/accounts.js";
@@ -31,6 +35,7 @@ import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
 import { sendRoutes } from "./routes/send.js";
+import { senderIconRoutes } from "./routes/sender-icons.js";
 import { serverInfoRoutes } from "./routes/server-info.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { signatureRoutes } from "./routes/signatures.js";
@@ -100,7 +105,7 @@ export function createApp({
       ],
       // ログイン時に Better Auth が返すセッショントークンと、2 段階認証・パスキーの
       // 途中の値 (lib/auth-state.ts) をブラウザから読めるようにする。
-      exposeHeaders: ["set-auth-token", AUTH_STATE_HEADER],
+      exposeHeaders: ["set-auth-token", AUTH_STATE_HEADER, "X-Icon-Source"],
     }),
   );
 
@@ -193,6 +198,15 @@ export function createApp({
   authed.route("/attachments", attachmentRoutes({ db, hub }));
   authed.route("/push", pushRoutes(deps));
   authed.route("/drafts", draftRoutes(deps));
+  authed.route(
+    "/sender-icons",
+    senderIconRoutes({
+      icons: createSenderIconService(
+        db,
+        defaultIconDeps(allowPrivateMailHosts),
+      ),
+    }),
+  );
   // /messages/:id より先に、送信 (/messages/send、/messages/outgoing) と
   // 反映の失敗 (/messages/failures) を登録する。
   authed.route("/messages", sendRoutes(deps));

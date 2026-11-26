@@ -333,6 +333,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
           threadKey: messages.threadKey,
           subject: messages.subject,
           from: messages.from,
+          senderCheck: messages.senderCheck,
           to: messages.to,
           receivedAt: messages.receivedAt,
           snippet: messages.snippet,

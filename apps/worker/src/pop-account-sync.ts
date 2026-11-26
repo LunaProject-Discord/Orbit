@@ -23,6 +23,7 @@ import { processOutbox } from "./outbox.js";
 import { extractAttachment } from "./pop-parse.js";
 import {
   applyPopOperation,
+  backfillPopHeaders,
   ensurePopMailboxes,
   forgetPopRecords,
   importRawMessage,
@@ -408,6 +409,11 @@ export class PopAccountSync {
           `POP3 サーバーから受信しました (取り込み ${result.imported} 件、サーバーから削除 ${result.deleted} 件)`,
         );
       }
+      // 項目を足す前に取り込んだメールに、認証結果などを補う (原文から読むので通信は無い)。
+      while (
+        !this.stopped &&
+        (await backfillPopHeaders(this.db, this.account))
+      ) {}
       if (!healthy) {
         healthy = true;
         this.backoff = MIN_BACKOFF_MS;

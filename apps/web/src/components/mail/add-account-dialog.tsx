@@ -15,6 +15,7 @@ import {
   incomingProtocolLabel,
   PopNotice,
   PopOptions,
+  ReceiveOnlySwitch,
   ServerFields,
   ServerSummary,
   serverFormOf,
@@ -77,6 +78,15 @@ function passwordKindOf(settings: DiscoveredSettings | null): PasswordKind {
   return "generic";
 }
 
+/** 送信サーバーにつながらないときに添える、受信専用で追加できることの案内。 */
+const RECEIVE_ONLY_HINT =
+  "送信サーバーにつながらない場合は「受信専用にする」をオンにすると、受信だけで追加できます。";
+
+/** 送信 (SMTP) サーバーの確認で失敗したときのエラー (smtp_auth_failed など)。 */
+function isSmtpError(error: unknown): boolean {
+  return error instanceof ApiError && !!error.code?.startsWith("smtp_");
+}
+
 function messageOf(
   error: unknown,
   kind: PasswordKind,
@@ -100,9 +110,9 @@ function messageOf(
           ? `iCloud のメールサーバーに接続できませんでした。時間をおいてもう一度お試しください。${detail}`
           : `受信 (${incomingProtocolLabel(protocol)}) サーバーに接続できませんでした。サーバー、ポート番号、セキュリティを確認してください。${detail}`;
       case "smtp_auth_failed":
-        return "送信 (SMTP) サーバーにログインできませんでした。「設定を編集」からユーザー名と送信サーバーの設定を確認してください。";
+        return `送信 (SMTP) サーバーにログインできませんでした。「設定を編集」からユーザー名と送信サーバーの設定を確認してください。${RECEIVE_ONLY_HINT}`;
       case "smtp_connection_failed":
-        return `送信 (SMTP) サーバーに接続できませんでした。「設定を編集」からサーバー、ポート番号、セキュリティを確認してください。${detail}`;
+        return `送信 (SMTP) サーバーに接続できませんでした。「設定を編集」からサーバー、ポート番号、セキュリティを確認してください。${detail}${RECEIVE_ONLY_HINT}`;
       case "legacy_tls_required":
         return "このメールサーバーは、古い方式の TLS にしか対応していません。接続するには、下の「古い TLS のサーバーへの接続を許可する」をオンにして、もう一度「追加」を押してください。";
       case "account_exists":
@@ -115,6 +125,10 @@ function messageOf(
         return "このサーバーでは Google でのログインが設定されていません。サーバーの管理者に確認するか、「アプリ パスワードで追加する」を選んでください。";
       case "host_not_found":
         return `ホストが見つかりません${body.host ? `: ${body.host}` : ""}。ホスト名を確認してください。`;
+    }
+    // 送信サーバーが見つからない (smtp_host_not_found) なども、送信の設定の問題として知らせる。
+    if (isSmtpError(error)) {
+      return `送信 (SMTP) サーバーを確認できませんでした。「設定を編集」から送信サーバーの設定を確認してください。${detail}${RECEIVE_ONLY_HINT}`;
     }
     if (error.status === 400) {
       return "入力内容に誤りがあります。各項目を確認してください。";
@@ -134,6 +148,8 @@ const initialForm = {
   incomingProtocol: "imap" as IncomingProtocol,
   pop: DEFAULT_POP_SETTINGS,
   allowLegacyTls: false,
+  /** 受信専用にする (送信サーバーを使わない)。オンなら smtp の欄は使わない。 */
+  receiveOnly: false,
 };
 
 type Props = {
@@ -157,6 +173,8 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
   /** 古い TLS のサーバーだと分かったときだけ、許可のスイッチを出す。 */
   const [legacyTlsOffered, setLegacyTlsOffered] = useState(false);
+  /** 送信サーバーの確認で失敗したら、見つかった設定の一覧でも「受信専用にする」を出す。 */
+  const [smtpFailed, setSmtpFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   /** ログイン画面へ移動中のサービス。 */
   const [redirecting, setRedirecting] = useState<OAuthProvider | null>(null);
@@ -200,6 +218,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     setDiscoveredFor(null);
     setPasswordInstead(false);
     setLegacyTlsOffered(false);
+    setSmtpFailed(false);
     setError(null);
   }
 
@@ -255,6 +274,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     setDiscoveredFor(email);
     setPasswordInstead(false);
     setLegacyTlsOffered(false);
+    setSmtpFailed(false);
     setForm((current) => ({
       ...current,
       username: found?.imap.username ?? email,
@@ -264,6 +284,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
       incomingProtocol: found?.incomingProtocol ?? "imap",
       pop: DEFAULT_POP_SETTINGS,
       allowLegacyTls: false,
+      receiveOnly: false,
     }));
     if (oauthOf(found)) {
       setStep("oauth");
@@ -297,7 +318,8 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
               ...common,
               provider: "generic",
               imap: toServerSettings(form.imap),
-              smtp: toServerSettings(form.smtp),
+              // 受信専用なら null を送る。送信サーバーは確かめずに追加される。
+              smtp: form.receiveOnly ? null : toServerSettings(form.smtp),
               username: form.username.trim() || email,
               // Google のアプリ パスワードも 4 文字ごとの空白入りで表示される。
               password:
@@ -321,6 +343,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
       if (cause instanceof ApiError && cause.code === "legacy_tls_required") {
         setLegacyTlsOffered(true);
       }
+      if (isSmtpError(cause)) setSmtpFailed(true);
       setError(messageOf(cause, kind, form.incomingProtocol));
       setSubmitting(false);
     }
@@ -373,7 +396,9 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
         ? "このアドレスは、パスワードの代わりにサービスのログイン画面で追加します。"
         : kind === "icloud"
           ? "このアプリ専用に作ったアプリ用パスワードを入力してください。"
-          : "パスワードを入力してください。受信と送信のサーバーへ接続できるかを確認してから追加します。";
+          : form.receiveOnly
+            ? "パスワードを入力してください。受信サーバーへ接続できるかを確認してから、受信専用で追加します。"
+            : "パスワードを入力してください。受信と送信のサーバーへ接続できるかを確認してから追加します。";
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -572,7 +597,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                 <div className="flex flex-col gap-2">
                   <ServerSummary
                     imap={form.imap}
-                    smtp={form.smtp}
+                    smtp={form.receiveOnly ? null : form.smtp}
                     incomingProtocol={form.incomingProtocol}
                     username={form.username}
                     auth={{ imap: "password", smtp: "password" }}
@@ -589,6 +614,13 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                       設定を編集
                     </Button>
                   </div>
+                  {(smtpFailed || form.receiveOnly) && (
+                    <ReceiveOnlySwitch
+                      checked={form.receiveOnly}
+                      onCheckedChange={(checked) => set("receiveOnly", checked)}
+                      disabled={busy}
+                    />
+                  )}
                   {form.incomingProtocol === "pop3" && (
                     <>
                       <PopNotice />
@@ -648,13 +680,21 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                       disabled={busy}
                     />
                   )}
-                  <ServerFields
-                    idPrefix={`${id}-smtp`}
-                    kind="smtp"
-                    value={form.smtp}
-                    onChange={(value) => set("smtp", value)}
+                  <ReceiveOnlySwitch
+                    checked={form.receiveOnly}
+                    onCheckedChange={(checked) => set("receiveOnly", checked)}
                     disabled={busy}
                   />
+                  {/* 受信専用のときは、送信サーバーの欄を隠す (入力した値は残しておく)。 */}
+                  {!form.receiveOnly && (
+                    <ServerFields
+                      idPrefix={`${id}-smtp`}
+                      kind="smtp"
+                      value={form.smtp}
+                      onChange={(value) => set("smtp", value)}
+                      disabled={busy}
+                    />
+                  )}
                 </>
               )}
               {alert}
