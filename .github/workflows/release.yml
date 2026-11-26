@@ -2,8 +2,9 @@ name: Release
 
 # 版のタグ (v1.2.0、試験版は v1.3.0-beta.1) を push すると、その版のリリースを作る (docs/updates.md)。
 # - GitHub Releases に v<版> を作り、デスクトップ版 (3 OS) と Android の APK を載せる。
-# - 自動更新の一覧 (latest.json、android.json) と SHA256SUMS も載せる。
-#   各サーバーは deploy/app-release.sh でこれを取り込み、接続しているアプリへ配る。
+# - デスクトップ版の自動更新の一覧 (latest.json) と SHA256SUMS も載せる。
+#   各サーバーは deploy/app-release.sh でこれを取り込み、接続しているデスクトップ版へ配る。
+#   スマホアプリの本体はストアで更新する (APK は手で入れる用)。
 # サーバーは同じタグのコミットを deploy/update.sh で取得して更新する。
 on:
   push:

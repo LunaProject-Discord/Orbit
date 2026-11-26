@@ -3,7 +3,7 @@ name: Android
 # Android アプリ (apps/mobile) をビルドする。
 # - プルリクエストと main: apps/mobile を変えたときに、確認用のアプリ (debug) を作る。
 # - 手動 (Run workflow): 最新の画面 (apps/web) を入れたアプリを作り直す。
-# - リリース (.github/workflows/release.yml から呼ばれる): その版の配布用のアプリ (APK) と android.json を作り、
+# - リリース (.github/workflows/release.yml から呼ばれる): その版の配布用のアプリ (APK) を作り、
 #   成果物 release-android として渡す (GitHub Releases へは release.yml がまとめて載せる)。
 # 署名鍵と Firebase の設定は、リポジトリのシークレットから渡す。無くてもビルドは通り、
 # その場合は確認用のアプリだけができて、プッシュ通知は使えない。
@@ -124,26 +124,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # リリースでは、サーバーが配る APK と、その情報 (android.json、apps/api/src/lib/app-releases.ts) を渡す。
-      # 端末に入れたアプリを入れ替えるには毎回同じ鍵で署名する必要があるので、署名鍵が無いときは載せない。
+      # リリースでは、配布用の APK を渡す (GitHub Releases から手で入れる用。アプリ本体の自動更新はストアに任せる)。
       - name: リリース用にファイルを集める
         if: env.RELEASE_VERSION != '' && env.HAS_KEYSTORE == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/release"
           apk="$(ls apps/mobile/android/app/build/outputs/apk/release/*.apk | head -n 1)"
-          name="Orbit-Mail-Android_${RELEASE_VERSION}.apk"
-          cp "$apk" "$RUNNER_TEMP/release/$name"
-          node -e '
-            const { createHash } = require("node:crypto");
-            const { readFileSync, writeFileSync } = require("node:fs");
-            const [dir, name, version, versionCode] = process.argv.slice(1);
-            const data = readFileSync(`${dir}/${name}`);
-            writeFileSync(`${dir}/android.json`, JSON.stringify({
-              version, versionCode: Number(versionCode), file: name,
-              sha256: createHash("sha256").update(data).digest("hex"), size: data.length,
-            }, null, 2) + "\n");
-          ' "$RUNNER_TEMP/release" "$name" "$RELEASE_VERSION" "$ANDROID_VERSION_CODE"
-          cat "$RUNNER_TEMP/release/android.json"
+          cp "$apk" "$RUNNER_TEMP/release/Orbit-Mail-Android_${RELEASE_VERSION}.apk"
 
       - name: リリースに載せられないことを知らせる
         if: env.RELEASE_VERSION != '' && env.HAS_KEYSTORE != 'true'

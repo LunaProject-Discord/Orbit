@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  androidRelease,
   compareVersions,
   currentRelease,
   desktopRelease,
@@ -109,28 +108,10 @@ describe("配布するリリースの読み込み", () => {
     await writeFile(join(dir, "CURRENT"), "1.2.0");
     await put("1.2.0", "latest.json", { version: "1.1.0", platforms: {} });
     expect(await desktopRelease(dir, "https://x")).toBeNull();
-    await put("1.2.0", "android.json", {
+    await put("1.2.0", "latest.json", {
       version: "1.2.0",
-      versionCode: 1020099,
-      file: "../secret",
-      sha256: "0".repeat(64),
-      size: 1,
+      platforms: { "linux-x86_64": { url: "../secret", signature: "s" } },
     });
-    expect(await androidRelease(dir, "https://x")).toBeNull();
-  });
-
-  it("Android の APK の情報を返す", async () => {
-    await writeFile(join(dir, "CURRENT"), "1.2.0");
-    await put("1.2.0", "android.json", {
-      version: "1.2.0",
-      versionCode: 1020099,
-      file: "orbit-mail-1.2.0.apk",
-      sha256: "a".repeat(64),
-      size: 10,
-    });
-    expect(await androidRelease(dir, "https://x")).toMatchObject({
-      versionCode: 1020099,
-      url: "https://x/app-update/releases/1.2.0/orbit-mail-1.2.0.apk",
-    });
+    expect(await desktopRelease(dir, "https://x")).toBeNull();
   });
 });

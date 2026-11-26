@@ -7,8 +7,8 @@
  *     1.2.0/
  *       SHA256SUMS            ファイルの SHA-256 (リリースのワークフローが作る)
  *       latest.json           デスクトップ版の更新の一覧 (Tauri の updater の静的な形。url はファイル名だけ)
- *       android.json          Android の APK の情報
  *       Orbit-Mail_1.2.0_x64-setup.exe など
+ * 配るのはデスクトップ版だけ。スマホアプリの本体はストアで更新する。
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -32,16 +32,7 @@ const desktopManifest = z.object({
   platforms: z.record(z.string().regex(/^[a-z0-9_-]{1,64}$/), desktopPlatform),
 });
 
-const androidManifest = z.object({
-  version: z.string().regex(RELEASE_VERSION),
-  versionCode: z.number().int().positive(),
-  file: z.string().regex(RELEASE_FILE_NAME),
-  sha256: z.string().regex(/^[0-9a-f]{64}$/),
-  size: z.number().int().nonnegative(),
-});
-
 export type DesktopManifest = z.infer<typeof desktopManifest>;
-export type AndroidManifest = z.infer<typeof androidManifest>;
 
 /** 配る版 (CURRENT)。無い、または書式が違えば null。 */
 export async function currentRelease(dir: string): Promise<string | null> {
@@ -105,25 +96,6 @@ export async function desktopRelease(
     };
   }
   return { ...manifest, platforms };
-}
-
-export type AndroidRelease = AndroidManifest & { url: string };
-
-export async function androidRelease(
-  dir: string,
-  publicUrl: string,
-): Promise<AndroidRelease | null> {
-  const version = await currentRelease(dir);
-  if (!version) return null;
-  const manifest = await readJson(
-    join(dir, version, "android.json"),
-    androidManifest,
-  );
-  if (!manifest || manifest.version !== version) return null;
-  return {
-    ...manifest,
-    url: releaseFileUrl(publicUrl, version, manifest.file),
-  };
 }
 
 /**

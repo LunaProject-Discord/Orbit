@@ -25,16 +25,6 @@ describe("サーバー情報とアプリ本体の更新", () => {
         platforms: { "linux-x86_64": { url: "a.AppImage", signature: "s" } },
       }),
     );
-    await writeFile(
-      join(dir, "1.2.0", "android.json"),
-      JSON.stringify({
-        version: "1.2.0",
-        versionCode: 1020099,
-        file: "a.apk",
-        sha256: "b".repeat(64),
-        size: 3,
-      }),
-    );
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -84,24 +74,9 @@ describe("サーバー情報とアプリ本体の更新", () => {
     ).toBe(204);
   });
 
-  it("Android: versionCode が古ければ APK の情報を返す", async () => {
-    const response = await app().request("/app-update/android?versionCode=10");
-    expect(await response.json()).toMatchObject({
-      versionCode: 1020099,
-      url: "https://orbit.example.com/app-update/releases/1.2.0/a.apk",
-      mode: "auto",
-    });
-    expect(
-      (await app().request("/app-update/android?versionCode=1020099")).status,
-    ).toBe(204);
-  });
-
   it("ORBIT_APP_UPDATE=off なら本体は配らない", async () => {
     expect(
       (await app({ appUpdate: "off" }).request("/app-update/desktop")).status,
-    ).toBe(204);
-    expect(
-      (await app({ appUpdate: "off" }).request("/app-update/android")).status,
     ).toBe(204);
   });
 });

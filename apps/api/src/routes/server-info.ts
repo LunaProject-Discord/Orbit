@@ -1,9 +1,5 @@
 import { Hono } from "hono";
-import {
-  androidRelease,
-  compareVersions,
-  desktopRelease,
-} from "../lib/app-releases.js";
+import { compareVersions, desktopRelease } from "../lib/app-releases.js";
 import type { BuildInfo, UpdatePolicy } from "../lib/update-policy.js";
 
 /**
@@ -65,22 +61,6 @@ export function serverInfoRoutes({
       return c.body(null, 204);
     }
     return c.json(release);
-  });
-
-  /**
-   * Android の本体の更新 (APK で入れたアプリが呼ぶ)。
-   * versionCode より新しい APK があればその情報を返し、無ければ 204。
-   */
-  app.get("/app-update/android", async (c) => {
-    c.header("Cache-Control", "no-cache");
-    if (policy.appUpdate === "off" || !releasesDir) return c.body(null, 204);
-    const release = await androidRelease(releasesDir, publicUrl);
-    if (!release) return c.body(null, 204);
-    const current = Number(c.req.query("versionCode"));
-    if (Number.isInteger(current) && current >= release.versionCode) {
-      return c.body(null, 204);
-    }
-    return c.json({ ...release, mode: policy.appUpdate });
   });
 
   return app;

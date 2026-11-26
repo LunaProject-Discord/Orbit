@@ -8,15 +8,11 @@
 import { useSyncExternalStore } from "react";
 import { apiUrl } from "@/lib/server-url";
 import {
-  type AndroidBodyInfo,
-  type AndroidRelease,
-  androidBody,
   bodyPlatform,
   type Compatibility,
   compatibility,
   type DesktopBodyStatus,
   desktopBody,
-  fetchAndroidRelease,
   fetchServerInfo,
   type ServerInfo,
 } from "./body";
@@ -42,19 +38,10 @@ export type UpdateStatus =
   | { kind: "disabled" }
   | { kind: "error"; message: string };
 
-/** アプリ本体の更新の状態 (lib/app-update/body.ts)。 */
+/** アプリ本体の更新の状態 (lib/app-update/body.ts)。デスクトップ版だけ (スマホはストアで更新する)。 */
 export type BodyStatus =
-  /** ブラウザー、iOS、読み込む前 */
-  | { kind: "none" }
-  | { kind: "desktop"; status: DesktopBodyStatus }
-  | {
-      kind: "android";
-      info: AndroidBodyInfo;
-      /** サーバーが配っている、いまより新しい APK。 */
-      release: AndroidRelease | null;
-      phase: "idle" | "checking" | "downloading" | "ready" | "installing";
-      error: string | null;
-    };
+  /** ブラウザー、スマホアプリ、読み込む前 */
+  { kind: "none" } | { kind: "desktop"; status: DesktopBodyStatus };
 
 export type AppUpdateState = {
   /** アプリ側の情報。ブラウザー、または読み込む前は null。 */
@@ -219,21 +206,6 @@ async function runCheck(): Promise<void> {
 
 // --- 接続先のサーバーの情報と、アプリ本体の更新 ---
 
-/** 新しい APK を知らせたことを伝える先 (components/app-update-boot.tsx がトーストを出す)。 */
-let onAndroidRelease: ((release: AndroidRelease) => void) | null = null;
-export function setAndroidReleaseListener(
-  listener: ((release: AndroidRelease) => void) | null,
-) {
-  onAndroidRelease = listener;
-}
-
-function setAndroid(
-  next: Partial<Extract<BodyStatus, { kind: "android" }>>,
-): void {
-  if (state.body.kind !== "android") return;
-  setState({ body: { ...state.body, ...next } });
-}
-
 /** 接続先のサーバーの情報を読み、アプリ本体の更新を確かめる。manual は設定から押したとき。 */
 export async function refreshServerInfo(manual = false): Promise<void> {
   const server = apiUrl();
@@ -242,102 +214,19 @@ export async function refreshServerInfo(manual = false): Promise<void> {
     server: info,
     compatibility: info ? compatibility(info.api) : "ok",
   });
-  const platform = bodyPlatform();
-  if (!info || !platform) return;
-  const mode = info.updates.appUpdate;
+  if (!info || bodyPlatform() !== "desktop") return;
 
-  if (platform === "desktop") {
-    try {
-      await desktopBody.configure(server, mode);
-    } catch {
-      // HTTPS ではないサーバー (開発中) や、この仕組みより前のアプリでは本体を更新しない。
-    }
-    try {
-      setState({
-        body: { kind: "desktop", status: await desktopBody.status() },
-      });
-    } catch {
-      setState({ body: { kind: "none" } });
-    }
-    if (manual) await desktopBody.check().catch(() => {});
-    return;
-  }
-
-  let androidInfo: AndroidBodyInfo;
   try {
-    androidInfo = await androidBody.info();
+    await desktopBody.configure(server, info.updates.appUpdate);
   } catch {
-    return; // この仕組みより前のアプリ
+    // HTTPS ではないサーバー (開発中) や、この仕組みより前のアプリでは本体を更新しない。
   }
-  const previous = state.body.kind === "android" ? state.body : null;
-  setState({
-    body: {
-      kind: "android",
-      info: androidInfo,
-      release: previous?.release ?? null,
-      phase: previous?.phase ?? "idle",
-      error: null,
-    },
-  });
-  // Google Play から入れたアプリは Play が更新する (Play 以外からの自己更新は規約で禁止)。
-  if (androidInfo.fromPlayStore || mode === "off") return;
-  if (previous?.phase === "downloading" || previous?.phase === "installing") {
-    return;
-  }
-  setAndroid({ phase: "checking" });
-  let release: AndroidRelease | null;
   try {
-    release = await fetchAndroidRelease(server, androidInfo.versionCode);
-  } catch (error) {
-    setAndroid({ phase: "idle", error: errorMessage(error) });
-    return;
+    setState({ body: { kind: "desktop", status: await desktopBody.status() } });
+  } catch {
+    setState({ body: { kind: "none" } });
   }
-  if (!release) {
-    setAndroid({ phase: "idle", release: null });
-    return;
-  }
-  const known = previous?.release?.versionCode === release.versionCode;
-  setAndroid({ release, phase: known ? (previous?.phase ?? "idle") : "idle" });
-  if (mode === "auto" && !(known && previous?.phase === "ready")) {
-    await downloadAndroidRelease();
-  }
-  if (!known) onAndroidRelease?.(release);
-}
-
-/** サーバーが配っている APK を取得しておく。 */
-export async function downloadAndroidRelease(): Promise<boolean> {
-  const body = state.body;
-  if (body.kind !== "android" || !body.release) return false;
-  if (body.phase === "ready") return true;
-  setAndroid({ phase: "downloading", error: null });
-  try {
-    await androidBody.download(body.release);
-    setAndroid({ phase: "ready" });
-    return true;
-  } catch (error) {
-    setAndroid({ phase: "idle", error: errorMessage(error) });
-    return false;
-  }
-}
-
-/** 取得した APK を入れる (OS の確認画面が出る)。 */
-export async function installAndroidRelease(): Promise<void> {
-  if (!(await downloadAndroidRelease())) return;
-  const body = state.body;
-  if (body.kind !== "android" || !body.release) return;
-  setAndroid({ phase: "installing", error: null });
-  try {
-    const result = await androidBody.install(body.release);
-    setAndroid({
-      phase: "ready",
-      error:
-        result.status === "permission"
-          ? "「この提供元のアプリを許可」をオンにしてから、もう一度「入れる」を押してください。"
-          : null,
-    });
-  } catch (error) {
-    setAndroid({ phase: "ready", error: errorMessage(error) });
-  }
+  if (manual) await desktopBody.check().catch(() => {});
 }
 
 /** デスクトップ版: 取得済みの本体の更新をすぐ入れて再起動する。 */

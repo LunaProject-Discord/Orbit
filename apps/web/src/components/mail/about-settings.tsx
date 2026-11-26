@@ -22,7 +22,6 @@ import {
   type AppUpdateState,
   applyAppUpdate,
   checkForAppUpdate,
-  installAndroidRelease,
   installDesktopUpdateNow,
   refreshServerInfo,
   type UpdateStatus,
@@ -288,7 +287,7 @@ export function AboutSettings() {
 
 /**
  * アプリ本体の更新 (lib/app-update/body.ts)。接続先のサーバーが配る版に揃える。
- * ブラウザーと iOS では出さない (iOS の本体はストアからしか更新できない)。
+ * デスクトップ版だけ。スマホアプリの本体はアプリストアで更新するので出さない。
  */
 function BodyUpdateSection({ update }: { update: AppUpdateState }) {
   const [busy, setBusy] = useState(false);
@@ -309,120 +308,65 @@ function BodyUpdateSection({ update }: { update: AppUpdateState }) {
   }
 
   const mode = server?.updates.appUpdate ?? null;
-  let line: { text: string; tone: "muted" | "ok" | "error"; spin?: boolean };
+  let line: { text: string; tone: "muted" | "ok" };
+  const s = body.status;
   let action: React.ReactNode = null;
-
-  if (body.kind === "desktop") {
-    const s = body.status;
-    if (!s.configured) {
-      line = {
-        text: "このビルドでは、アプリ本体の自動更新は無効です。",
-        tone: "muted",
-      };
-    } else if (mode === "off") {
-      line = {
-        text: "接続先のサーバーの設定で、アプリ本体の自動更新は止められています。",
-        tone: "muted",
-      };
-    } else if (s.pending) {
-      line = {
-        text: `${s.pending} を用意しました。アプリを終了するときに入れ替わります。`,
-        tone: "ok",
-      };
-      action = (
-        <Button
-          size="sm"
-          disabled={busy}
-          onClick={() => void run(installDesktopUpdateNow)}
-        >
-          <DownloadIcon />
-          今すぐ更新
-        </Button>
-      );
-    } else if (s.installed) {
-      line = {
-        text: `${s.installed} を入れました。次に起動したときに切り替わります。`,
-        tone: "ok",
-      };
-    } else {
-      line = {
-        text:
-          mode === "auto"
-            ? "接続先のサーバーに新しい版があれば、自動で取得して入れ替えます。"
-            : "接続先のサーバーに新しい版があれば、お知らせします。",
-        tone: "muted",
-      };
-    }
-    if (s.configured && mode !== "off") {
-      action = (
-        <>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => void run(() => refreshServerInfo(true))}
-          >
-            <RefreshCwIcon />
-            更新を確認
-          </Button>
-          {action}
-        </>
-      );
-    }
+  if (!s.configured) {
+    line = {
+      text: "このビルドでは、アプリ本体の自動更新は無効です。",
+      tone: "muted",
+    };
+  } else if (mode === "off") {
+    line = {
+      text: "接続先のサーバーの設定で、アプリ本体の自動更新は止められています。",
+      tone: "muted",
+    };
+  } else if (s.pending) {
+    line = {
+      text: `${s.pending} を用意しました。アプリを終了するときに入れ替わります。`,
+      tone: "ok",
+    };
+    action = (
+      <Button
+        size="sm"
+        disabled={busy}
+        onClick={() => void run(installDesktopUpdateNow)}
+      >
+        <DownloadIcon />
+        今すぐ更新
+      </Button>
+    );
+  } else if (s.installed) {
+    line = {
+      text: `${s.installed} を入れました。次に起動したときに切り替わります。`,
+      tone: "ok",
+    };
   } else {
-    if (body.info.fromPlayStore) {
-      line = {
-        text: "Google Play から入れたアプリは、Google Play で更新されます。",
-        tone: "muted",
-      };
-    } else if (mode === "off") {
-      line = {
-        text: "接続先のサーバーの設定で、アプリ本体の自動更新は止められています。",
-        tone: "muted",
-      };
-    } else if (body.release) {
-      const version = body.release.version;
-      line =
-        body.phase === "downloading"
-          ? { text: `${version} を取得しています…`, tone: "muted", spin: true }
-          : body.phase === "installing"
-            ? { text: `${version} を入れています…`, tone: "muted", spin: true }
-            : {
-                text: `新しい版 ${version} を入れられます。入れるときは OS の確認が出ます。`,
-                tone: "ok",
-              };
-      action = (
-        <Button
-          size="sm"
-          disabled={
-            busy || body.phase === "downloading" || body.phase === "installing"
-          }
-          onClick={() => void run(installAndroidRelease)}
-        >
-          <DownloadIcon />
-          入れる
-        </Button>
-      );
-    } else {
-      line =
-        body.phase === "checking"
-          ? { text: "確認しています…", tone: "muted", spin: true }
-          : { text: `最新の版です (${body.info.versionName})。`, tone: "ok" };
-      action = (
+    line = {
+      text:
+        mode === "auto"
+          ? "接続先のサーバーに新しい版があれば、自動で取得して入れ替えます。"
+          : "接続先のサーバーに新しい版があれば、お知らせします。",
+      tone: "muted",
+    };
+  }
+  if (s.configured && mode !== "off") {
+    action = (
+      <>
         <Button
           variant="outline"
           size="sm"
-          disabled={busy || body.phase === "checking"}
+          disabled={busy}
           onClick={() => void run(() => refreshServerInfo(true))}
         >
           <RefreshCwIcon />
           更新を確認
         </Button>
-      );
-    }
+        {action}
+      </>
+    );
   }
 
-  const error = body.kind === "android" ? body.error : null;
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
@@ -434,13 +378,9 @@ function BodyUpdateSection({ update }: { update: AppUpdateState }) {
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5">
         <StatusLine
           tone={line.tone}
-          icon={line.spin ? null : line.tone === "ok" ? CircleCheckIcon : null}
-          spin={line.spin}
+          icon={line.tone === "ok" ? CircleCheckIcon : null}
         >
           {line.text}
-          {error && (
-            <span className="mt-1 block text-destructive">{error}</span>
-          )}
         </StatusLine>
         {action && <div className="flex flex-wrap gap-2">{action}</div>}
       </div>

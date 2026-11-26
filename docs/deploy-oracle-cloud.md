@@ -510,8 +510,8 @@ scp <利用者名>@<サーバーの IP アドレス>:orbit-latest.dump.gpg .
 | `ORBIT_UPDATE_VERSION` | | 版を固定する (例 `1.2.0`)。書くとチャネルより優先する |
 | `ORBIT_SERVER_AUTO_UPDATE` | | `true` なら、`deploy/auto-update.sh install` で入れたタイマーで毎日更新する。既定は `false` |
 | `ORBIT_UPDATE_TIME` | | 自動更新の時刻 (`HH:MM`)。既定は `04:30`。変えたら `auto-update.sh install` をやり直す |
-| `ORBIT_APP_UPDATE` | | アプリ本体の更新。`auto` (既定)、`notify` (知らせるだけ)、`off` (配らない) |
-| `ORBIT_RELEASES_REPO` / `ORBIT_RELEASES_TOKEN` | | アプリ本体のファイルを取り込むリポジトリ (既定は git の origin) と、非公開のときの読み取り用トークン |
+| `ORBIT_APP_UPDATE` | | デスクトップ版の本体の更新。`auto` (既定)、`notify` (知らせるだけ)、`off` (配らない)。スマホアプリはストアで更新する |
+| `ORBIT_RELEASES_REPO` / `ORBIT_RELEASES_TOKEN` | | デスクトップ版のファイルを取り込むリポジトリ (既定は git の origin) と、非公開のときの読み取り用トークン |
 
 次の値は `DOMAIN` などから `deploy/compose.yml` が決めるので、`deploy/.env` に書く必要はありません (書いても上書きされます)。
 
