@@ -286,6 +286,40 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     expect(await again.json()).toEqual({ error: "account_exists" });
   });
 
+  it("送信サーバーを使わない受信専用のアカウントを追加できる", async () => {
+    const response = await request("POST", "/accounts", {
+      email: "jiro@docomo.ne.jp",
+      incomingProtocol: "pop3",
+      imap: { host: "mail.spmode.ne.jp", port: 995, secure: true },
+      smtp: null,
+      username: "jiro",
+      password: "secret",
+    });
+    expect(response.status).toBe(201);
+    expect(seen.smtp).toHaveLength(0);
+    const { account } = (await response.json()) as {
+      account: Record<string, unknown>;
+    };
+    expect(account).toMatchObject({ smtpHost: null, smtpPort: null });
+
+    // サーバー設定の確認でも、送信は確かめない。
+    const test = await request(
+      "POST",
+      `/accounts/${account.id as string}/server/test`,
+      {
+        imap: { host: "mail.spmode.ne.jp", port: 995, secure: true },
+        smtp: null,
+        username: "jiro",
+      },
+    );
+    expect(await test.json()).toEqual({
+      ok: true,
+      imap: { ok: true },
+      smtp: { ok: true },
+    });
+    expect(seen.smtp).toHaveLength(0);
+  });
+
   it("受信方式を POP3 に変えると、取り込み済みのメールとフォルダを消す", async () => {
     const id = await addAccount(userId, "switch@old.example");
     const [box] = await db

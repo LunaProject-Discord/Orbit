@@ -5,10 +5,12 @@ import { type FormEvent, useId, useState } from "react";
 import {
   IncomingProtocolPicker,
   PopOptions,
+  ReceiveOnlySwitch,
   ServerFields,
   type ServerForm,
   ServerSummary,
   serverFormFromSaved,
+  smtpFormFromIncoming,
   switchIncomingServerForm,
   toServerSettings,
 } from "@/components/mail/server-settings";
@@ -29,6 +31,7 @@ import {
   type AccountServerInput,
   ApiError,
   type IncomingProtocol,
+  isReceiveOnly,
   NetworkError,
   type PopSettings,
   ServerCheckError,
@@ -201,8 +204,18 @@ function AccountServerForm({
   const [imap, setImap] = useState<ServerForm>(() =>
     serverFormFromSaved(account.imapHost, account.imapPort, account.imapSecure),
   );
+  /** 受信専用 (送信サーバーを使わない) にするか。今の設定から始める。 */
+  const [receiveOnly, setReceiveOnly] = useState(() => isReceiveOnly(account));
+  // 受信専用のアカウントは送信サーバーの設定を持たないので、オフにしたときに備えて、
+  // 受信サーバーと同じホストと SSL/TLS の決まったポート番号を入れておく。
   const [smtp, setSmtp] = useState<ServerForm>(() =>
-    serverFormFromSaved(account.smtpHost, account.smtpPort, account.smtpSecure),
+    isReceiveOnly(account)
+      ? smtpFormFromIncoming(account.imapHost)
+      : serverFormFromSaved(
+          account.smtpHost,
+          account.smtpPort,
+          account.smtpSecure,
+        ),
   );
   /** 今の受信方式。Google のログインから切り替えるときは IMAP のまま。 */
   const savedProtocol: IncomingProtocol =
@@ -232,7 +245,8 @@ function AccountServerForm({
     ...(requirePassword ? {} : { incomingProtocol: protocol }),
     ...(protocol === "pop3" ? { pop } : {}),
     imap: toServerSettings(imap),
-    smtp: toServerSettings(smtp),
+    // 受信専用なら null を送る。送信サーバーは確かめない。
+    smtp: receiveOnly ? null : toServerSettings(smtp),
     username: username.trim(),
     // Google のアプリ パスワードは 4 文字ごとの空白入りで表示される。
     ...(password
@@ -298,7 +312,9 @@ function AccountServerForm({
         <DialogDescription className="break-all">
           {requirePassword
             ? `${account.email} を、Google のログインの代わりにアプリ パスワードで接続します。保存する前に、受信と送信のサーバーへ接続できるかを確認します。`
-            : `${account.email} の受信と送信のサーバーを変更します。保存する前に、両方のサーバーへ接続できるかを確認します。`}
+            : receiveOnly
+              ? `${account.email} の受信サーバーを変更します。保存する前に、受信サーバーへ接続できるかを確認します。`
+              : `${account.email} の受信と送信のサーバーを変更します。保存する前に、両方のサーバーへ接続できるかを確認します。`}
         </DialogDescription>
       </DialogHeader>
       <form onSubmit={handleSubmit} className="flex flex-col gap-5">
@@ -379,14 +395,28 @@ function AccountServerForm({
         {protocol === "pop3" && (
           <PopOptions value={pop} onChange={setPop} disabled={busy !== null} />
         )}
-        <ServerFields
-          idPrefix={`${id}-smtp`}
-          kind="smtp"
-          value={smtp}
-          onChange={setSmtp}
-          disabled={busy !== null}
-          check={result?.smtp}
-        />
+        {/* Google のログインから切り替えるときは、受信方式と同じく今の送信の設定のまま。 */}
+        {!requirePassword && (
+          <ReceiveOnlySwitch
+            checked={receiveOnly}
+            onCheckedChange={(checked) => {
+              setReceiveOnly(checked);
+              setResult(null);
+            }}
+            disabled={busy !== null}
+          />
+        )}
+        {/* 受信専用のときは、送信サーバーの欄を隠す (入力した値は残しておく)。 */}
+        {!receiveOnly && (
+          <ServerFields
+            idPrefix={`${id}-smtp`}
+            kind="smtp"
+            value={smtp}
+            onChange={setSmtp}
+            disabled={busy !== null}
+            check={result?.smtp}
+          />
+        )}
         {legacyOffered && (
           <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
             <div className="min-w-0 flex-1">

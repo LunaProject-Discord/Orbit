@@ -219,6 +219,17 @@ export type Account = {
 
 export type ServerSettings = { host: string; port: number; secure: boolean };
 
+/**
+ * 受信専用のアカウントか。IMAP / POP3 で受信するアカウントのうち、送信 (SMTP) サーバーを
+ * 設定していないもの。このアカウントを差出人にしてメールを送ることはできない。
+ */
+export function isReceiveOnly(
+  account: Partial<Pick<Account, "protocol" | "smtpHost">>,
+): boolean {
+  // 項目が無い (古い形の値) ときは、送信できるものとして扱う。
+  return account.protocol !== "graph" && account.smtpHost === null;
+}
+
 /** パスワードで追加するアカウントの受信方式。 */
 export type IncomingProtocol = "imap" | "pop3";
 
@@ -243,7 +254,11 @@ export type CreateAccountInput = {
    * IMAP で受信し provider が gmail か icloud なら省略でき、サーバーが決まった値を使う。
    */
   imap?: ServerSettings;
-  smtp?: ServerSettings;
+  /**
+   * 送信 (SMTP) サーバー。null にすると受信専用のアカウントになり、送信サーバーは確かめない。
+   * 省略したときは imap と同じく、provider が gmail か icloud ならサーバーが決まった値を使う。
+   */
+  smtp?: ServerSettings | null;
   /** 省略するとメールアドレスを使う。 */
   username?: string;
   password: string;
@@ -1168,7 +1183,8 @@ export type AccountServerInput = {
   pop?: PopSettings;
   /** 受信サーバー (POP3 で受信するなら POP3 サーバー)。 */
   imap: ServerSettings;
-  smtp: ServerSettings;
+  /** 送信 (SMTP) サーバー。null にすると受信専用にする (送信サーバーは確かめない)。 */
+  smtp: ServerSettings | null;
   username: string;
   /** 省くと保存済みのパスワードを使う。 */
   password?: string;
@@ -1192,6 +1208,7 @@ export type ServerCheckResult = {
   ok: boolean;
   /** 受信サーバー (IMAP または POP3) の結果。 */
   imap: ServerCheck;
+  /** 送信サーバーの結果。受信専用 (smtp が null) のときは確かめず、ok になる。 */
   smtp: ServerCheck;
 };
 

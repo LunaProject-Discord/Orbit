@@ -9,6 +9,7 @@ import {
   replaceSignature,
   resolveRecipients,
   sanitizeHtml,
+  senderAccount,
   withReplyText,
 } from "@/lib/compose";
 
@@ -86,6 +87,54 @@ const signed = [{ ...accounts[0], signatureHtml: SIGNATURE }] as {
   email: string;
   signatureHtml: string;
 }[];
+
+describe("受信専用のアカウント", () => {
+  const receiveOnly = {
+    id: "acc1",
+    email: "Me@example.com",
+    protocol: "pop3" as const,
+    smtpHost: null,
+  };
+  const sendable = {
+    id: "acc2",
+    email: "other@example.com",
+    protocol: "imap" as const,
+    smtpHost: "smtp.example.com",
+    signatureHtml: SIGNATURE,
+  };
+
+  it("senderAccount は受信専用のアカウントを避ける", () => {
+    expect(senderAccount([receiveOnly, sendable], "acc1")?.id).toBe("acc2");
+    expect(senderAccount([receiveOnly, sendable], "acc2")?.id).toBe("acc2");
+    expect(senderAccount([receiveOnly, sendable], null)?.id).toBe("acc2");
+    expect(senderAccount([receiveOnly], "acc1")).toBeNull();
+    // Microsoft Graph のアカウントは SMTP を使わないが、送信できる。
+    expect(
+      senderAccount(
+        [{ id: "g", protocol: "graph" as const, smtpHost: null }],
+        "g",
+      )?.id,
+    ).toBe("g");
+  });
+
+  it("受信専用のアカウントに届いたメールへの返信は、送信できるアカウントから送る", () => {
+    const draft = buildDraftFrom("replyAll", original, [receiveOnly, sendable]);
+    expect(draft.accountId).toBe("acc2");
+    // 別のアカウントから送るので、会話の署名は当てはまらない。アカウントの署名を使う。
+    expect(draft.threadKey).toBeNull();
+    expect(draft.html).toContain("aoi@example.com");
+    // 受信専用のアカウントのアドレスも自分のものとして扱い、Cc には入れない。
+    expect(draft.cc.list.map((entry) => entry.address)).toEqual([
+      "sato@example.com",
+      "suzuki@example.com",
+    ]);
+  });
+
+  it("送信できるアカウントが無ければ、受け取ったアカウントのままにする", () => {
+    const draft = buildDraftFrom("forward", original, [receiveOnly]);
+    expect(draft.accountId).toBe("acc1");
+  });
+});
 
 describe("buildDraftFrom", () => {
   it("返信は差出人だけに宛て、本文を引用する", () => {

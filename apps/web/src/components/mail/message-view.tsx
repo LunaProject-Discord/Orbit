@@ -89,7 +89,7 @@ import {
   replaceCidReferences,
   splitAttachments,
 } from "@/lib/attachments";
-import type { ComposeMode } from "@/lib/compose";
+import { type ComposeMode, senderAccount } from "@/lib/compose";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { isDesktopApp } from "@/lib/desktop/app";
 import { attachTextMenu } from "@/lib/desktop/text-menu";
@@ -616,15 +616,27 @@ export function MessageView({
     sender && own.has(sender.address.toLowerCase())
       ? (last?.to[0] ?? sender)
       : sender;
+  // 返信に使うアカウント。受信専用のアカウントに届いたメールは、送信できるほかのアカウントから返す。
+  // 送信できるアカウントが無ければ、返信欄は出さない (作成画面の「返信」で理由を知らせる)。
+  const replyAccount = last ? senderAccount(accounts, last.accountId) : null;
   const quickReplyBox = preferences.quickReply &&
     last &&
     replyTo &&
+    replyAccount &&
     !last.draft && (
       <div className="shrink-0 px-4 pt-2 pb-4 sm:px-6">
         <QuickReply
           // 別のメールを開いたり、新しいメールが届いたりしたら、宛先が変わるので作り直す。
           key={last.id}
           recipient={addressLabel(replyTo)}
+          from={
+            replyAccount.id === last.accountId ||
+            !accounts.some((item) => item.id === last.accountId)
+              ? undefined
+              : replyAccount.displayName
+                ? `${replyAccount.displayName} <${replyAccount.email}>`
+                : replyAccount.email
+          }
           onSend={quickReply}
           onExpand={(text) => compose("reply", text)}
         />

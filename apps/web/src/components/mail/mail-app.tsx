@@ -145,9 +145,12 @@ import {
   draftSignature,
   htmlToText,
   loadUnsavedDrafts,
+  NO_SENDABLE_ACCOUNT,
   newDraft,
+  RECEIVE_ONLY_SEND_ERROR,
   removeUnsavedDraft,
   sanitizeHtml,
+  senderAccount,
   storeUnsavedDraft,
   withReplyText,
 } from "@/lib/compose";
@@ -1983,9 +1986,14 @@ const MailView = memo(function MailView({
     }
   }, [standaloneMessage, selectedMessageId]);
 
-  /** 新しいメールを書き始める。from を省くと、いま選んでいるアカウント (無ければ先頭) から。 */
+  /**
+   * 新しいメールを書き始める。from を省くと、いま選んでいるアカウント (無ければ先頭) から。
+   * そのアカウントが受信専用なら、送信できるアカウントのうち先頭のものから送る。
+   * 送信できるアカウントが無ければ、そのまま開く (作成画面で送れないことを知らせる)。
+   */
   function handleNewMail(from?: string) {
-    const accountId = from ?? selectedAccountId ?? accounts?.[0]?.id;
+    const preferred = from ?? selectedAccountId ?? accounts?.[0]?.id;
+    const accountId = senderAccount(accounts ?? [], preferred)?.id ?? preferred;
     if (!accountId) return;
     const account = accounts?.find((item) => item.id === accountId);
     showInCompose(newDraft(accountId, account?.signatureHtml), false);
@@ -1993,7 +2001,10 @@ const MailView = memo(function MailView({
 
   /** プロフィールカードから、そのアドレス宛ての新しいメールを書き始める。 */
   function handleComposeTo(address: Address, accountId: string) {
-    const account = accounts?.find((item) => item.id === accountId);
+    // 開いているメールのアカウントが受信専用なら、送信できるほかのアカウントから送る。
+    const account =
+      senderAccount(accounts ?? [], accountId) ??
+      accounts?.find((item) => item.id === accountId);
     if (!account) return;
     const to = { list: [address], text: "" };
     // この相手に署名を決めてあれば、アカウントの署名の代わりに使う。
@@ -2090,6 +2101,11 @@ const MailView = memo(function MailView({
       setNotice({ message: QUICK_REPLY_NO_RECIPIENT, tone: "error" });
       return false;
     }
+    // 送信できるアカウントが無いと、受信専用のアカウントのままになり送れない。
+    if (!senderAccount(accounts ?? [], reply.accountId)) {
+      setNotice({ message: NO_SENDABLE_ACCOUNT, tone: "error" });
+      return false;
+    }
     const html = sanitizeHtml(reply.html);
     let result: "sent" | "queued";
     try {
@@ -2109,8 +2125,14 @@ const MailView = memo(function MailView({
         },
         [],
       );
-    } catch {
-      setNotice({ message: QUICK_REPLY_ERROR, tone: "error" });
+    } catch (cause) {
+      setNotice({
+        message:
+          cause instanceof ApiError && cause.code === "receive_only"
+            ? RECEIVE_ONLY_SEND_ERROR
+            : QUICK_REPLY_ERROR,
+        tone: "error",
+      });
       return false;
     }
     setNotice({
