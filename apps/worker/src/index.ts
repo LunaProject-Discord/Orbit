@@ -19,6 +19,7 @@ import {
   PushSender,
   webPushTransport,
 } from "./new-mail.js";
+import { buildSearchIndex } from "./search-index.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -68,6 +69,12 @@ if (!webPush) {
   );
 }
 
+// 取り込み済みのメールの検索用の文字列と、検索の索引を裏で作る (そろっていれば確かめるだけ)。
+let stopping = false;
+void buildSearchIndex(pool, { stopped: () => stopping }).catch((error) => {
+  console.error("検索の索引を作れませんでした。", error);
+});
+
 // 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。
 
 // 置き場の添付ファイルは、7 日たったら消す (送信用に受け取ったものも、受信メールから
@@ -98,6 +105,7 @@ void sweep();
 const sweepTimer = setInterval(sweep, 60 * 60_000);
 
 async function shutdown() {
+  stopping = true;
   clearInterval(sweepTimer);
   await manager.stop();
   await pool.end();

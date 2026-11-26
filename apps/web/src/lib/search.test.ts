@@ -53,6 +53,20 @@ describe("highlightParts", () => {
     ]);
   });
 
+  it("全角と半角・空白の有無を区別せずに探し、元の文字のまま目立たせる", () => {
+    expect(highlightParts("ＡＢＣ商事のご請求\n書", ["abc", "請求書"])).toEqual(
+      [
+        { text: "ＡＢＣ", match: true },
+        { text: "商事のご", match: false },
+        { text: "請求\n書", match: true },
+      ],
+    );
+    expect(highlightParts("ｱﾏｿﾞﾝで購入", ["アマゾン"])).toEqual([
+      { text: "ｱﾏｿﾞﾝ", match: true },
+      { text: "で購入", match: false },
+    ]);
+  });
+
   it("語が無ければそのまま返す", () => {
     expect(highlightParts("件名", [])).toEqual([
       { text: "件名", match: false },

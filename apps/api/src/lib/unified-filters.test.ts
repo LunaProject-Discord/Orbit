@@ -117,8 +117,8 @@ describe("統合フォルダの条件", () => {
         { type: "text", field: "from", value: "b", negate: false },
       ],
     });
-    expect(none?.sql).toMatch(/^not coalesce\(\(.* or .*\), false\)$/);
-    expect(none?.params).toEqual(["%a%", "%b%"]);
+    expect(none?.sql).toMatch(/^not coalesce\(\(.* or .*\), false\)$/s);
+    expect(none?.params).toEqual([2, "a", 2, "b"]);
   });
 
   it("含まないは、列が空でも当てはまるよう coalesce してから否定する", () => {
@@ -129,7 +129,7 @@ describe("統合フォルダの条件", () => {
       negate: true,
     });
     expect(query?.sql).toMatch(/^not coalesce\(/);
-    expect(query?.params).toEqual(["%50\\%%"]);
+    expect(query?.params).toEqual([1, "50%"]);
   });
 });
 
@@ -141,7 +141,7 @@ describe("検索の書き方の条件", () => {
       negate: false,
     });
     expect(query?.sql).toMatch(/ or /);
-    expect(query?.params).toContain("%github%");
-    expect(query?.params).toContain("%請求書%");
+    expect(query?.params).toContain("github");
+    expect(query?.params).toContain("請求書");
   });
 });

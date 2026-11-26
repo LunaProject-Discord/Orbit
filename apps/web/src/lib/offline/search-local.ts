@@ -1,4 +1,5 @@
 import type { Address, SearchFilters } from "@/lib/api";
+import { findFolded, foldForSearch } from "@/lib/search-fold";
 
 /**
  * 端末内に保存したメールの検索 (オフライン用)。
@@ -460,10 +461,9 @@ export function hasPositiveFolder(search: ParsedSearch): boolean {
 }
 
 function addressText(list: Address[]): string {
-  return list
-    .map((item) => `${item.name ?? ""} ${item.address}`)
-    .join(" ")
-    .toLowerCase();
+  return foldForSearch(
+    list.map((item) => `${item.name ?? ""} ${item.address}`).join(" "),
+  );
 }
 
 /** その日の 0 時 (この端末のタイムゾーン) を、日数をずらして返す。 */
@@ -490,14 +490,15 @@ export function matchSearch(
   const received = Date.parse(doc.receivedAt);
   if (search.until && received >= startOfDay(search.until, 1)) return null;
 
-  const subject = doc.subject.toLowerCase();
+  // 全角と半角・大文字と小文字・空白の有無は区別しない (サーバーの検索と同じ)。
+  const subject = foldForSearch(doc.subject);
   const from = addressText(doc.from);
   const recipients = addressText(doc.recipients);
-  const body = `${doc.snippet}\n${doc.body ?? ""}`.toLowerCase();
+  const body = foldForSearch(`${doc.snippet}\n${doc.body ?? ""}`);
   const leafMatches = (leaf: SearchLeaf): boolean => {
     switch (leaf.kind) {
       case "text": {
-        const needle = leaf.text.toLowerCase();
+        const needle = foldForSearch(leaf.text);
         let found: boolean;
         switch (leaf.field) {
           case "from":
@@ -559,13 +560,15 @@ export function matchSearch(
         term !== null && (term.field === "any" || term.field === "body"),
     );
   if (!excerptTerm || !doc.body) return { excerpt: null };
-  const needle = excerptTerm.text.toLowerCase();
-  if (subject.includes(needle) || doc.snippet.toLowerCase().includes(needle)) {
+  if (
+    findFolded(doc.subject, excerptTerm.text) ||
+    findFolded(doc.snippet, excerptTerm.text)
+  ) {
     return { excerpt: null };
   }
-  const position = doc.body.toLowerCase().indexOf(needle);
-  if (position < 0) return { excerpt: null };
-  const start = Math.max(0, position - EXCERPT_BEFORE);
+  const found = findFolded(doc.body, excerptTerm.text);
+  if (!found) return { excerpt: null };
+  const start = Math.max(0, found.start - EXCERPT_BEFORE);
   const text = doc.body
     .slice(start, start + EXCERPT_LENGTH)
     .replace(/\s+/g, " ")

@@ -1,4 +1,5 @@
 import type { SearchFilters, SearchParams } from "@/lib/api";
+import { foldForSearch, foldWithMap } from "@/lib/search-fold";
 
 export const emptyFilters: SearchFilters = {
   from: "",
@@ -34,25 +35,27 @@ export function isSearchActive(
 export type HighlightPart = { text: string; match: boolean };
 
 /**
- * 文字列を、検索した語に当たる部分とそれ以外に分ける (大文字と小文字は区別しない)。
+ * 文字列を、検索した語に当たる部分とそれ以外に分ける (全角と半角・大文字と小文字・空白の有無は区別しない)。
  * 語が重なるときは、先に現れるもの、同じ位置なら長いものを優先する。
  */
 export function highlightParts(text: string, terms: string[]): HighlightPart[] {
+  // 検索と同じく、全角と半角・大文字と小文字・空白の有無を区別せずに探す。
   const needles = terms
-    .map((term) => term.toLowerCase())
+    .map((term) => foldForSearch(term))
     .filter((term) => term !== "");
   if (needles.length === 0 || text === "") return [{ text, match: false }];
-  const lower = text.toLowerCase();
-  // 小文字にすると長さが変わる文字があると位置がずれるので、その場合は目立たせない。
-  if (lower.length !== text.length) return [{ text, match: false }];
+  const mapped = foldWithMap(text);
+  const folded = mapped.folded;
 
   const parts: HighlightPart[] = [];
+  // index はそろえた文字列での位置、done は元の文字列でどこまで出したか。
   let index = 0;
-  while (index < text.length) {
+  let done = 0;
+  while (index < folded.length) {
     let start = -1;
     let length = 0;
     for (const needle of needles) {
-      const found = lower.indexOf(needle, index);
+      const found = folded.indexOf(needle, index);
       if (found === -1) continue;
       if (
         start === -1 ||
@@ -64,14 +67,19 @@ export function highlightParts(text: string, terms: string[]): HighlightPart[] {
       }
     }
     if (start === -1) break;
-    if (start > index) {
-      parts.push({ text: text.slice(index, start), match: false });
+    const from = Math.max(done, mapped.start[start] as number);
+    const to = mapped.end[start + length - 1] as number;
+    if (from > done) {
+      parts.push({ text: text.slice(done, from), match: false });
     }
-    parts.push({ text: text.slice(start, start + length), match: true });
+    if (to > from) {
+      parts.push({ text: text.slice(from, to), match: true });
+      done = to;
+    }
     index = start + length;
   }
-  if (index < text.length) {
-    parts.push({ text: text.slice(index), match: false });
+  if (done < text.length) {
+    parts.push({ text: text.slice(done), match: false });
   }
   return parts;
 }
