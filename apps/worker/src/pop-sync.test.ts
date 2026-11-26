@@ -26,7 +26,11 @@ import {
   popAttachmentDownloader,
   receivePop,
 } from "./pop-account-sync.js";
-import { applyPopOperation, ensurePopMailboxes } from "./pop-store.js";
+import {
+  applyPopOperation,
+  ensurePopMailboxes,
+  fillPopSenderChecks,
+} from "./pop-store.js";
 
 const adminUrl = process.env.DATABASE_URL;
 
@@ -482,5 +486,35 @@ describe.skipIf(!adminUrl)("POP3 の受信", () => {
     expect(await paths()).toEqual(
       ["Archive", "INBOX", "Junk", "Sent", "Trash"].sort(),
     );
+  });
+
+  it("送信元の確認結果が無いメールに、見られたものだけ原文から認証結果を入れる", async () => {
+    const auth =
+      "Authentication-Results: mx.example.jp; spf=pass smtp.mailfrom=example.jp; dmarc=pass header.from=example.jp\r\n";
+    const server = [
+      { uidl: "auth-1", raw: auth + mail(1).raw },
+      { uidl: "auth-2", raw: auth + mail(2).raw },
+    ];
+    const { factory } = fakeClient(server);
+    await receivePop(db, account, inbox, factory({} as never), {
+      stopped,
+      log,
+    });
+    // 確認結果を足す前に取り込んだメールの状態にする。
+    await db
+      .update(messages)
+      .set({ senderCheck: null, authResults: null })
+      .where(eq(messages.accountId, account.id));
+    const rows = await inboxMessages();
+    const [seen, unseen] = rows;
+    await fillPopSenderChecks(db, account, [seen?.id as string]);
+    const checks = await db
+      .select({ id: messages.id, senderCheck: messages.senderCheck })
+      .from(messages)
+      .where(eq(messages.accountId, account.id));
+    const byId = new Map(checks.map((row) => [row.id, row.senderCheck]));
+    // 表示名「ドコモ」は別のドメインなので名前の注意も付くが、DMARC の合格は読めている。
+    expect(byId.get(seen?.id as string)).toMatchObject({ verified: true });
+    expect(byId.get(unseen?.id as string)).toBeNull();
   });
 });

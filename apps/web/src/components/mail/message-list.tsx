@@ -218,6 +218,14 @@ type RowHandlers = {
 };
 
 /** 検索した語に当たる部分を目立たせて表示する。 */
+/**
+ * 先にサーバーで取得してほしいものがあるメールか。本文がまだのものと、
+ * 送信元の確認結果がまだのもの (その項目を足す前に取り込んだメール。見えたものだけ補う)。
+ */
+function needsPrefetch(message: MessageSummary): boolean {
+  return message.bodyPending === true || message.senderCheck === null;
+}
+
 function Highlighted({ text, terms }: { text: string; terms: string[] }) {
   if (terms.length === 0) return text;
   let offset = 0;
@@ -426,7 +434,7 @@ const MessageRow = memo(function MessageRow({
             className="absolute top-0 left-0 w-full border-b"
             onPointerEnter={(event) => {
               if (event.pointerType === "mouse") {
-                prefetcher.hover(message.bodyPending ? message.id : null);
+                prefetcher.hover(needsPrefetch(message) ? message.id : null);
                 clearTimeout(warmTimer.current);
                 warmTimer.current = setTimeout(
                   () => handlers.warm(message),
@@ -897,7 +905,7 @@ export function MessageList({
     .filter((row) => row.end > viewTop && row.start < viewBottom)
     .flatMap((row) => {
       const item = items[row.index];
-      return item?.kind === "row" && item.message.bodyPending
+      return item?.kind === "row" && needsPrefetch(item.message)
         ? [item.message.id]
         : [];
     })

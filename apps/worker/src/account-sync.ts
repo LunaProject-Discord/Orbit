@@ -13,7 +13,11 @@ import {
   AttachmentRequests,
   ImapAttachmentDownloader,
 } from "./attachment-fetch.js";
-import { BodyRequests, imapBodyFetcher } from "./body-fetch.js";
+import {
+  BodyRequests,
+  imapBodyFetcher,
+  imapHeaderFetcher,
+} from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { imapDraftRemote } from "./draft-imap.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -171,6 +175,9 @@ export class AccountSync {
       db,
       account,
       imapBodyFetcher(db, (task) => this.attachmentDownloader.withClient(task)),
+      imapHeaderFetcher(db, (task) =>
+        this.attachmentDownloader.withClient(task),
+      ),
       (message) => this.log(message),
     );
   }

@@ -579,40 +579,7 @@ export async function fetchGraphHeaders(
   for (let i = 0; i < batch.length; i += BODY_CONCURRENCY) {
     await Promise.all(
       batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
-        let message: GraphMessage | null = null;
-        if (row.providerMessageId) {
-          try {
-            message = await client.get<GraphMessage>(
-              `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=sender,internetMessageHeaders`,
-              signal,
-            );
-          } catch (error) {
-            // サーバーから消えていた場合は、空のまま取り込み済みにする。
-            if (!(error instanceof GraphError && error.notFound)) throw error;
-          }
-        }
-        const sender = toMessageValues({
-          id: row.providerMessageId ?? "",
-          sender: message?.sender ?? null,
-        }).sender;
-        const list = listInfoFromGraph(
-          message?.internetMessageHeaders,
-          row.from,
-        );
-        await db
-          .update(messages)
-          .set({ sender, ...list, headersFetchedAt: new Date() })
-          .where(eq(messages.id, row.messageId));
-        // 画面に出る内容が増えたメールだけ、端末へ変更を知らせる。
-        const fromAddresses = new Set(
-          row.from.map((item) => item.address.toLowerCase()),
-        );
-        if (
-          list.listId !== null ||
-          list.listUnsubscribe.length > 0 ||
-          list.senderCheck.warnings.length > 0 ||
-          sender?.some((item) => !fromAddresses.has(item.address.toLowerCase()))
-        ) {
+        if (await fetchGraphMessageHeaders(db, client, row, signal)) {
           changed.push(row.messageId);
         }
       }),
@@ -622,4 +589,49 @@ export async function fetchGraphHeaders(
     recordChanges(tx, account.userId, "message", "upsert", changed),
   );
   return pending.length > HEADER_BATCH;
+}
+
+/**
+ * メッセージ 1 通の代理送信 (sender) とメーリングリストの情報、認証結果を取得して保存する。
+ * 画面に出る内容 (注意・メーリングリスト・代理送信) が増えたら true を返す。
+ * 変更の通知 (recordChanges) は呼び出し側で行う。
+ */
+export async function fetchGraphMessageHeaders(
+  db: Database,
+  client: GraphClient,
+  row: { messageId: string; providerMessageId: string | null; from: Address[] },
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let message: GraphMessage | null = null;
+  if (row.providerMessageId) {
+    try {
+      message = await client.get<GraphMessage>(
+        `/me/messages/${encodeURIComponent(row.providerMessageId)}?$select=sender,internetMessageHeaders`,
+        signal,
+      );
+    } catch (error) {
+      // サーバーから消えていた場合は、空のまま取り込み済みにする。
+      if (!(error instanceof GraphError && error.notFound)) throw error;
+    }
+  }
+  const sender = toMessageValues({
+    id: row.providerMessageId ?? "",
+    sender: message?.sender ?? null,
+  }).sender;
+  const list = listInfoFromGraph(message?.internetMessageHeaders, row.from);
+  await db
+    .update(messages)
+    .set({ sender, ...list, headersFetchedAt: new Date() })
+    .where(eq(messages.id, row.messageId));
+  const fromAddresses = new Set(
+    row.from.map((item) => item.address.toLowerCase()),
+  );
+  return (
+    list.listId !== null ||
+    list.listUnsubscribe.length > 0 ||
+    list.senderCheck.warnings.length > 0 ||
+    (sender ?? []).some(
+      (item) => !fromAddresses.has(item.address.toLowerCase()),
+    )
+  );
 }

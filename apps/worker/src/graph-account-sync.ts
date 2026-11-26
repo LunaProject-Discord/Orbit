@@ -16,7 +16,11 @@ import {
   AttachmentRequests,
   graphAttachmentDownloader,
 } from "./attachment-fetch.js";
-import { BodyRequests, graphBodyFetcher } from "./body-fetch.js";
+import {
+  BodyRequests,
+  graphBodyFetcher,
+  graphHeaderFetcher,
+} from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { graphDraftRemote } from "./draft-graph.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -157,6 +161,7 @@ export class GraphAccountSync {
       db,
       account,
       graphBodyFetcher(db, onDemand, this.abort.signal),
+      graphHeaderFetcher(db, onDemand, this.abort.signal),
       (message) => this.log(message),
       ON_DEMAND_BODY_CONCURRENCY,
     );
