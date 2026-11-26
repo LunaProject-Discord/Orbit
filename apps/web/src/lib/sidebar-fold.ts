@@ -18,7 +18,13 @@ export function storeSidebarFolded(folded: boolean): void {
   }
 }
 
-/** カーソルを乗せてから一時的に広げるまでと、離れてから戻すまでの時間 (ミリ秒)。 */
+/**
+ * 折りたたみ中にサイドバーを一時的に広げる、ウィンドウの左端からの幅 (CSS px)。
+ * 帯の項目 (左から 8px〜40px) に掛からないようにしている。
+ */
+export const PEEK_EDGE_WIDTH = 8;
+
+/** カーソルを左端に寄せてから一時的に広げるまでと、離れてから戻すまでの時間 (ミリ秒)。 */
 export const PEEK_OPEN_DELAY = 80;
 export const PEEK_CLOSE_DELAY = 300;
 
