@@ -31,6 +31,7 @@ import {
 } from "@/lib/sidebar-categories";
 import {
   PEEK_CLOSE_DELAY,
+  PEEK_EDGE_WIDTH,
   PEEK_OPEN_DELAY,
   SIDEBAR_FOLD_KEY_LABEL,
 } from "@/lib/sidebar-fold";
@@ -96,8 +97,9 @@ type RailProps = {
 
 /**
  * 折りたたんだサイドバーの代わりに出す、アイコンだけの細い帯。
- * マウスではカーソルを乗せるとサイドバーが上に重なるので、
- * 上から順の並びと高さをサイドバーと揃え、重なった後に押しても同じ項目に当たるようにしている。
+ * 帯の項目はそのまま押して使う。サイドバーを一時的に重ねるのは、
+ * カーソルをウィンドウの左端 (またはそのすぐ近く) に寄せたときだけ (useSidebarPeek)。
+ * 項目は等間隔に並べる (名前とアドレスの 2 行になるアカウントも 1 行と同じ高さ)。
  */
 export function SidebarRail({
   accounts,
@@ -218,8 +220,8 @@ export function SidebarRail({
         selected={folderView && selectedAccountId === account.id}
         onClick={() => onSelect(account.id, null)}
         // サイドバーのアカウントの行と同じく、上に 8px 空ける (並びの先頭では空けない)。
-        // 名前とアドレスの 2 行になる行は 16px 高いので、その分を下に空けて次の項目の高さを揃える。
-        className={cn("mt-2 first:mt-0", account.displayName && "mb-4")}
+        // 名前を設定したアカウント (サイドバーでは 2 行) も、帯では他と同じ間隔で並べる。
+        className="mt-2 first:mt-0"
       >
         {account.icon ? (
           // アイコンや絵文字を選んでいるアカウントは、サイドバーと同じ印を出す。
@@ -390,23 +392,30 @@ function sidebarBusy(aside: HTMLElement): boolean {
 }
 
 /**
- * 折りたたんだサイドバーを、カーソルを乗せている間だけ一時的に広げる。
- * タッチ操作では帯を押すと広がり、外を押すと戻る。
+ * 折りたたんだサイドバーを一時的に広げる。
+ * マウスでは、カーソルをウィンドウの左端 (左から PEEK_EDGE_WIDTH の範囲) に寄せると広がり、
+ * サイドバーから離れると戻る。帯の項目の上に乗せただけでは広げない (帯をそのまま押せるように)。
+ * タッチ操作では、帯の項目以外の所 (空いている所) を押すと広がり、外を押すと戻る。
  */
 export function useSidebarPeek(
   asideRef: RefObject<HTMLElement | null>,
   enabled: boolean,
 ) {
   const [peek, setPeek] = useState(false);
+  const peekRef = useRef(false);
+  peekRef.current = peek;
   const insideRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const aside = asideRef.current;
     if (!enabled || !aside) return;
+    /** 広げる待ち時間中か。 */
+    let opening = false;
     const clear = () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = null;
+      opening = false;
     };
     const tryClose = () => {
       timerRef.current = null;
@@ -417,23 +426,42 @@ export function useSidebarPeek(
       }
       setPeek(false);
     };
+    /** カーソルの位置を見て、左端なら広げる準備、離れたら準備を取りやめる。 */
+    const track = (event: PointerEvent) => {
+      if (event.pointerType === "touch" || peekRef.current) return;
+      if (isAtLeftEdge(event.clientX)) {
+        if (opening) return;
+        clear();
+        opening = true;
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          opening = false;
+          setPeek(true);
+        }, PEEK_OPEN_DELAY);
+      } else if (opening) {
+        clear();
+      }
+    };
     const onEnter = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
       insideRef.current = true;
-      clear();
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        setPeek(true);
-      }, PEEK_OPEN_DELAY);
+      if (peekRef.current) clear();
+      else track(event);
     };
     const onLeave = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
       insideRef.current = false;
       clear();
-      timerRef.current = setTimeout(tryClose, PEEK_CLOSE_DELAY);
+      if (peekRef.current)
+        timerRef.current = setTimeout(tryClose, PEEK_CLOSE_DELAY);
     };
-    // タッチ操作では、帯のどこを押しても広げる (押した項目の操作はそのまま行う)。
-    const onClick = () => setPeek(true);
+    // タッチ操作では、帯の空いている所を押すと広げる (項目を押したときはその操作だけ行う)。
+    const onClick = (event: MouseEvent) => {
+      if (peekRef.current) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest("button, a")) return;
+      setPeek(true);
+    };
     const onDocumentDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || aside.contains(target)) return;
@@ -455,6 +483,7 @@ export function useSidebarPeek(
       setPeek(false);
     };
     aside.addEventListener("pointerenter", onEnter);
+    aside.addEventListener("pointermove", track);
     aside.addEventListener("pointerleave", onLeave);
     aside.addEventListener("click", onClick);
     document.addEventListener("pointerdown", onDocumentDown);
@@ -463,6 +492,7 @@ export function useSidebarPeek(
       clear();
       insideRef.current = false;
       aside.removeEventListener("pointerenter", onEnter);
+      aside.removeEventListener("pointermove", track);
       aside.removeEventListener("pointerleave", onLeave);
       aside.removeEventListener("click", onClick);
       document.removeEventListener("pointerdown", onDocumentDown);
@@ -472,4 +502,9 @@ export function useSidebarPeek(
   }, [asideRef, enabled]);
 
   return enabled && peek;
+}
+
+/** カーソルがウィンドウの左端 (またはそのすぐ近く) にあるか。 */
+export function isAtLeftEdge(clientX: number): boolean {
+  return clientX < PEEK_EDGE_WIDTH;
 }
