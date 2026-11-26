@@ -4,7 +4,8 @@ import {
   parseAuthenticationResults,
   type SenderCheck,
 } from "@orbit/core";
-import type { Address } from "@orbit/db";
+import { type Address, messages } from "@orbit/db";
+import { isNull, or } from "drizzle-orm";
 import { clean } from "./message-parse.js";
 
 /**
@@ -72,6 +73,17 @@ function parseListUnsubscribe(value: string | undefined): string[] {
   }
   return urls;
 }
+
+/**
+ * ヘッダーの補完がまだのメール。項目を足す前に取り込んだものが対象で、
+ * 認証結果 (sender_check) を足す前に取り込んだものも含む。
+ * 取り込み済みの全件を書き換えるマイグレーションは大きな DB で終わらなくなるので、
+ * 印を付け直さず、こちらの条件で探す (索引 messages_sender_check_pending_idx)。
+ */
+export const headersPending = or(
+  isNull(messages.headersFetchedAt),
+  isNull(messages.senderCheck),
+);
 
 /** メーリングリストの情報と、送信元の認証結果。 */
 export type HeaderInfo = ListInfo & {

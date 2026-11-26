@@ -31,6 +31,7 @@ import {
 } from "./mailbox-store.js";
 import {
   FETCH_HEADERS,
+  headersPending,
   LIST_HEADERS,
   parseListHeaders,
 } from "./message-headers.js";
@@ -163,7 +164,7 @@ export async function mailboxesWithPendingHeaders(
     .where(
       and(
         eq(messages.accountId, accountId),
-        isNull(messages.headersFetchedAt),
+        headersPending,
         isNotNull(messageMailboxes.uid),
       ),
     );
@@ -192,7 +193,7 @@ export async function fetchHeaders(
       and(
         eq(messageMailboxes.mailboxId, mailboxId),
         isNotNull(messageMailboxes.uid),
-        isNull(messages.headersFetchedAt),
+        headersPending,
       ),
     )
     .orderBy(desc(messages.receivedAt))

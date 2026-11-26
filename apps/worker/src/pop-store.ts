@@ -13,12 +13,12 @@ import {
   messages,
   popMessages,
 } from "@orbit/db";
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import type { SpecialUse } from "./mailbox-list.js";
 import { renameMailboxPaths } from "./mailbox-operations.js";
 import { removePlacements, type SyncAccount } from "./mailbox-store.js";
-import { parseListHeaders } from "./message-headers.js";
+import { headersPending, parseListHeaders } from "./message-headers.js";
 import { makeSnippet } from "./message-parse.js";
 import { buildMime } from "./mime.js";
 import { announceNewMail } from "./new-mail.js";
@@ -454,12 +454,7 @@ export async function backfillPopHeaders(
     })
     .from(messages)
     .leftJoin(messageSources, eq(messageSources.messageId, messages.id))
-    .where(
-      and(
-        eq(messages.accountId, account.id),
-        isNull(messages.headersFetchedAt),
-      ),
-    )
+    .where(and(eq(messages.accountId, account.id), headersPending))
     .orderBy(desc(messages.receivedAt))
     .limit(HEADER_BACKFILL_BATCH + 1);
   const batch = pending.slice(0, HEADER_BACKFILL_BATCH);

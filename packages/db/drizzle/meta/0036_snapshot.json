@@ -1,5 +1,5 @@
 {
-  "id": "0ad59143-6a8f-4b06-9718-1012e7c54c86",
+  "id": "62fa44cf-5873-4093-97f0-6b50fc5a5298",
   "prevId": "846a4d53-5b54-4334-889e-6f2eafdd9cc7",
   "version": "7",
   "dialect": "postgresql",
@@ -1796,6 +1796,22 @@
           ],
           "isUnique": false,
           "where": "\"messages\".\"headers_fetched_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "messages_sender_check_pending_idx": {
+          "name": "messages_sender_check_pending_idx",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"messages\".\"sender_check\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
