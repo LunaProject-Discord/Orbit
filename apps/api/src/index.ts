@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import { createAuth } from "./auth.js";
 import { loadEnv } from "./env.js";
 import { EventsHub } from "./lib/events-hub.js";
+import { watchSearchIndex } from "./lib/search-index.js";
 import {
   createConsoleMailer,
   createGraphMailer,
@@ -68,12 +69,16 @@ const app = createApp({
   publicUrl: env.publicUrl,
 });
 
+// 検索の索引は同期ワーカーが裏で作る。できるまでは索引を使わずに探す。
+const stopSearchIndexWatch = watchSearchIndex(db);
+
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {
   console.log(`API サーバーを起動しました: http://localhost:${info.port}`);
 });
 
 async function shutdown() {
   server.close();
+  stopSearchIndexWatch();
   await hub.stop();
   await pool.end();
   process.exit(0);

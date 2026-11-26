@@ -498,43 +498,10 @@ export const messages = pgTable(
     flagged: boolean().notNull().default(false),
     answered: boolean().notNull().default(false),
     draft: boolean().notNull().default(false),
-    /**
-     * 検索用の文字列 (差出人、宛先、本文)。PostgreSQL が自動で作るので、書き込む側は意識しなくてよい。
-     * mail_addresses_text / mail_html_to_text はマイグレーション 0007 で定義している。
-     * 本文は、テキストが無ければ HTML からタグを除いたもの、取得前なら冒頭の抜粋を使う。
-     */
-    searchFrom: text()
-      .notNull()
-      .generatedAlwaysAs(sql`mail_addresses_text("from")`),
-    searchRecipients: text()
-      .notNull()
-      .generatedAlwaysAs(sql`mail_addresses_text("to" || "cc" || "bcc")`),
-    searchBody: text()
-      .notNull()
-      .generatedAlwaysAs(
-        sql`coalesce(nullif("body_text", ''), mail_html_to_text("body_html"), "snippet", '')`,
-      ),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
-    // 部分一致 (ILIKE '%語%') を速くする pg_trgm の索引。日本語にもそのまま使える。
-    index("messages_subject_trgm_idx").using(
-      "gin",
-      t.subject.op("gin_trgm_ops"),
-    ),
-    index("messages_search_from_trgm_idx").using(
-      "gin",
-      t.searchFrom.op("gin_trgm_ops"),
-    ),
-    index("messages_search_recipients_trgm_idx").using(
-      "gin",
-      t.searchRecipients.op("gin_trgm_ops"),
-    ),
-    index("messages_search_body_trgm_idx").using(
-      "gin",
-      t.searchBody.op("gin_trgm_ops"),
-    ),
     uniqueIndex("messages_account_provider_id_idx").on(
       t.accountId,
       t.providerMessageId,
@@ -550,6 +517,31 @@ export const messages = pgTable(
     index("messages_sender_check_pending_idx")
       .on(t.accountId)
       .where(sql`${t.senderCheck} is null`),
+  ],
+);
+
+/**
+ * メールの検索用の文字列。1 通に 1 行で、messages への追加・変更のたびに DB のトリガーが作り直す
+ * (書き込む側は意識しなくてよい)。中身は件名・差出人・宛先・本文をそれぞれ mail_search_normalize で
+ * そろえて (NFKC、小文字、空白を除く) 制御文字 \x01 でつないだもの。関数とトリガーはマイグレーション 0037。
+ *
+ * 索引 message_search_grams_idx (1 文字と、隣り合う 2 文字の組の GIN) は、メールが多いと作るのに
+ * 時間がかかるので、マイグレーションでは作らず、同期ワーカー (apps/worker/src/search-index.ts) が
+ * 取り込み済みのメールの行を作ったあとに CREATE INDEX CONCURRENTLY で作る。
+ */
+export const messageSearch = pgTable(
+  "message_search",
+  {
+    messageId: uuid()
+      .primaryKey()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    doc: text().notNull(),
+  },
+  (t) => [
+    index("message_search_grams_idx").using(
+      "gin",
+      sql`mail_search_grams(${t.doc})`,
+    ),
   ],
 );
 

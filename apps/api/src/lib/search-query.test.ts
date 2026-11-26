@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   highlightTerms,
   isEmptySearch,
-  likePattern,
   MAX_SEARCH_TERMS,
   normalizeDate,
   parseSearchQuery,
@@ -103,12 +102,6 @@ describe("normalizeDate", () => {
     expect(normalizeDate("2026-02-30")).toBeNull();
     expect(normalizeDate("11/21")).toBeNull();
     expect(normalizeDate("abc")).toBeNull();
-  });
-});
-
-describe("likePattern", () => {
-  it("% や _ を、そのままの文字として探す", () => {
-    expect(likePattern("100%_a\\b")).toBe("%100\\%\\_a\\\\b%");
   });
 });
 

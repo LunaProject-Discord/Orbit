@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
 import { mailAccounts, mailboxes, messageMailboxes, messages } from "@orbit/db";
-import { and, eq, type SQL, sql } from "drizzle-orm";
+import { and, eq, inArray, type SQL, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
@@ -9,6 +9,7 @@ import {
   listOrderSql,
   nextListCursor,
 } from "../lib/list-order.js";
+import { findFolded } from "../lib/search-fold.js";
 import {
   addSearchCondition,
   highlightTerms,
@@ -17,7 +18,11 @@ import {
   parseSearchQuery,
   searchLeaves,
 } from "../lib/search-query.js";
-import { hasPositiveFolder, searchCondition } from "../lib/search-sql.js";
+import {
+  hasPositiveFolder,
+  needsVerification,
+  searchCondition,
+} from "../lib/search-sql.js";
 import {
   filterConditions,
   loadUnifiedFolder,
@@ -75,9 +80,40 @@ const searchQuery = z.object({
   ...listOrderQuery,
 });
 
+/**
+ * 候補を確かめながら探すときの、一度に取る候補の数 (少なくとも / 多くとも) と、繰り返す回数。
+ * これを超えそうなら、索引と LIKE で探す (当てはまる全件を確かめる)。
+ */
+const VERIFY_BATCH = 100;
+const VERIFY_BATCH_MAX = 2000;
+const VERIFY_ROUNDS = 3;
+
 /** 抜粋で、見つかった語の前に付ける文字数と全体の長さ。 */
 const EXCERPT_BEFORE = 30;
 const EXCERPT_LENGTH = 160;
+
+/**
+ * 本文の抜粋。語が件名にも冒頭の抜粋にも無く、本文にあるときだけ、その前後を返す。
+ * 全角と半角・大文字と小文字・空白の有無は、検索と同じく区別しない。
+ */
+export function searchExcerpt(
+  term: string,
+  message: { subject: string; snippet: string },
+  body: string | null,
+): string | null {
+  if (!body) return null;
+  if (findFolded(message.subject, term) || findFolded(message.snippet, term)) {
+    return null;
+  }
+  const found = findFolded(body, term);
+  if (!found) return null;
+  const start = Math.max(0, found.start - EXCERPT_BEFORE);
+  const text = body
+    .slice(start, start + EXCERPT_LENGTH)
+    .replace(/\s+/g, " ")
+    .trim();
+  return `${start > 0 ? "…" : ""}${text}`;
+}
 
 /**
  * メールの検索。サーバーに同期済みのメール (全フォルダ) を、件名・差出人・宛先・本文の
@@ -132,8 +168,16 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
     if (query.accountId) {
       conditions.push(eq(messages.accountId, query.accountId));
     }
-    const matches = searchCondition(search, { timeZone: query.timeZone });
-    if (matches) conditions.push(matches);
+    // よく出る語では、索引の語 (1 文字・2 文字の組) だけで新しい順に候補を取り、
+    // 候補を 1 通ずつ確かめる (当てはまる全件の本文を確かめずに済む)。
+    const verify = needsVerification(search);
+    const indexMatch = searchCondition(search, { timeZone: query.timeZone });
+    const looseMatch = verify
+      ? searchCondition(search, { timeZone: query.timeZone, mode: "loose" })
+      : undefined;
+    const verifyCondition = verify
+      ? searchCondition(search, { timeZone: query.timeZone, mode: "verify" })
+      : undefined;
     // 日付は、利用者のタイムゾーンでの 0 時を区切りにする。
     const startOfDay = (date: string, addDays = 0) =>
       sql`((${date}::date + ${addDays}::int)::timestamp at time zone ${query.timeZone})`;
@@ -167,7 +211,95 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
     if (!order) {
       return c.json({ error: "invalid_cursor" }, 400);
     }
-    if (order.after) conditions.push(order.after);
+
+    // まず、当てはまるメールの ID だけを並べて取る。表示に使う列 (本文など) は、
+    // 並べ替えの前に全件分を読まないよう、このページの分だけ後から取る。
+    const wanted = query.limit + 1;
+    const hits: { id: string; receivedAt: Date; sortKey: unknown }[] = [];
+    const findHits = (where: SQL[], limit: number) =>
+      db
+        .select({
+          id: messages.id,
+          receivedAt: messages.receivedAt,
+          sortKey: order.key,
+        })
+        .from(messages)
+        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+        .where(and(...where))
+        .orderBy(...order.orderBy)
+        .limit(limit);
+    const base = order.after ? [...conditions, order.after] : conditions;
+    if (!verifyCondition || !looseMatch) {
+      hits.push(
+        ...(await findHits(indexMatch ? [...base, indexMatch] : base, wanted)),
+      );
+    } else {
+      // 索引の語だけで新しい順に候補を取り、1 通ずつ確かめる。よく出る語ならこれで足りる。
+      // 確かめて残る割合から、足りない分に要る候補の数を見積もって続きを取る。多すぎる
+      // (語が離れて現れるだけのメールが多いなど) ときは、続きを索引と LIKE で探す。
+      let after = order.after;
+      let batch = Math.max(wanted * 2, VERIFY_BATCH);
+      for (let round = 1; ; round += 1) {
+        const candidates = await findHits(
+          [...conditions, ...(after ? [after] : []), looseMatch],
+          batch,
+        );
+        let confirmedCount = 0;
+        if (candidates.length > 0) {
+          const confirmed = await db
+            .select({ id: messages.id })
+            .from(messages)
+            .where(
+              and(
+                inArray(
+                  messages.id,
+                  candidates.map((candidate) => candidate.id),
+                ),
+                verifyCondition,
+              ),
+            );
+          const ids = new Set(confirmed.map((row) => row.id));
+          confirmedCount = ids.size;
+          hits.push(...candidates.filter((candidate) => ids.has(candidate.id)));
+        }
+        const lastCandidate = candidates.at(-1);
+        if (
+          hits.length >= wanted ||
+          candidates.length < batch ||
+          !lastCandidate
+        ) {
+          break;
+        }
+        after =
+          listOrderSql(query, nextListCursor(query, lastCandidate))?.after ??
+          null;
+        const rate = confirmedCount / candidates.length;
+        const needed = Math.ceil(
+          ((wanted - hits.length) / Math.max(rate, 0.001)) * 1.5,
+        );
+        if (round >= VERIFY_ROUNDS || needed > VERIFY_BATCH_MAX) {
+          hits.push(
+            ...(await findHits(
+              [
+                ...conditions,
+                ...(after ? [after] : []),
+                ...(indexMatch ? [indexMatch] : []),
+              ],
+              wanted - hits.length,
+            )),
+          );
+          break;
+        }
+        batch = Math.max(needed, VERIFY_BATCH);
+      }
+    }
+    const pageHits = hits.slice(0, query.limit);
+    const last = hits[query.limit - 1];
+    const nextCursor =
+      hits.length > query.limit && last ? nextListCursor(query, last) : null;
+    if (pageHits.length === 0) {
+      return c.json({ messages: [], nextCursor, terms });
+    }
 
     // 結果に添えるフォルダ。探したフォルダを優先し、「すべてのメール」やごみ箱は後回しにする。
     const preferred =
@@ -198,17 +330,6 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
         (term) =>
           term !== null && (term.field === "any" || term.field === "body"),
       );
-    const position = excerptTerm
-      ? sql<number>`position(lower(${excerptTerm.text}) in lower(${messages.searchBody}))`
-      : sql<number>`0`;
-    const excerpt = excerptTerm
-      ? sql<string | null>`case
-          when position(lower(${excerptTerm.text}) in lower(${messages.snippet})) = 0
-            and position(lower(${excerptTerm.text}) in lower(${messages.subject})) = 0
-            and ${position} > 0
-          then substring(${messages.searchBody} from greatest(1, ${position} - ${EXCERPT_BEFORE}::int) for ${EXCERPT_LENGTH}::int)
-        end`
-      : sql<string | null>`null`;
 
     const rows = await db
       .select({
@@ -226,30 +347,37 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
         seen: messages.seen,
         flagged: messages.flagged,
         answered: messages.answered,
-        excerpt,
-        excerptPosition: position,
-        sortKey: order.key,
+        body: excerptTerm
+          ? sql<
+              string | null
+            >`coalesce(nullif(${messages.bodyText}, ''), mail_search_html_text(${messages.bodyHtml}))`
+          : sql<string | null>`null`,
       })
       .from(messages)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
-      .where(and(...conditions))
-      .orderBy(...order.orderBy)
-      .limit(query.limit + 1);
+      .where(
+        inArray(
+          messages.id,
+          pageHits.map((hit) => hit.id),
+        ),
+      );
+    const byId = new Map(rows.map((row) => [row.id, row]));
 
-    const page = rows
-      .slice(0, query.limit)
-      .map(({ excerpt: text, excerptPosition, sortKey: _, ...message }) => ({
-        ...message,
-        // 検索結果は会話にまとめず、当てはまったメールを 1 通ずつ返す。
-        threadCount: 1,
-        threadMessageIds: [message.id],
-        excerpt: text
-          ? `${excerptPosition > EXCERPT_BEFORE + 1 ? "…" : ""}${text.replace(/\s+/g, " ").trim()}`
-          : null,
-      }));
-    const last = rows[query.limit - 1];
-    const nextCursor =
-      rows.length > query.limit && last ? nextListCursor(query, last) : null;
+    const page = pageHits.flatMap((hit) => {
+      const row = byId.get(hit.id);
+      if (!row) return [];
+      const { body, ...message } = row;
+      return [
+        {
+          ...message,
+          // 検索結果は会話にまとめず、当てはまったメールを 1 通ずつ返す。
+          threadCount: 1,
+          threadMessageIds: [message.id],
+          excerpt: excerptTerm
+            ? searchExcerpt(excerptTerm.text, message, body)
+            : null,
+        },
+      ];
+    });
     return c.json({ messages: page, nextCursor, terms });
   });
 

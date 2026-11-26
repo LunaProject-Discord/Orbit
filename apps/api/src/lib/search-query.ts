@@ -353,11 +353,6 @@ export function isEmptySearch(search: ParsedSearch): boolean {
   return search.nodes.length === 0;
 }
 
-/** ILIKE の検索文字列にする。% や _ はそのままの文字として探す。 */
-export function likePattern(text: string): string {
-  return `%${text.replace(/[\\%_]/g, "\\$&")}%`;
-}
-
 /** 一覧で目立たせる語 (含まないことを求めた語と、差出人・宛先に限定した語は除く)。 */
 export function highlightTerms(search: ParsedSearch): string[] {
   const terms: string[] = [];
