@@ -5,7 +5,7 @@ import {
   type SenderCheck,
 } from "@orbit/core";
 import { type Address, messages } from "@orbit/db";
-import { isNull, or } from "drizzle-orm";
+import { and, isNull, or, sql } from "drizzle-orm";
 import { clean } from "./message-parse.js";
 
 /**
@@ -74,15 +74,23 @@ function parseListUnsubscribe(value: string | undefined): string[] {
   return urls;
 }
 
+/** 認証結果を後から補う、取り込み済みのメールの範囲 (受け取ってからの日数)。 */
+export const AUTH_BACKFILL_DAYS = 30;
+
 /**
  * ヘッダーの補完がまだのメール。項目を足す前に取り込んだものが対象で、
- * 認証結果 (sender_check) を足す前に取り込んだものも含む。
+ * 認証結果 (sender_check) を足す前に取り込んだもののうち、最近のものも含む。
  * 取り込み済みの全件を書き換えるマイグレーションは大きな DB で終わらなくなるので、
  * 印を付け直さず、こちらの条件で探す (索引 messages_sender_check_pending_idx)。
+ * 書き換えるたびに検索用の列と索引も作り直されて DB が重くなるため、古いメールには補わない
+ * (なりすましの警告が役に立つのは、主に届いたばかりのメール)。
  */
 export const headersPending = or(
   isNull(messages.headersFetchedAt),
-  isNull(messages.senderCheck),
+  and(
+    isNull(messages.senderCheck),
+    sql`${messages.receivedAt} > now() - make_interval(days => ${AUTH_BACKFILL_DAYS})`,
+  ),
 );
 
 /**

@@ -7,7 +7,7 @@
 - Microsoft 365 / Outlook.com は判定したサーバーの名前を省くので、その場合は空として読む。
 - 取得経路: IMAP (Gmail を含む) は取り込み時と後からの補完で `HEADER.FIELDS` に含めて取得、Microsoft Graph は `internetMessageHeaders`、POP3 は保存してある原文から読む。
 - 読み取りは `packages/core/src/sender-auth.ts` (`parseAuthenticationResults`、`checkSender`)。結果は `messages.auth_results` と `messages.sender_check` に入る。
-- 取り込み済みのメールは、`sender_check` が空のものを同期ワーカーが少しずつ読み直す (`headersPending`、索引 `messages_sender_check_pending_idx`)。マイグレーションで全件を書き換えると、検索用の生成列と索引を全件作り直すため大きな DB で終わらなくなるので、しない。
+- 取り込み済みのメールは、受け取ってから 30 日以内で `sender_check` が空のものだけを、同期ワーカーが間を空けて少しずつ読み直す (`headersPending`、索引 `messages_sender_check_pending_idx`)。マイグレーションで全件を書き換えると、検索用の生成列と索引を全件作り直すため大きな DB で終わらなくなるので、しない。
 
 ## なりすましの警告
 
