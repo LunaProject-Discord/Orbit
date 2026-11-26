@@ -11,6 +11,8 @@ const focusBody = z.object({
   accountId: z.uuid().nullable().default(null),
   /** 表示中のフォルダ。null は受信トレイ。 */
   mailboxId: z.uuid().nullable().default(null),
+  /** 利用者がフォルダの更新を指示した (デスクトップ版の F5 など)。すぐに確認し直させる。 */
+  refresh: z.boolean().optional(),
 });
 
 export function focusRoutes({ db }: Pick<RouteDeps, "db">) {
@@ -22,7 +24,7 @@ export function focusRoutes({ db }: Pick<RouteDeps, "db">) {
    * 保存はせず、届かなくなれば自動的に通常の間隔へ戻る。
    */
   app.post("/", zValidator("json", focusBody), async (c) => {
-    const { accountId, mailboxId } = c.req.valid("json");
+    const { accountId, mailboxId, refresh } = c.req.valid("json");
     const accounts = await db
       .select({ id: mailAccounts.id })
       .from(mailAccounts)
@@ -46,6 +48,7 @@ export function focusRoutes({ db }: Pick<RouteDeps, "db">) {
       const payload: FocusNotification = {
         accountId: account.id,
         mailboxId: focused?.accountId === account.id ? focused.id : null,
+        ...(refresh ? { refresh: true } : {}),
       };
       await db.execute(
         sql`select pg_notify(${CHANNEL_FOCUS}, ${JSON.stringify(payload)})`,

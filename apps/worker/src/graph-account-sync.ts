@@ -213,10 +213,11 @@ export class GraphAccountSync {
   }
 
   /** 利用者が画面を開いている。mailboxId は開いているフォルダ (受信トレイなら null)。 */
-  notifyFocus(mailboxId: string | null) {
+  notifyFocus(mailboxId: string | null, refresh = false) {
     const wasPresent = Date.now() < this.presentUntil;
     this.presentUntil = Date.now() + PRESENCE_TTL_MS;
-    if (wasPresent && mailboxId === this.focusMailboxId) return;
+    // refresh は、利用者がフォルダの更新を指示したこと。同じフォルダでも確認し直す。
+    if (wasPresent && mailboxId === this.focusMailboxId && !refresh) return;
     // 開いた直後のフォルダは、次の確認を待たずに同期する。
     this.focusMailboxId = mailboxId;
     this.requestWake();

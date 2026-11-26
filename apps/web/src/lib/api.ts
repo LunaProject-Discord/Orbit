@@ -1700,10 +1700,14 @@ export async function saveAccountOrder(accountIds: string[]): Promise<void> {
 export async function sendFocus(
   accountId: string | null,
   mailboxId: string | null,
+  /** 利用者がフォルダの更新を指示した。サーバーはすぐにフォルダを確認し直す。 */
+  refresh = false,
 ): Promise<void> {
   await apiFetch("/v1/focus", {
     method: "POST",
-    body: { accountId, mailboxId },
+    body: refresh
+      ? { accountId, mailboxId, refresh: true }
+      : { accountId, mailboxId },
   });
 }
 

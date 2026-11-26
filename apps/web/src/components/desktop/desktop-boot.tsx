@@ -2,7 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { APP_URL_EVENT, listenDesktop } from "@/lib/desktop/app";
+import {
+  APP_URL_EVENT,
+  desktopPlatform,
+  isDesktopApp,
+  listenDesktop,
+} from "@/lib/desktop/app";
+import { startBrowserGuard } from "@/lib/desktop/browser-keys";
 import { routeForAppUrl } from "@/lib/native/oauth";
 
 /**
@@ -21,6 +27,13 @@ export function DesktopBoot() {
       }),
     [router],
   );
+
+  // ブラウザー標準のキー操作 (再読み込み、印刷、ページ内検索、ズームなど)、マウスの戻るボタン、
+  // 画像やリンクのドラッグを止める (lib/desktop/browser-keys.ts)。
+  useEffect(() => {
+    if (!isDesktopApp()) return;
+    return startBrowserGuard(window, { mac: desktopPlatform() === "macos" });
+  }, []);
 
   return null;
 }

@@ -18,7 +18,12 @@ export type ChangeNotification = { userId: string; seq: string };
 export const CHANNEL_FOCUS = "mail_focus";
 
 /** CHANNEL_FOCUS の payload。mailboxId が null なら、画面を開いていることだけを伝える。 */
-export type FocusNotification = { accountId: string; mailboxId: string | null };
+export type FocusNotification = {
+  accountId: string;
+  mailboxId: string | null;
+  /** 利用者がフォルダの更新を指示した。開いているフォルダを、すぐに確認し直させる。 */
+  refresh?: boolean;
+};
 
 /** API → ワーカー: Microsoft Graph から変更通知 (Webhook) が届いた。 */
 export const CHANNEL_GRAPH_PUSH = "mail_graph_push";

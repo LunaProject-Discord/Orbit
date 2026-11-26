@@ -220,10 +220,11 @@ export class PopAccountSync {
   }
 
   /** 利用者が画面を開いた。開いた直後は、次の確認を待たずに受信を確かめる。 */
-  notifyFocus(_mailboxId: string | null) {
+  notifyFocus(_mailboxId: string | null, refresh = false) {
     const wasPresent = Date.now() < this.presentUntil;
     this.presentUntil = Date.now() + PRESENCE_TTL_MS;
-    if (!wasPresent) this.requestWake();
+    // refresh は、利用者がフォルダの更新を指示したこと。POP3 は受信トレイしか無いので、受信を確かめる。
+    if (!wasPresent || refresh) this.requestWake();
   }
 
   stop() {

@@ -251,11 +251,23 @@ export class AccountSync {
     this.client?.close();
   }
 
-  /** 利用者が画面を開いている。mailboxId は開いているフォルダ (受信トレイなら null)。 */
-  notifyFocus(mailboxId: string | null) {
+  /**
+   * 利用者が画面を開いている。mailboxId は開いているフォルダ (受信トレイなら null)。
+   * refresh は、利用者がフォルダの更新を指示したこと。開いているフォルダをすぐに確認し直す。
+   */
+  notifyFocus(mailboxId: string | null, refresh = false) {
     this.focusUntil = Date.now() + PRESENCE_TTL_MS;
-    if (mailboxId === (this.focus?.mailboxId ?? null)) return;
+    if (mailboxId === (this.focus?.mailboxId ?? null)) {
+      if (!refresh) return;
+      // 受信トレイ (見張っているフォルダが無い) は、通常の同期で確認する。
+      if (this.focus) this.requestFocusSync("forced");
+      else this.requestSync();
+      return;
+    }
+    // フォルダが変わったときは、切り替えた直後に確認する (setFocus)。
+    // 受信トレイは見張りの対象にならないので、更新の指示なら通常の同期で確認する。
     void this.setFocus(mailboxId);
+    if (refresh) this.requestSync();
   }
 
   private async setFocus(mailboxId: string | null) {
