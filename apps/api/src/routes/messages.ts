@@ -163,6 +163,7 @@ export function messageRoutes({
   /**
    * 利用者が見ているメール (カーソルを載せた行、画面に見えている行) の本文を、
    * 取り込みの順番を待たずに取得するよう同期ワーカーへ頼む。取得済みのものは頼まない。
+   * 送信元の確認結果がまだ無いメールは、認証結果のヘッダーも取得してもらう。
    * 取得が終わると変更通知で端末が読み直すので、ここでは待たずに応答する。
    */
   app.post("/prefetch", zValidator("json", prefetchBody), async (c) => {
@@ -175,7 +176,8 @@ export function messageRoutes({
         and(
           inArray(messages.id, ids),
           eq(mailAccounts.userId, c.var.user.id),
-          isNull(messages.bodyFetchedAt),
+          // 送信元の確認結果を足す前に取り込んだメールは、見られたときに認証結果を補う。
+          or(isNull(messages.bodyFetchedAt), isNull(messages.senderCheck)),
         ),
       );
     const pending = new Map(rows.map((row) => [row.id, row.accountId]));
@@ -306,9 +308,10 @@ export function messageRoutes({
       if (!message) {
         return c.json({ error: "not_found" }, 404);
       }
-      if (message.bodyFetchedAt === null) {
+      if (message.bodyFetchedAt === null || message.senderCheck === null) {
         // 本文は一覧より後に順に取り込まれる。開かれたメールは順番を待たせず、
         // 同期ワーカーに先に取得してもらう (取得が終わると変更通知で端末が読み直す)。
+        // 送信元の確認結果を足す前に取り込んだメールは、ここで認証結果も取得してもらう。
         const payload: BodyFetchNotification = {
           accountId: message.accountId,
           messageIds: [message.id],

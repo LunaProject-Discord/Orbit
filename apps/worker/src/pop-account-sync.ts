@@ -19,12 +19,14 @@ import {
 } from "./attachment-fetch.js";
 import { recordChanges } from "./changes.js";
 import { isTemporaryLoginRefusal } from "./login-refusal.js";
+import { headerBackfillPause } from "./message-headers.js";
 import { processOutbox } from "./outbox.js";
 import { extractAttachment } from "./pop-parse.js";
 import {
   applyPopOperation,
   backfillPopHeaders,
   ensurePopMailboxes,
+  fillPopSenderChecks,
   forgetPopRecords,
   importRawMessage,
   loadPopRecords,
@@ -206,8 +208,19 @@ export class PopAccountSync {
     console.log(`[${this.account.email}] ${message}`);
   }
 
-  /** 本文は取り込んだときに入れてあるので、取りに行くものは無い。 */
-  notifyBody(_messageIds: string[], _priority: BodyFetchPriority) {}
+  /**
+   * 本文は取り込んだときに入れてあるので、取りに行くものは無い。
+   * 送信元の確認結果がまだ無いメールにだけ、保存しておいた原文から認証結果を入れる。
+   */
+  notifyBody(messageIds: string[], _priority: BodyFetchPriority) {
+    if (this.stopped) return;
+    void fillPopSenderChecks(this.db, this.account, messageIds).catch(
+      (cause: unknown) =>
+        this.log(
+          `認証結果を補えませんでした: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+    );
+  }
 
   /** 添付ファイルを、保存しておいた原文から取り出す。 */
   notifyAttachment(attachmentId: string) {
@@ -414,7 +427,10 @@ export class PopAccountSync {
       while (
         !this.stopped &&
         (await backfillPopHeaders(this.db, this.account))
-      ) {}
+      ) {
+        // DB が重くならないよう、間を空けて少しずつ進める。
+        await headerBackfillPause();
+      }
       if (!healthy) {
         healthy = true;
         this.backoff = MIN_BACKOFF_MS;

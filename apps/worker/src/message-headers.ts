@@ -5,7 +5,7 @@ import {
   type SenderCheck,
 } from "@orbit/core";
 import { type Address, messages } from "@orbit/db";
-import { isNull, or } from "drizzle-orm";
+import { isNull } from "drizzle-orm";
 import { clean } from "./message-parse.js";
 
 /**
@@ -75,15 +75,30 @@ function parseListUnsubscribe(value: string | undefined): string[] {
 }
 
 /**
- * ヘッダーの補完がまだのメール。項目を足す前に取り込んだものが対象で、
- * 認証結果 (sender_check) を足す前に取り込んだものも含む。
- * 取り込み済みの全件を書き換えるマイグレーションは大きな DB で終わらなくなるので、
- * 印を付け直さず、こちらの条件で探す (索引 messages_sender_check_pending_idx)。
+ * ヘッダーの補完がまだのメール (項目を足す前に取り込んだもの)。裏で少しずつ補う。
+ * 認証結果 (sender_check) を足す前に取り込んだメールは、ここには含めない。
+ * 全件を書き換えると、そのたびに検索用の列と索引も作り直されて DB が重くなるため、
+ * 利用者が開いたメールや一覧に見えている行だけを、本文の先読みと同じ仕組みで補う
+ * (senderCheckPending、body-fetch.ts)。
  */
-export const headersPending = or(
-  isNull(messages.headersFetchedAt),
-  isNull(messages.senderCheck),
-);
+export const headersPending = isNull(messages.headersFetchedAt);
+
+/** 送信元の確認結果がまだ無いメール。開いたときや一覧に見えたときに補う。 */
+export const senderCheckPending = isNull(messages.senderCheck);
+
+/**
+ * 取り込み済みのメールにヘッダーを補うとき、1 回分 (数百通の書き換え) ごとに空ける間。
+ * 書き換えるたびに検索用の列と索引も作り直されるので、続けて流すと DB が重くなり、
+ * 画面の一覧の読み込みが遅くなる。急がない作業なので、間を空けて少しずつ進める。
+ */
+export const HEADER_BACKFILL_PAUSE_MS = 2_000;
+
+/** 補完 1 回分のあとに待つ。 */
+export function headerBackfillPause(): Promise<void> {
+  return new Promise((resolve) =>
+    setTimeout(resolve, HEADER_BACKFILL_PAUSE_MS),
+  );
+}
 
 /** メーリングリストの情報と、送信元の認証結果。 */
 export type HeaderInfo = ListInfo & {

@@ -16,7 +16,11 @@ import {
   AttachmentRequests,
   graphAttachmentDownloader,
 } from "./attachment-fetch.js";
-import { BodyRequests, graphBodyFetcher } from "./body-fetch.js";
+import {
+  BodyRequests,
+  graphBodyFetcher,
+  graphHeaderFetcher,
+} from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { graphDraftRemote } from "./draft-graph.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -36,6 +40,7 @@ import {
 } from "./graph-sync.js";
 import { syncPriority } from "./mailbox-list.js";
 import { isMailboxOperation } from "./mailbox-operations.js";
+import { headerBackfillPause } from "./message-headers.js";
 import { processOutbox } from "./outbox.js";
 import { applyGraphOperation } from "./outbox-graph.js";
 import { processSends } from "./send.js";
@@ -156,6 +161,7 @@ export class GraphAccountSync {
       db,
       account,
       graphBodyFetcher(db, onDemand, this.abort.signal),
+      graphHeaderFetcher(db, onDemand, this.abort.signal),
       (message) => this.log(message),
       ON_DEMAND_BODY_CONCURRENCY,
     );
@@ -607,7 +613,8 @@ export class GraphAccountSync {
         Date.now() < nextPollAt &&
         (await fetchGraphHeaders(this.db, client, this.account, signal))
       ) {
-        // 続きを取得する
+        // 続きを取得する (DB が重くならないよう、間を空ける)
+        await headerBackfillPause();
       }
       if (this.stopped) break;
       // 確認し残したフォルダがあれば、待たずに次の周回で続ける。

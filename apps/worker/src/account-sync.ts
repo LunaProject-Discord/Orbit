@@ -13,7 +13,11 @@ import {
   AttachmentRequests,
   ImapAttachmentDownloader,
 } from "./attachment-fetch.js";
-import { BodyRequests, imapBodyFetcher } from "./body-fetch.js";
+import {
+  BodyRequests,
+  imapBodyFetcher,
+  imapHeaderFetcher,
+} from "./body-fetch.js";
 import { recordChanges } from "./changes.js";
 import { imapDraftRemote } from "./draft-imap.js";
 import { dbDraftStore, processDrafts } from "./draft-sync.js";
@@ -43,6 +47,7 @@ import {
   syncMailbox,
   syncMailboxList,
 } from "./mailbox-sync.js";
+import { headerBackfillPause } from "./message-headers.js";
 import { processOutbox } from "./outbox.js";
 import { applyImapOperation } from "./outbox-imap.js";
 import { processSends, type SendOutcome } from "./send.js";
@@ -170,6 +175,9 @@ export class AccountSync {
       db,
       account,
       imapBodyFetcher(db, (task) => this.attachmentDownloader.withClient(task)),
+      imapHeaderFetcher(db, (task) =>
+        this.attachmentDownloader.withClient(task),
+      ),
       (message) => this.log(message),
     );
   }
@@ -799,6 +807,7 @@ export class AccountSync {
             this.account,
             mailbox.id,
           );
+          if (remaining) await headerBackfillPause();
         }
       } finally {
         lock.release();

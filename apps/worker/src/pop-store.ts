@@ -18,7 +18,11 @@ import { recordChanges, type Tx } from "./changes.js";
 import type { SpecialUse } from "./mailbox-list.js";
 import { renameMailboxPaths } from "./mailbox-operations.js";
 import { removePlacements, type SyncAccount } from "./mailbox-store.js";
-import { headersPending, parseListHeaders } from "./message-headers.js";
+import {
+  headersPending,
+  parseListHeaders,
+  senderCheckPending,
+} from "./message-headers.js";
 import { makeSnippet } from "./message-parse.js";
 import { buildMime } from "./mime.js";
 import { announceNewMail } from "./new-mail.js";
@@ -470,11 +474,59 @@ export async function backfillPopHeaders(
         .update(messages)
         .set({ ...info, headersFetchedAt: new Date() })
         .where(eq(messages.id, row.id));
-      if (info.authResults || info.senderCheck.warnings.length > 0) {
+      if (info.senderCheck.warnings.length > 0) {
         changed.push(row.id);
       }
     }
     await recordChanges(tx, account.userId, "message", "upsert", changed);
   });
   return pending.length > HEADER_BACKFILL_BATCH;
+}
+
+/**
+ * 送信元の確認結果がまだ無いメール (その項目を足す前に取り込んだもの) のうち、
+ * 利用者が開いた、または一覧に見えているものに、保存しておいた原文から認証結果を入れる。
+ * 全件を裏で補うと DB が重くなるため、見られたものだけ補う。
+ */
+export async function fillPopSenderChecks(
+  db: Database,
+  account: Pick<SyncAccount, "id" | "userId">,
+  messageIds: string[],
+): Promise<void> {
+  if (messageIds.length === 0) return;
+  const pending = await db
+    .select({
+      id: messages.id,
+      from: messages.from,
+      raw: messageSources.raw,
+    })
+    .from(messages)
+    .leftJoin(messageSources, eq(messageSources.messageId, messages.id))
+    .where(
+      and(
+        eq(messages.accountId, account.id),
+        inArray(messages.id, messageIds),
+        senderCheckPending,
+      ),
+    );
+  if (pending.length === 0) return;
+  await db.transaction(async (tx) => {
+    for (const row of pending) {
+      const info = parseListHeaders(
+        row.raw ? headerSection(row.raw) : undefined,
+        row.from,
+      );
+      await tx
+        .update(messages)
+        .set({ ...info, headersFetchedAt: new Date() })
+        .where(eq(messages.id, row.id));
+    }
+    await recordChanges(
+      tx,
+      account.userId,
+      "message",
+      "upsert",
+      pending.map((row) => row.id),
+    );
+  });
 }
