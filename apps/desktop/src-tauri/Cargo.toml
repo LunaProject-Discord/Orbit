@@ -33,6 +33,9 @@ tauri-plugin-window-state = "2"
 # Windows の通知 (トースト) に返信欄を付けるため、WinRT の通知 API を直接使う (src/toast.rs)。
 # 版は、通知のプラグインが使っているもの (Cargo.lock) と合わせる。
 [target.'cfg(windows)'.dependencies]
+# WebView2 のブラウザーのショートカットを止め、キャッシュを使わない再読み込みを頼む (src/browser.rs)。
+# 版は Tauri (wry) が使っているもの (Cargo.lock) と合わせる。
+webview2-com = "0.39"
 windows = { version = "0.62", features = [
   "Foundation",
   "Foundation_Collections",
@@ -43,6 +46,13 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Gdi",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# キャッシュを使わない再読み込み (src/browser.rs)。版は Tauri (wry) が使っているものと合わせる。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-web-kit = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
 
 [profile.release]
 codegen-units = 1

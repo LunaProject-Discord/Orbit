@@ -46,6 +46,27 @@ export async function invokeDesktop<T = void>(
   }
 }
 
+/**
+ * ファイルを保存する。保存先は、アプリ側 (apps/desktop/src-tauri/src/browser.rs の save_file) が
+ * OS の画面で利用者に選ばせる (WebView のダウンロードの一覧を出さない)。
+ * 保存したら true、保存先を選ぶのをやめたら false、アプリ側に頼めなければ null (古いアプリ、ブラウザー)。
+ */
+export async function saveFileDesktop(
+  blob: Blob,
+  filename: string,
+): Promise<boolean | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return await invoke<boolean>("save_file", bytes, {
+      headers: { "x-file-name": encodeURIComponent(filename) },
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** アプリ側からのイベントを受け取る。戻り値の関数で解除する。 */
 export function listenDesktop<T>(
   event: string,

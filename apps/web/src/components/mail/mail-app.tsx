@@ -155,7 +155,17 @@ import {
   withReplyText,
 } from "@/lib/compose";
 import { refreshDateStyle } from "@/lib/date-format-settings";
-import { desktopWindow, isDesktopApp, notifyNewMail } from "@/lib/desktop/app";
+import {
+  desktopPlatform,
+  desktopWindow,
+  isDesktopApp,
+  notifyNewMail,
+} from "@/lib/desktop/app";
+import {
+  type DesktopKeyCommand,
+  isEditableTarget,
+  resolveDesktopKey,
+} from "@/lib/desktop/browser-keys";
 import { setTitleBarMenu } from "@/lib/desktop/title-bar-menu";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
@@ -581,6 +591,8 @@ const MailView = memo(function MailView({
    * 開いたときに履歴へ積み (mailSearch)、「戻る」で閉じられるようにする。
    */
   const [searchScreen, setSearchScreen] = useState(false);
+  /** 値が増えると、表示中のメールを印刷する (デスクトップ版の Ctrl+P)。 */
+  const [printRequest, setPrintRequest] = useState(0);
   /** 開いているメールの中の検索を開く要求 (検索欄の候補やショートカットキーから)。 */
   const [findRequest, setFindRequest] = useState<{
     text: string;
@@ -1437,6 +1449,29 @@ const MailView = memo(function MailView({
       setNotice({ message: SYNC_NOW_ERROR, tone: "error" });
     }
     await Promise.allSettled([
+      loadFirstPage(selection, false),
+      loadMailboxes(),
+      loadDrafts(),
+      loadOutgoing(),
+    ]);
+    setRefreshKey((key) => key + 1);
+  }, [loadFirstPage, loadMailboxes, loadDrafts, loadOutgoing]);
+
+  /**
+   * フォルダの更新 (デスクトップ版の F5 / Ctrl+R)。表示中のフォルダをメールサーバーへすぐに確認させ、
+   * いまの一覧を取得し直す。アカウント全体を確認させるのは、アカウントの更新 (handlePullRefresh)。
+   */
+  const handleFolderRefresh = useCallback(async () => {
+    const selection = selectionRef.current;
+    keptRowsRef.current = new Set();
+    if (!onlineRef.current) {
+      setNotice({ message: PULL_OFFLINE, tone: "error" });
+      return;
+    }
+    await Promise.allSettled([
+      sendFocus(selection.accountId, selection.mailboxId, true).catch(() =>
+        setNotice({ message: SYNC_NOW_ERROR, tone: "error" }),
+      ),
       loadFirstPage(selection, false),
       loadMailboxes(),
       loadDrafts(),
@@ -2960,25 +2995,90 @@ const MailView = memo(function MailView({
     return child ? { seen: child.seen, flagged: child.flagged } : {};
   };
 
-  // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
-  const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
-  shortcutRef.current = (event) => {
-    // デスクトップ版にはブラウザーのページ内検索が無いので、Ctrl+F でメールの中を探す。
-    if (
-      isDesktopApp() &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.altKey &&
-      !event.shiftKey &&
-      event.key.toLowerCase() === "f" &&
-      selectedMessageId &&
-      !settingsOpen
-    ) {
-      event.preventDefault();
+  /** 検索欄へ移る。検索欄が無ければ何もしない。移ったら (検索画面を開いたら) true。 */
+  const focusSearch = () => {
+    const input = document.getElementById(SEARCH_INPUT_ID);
+    if (!(input instanceof HTMLInputElement)) {
+      // スマホ幅では、検索画面を開く。
+      if (showSearch && !medium) {
+        openSearchScreen();
+        return true;
+      }
+      return false;
+    }
+    const focus = () => {
+      input.focus();
+      input.select();
+    };
+    if (input.offsetParent !== null) {
+      focus();
+    } else {
+      // スマホ幅でメールを開いているときは一覧が隠れているので、一覧へ戻ってから移動する。
+      setSelectedMessageId(null);
+      requestAnimationFrame(focus);
+    }
+    return true;
+  };
+
+  /**
+   * デスクトップ版で、ブラウザーのキーに割り当てたアプリの操作を行う。
+   * 再読み込みと強制再読み込みは、どの画面でも lib/desktop/browser-keys.ts が行う。
+   */
+  const runDesktopCommand = (command: DesktopKeyCommand | "block") => {
+    // ダイアログやメニューを開いている間は、後ろの画面を操作しない。
+    if (document.querySelector('[role="dialog"], [role="menu"]')) return;
+    /** メールを表示しているか (メールだけのウィンドウを含む)。 */
+    const showingMessage =
+      standaloneMessage || (selectedMessageId !== null && !settingsOpen);
+    const findInMessage = () => {
+      if (!showingMessage) return;
       setFindRequest((current) => ({
         text: "",
         nonce: (current?.nonce ?? 0) + 1,
       }));
-      return;
+    };
+    switch (command) {
+      case "print":
+        // 印刷できるのは、メールを表示しているときだけ。
+        if (showingMessage) setPrintRequest((count) => count + 1);
+        break;
+      case "findInMessage":
+        findInMessage();
+        break;
+      case "focusSearch":
+        // メールだけのウィンドウには検索欄が無いので、メールの中を探す。
+        if (standaloneMessage) findInMessage();
+        else if (!standaloneCompose) focusSearch();
+        break;
+      case "refreshFolder":
+      case "refreshAccount":
+        if (standaloneCompose) break;
+        if (standaloneMessage) {
+          // メールだけのウィンドウでは、表示しているメールを取得し直す。
+          setRefreshKey((key) => key + 1);
+        } else if (command === "refreshFolder") {
+          void handleFolderRefresh();
+        } else {
+          void handlePullRefresh();
+        }
+        break;
+    }
+  };
+
+  // ショートカットキー。処理は毎回の描画で作り直し、最新の一覧と選択を使う。
+  const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  shortcutRef.current = (event) => {
+    // デスクトップ版では、ブラウザーのキー (Ctrl+R、Ctrl+F、Ctrl+P など) にアプリの操作を割り当てている
+    // (lib/desktop/browser-keys.ts)。ブラウザー標準の動きは、そちらで止めている。
+    if (isDesktopApp()) {
+      const command = resolveDesktopKey(event, {
+        mac: desktopPlatform() === "macos",
+        editable: isEditableTarget(event.target),
+      });
+      if (command) {
+        runDesktopCommand(command);
+        return;
+      }
     }
     // 作成専用のウィンドウでは、一覧の操作のキーは使わない (一覧を出していない)。
     if (standaloneCompose || standaloneMessage) return;
@@ -3019,27 +3119,7 @@ const MailView = memo(function MailView({
       return;
     }
     if (command === "search") {
-      const input = document.getElementById(SEARCH_INPUT_ID);
-      if (!(input instanceof HTMLInputElement)) {
-        // スマホ幅では、検索画面を開く。
-        if (showSearch && !medium) {
-          event.preventDefault();
-          openSearchScreen();
-        }
-        return;
-      }
-      event.preventDefault();
-      const focus = () => {
-        input.focus();
-        input.select();
-      };
-      if (input.offsetParent !== null) {
-        focus();
-      } else {
-        // スマホ幅でメールを開いているときは一覧が隠れているので、一覧へ戻ってから移動する。
-        setSelectedMessageId(null);
-        requestAnimationFrame(focus);
-      }
+      if (focusSearch()) event.preventDefault();
       return;
     }
     // 下書きの一覧を表示している間は、メールの一覧への操作は受け付けない。
@@ -3934,6 +4014,7 @@ const MailView = memo(function MailView({
                     : undefined
                 }
                 findRequest={findRequest}
+                printRequest={printRequest}
               />
             ) : (
               <>

@@ -137,6 +137,11 @@ import {
   updatePreferences,
   usePreferences,
 } from "@/lib/preferences";
+import {
+  buildPrintDocument,
+  type PrintableMessage,
+  printHtml,
+} from "@/lib/print-message";
 import { DESKTOP_SCROLLBARS_ATTRIBUTE } from "@/lib/scrollbar-hover";
 import { shortcutLabels } from "@/lib/shortcuts";
 import { findContactRule, findThreadRule } from "@/lib/signatures";
@@ -214,6 +219,11 @@ export function buildSrcDoc(
     document.documentElement.hasAttribute(DESKTOP_SCROLLBARS_ATTRIBUTE)
       ? BODY_SCROLLBAR_STYLE
       : "",
+    // デスクトップ版では、本文の画像やリンクもつかんで引っ張れないようにする (アプリの画面と同じ)。
+    typeof document !== "undefined" &&
+    document.documentElement.hasAttribute("data-desktop")
+      ? "<style>img,a{-webkit-user-drag:none}</style>"
+      : "",
     "</head><body>",
     html,
     "</body></html>",
@@ -275,6 +285,8 @@ type Props = {
   toolbarEnd?: ReactNode;
   /** nonce が変わると、メールの中の検索を text で開く (検索欄の候補やショートカットキーから)。 */
   findRequest?: { text: string; nonce: number } | null;
+  /** 値が増えると、表示しているメールを印刷する (デスクトップ版の Ctrl+P)。 */
+  printRequest?: number;
 };
 
 type State =
@@ -309,6 +321,7 @@ export function MessageView({
   onMissing,
   toolbarEnd,
   findRequest,
+  printRequest = 0,
 }: Props) {
   /** メールの中の検索。開いていなければ null。 */
   const [find, setFind] = useState<{ text: string; request: number } | null>(
@@ -364,6 +377,53 @@ export function MessageView({
   const details = useRef(new Map<string, MessageDetail>());
   const preferences = usePreferences();
   const preferencesRef = useRef(preferences);
+  const printDateStyle = useDateStyle();
+  const handledPrint = useRef(printRequest);
+  // 印刷を頼まれたら、本文を開いているメール (無ければ最新の 1 通) を、表示しているとおりに印刷する。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 印刷は printRequest が増えたときだけ行う
+  useEffect(() => {
+    if (printRequest === handledPrint.current) return;
+    handledPrint.current = printRequest;
+    if (state.status !== "ready") return;
+    const opened = state.thread.filter((item) => expanded.has(item.id));
+    const targets = opened.length > 0 ? opened : state.thread.slice(-1);
+    /** 外部の画像を表示しているか (本文の枠の CSP で分かる)。すべてのメールで表示しているときだけ印刷にも入れる。 */
+    let remoteImages = true;
+    const messages = targets.map((item): PrintableMessage => {
+      const detail = details.current.get(item.id);
+      // 表示している本文の枠から取る (取得済みの埋め込み画像や、表示を許した外部の画像が入っている)。
+      const frame = contentRef.current?.querySelector<HTMLIFrameElement>(
+        `[data-message-print="${CSS.escape(item.id)}"] iframe`,
+      );
+      const shown = frame?.contentDocument ?? null;
+      const shownHtml = shown?.body?.innerHTML || null;
+      const policy =
+        shown
+          ?.querySelector('meta[http-equiv="Content-Security-Policy"]')
+          ?.getAttribute("content") ?? "";
+      if (!policy.includes("img-src data: https:")) remoteImages = false;
+      const listed = detail
+        ? splitAttachments(detail.bodyHtml, detail.attachments).listed
+        : [];
+      return {
+        subject: detail?.subject ?? item.subject,
+        from: detail?.from ?? item.from,
+        to: detail?.to ?? item.to,
+        cc: detail?.cc ?? item.cc,
+        date: formatFullDate(item.receivedAt, printDateStyle),
+        bodyHtml: shownHtml ?? detail?.bodyHtml ?? null,
+        bodyText: detail?.bodyText ?? item.snippet,
+        attachments: listed.map((file) => file.filename || "(名前なし)"),
+      };
+    });
+    printHtml(
+      buildPrintDocument(messages, {
+        allowRemoteImages: remoteImages,
+        bodyStyle: bodyStyle(preferences),
+      }),
+    );
+  }, [printRequest]);
+
   preferencesRef.current = preferences;
   const swipeSettings = useSwipeSettings();
   /** 値が増えると、移動先のメニューを開く (スワイプで「フォルダを選んで移動」をしたとき)。 */
@@ -802,7 +862,12 @@ export function MessageView({
           onClose={() => setFind(null)}
         />
       )}
-      <div ref={contentRef} className="flex min-h-0 flex-1 flex-col">
+      {/* デスクトップ版で文字を選べる範囲 (それ以外の画面の文字は選べない。globals.css)。 */}
+      <div
+        ref={contentRef}
+        className="flex min-h-0 flex-1 flex-col"
+        data-selectable
+      >
         <MessageSwipe
           left={swipeSides.left}
           right={swipeSides.right}
@@ -1917,6 +1982,8 @@ function MessageContent({
 
   return (
     <article
+      // 印刷 (Ctrl+P) で、表示している本文 (読み込んだ画像を含む) を見つけるための印。
+      data-message-print={message.id}
       className={cn(
         "flex flex-col",
         // 見出しと本文をまとめてスクロールさせる (見出しは固定しない)。

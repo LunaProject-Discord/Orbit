@@ -3,6 +3,7 @@
 //! (ウィンドウ枠、トレイ、未読数のバッジ、新着メールの通知、外部リンク、自動更新)。
 
 mod badge;
+mod browser;
 mod fonts;
 mod settings;
 mod system_menu;
@@ -225,7 +226,13 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
     // (タイトルバーの分の余白を最初から確保し、表示がずれないようにする)。
     let script = format!(
         r#"(function () {{
-  var mark = function () {{ document.documentElement.dataset.desktop = "{platform}"; }};
+  var mark = function () {{
+    var html = document.documentElement;
+    html.dataset.desktop = "{platform}";
+    // スペルチェックの波線と翻訳の提案を出さない (入力欄は html の指定を引き継ぐ)。
+    html.spellcheck = false;
+    html.setAttribute("translate", "no");
+  }};
   if (document.documentElement) return mark();
   new MutationObserver(function (_, observer) {{
     if (!document.documentElement) return;
@@ -238,7 +245,7 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
 
     let navigation_handle = app.clone();
     let new_window_handle = app.clone();
-    WebviewWindowBuilder::from_config(app, &config)?
+    let window = WebviewWindowBuilder::from_config(app, &config)?
         .initialization_script(script)
         // 右クリックメニューの「貼り付け」で、確認なしにクリップボードを読めるようにする
         // (WebView の標準のメニューは画面側で止め、アプリのメニューを出している)。
@@ -260,7 +267,9 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
             open_external(&new_window_handle, &url);
             NewWindowResponse::Deny
         })
-        .build()
+        .build()?;
+    browser::disable_browser_keys(&window);
+    Ok(window)
 }
 
 pub fn run() {
@@ -278,6 +287,8 @@ pub fn run() {
             notify_new_mail,
             set_unread_count,
             open_window,
+            browser::force_reload,
+            browser::save_file,
             fonts::list_fonts,
             system_menu::show_system_menu,
             web_bundle::app_update_info,

@@ -125,7 +125,10 @@ export class AccountManager {
         if (payload) {
           this.running
             .get(payload.accountId)
-            ?.sync.notifyFocus(payload.mailboxId ?? null);
+            ?.sync.notifyFocus(
+              payload.mailboxId ?? null,
+              payload.refresh === true,
+            );
         }
         return;
       }

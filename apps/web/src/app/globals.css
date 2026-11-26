@@ -77,6 +77,39 @@
     overscroll-behavior: none;
   }
 
+  /*
+   * デスクトップ版では、ボタンや一覧などの画面の文字は選べないようにする (ほかのアプリと同じ)。
+   * 選べるのは入力欄と、メールの内容 (data-selectable を付けた範囲) だけ。
+   * 画像やリンクも、つかんで引っ張れないようにする (lib/desktop/browser-keys.ts でも止めている)。
+   */
+  html[data-desktop] body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  html[data-desktop]
+    :is(
+      input,
+      textarea,
+      [contenteditable]:not([contenteditable="false"]),
+      [data-selectable],
+      [data-selectable] *
+    ) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  html[data-desktop]
+    [data-selectable]
+    :is(button, [role="button"], [role="menuitem"], [role="tab"]) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  html[data-desktop] :is(img, a):not([contenteditable="true"] *) {
+    -webkit-user-drag: none;
+  }
+
   body {
     @apply bg-background text-foreground;
     padding-top: var(--titlebar-height);

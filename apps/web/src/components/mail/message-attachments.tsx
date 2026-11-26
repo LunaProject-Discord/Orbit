@@ -32,6 +32,7 @@ import {
   type Preview,
   previewOf,
 } from "@/lib/attachments";
+import { saveFileDesktop } from "@/lib/desktop/app";
 import { formatSize } from "@/lib/format";
 import { fetchAttachment } from "@/lib/offline";
 import { cn } from "@/lib/utils";
@@ -65,7 +66,9 @@ const nameOf = (file: Attachment) => file.filename || "(名前なし)";
  * ファイルとして保存する。中身は差出人が自由に決められるので、種類は付けずに渡し、
  * ブラウザーがこのアプリのページとして開くことのないようにする。
  */
-function saveBlob(blob: Blob, filename: string) {
+async function saveBlob(blob: Blob, filename: string) {
+  // デスクトップ版では、保存先を選ぶ画面を出して保存する。頼めなければ (古いアプリ) ブラウザーと同じ方法で。
+  if ((await saveFileDesktop(blob, filename)) !== null) return;
   const url = URL.createObjectURL(
     new Blob([blob], { type: "application/octet-stream" }),
   );
@@ -163,7 +166,7 @@ export function MessageAttachments({
 
   async function save(file: Attachment) {
     const blob = await load(file);
-    if (blob) saveBlob(blob, file.filename || "attachment");
+    if (blob) void saveBlob(blob, file.filename || "attachment");
   }
 
   async function saveAll() {
