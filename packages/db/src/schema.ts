@@ -339,7 +339,18 @@ export const mailAccounts = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("mail_accounts_user_email_idx").on(t.userId, t.email)],
+  (t) => [
+    // 同じアドレスでも、受信サーバーかユーザー名が違えば別のアカウントとして追加できる
+    // (例: ドコモメールを IMAP で、同じアドレスのメッセージR/S を POP3 で)。
+    // Microsoft Graph のアカウントは受信サーバーが無い (null) ので、空文字として比べる。
+    uniqueIndex("mail_accounts_user_email_server_idx").on(
+      t.userId,
+      t.email,
+      sql`coalesce(lower(${t.imapHost}), '')`,
+      t.username,
+    ),
+    index("mail_accounts_user_email_idx").on(t.userId, t.email),
+  ],
 );
 
 export const mailboxSpecialUse = pgEnum("mailbox_special_use", [

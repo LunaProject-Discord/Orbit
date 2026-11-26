@@ -263,6 +263,29 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     });
   });
 
+  it("同じアドレスでも、受信サーバーかユーザー名が違えば追加できる", async () => {
+    await addAccount(userId, "hanako@docomo.ne.jp", {
+      imapHost: "imap2.spmode.ne.jp",
+      username: "hanako@docomo.ne.jp",
+    });
+    const pop = {
+      email: "hanako@docomo.ne.jp",
+      incomingProtocol: "pop3",
+      imap: { host: "mail.spmode.ne.jp", port: 995, secure: true },
+      smtp: { host: "mail.spmode.ne.jp", port: 465, secure: true },
+      username: "hanako",
+      password: "secret",
+    };
+    expect((await request("POST", "/accounts", pop)).status).toBe(201);
+    // 受信サーバーとユーザー名まで同じなら、追加済みとして断る。
+    const again = await request("POST", "/accounts", {
+      ...pop,
+      imap: { ...pop.imap, host: "MAIL.spmode.ne.jp" },
+    });
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: "account_exists" });
+  });
+
   it("受信方式を POP3 に変えると、取り込み済みのメールとフォルダを消す", async () => {
     const id = await addAccount(userId, "switch@old.example");
     const [box] = await db
