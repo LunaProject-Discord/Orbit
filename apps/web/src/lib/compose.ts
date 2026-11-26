@@ -60,6 +60,7 @@ export const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
 export const MAX_GRAPH_ATTACHMENTS_BYTES = 3 * 1024 * 1024;
 export const MAX_ATTACHMENT_COUNT = 20;
 
+/** IMAP と POP3 のアカウントは SMTP で送るので、どちらも MAX_ATTACHMENTS_BYTES。 */
 export function attachmentLimit(account: Pick<Account, "protocol">): number {
   return account.protocol === "graph"
     ? MAX_GRAPH_ATTACHMENTS_BYTES

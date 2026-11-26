@@ -43,6 +43,7 @@ import { FontPicker } from "@/components/mail/font-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
 import { InvitationSettings } from "@/components/mail/invitation-settings";
 import { SecuritySettings } from "@/components/mail/security-settings";
+import { PopNotice, popDeleteOptions } from "@/components/mail/server-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
@@ -1311,7 +1312,9 @@ function AccountCard({
       | { color: string | null }
       | { icon: AccountIconName | null }
       | { allowLegacyTls: boolean }
-      | { pushConnections: number | null },
+      | { pushConnections: number | null }
+      | { popLeaveOnServer: boolean }
+      | { popDeleteAfterDays: number | null },
   ) => {
     // 押してすぐ画面に反映し、保存できなければ元に戻す。
     onUpdated({ ...account, ...patch });
@@ -1334,6 +1337,9 @@ function AccountCard({
           </p>
           <p className="truncate text-muted-foreground text-xs">
             {account.email}
+          </p>
+          <p className="truncate text-muted-foreground text-xs">
+            受信: {RECEIVING_LABELS[account.protocol]}
           </p>
           {problem && (
             <p className="mt-1 flex items-start gap-1 text-destructive text-xs">
@@ -1400,7 +1406,7 @@ function AccountCard({
       </div>
 
       {/* 接続先を手で設定したアカウントだけ。Gmail や iCloud は新しい TLS に対応している。 */}
-      {account.protocol === "imap" &&
+      {(account.protocol === "imap" || account.protocol === "pop3") &&
         (account.provider === "generic" || account.allowLegacyTls) && (
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
@@ -1422,7 +1428,7 @@ function AccountCard({
           </div>
         )}
 
-      {/* Microsoft (Graph) は変更通知で全フォルダの変化が届くので、IMAP のアカウントだけ。 */}
+      {/* Microsoft (Graph) は変更通知で全フォルダの変化が届き、POP3 にはフォルダが無いので、IMAP のアカウントだけ。 */}
       {account.protocol === "imap" && (
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
@@ -1461,6 +1467,73 @@ function AccountCard({
             </SelectContent>
           </Select>
         </div>
+      )}
+
+      {/* POP3 のアカウントだけ。受信したメールをサーバーに残すかどうかと、消すまでの日数。 */}
+      {account.protocol === "pop3" && (
+        <>
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p id={`${id}-pop-leave`} className="font-medium text-sm">
+                受信したメールをサーバーに残す
+              </p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                オフにすると、受信したメールをサーバーから削除します。ほかの端末やメールソフトでは受け取れなくなります。
+              </p>
+            </div>
+            <Switch
+              aria-labelledby={`${id}-pop-leave`}
+              checked={account.popLeaveOnServer}
+              onCheckedChange={(checked) =>
+                saveNow({ popLeaveOnServer: checked })
+              }
+            />
+          </div>
+          {account.popLeaveOnServer && (
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <p id={`${id}-pop-delete`} className="font-medium text-sm">
+                  サーバーから削除するまでの日数
+                </p>
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  受信してから選んだ日数がたったメールを、サーバーから削除します。このアプリで完全に削除したメールは、日数に関係なくサーバーからも削除します。
+                </p>
+              </div>
+              <Select
+                items={popDeleteOptions(account.popDeleteAfterDays)}
+                value={
+                  account.popDeleteAfterDays === null
+                    ? "never"
+                    : String(account.popDeleteAfterDays)
+                }
+                onValueChange={(next) =>
+                  saveNow({
+                    popDeleteAfterDays:
+                      next === "never" || next === null ? null : Number(next),
+                  })
+                }
+              >
+                <SelectTrigger
+                  size="sm"
+                  aria-labelledby={`${id}-pop-delete`}
+                  className="shrink-0"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end" className="w-auto">
+                  {popDeleteOptions(account.popDeleteAfterDays).map(
+                    (option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <PopNotice />
+        </>
       )}
 
       {error && (
@@ -1797,6 +1870,13 @@ function SelectRow<T extends string | number>(props: {
 }
 
 /** ほかのフォルダ用に足す接続の本数の選択肢 (サーバー側の上限は 8 本)。 */
+/** アカウントの一覧に出す受信方式の名前。 */
+const RECEIVING_LABELS: Record<Account["protocol"], string> = {
+  imap: "IMAP",
+  pop3: "POP3",
+  graph: "Microsoft Graph",
+};
+
 const PUSH_CONNECTION_OPTIONS = [
   { value: "auto", label: "自動" },
   { value: "0", label: "使わない" },

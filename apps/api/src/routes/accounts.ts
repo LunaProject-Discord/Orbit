@@ -20,8 +20,15 @@ import {
   openMicrosoftState,
   providerOfImapHost,
 } from "@orbit/core";
-import { changes, mailAccounts, mailboxes } from "@orbit/db";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import {
+  changes,
+  mailAccounts,
+  mailboxes,
+  messages,
+  outbox,
+  popMessages,
+} from "@orbit/db";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
@@ -34,12 +41,24 @@ import {
 import { isDistinct, recordChanges } from "../lib/changes.js";
 import { resolvesToPrivateAddress } from "../lib/host-check.js";
 import { verifyImap as defaultVerifyImap } from "../lib/imap-verify.js";
+import { verifyPop3 as defaultVerifyPop3 } from "../lib/pop3-verify.js";
 import { verifySmtp as defaultVerifySmtp } from "../lib/smtp-verify.js";
 
 const server = z.object({
   host: z.string().trim().min(1).max(253),
   port: z.number().int().min(1).max(65535),
   secure: z.boolean(),
+});
+
+/** 受信の方式。imap なら IMAP、pop3 なら POP3 で受け取る (どちらも送信は SMTP)。 */
+const incomingProtocol = z.enum(["imap", "pop3"]);
+
+/** POP3 で受け取るときの、サーバーに残すかどうかの設定。 */
+const popOptions = z.object({
+  /** 受け取ったメールをサーバーに残す。false なら取り込んだあとサーバーから消す。 */
+  leaveOnServer: z.boolean(),
+  /** サーバーに残したメールを、この日数が過ぎたら消す。null なら消さない。 */
+  deleteAfterDays: z.number().int().min(1).max(3650).nullable(),
 });
 
 const createAccountBody = z.object({
@@ -51,8 +70,12 @@ const createAccountBody = z.object({
   /**
    * 接続先。provider が gmail か icloud なら省略でき、そのサービスの決まった値を使う。
    * ユーザー名を省略するとメールアドレスを使う。
+   * imap は受信の接続先で、incomingProtocol が pop3 なら POP3 サーバーを入れる。
    */
+  incomingProtocol: incomingProtocol.default("imap"),
   imap: server.optional(),
+  /** POP3 のときの、サーバーに残すかどうか。省略するとサーバーに残し、消さない。 */
+  pop: popOptions.optional(),
   smtp: server.optional(),
   username: z.string().min(1).max(320).optional(),
   password: z.string().min(1).max(1024),
@@ -106,9 +129,15 @@ const idParam = z.object({ id: z.uuid() });
 
 const discoverBody = z.object({ email: z.email().max(320) });
 
-/** 追加済みアカウントの接続先を変える。password を省くと、保存済みのパスワードを使う。 */
+/**
+ * 追加済みアカウントの接続先を変える。password を省くと、保存済みのパスワードを使う。
+ * incomingProtocol を省くと、いまの受信の方式のまま。変えると、取り込み済みのメールを
+ * いったん消して、新しい方式で取り込み直す。
+ */
 const serverSettingsBody = z.object({
+  incomingProtocol: incomingProtocol.optional(),
   imap: server,
+  pop: popOptions.optional(),
   smtp: server,
   username: z.string().min(1).max(320),
   password: z.string().min(1).max(1024).optional(),
@@ -151,6 +180,10 @@ const updateAccountBody = z
     pushConnections: z.number().int().min(0).max(8).nullable().optional(),
     /** このアカウントに届いた新着メールを通知する。 */
     notifyNewMail: z.boolean().optional(),
+    /** POP3: 受け取ったメールをサーバーに残す。POP3 のアカウントでだけ変えられる。 */
+    popLeaveOnServer: z.boolean().optional(),
+    /** POP3: サーバーに残したメールを消すまでの日数。null なら消さない。 */
+    popDeleteAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -176,6 +209,8 @@ const publicColumns = {
   allowLegacyTls: mailAccounts.allowLegacyTls,
   pushConnections: mailAccounts.pushConnections,
   notifyNewMail: mailAccounts.notifyNewMail,
+  popLeaveOnServer: mailAccounts.popLeaveOnServer,
+  popDeleteAfterDays: mailAccounts.popDeleteAfterDays,
   username: mailAccounts.username,
   status: mailAccounts.status,
   lastError: mailAccounts.lastError,
@@ -186,10 +221,52 @@ const publicColumns = {
   createdAt: mailAccounts.createdAt,
 };
 
+type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
+
+/**
+ * アカウントの取り込み済みのフォルダとメールを消す (受信の方式を変えたとき)。
+ * まだ反映していない既読や移動などの操作も、古い方式のものなので捨てる (送信待ちのメールは残す)。
+ * 消したものは変更履歴に載せ、端末からも消えるようにする。
+ */
+async function resetMailData(tx: Tx, userId: string, accountId: string) {
+  await tx
+    .delete(outbox)
+    .where(and(eq(outbox.accountId, accountId), ne(outbox.kind, "send")));
+  await tx.delete(popMessages).where(eq(popMessages.accountId, accountId));
+  const removedMessages = await tx
+    .delete(messages)
+    .where(eq(messages.accountId, accountId))
+    .returning({ id: messages.id });
+  const removedMailboxes = await tx
+    .delete(mailboxes)
+    .where(eq(mailboxes.accountId, accountId))
+    .returning({ id: mailboxes.id });
+  const entries = [
+    ...removedMessages.map((row) => ({
+      entity: "message" as const,
+      entityId: row.id,
+    })),
+    ...removedMailboxes.map((row) => ({
+      entity: "mailbox" as const,
+      entityId: row.id,
+    })),
+  ];
+  for (let i = 0; i < entries.length; i += 1000) {
+    await tx.insert(changes).values(
+      entries.slice(i, i + 1000).map((entry) => ({
+        userId,
+        ...entry,
+        op: "delete" as const,
+      })),
+    );
+  }
+}
+
 /** テストで差し替えるもの。省けば実際のネットワークを使う。 */
 export type AccountRouteOverrides = {
   discovery?: DiscoveryDeps;
   verifyImap?: typeof defaultVerifyImap;
+  verifyPop3?: typeof defaultVerifyPop3;
   verifySmtp?: typeof defaultVerifySmtp;
 };
 
@@ -208,6 +285,21 @@ export function accountRoutes(
 ) {
   const app = new Hono<AppEnv>();
   const verifyImap = overrides.verifyImap ?? defaultVerifyImap;
+  const verifyPop3 = overrides.verifyPop3 ?? defaultVerifyPop3;
+
+  /** 受信のサーバー (IMAP または POP3) へ、実際にログインできるかを確かめる。 */
+  function verifyIncoming(
+    protocol: z.infer<typeof incomingProtocol>,
+    settings: z.infer<typeof server> & {
+      username: string;
+      password: string;
+      allowLegacyTls: boolean;
+    },
+  ) {
+    return protocol === "pop3"
+      ? verifyPop3({ ...settings, allowInsecure: allowPrivateMailHosts })
+      : verifyImap(settings);
+  }
   const verifySmtp = overrides.verifySmtp ?? defaultVerifySmtp;
   const discovery =
     overrides.discovery ?? defaultDiscoveryDeps(allowPrivateMailHosts);
@@ -221,8 +313,9 @@ export function accountRoutes(
     return null;
   }
 
-  /** 受信 (IMAP) と送信 (SMTP) に、実際にログインできるかを同時に確かめる。 */
+  /** 受信 (IMAP / POP3) と送信 (SMTP) に、実際にログインできるかを同時に確かめる。 */
   async function checkServers(settings: {
+    incomingProtocol: z.infer<typeof incomingProtocol>;
     imap: z.infer<typeof server>;
     smtp: z.infer<typeof server>;
     username: string;
@@ -232,7 +325,7 @@ export function accountRoutes(
     const [imap, smtp] = await Promise.all([
       (async (): Promise<ServerCheck> =>
         (await checkHost(settings.imap.host)) ??
-        (await verifyImap({
+        (await verifyIncoming(settings.incomingProtocol, {
           ...settings.imap,
           username: settings.username,
           password: settings.password,
@@ -305,8 +398,10 @@ export function accountRoutes(
     const input = c.req.valid("json");
     const user = c.var.user;
 
+    // Gmail と iCloud の決まった接続先は IMAP。POP3 で受け取るなら接続先を指定してもらう。
     const preset =
-      input.provider === "gmail" || input.provider === "icloud"
+      input.incomingProtocol === "imap" &&
+      (input.provider === "gmail" || input.provider === "icloud")
         ? MAIL_PROVIDER_PRESETS[input.provider]
         : null;
     const imap = input.imap ?? preset?.imap;
@@ -315,10 +410,14 @@ export function accountRoutes(
       return c.json({ error: "server_required" }, 400);
     }
     // 手動で設定した場合も、接続先が Gmail や iCloud ならそのサービスとして扱う。
+    // POP3 で受け取るアカウントは、どのサービスでも汎用のアカウントとして扱う
+    // (フォルダや送信済みの控えを、すべてこのアプリの中で持つため)。
     const provider: typeof input.provider =
-      input.provider === "generic"
-        ? (providerOfImapHost(imap.host) ?? "generic")
-        : input.provider;
+      input.incomingProtocol === "pop3"
+        ? "generic"
+        : input.provider === "generic"
+          ? (providerOfImapHost(imap.host) ?? "generic")
+          : input.provider;
     const body = {
       ...input,
       imap,
@@ -356,7 +455,7 @@ export function accountRoutes(
       return c.json({ error: "account_exists" }, 409);
     }
 
-    const verified = await verifyImap({
+    const verified = await verifyIncoming(body.incomingProtocol, {
       ...body.imap,
       username: body.username,
       password: body.password,
@@ -395,6 +494,15 @@ export function accountRoutes(
           displayName: body.displayName || null,
           provider: body.provider,
           authType: "password",
+          protocol: body.incomingProtocol,
+          ...(body.incomingProtocol === "pop3" && body.pop
+            ? {
+                popLeaveOnServer: body.pop.leaveOnServer,
+                popDeleteAfterDays: body.pop.leaveOnServer
+                  ? body.pop.deleteAfterDays
+                  : null,
+              }
+            : {}),
           imapHost: body.imap.host,
           imapPort: body.imap.port,
           imapSecure: body.imap.secure,
@@ -776,15 +884,28 @@ export function accountRoutes(
             ...(body.notifyNewMail !== undefined
               ? { notifyNewMail: body.notifyNewMail }
               : {}),
+            ...(body.popLeaveOnServer !== undefined
+              ? { popLeaveOnServer: body.popLeaveOnServer }
+              : {}),
+            ...(body.popDeleteAfterDays !== undefined
+              ? { popDeleteAfterDays: body.popDeleteAfterDays }
+              : {}),
           })
           .where(
             and(
               eq(mailAccounts.id, id),
               eq(mailAccounts.userId, user.id),
-              // TLS と接続の本数の設定は、IMAP / SMTP でつなぐアカウントにしか無い。
-              body.allowLegacyTls !== undefined ||
-                body.pushConnections !== undefined
+              // TLS の設定は IMAP / POP3 でつなぐアカウントに、接続の本数の設定は
+              // IMAP のアカウントに、サーバーに残す設定は POP3 のアカウントにしか無い。
+              body.pushConnections !== undefined
                 ? eq(mailAccounts.protocol, "imap")
+                : undefined,
+              body.allowLegacyTls !== undefined
+                ? ne(mailAccounts.protocol, "graph")
+                : undefined,
+              body.popLeaveOnServer !== undefined ||
+                body.popDeleteAfterDays !== undefined
+                ? eq(mailAccounts.protocol, "pop3")
                 : undefined,
             ),
           )
@@ -792,7 +913,9 @@ export function accountRoutes(
         if (!row) return null;
         if (
           body.allowLegacyTls !== undefined ||
-          body.pushConnections !== undefined
+          body.pushConnections !== undefined ||
+          body.popLeaveOnServer !== undefined ||
+          body.popDeleteAfterDays !== undefined
         ) {
           // 同期ワーカーが、新しい設定でつなぎ直す。
           await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);
@@ -843,7 +966,7 @@ export function accountRoutes(
       .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, userId)));
     if (!account) return { error: "not_found" as const };
     // Microsoft Graph でつなぐアカウントは IMAP / SMTP を使わない (ログインし直しだけ)。
-    if (account.protocol !== "imap") {
+    if (account.protocol === "graph") {
       return { error: "not_editable" as const };
     }
     // Google でログインした Gmail は、アプリ パスワードを入れればパスワードでの接続に切り替えられる。
@@ -862,12 +985,21 @@ export function accountRoutes(
       }
       password = credentials.password;
     }
+    const protocol = body.incomingProtocol ?? account.protocol;
+    // POP3 で受け取るアカウントは、どのサービスでも汎用のアカウントとして扱う。
     const provider: typeof account.provider =
-      account.provider === "generic" || account.provider === "icloud"
-        ? (providerOfImapHost(body.imap.host) ?? "generic")
-        : account.provider;
+      protocol === "pop3"
+        ? "generic"
+        : account.provider === "generic" ||
+            account.provider === "icloud" ||
+            account.protocol === "pop3"
+          ? (providerOfImapHost(body.imap.host) ?? "generic")
+          : account.provider;
     return {
       settings: {
+        incomingProtocol: protocol,
+        protocolChanged: protocol !== account.protocol,
+        pop: body.pop ?? null,
         imap: body.imap,
         smtp: body.smtp,
         username: body.username,
@@ -933,6 +1065,15 @@ export function accountRoutes(
         const [row] = await tx
           .update(mailAccounts)
           .set({
+            protocol: settings.incomingProtocol,
+            ...(settings.incomingProtocol === "pop3" && settings.pop
+              ? {
+                  popLeaveOnServer: settings.pop.leaveOnServer,
+                  popDeleteAfterDays: settings.pop.leaveOnServer
+                    ? settings.pop.deleteAfterDays
+                    : null,
+                }
+              : {}),
             imapHost: settings.imap.host,
             imapPort: settings.imap.port,
             imapSecure: settings.imap.secure,
@@ -956,11 +1097,16 @@ export function accountRoutes(
             and(
               eq(mailAccounts.id, id),
               eq(mailAccounts.userId, user.id),
-              eq(mailAccounts.protocol, "imap"),
+              ne(mailAccounts.protocol, "graph"),
             ),
           )
           .returning(publicColumns);
         if (!row) return null;
+        if (settings.protocolChanged) {
+          // 受信の方式を変えた。フォルダもメールの ID も方式ごとに違うので、
+          // 取り込み済みのものを消して、新しい方式で取り込み直す。
+          await resetMailData(tx, user.id, id);
+        }
         await recordChanges(tx, user.id, "account", [id]);
         // 同期ワーカーが、新しい接続先でつなぎ直す。
         await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);

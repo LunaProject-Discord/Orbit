@@ -8,11 +8,17 @@ import {
 } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
 import {
+  DEFAULT_POP_SETTINGS,
   discoverySourceLabel,
   guessServerForm,
+  IncomingProtocolPicker,
+  incomingProtocolLabel,
+  PopNotice,
+  PopOptions,
   ServerFields,
   ServerSummary,
   serverFormOf,
+  switchIncomingServerForm,
   toServerSettings,
 } from "@/components/mail/server-settings";
 import { Button } from "@/components/ui/button";
@@ -33,6 +39,7 @@ import {
   createAccount,
   type DiscoveredSettings,
   discoverAccountSettings,
+  type IncomingProtocol,
   NetworkError,
   type OAuthProvider,
   startOAuthLogin,
@@ -70,7 +77,11 @@ function passwordKindOf(settings: DiscoveredSettings | null): PasswordKind {
   return "generic";
 }
 
-function messageOf(error: unknown, kind: PasswordKind): string {
+function messageOf(
+  error: unknown,
+  kind: PasswordKind,
+  protocol: IncomingProtocol = "imap",
+): string {
   if (error instanceof NetworkError) {
     return "サーバーに接続できませんでした。ネットワークの状態を確認してください。";
   }
@@ -87,7 +98,7 @@ function messageOf(error: unknown, kind: PasswordKind): string {
       case "connection_failed":
         return kind === "icloud"
           ? `iCloud のメールサーバーに接続できませんでした。時間をおいてもう一度お試しください。${detail}`
-          : `受信 (IMAP) サーバーに接続できませんでした。サーバー、ポート番号、セキュリティを確認してください。${detail}`;
+          : `受信 (${incomingProtocolLabel(protocol)}) サーバーに接続できませんでした。サーバー、ポート番号、セキュリティを確認してください。${detail}`;
       case "smtp_auth_failed":
         return "送信 (SMTP) サーバーにログインできませんでした。「設定を編集」からユーザー名と送信サーバーの設定を確認してください。";
       case "smtp_connection_failed":
@@ -119,6 +130,9 @@ const initialForm = {
   password: "",
   imap: guessServerForm("imap", ""),
   smtp: guessServerForm("smtp", ""),
+  /** 受信方式。imap の欄は、POP3 のときは POP3 サーバーを入れる。 */
+  incomingProtocol: "imap" as IncomingProtocol,
+  pop: DEFAULT_POP_SETTINGS,
   allowLegacyTls: false,
 };
 
@@ -168,7 +182,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
       // ログインをやめて戻ってきたときに、もう一度押せるようにしておく。
       if (usesAppOAuth()) setRedirecting(null);
     } catch (cause) {
-      setError(messageOf(cause, kind));
+      setError(messageOf(cause, kind, form.incomingProtocol));
       setRedirecting(null);
     }
   }
@@ -246,6 +260,9 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
       username: found?.imap.username ?? email,
       imap: found ? serverFormOf(found.imap) : guessServerForm("imap", email),
       smtp: found ? serverFormOf(found.smtp) : guessServerForm("smtp", email),
+      // IMAP が見つからず POP3 だけが見つかったドメインでは、POP3 を選んでおく。
+      incomingProtocol: found?.incomingProtocol ?? "imap",
+      pop: DEFAULT_POP_SETTINGS,
       allowLegacyTls: false,
     }));
     if (oauthOf(found)) {
@@ -287,6 +304,10 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                 kind === "gmail"
                   ? form.password.replace(/\s+/g, "")
                   : form.password,
+              // IMAP は省略したときの値なので、POP3 のときだけ送る。
+              ...(form.incomingProtocol === "pop3"
+                ? { incomingProtocol: "pop3" as const, pop: form.pop }
+                : {}),
               ...(legacyTlsOffered && form.allowLegacyTls
                 ? { allowLegacyTls: true }
                 : {}),
@@ -300,7 +321,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
       if (cause instanceof ApiError && cause.code === "legacy_tls_required") {
         setLegacyTlsOffered(true);
       }
-      setError(messageOf(cause, kind));
+      setError(messageOf(cause, kind, form.incomingProtocol));
       setSubmitting(false);
     }
   }
@@ -552,6 +573,7 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                   <ServerSummary
                     imap={form.imap}
                     smtp={form.smtp}
+                    incomingProtocol={form.incomingProtocol}
                     username={form.username}
                     auth={{ imap: "password", smtp: "password" }}
                   />
@@ -567,6 +589,16 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                       設定を編集
                     </Button>
                   </div>
+                  {form.incomingProtocol === "pop3" && (
+                    <>
+                      <PopNotice />
+                      <PopOptions
+                        value={form.pop}
+                        onChange={(value) => set("pop", value)}
+                        disabled={busy}
+                      />
+                    </>
+                  )}
                 </div>
               )}
 
@@ -584,13 +616,38 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
                       onChange={(event) => set("username", event.target.value)}
                     />
                   </div>
+                  <IncomingProtocolPicker
+                    value={form.incomingProtocol}
+                    onChange={(next) =>
+                      setForm((current) => ({
+                        ...current,
+                        incomingProtocol: next,
+                        // 手で変えていなければ、ポート番号とホスト名を新しい方式に合わせる。
+                        imap: switchIncomingServerForm(
+                          current.imap,
+                          current.incomingProtocol,
+                          next,
+                          email,
+                        ),
+                      }))
+                    }
+                    disabled={busy}
+                  />
                   <ServerFields
                     idPrefix={`${id}-imap`}
                     kind="imap"
+                    protocol={form.incomingProtocol}
                     value={form.imap}
                     onChange={(value) => set("imap", value)}
                     disabled={busy}
                   />
+                  {form.incomingProtocol === "pop3" && (
+                    <PopOptions
+                      value={form.pop}
+                      onChange={(value) => set("pop", value)}
+                      disabled={busy}
+                    />
+                  )}
                   <ServerFields
                     idPrefix={`${id}-smtp`}
                     kind="smtp"
@@ -676,6 +733,12 @@ function DiscoveryNotice({
           </span>
         </span>
       </output>
+      {discovered.incomingProtocol === "pop3" && (
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          このメールサービスでは IMAP の設定が見つからなかったため、POP3
+          で受信します。
+        </p>
+      )}
       {discovered.imap.auth === "oauth2" && (
         <p className="text-muted-foreground text-xs leading-relaxed">
           このメールサービスは OAuth2

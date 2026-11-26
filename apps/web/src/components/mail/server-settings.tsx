@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 受信 (IMAP) と送信 (SMTP) のサーバー設定の部品。アカウントの追加画面と、
+ * 受信 (IMAP / POP3) と送信 (SMTP) のサーバー設定の部品。アカウントの追加画面と、
  * 追加済みアカウントの「サーバー設定」で使う。
  */
 
@@ -17,6 +17,7 @@ import {
   UploadIcon,
   UserIcon,
 } from "lucide-react";
+import { useId } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -26,13 +27,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import type {
   DiscoveredServer,
   DiscoveredSettings,
+  IncomingProtocol,
+  PopSettings,
   ServerCheck,
   ServerSettings,
 } from "@/lib/api";
 
+/**
+ * サーバーの種類。imap は受信サーバーのことで、受信方式が POP3 のときも imap と呼ぶ
+ * (API の項目名に合わせている)。受信方式は IncomingProtocol で別に持つ。
+ */
 export type ServerKind = "imap" | "smtp";
 
 /** 画面で選べるセキュリティ。保存するのは「最初から TLS か (secure)」だけ。 */
@@ -46,24 +54,83 @@ export const SECURITY_OPTIONS = [
   { value: "starttls", label: "STARTTLS" },
 ] as const;
 
-const DEFAULT_PORTS: Record<ServerKind, Record<Security, string>> = {
+const DEFAULT_PORTS: Record<ServerKind | "pop3", Record<Security, string>> = {
   imap: { ssl: "993", starttls: "143" },
+  pop3: { ssl: "995", starttls: "110" },
   smtp: { ssl: "465", starttls: "587" },
+};
+
+/** よく使われるポート番号。受信サーバーは受信方式 (IMAP / POP3) で変わる。 */
+function defaultPort(
+  kind: ServerKind,
+  protocol: IncomingProtocol,
+  security: Security,
+): string {
+  return DEFAULT_PORTS[kind === "imap" ? protocol : "smtp"][security];
+}
+
+/** 受信方式の表示名。 */
+export function incomingProtocolLabel(protocol: IncomingProtocol): string {
+  return protocol === "pop3" ? "POP3" : "IMAP";
+}
+
+/** POP3 で受信するときの初めの値。受信したメールはサーバーに残し、消さない。 */
+export const DEFAULT_POP_SETTINGS: PopSettings = {
+  leaveOnServer: true,
+  deleteAfterDays: null,
 };
 
 export function securityLabel(security: Security): string {
   return security === "ssl" ? "SSL/TLS" : "STARTTLS";
 }
 
-/** 新しく入力するときの初めの値。ホストはメールアドレスのドメインから推し量る。 */
-export function guessServerForm(kind: ServerKind, email: string): ServerForm {
+/** 推し量ったホスト名。imap.example.com、pop.example.com、smtp.example.com のようにする。 */
+function guessHost(
+  kind: ServerKind,
+  protocol: IncomingProtocol,
+  email: string,
+): string {
   const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+  if (!domain) return "";
+  const prefix =
+    kind === "smtp" ? "smtp" : protocol === "pop3" ? "pop" : "imap";
+  return `${prefix}.${domain}`;
+}
+
+/** 新しく入力するときの初めの値。ホストはメールアドレスのドメインから推し量る。 */
+export function guessServerForm(
+  kind: ServerKind,
+  email: string,
+  protocol: IncomingProtocol = "imap",
+): ServerForm {
   const security: Security = kind === "imap" ? "ssl" : "starttls";
   return {
-    host: domain ? `${kind}.${domain}` : "",
-    port: DEFAULT_PORTS[kind][security],
+    host: guessHost(kind, protocol, email),
+    port: defaultPort(kind, protocol, security),
     security,
   };
+}
+
+/**
+ * 受信方式を切り替えたときの受信サーバーの入力。前の方式の決まったポート番号や、
+ * 推し量ったホスト名のまま (手で変えていない) なら、新しい方式に合わせて変える。
+ */
+export function switchIncomingServerForm(
+  form: ServerForm,
+  from: IncomingProtocol,
+  to: IncomingProtocol,
+  email: string,
+): ServerForm {
+  if (from === to) return form;
+  const port =
+    form.port === "" || form.port === defaultPort("imap", from, form.security)
+      ? defaultPort("imap", to, form.security)
+      : form.port;
+  const host =
+    form.host.trim() === guessHost("imap", from, email)
+      ? guessHost("imap", to, email)
+      : form.host;
+  return { ...form, host, port };
 }
 
 export function serverFormOf(server: DiscoveredServer): ServerForm {
@@ -99,6 +166,8 @@ export function toServerSettings(form: ServerForm): ServerSettings {
 export function ServerFields(props: {
   idPrefix: string;
   kind: ServerKind;
+  /** 受信サーバー (kind が imap) の受信方式。省略すると IMAP。 */
+  protocol?: IncomingProtocol;
   value: ServerForm;
   onChange: (next: ServerForm) => void;
   disabled?: boolean;
@@ -106,12 +175,13 @@ export function ServerFields(props: {
   check?: ServerCheck | null;
 }) {
   const { value, onChange, kind } = props;
+  const protocol = props.protocol ?? "imap";
   const changeSecurity = (security: Security) => {
     const other: Security = security === "ssl" ? "starttls" : "ssl";
     // 前のセキュリティの決まったポートのままなら、新しいセキュリティの決まったポートにする。
     const port =
-      value.port === DEFAULT_PORTS[kind][other] || value.port === ""
-        ? DEFAULT_PORTS[kind][security]
+      value.port === defaultPort(kind, protocol, other) || value.port === ""
+        ? defaultPort(kind, protocol, security)
         : value.port;
     onChange({ ...value, security, port });
   };
@@ -119,7 +189,9 @@ export function ServerFields(props: {
     <fieldset className="flex flex-col gap-3" disabled={props.disabled}>
       <legend className="mb-3 flex items-center gap-2 font-medium text-sm">
         <ServerKindIcon kind={kind} />
-        {kind === "imap" ? "受信 (IMAP)" : "送信 (SMTP)"}
+        {kind === "imap"
+          ? `受信 (${incomingProtocolLabel(protocol)})`
+          : "送信 (SMTP)"}
       </legend>
       <div className="grid grid-cols-[1fr_6rem] gap-4">
         <div className="flex flex-col gap-2">
@@ -132,7 +204,11 @@ export function ServerFields(props: {
             autoCapitalize="none"
             spellCheck={false}
             placeholder={
-              kind === "imap" ? "imap.example.com" : "smtp.example.com"
+              kind === "smtp"
+                ? "smtp.example.com"
+                : protocol === "pop3"
+                  ? "pop.example.com"
+                  : "imap.example.com"
             }
             value={value.host}
             onChange={(event) =>
@@ -268,6 +344,8 @@ const AUTH_LABELS: Record<DiscoveredServer["auth"], string> = {
 export function ServerSummary(props: {
   imap: ServerForm;
   smtp: ServerForm;
+  /** 受信方式。省略すると IMAP。 */
+  incomingProtocol?: IncomingProtocol;
   username: string;
   auth?: { imap: DiscoveredServer["auth"]; smtp: DiscoveredServer["auth"] };
 }) {
@@ -288,7 +366,9 @@ export function ServerSummary(props: {
                   {kind === "imap" ? "受信" : "送信"}
                 </p>
                 <p className="text-muted-foreground text-xs">
-                  {kind === "imap" ? "IMAP" : "SMTP"}
+                  {kind === "imap"
+                    ? incomingProtocolLabel(props.incomingProtocol ?? "imap")
+                    : "SMTP"}
                 </p>
               </div>
             </div>
@@ -355,4 +435,156 @@ const SOURCE_LABELS: Record<DiscoveredSettings["source"], string> = {
 
 export function discoverySourceLabel(source: DiscoveredSettings["source"]) {
   return SOURCE_LABELS[source];
+}
+
+/**
+ * 受信方式 (IMAP / POP3) を選ぶ部品。POP3 を選んでいるときは、IMAP との違いの案内も出す。
+ */
+export function IncomingProtocolPicker(props: {
+  value: IncomingProtocol;
+  onChange: (next: IncomingProtocol) => void;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-2">
+      <span id={`${id}-label`} className="font-medium text-sm leading-none">
+        受信方式
+      </span>
+      <div
+        role="radiogroup"
+        aria-labelledby={`${id}-label`}
+        className="grid grid-cols-2 gap-2"
+      >
+        {(["imap", "pop3"] as const).map((protocol) => {
+          const selected = props.value === protocol;
+          return (
+            // biome-ignore lint/a11y/useSemanticElements: 見た目をボタンにそろえるため、radio の役割を持つボタンにしている
+            <button
+              key={protocol}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={props.disabled}
+              onClick={() => props.onChange(protocol)}
+              className={cn(
+                "flex items-center justify-center rounded-lg border px-3 py-2 text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50",
+                selected && "border-primary bg-muted font-medium",
+              )}
+            >
+              {incomingProtocolLabel(protocol)}
+            </button>
+          );
+        })}
+      </div>
+      {props.value === "pop3" && <PopNotice />}
+    </div>
+  );
+}
+
+/** POP3 でできないことの案内。 */
+export function PopNotice() {
+  return (
+    <p className="text-muted-foreground text-xs leading-relaxed">
+      POP3
+      では、既読やフォルダの状態をほかのメールソフトと同期できません。メールサービスが
+      IMAP に対応している場合は、IMAP をおすすめします。
+    </p>
+  );
+}
+
+/** サーバーから消すまでの日数の選択肢。value は Select で扱うための文字列。 */
+const POP_DELETE_AFTER_DAYS = [7, 14, 30, 90, 180];
+
+/** 日数の選択肢。決まった選択肢に無い日数が保存されていれば、それも加える。 */
+export function popDeleteOptions(current: number | null) {
+  const days =
+    current !== null && !POP_DELETE_AFTER_DAYS.includes(current)
+      ? [...POP_DELETE_AFTER_DAYS, current].sort((a, b) => a - b)
+      : POP_DELETE_AFTER_DAYS;
+  return [
+    { value: "never", label: "削除しない" },
+    ...days.map((day) => ({ value: String(day), label: `${day} 日後` })),
+  ];
+}
+
+/**
+ * POP3 で受信したメールをサーバーに残すかどうかと、残すときに何日でサーバーから消すか。
+ * アカウントの追加画面とサーバー設定で使う。
+ */
+export function PopOptions(props: {
+  value: PopSettings;
+  onChange: (next: PopSettings) => void;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  const { value, onChange } = props;
+  const options = popDeleteOptions(value.deleteAfterDays);
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p id={`${id}-leave`} className="font-medium text-sm">
+            受信したメールをサーバーに残す
+          </p>
+          <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+            {value.leaveOnServer
+              ? "受信したあともサーバーにメールを残すので、ほかの端末やメールソフトでも受け取れます。"
+              : "受信したメールはサーバーから削除します。ほかの端末やメールソフトでは受け取れなくなります。"}
+          </p>
+        </div>
+        <Switch
+          aria-labelledby={`${id}-leave`}
+          checked={value.leaveOnServer}
+          disabled={props.disabled}
+          onCheckedChange={(checked) =>
+            onChange({ ...value, leaveOnServer: checked })
+          }
+        />
+      </div>
+      {value.leaveOnServer && (
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <p id={`${id}-delete`} className="font-medium text-sm">
+              サーバーから削除するまでの日数
+            </p>
+            <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+              受信してから選んだ日数がたったメールを、サーバーから削除します。このアプリで完全に削除したメールは、日数に関係なくサーバーからも削除します。
+            </p>
+          </div>
+          <Select
+            items={options}
+            value={
+              value.deleteAfterDays === null
+                ? "never"
+                : String(value.deleteAfterDays)
+            }
+            onValueChange={(next) =>
+              onChange({
+                ...value,
+                deleteAfterDays:
+                  next === "never" || next === null ? null : Number(next),
+              })
+            }
+            disabled={props.disabled}
+          >
+            <SelectTrigger
+              size="sm"
+              aria-labelledby={`${id}-delete`}
+              className="shrink-0"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end" className="w-auto">
+              {options.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
+  );
 }

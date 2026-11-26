@@ -23,6 +23,7 @@ function setup(responses: Response[]) {
 
 const target: AttachmentTarget = {
   id: "00000000-0000-7000-8000-000000000001",
+  messageId: "00000000-0000-7000-8000-000000000003",
   userId: "00000000-0000-7000-8000-000000000002",
   partId: "ATT/1=",
   providerMessageId: "MSG/1=",
