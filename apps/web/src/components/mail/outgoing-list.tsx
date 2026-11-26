@@ -38,6 +38,8 @@ function queuedErrorLabel(code: string | null): string {
   switch (code) {
     case "account_not_found":
       return "差出人のアカウントが見つかりません。編集して、別のアカウントを選んでください。";
+    case "receive_only":
+      return "差出人のアカウントは受信専用のため、送信できません。編集して、別のアカウントを選んでください。";
     case "attachment_not_found":
       return "添付ファイルがサーバーに残っていません。編集して、もう一度添付してください。";
     case "attachments_too_large":

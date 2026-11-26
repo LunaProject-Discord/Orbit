@@ -71,6 +71,7 @@ import {
 import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
   type Account,
+  isReceiveOnly,
   type NotificationAction,
   oauthProviderOf,
   type SwipeSettings,
@@ -1340,6 +1341,8 @@ function AccountCard({
           </p>
           <p className="truncate text-muted-foreground text-xs">
             受信: {RECEIVING_LABELS[account.protocol]}
+            {/* 送信サーバーを設定していないアカウントは、受信だけに使う。 */}
+            {isReceiveOnly(account) && " ・ 受信専用"}
           </p>
           {problem && (
             <p className="mt-1 flex items-start gap-1 text-destructive text-xs">

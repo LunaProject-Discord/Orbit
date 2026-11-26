@@ -11,6 +11,11 @@ import { insertIntoField } from "@/lib/emoji/insert";
 type Props = {
   /** 返信の宛先になる相手の名前。 */
   recipient: string;
+  /**
+   * 受け取ったアカウントとは別のアカウントから送るときの差出人 (受け取ったアカウントが
+   * 受信専用のとき)。入力欄の上に出して、どこから送るかが分かるようにする。
+   */
+  from?: string;
   /** 書いた文章を送る。送れたら true、送れなければ false (文章は残す)。 */
   onSend: (text: string) => Promise<boolean>;
   /** 続きを作成画面で書く (宛先や書式を変えたい、ファイルを付けたいとき)。 */
@@ -21,7 +26,7 @@ type Props = {
  * 本文の下の返信欄。押すと入力欄が開き、短い返信をその場で送れる。
  * 宛先は「返信」と同じ (差出人だけ)。署名と元のメールの引用は、送るときに付く。
  */
-export function QuickReply({ recipient, onSend, onExpand }: Props) {
+export function QuickReply({ recipient, from, onSend, onExpand }: Props) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -64,6 +69,11 @@ export function QuickReply({ recipient, onSend, onExpand }: Props) {
       }}
       className="flex flex-col gap-2 rounded-lg border p-2 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
     >
+      {from && (
+        <p className="truncate px-1.5 pt-1 text-muted-foreground text-xs">
+          差出人: {from} (受け取ったアカウントは受信専用のため)
+        </p>
+      )}
       <Textarea
         ref={inputRef}
         value={text}

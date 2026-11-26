@@ -76,7 +76,8 @@ const createAccountBody = z.object({
   imap: server.optional(),
   /** POP3 のときの、サーバーに残すかどうか。省略するとサーバーに残し、消さない。 */
   pop: popOptions.optional(),
-  smtp: server.optional(),
+  /** 送信の接続先。null なら受信専用のアカウントにする (送信サーバーを使わない)。 */
+  smtp: server.nullable().optional(),
   username: z.string().min(1).max(320).optional(),
   password: z.string().min(1).max(1024),
   /**
@@ -138,7 +139,8 @@ const serverSettingsBody = z.object({
   incomingProtocol: incomingProtocol.optional(),
   imap: server,
   pop: popOptions.optional(),
-  smtp: server,
+  /** 送信の接続先。null なら受信専用にする。 */
+  smtp: server.nullable(),
   username: z.string().min(1).max(320),
   password: z.string().min(1).max(1024).optional(),
   allowLegacyTls: z.boolean().optional(),
@@ -317,7 +319,8 @@ export function accountRoutes(
   async function checkServers(settings: {
     incomingProtocol: z.infer<typeof incomingProtocol>;
     imap: z.infer<typeof server>;
-    smtp: z.infer<typeof server>;
+    /** 受信専用なら null (送信は確かめない)。 */
+    smtp: z.infer<typeof server> | null;
     username: string;
     password: string;
     allowLegacyTls: boolean;
@@ -331,15 +334,20 @@ export function accountRoutes(
           password: settings.password,
           allowLegacyTls: settings.allowLegacyTls,
         })))(),
-      (async (): Promise<ServerCheck> =>
-        (await checkHost(settings.smtp.host)) ??
-        (await verifySmtp({
-          ...settings.smtp,
-          username: settings.username,
-          password: settings.password,
-          allowLegacyTls: settings.allowLegacyTls,
-          allowInsecure: allowPrivateMailHosts,
-        })))(),
+      (async (): Promise<ServerCheck> => {
+        const smtp = settings.smtp;
+        if (!smtp) return { ok: true };
+        return (
+          (await checkHost(smtp.host)) ??
+          (await verifySmtp({
+            ...smtp,
+            username: settings.username,
+            password: settings.password,
+            allowLegacyTls: settings.allowLegacyTls,
+            allowInsecure: allowPrivateMailHosts,
+          }))
+        );
+      })(),
     ]);
     return { imap, smtp };
   }
@@ -405,8 +413,9 @@ export function accountRoutes(
         ? MAIL_PROVIDER_PRESETS[input.provider]
         : null;
     const imap = input.imap ?? preset?.imap;
-    const smtp = input.smtp ?? preset?.smtp;
-    if (!imap || !smtp) {
+    // smtp に null を渡したら受信専用 (送信サーバーを使わない)。
+    const smtp = input.smtp === null ? null : (input.smtp ?? preset?.smtp);
+    if (!imap || smtp === undefined) {
       return c.json({ error: "server_required" }, 400);
     }
     // 手動で設定した場合も、接続先が Gmail や iCloud ならそのサービスとして扱う。
@@ -429,7 +438,7 @@ export function accountRoutes(
     };
 
     if (!allowPrivateMailHosts) {
-      for (const host of [body.imap.host, body.smtp.host]) {
+      for (const host of [body.imap.host, ...(smtp ? [smtp.host] : [])]) {
         const isPrivate = await resolvesToPrivateAddress(host).catch(
           () => null,
         );
@@ -468,14 +477,16 @@ export function accountRoutes(
     if (!verified.ok) {
       return c.json({ error: verified.reason, detail: verified.detail }, 422);
     }
-    // 送信の設定の誤りも、追加する前に分かるようにする。
-    const smtpVerified = await verifySmtp({
-      ...body.smtp,
-      username: body.username,
-      password: body.password,
-      allowLegacyTls: body.allowLegacyTls,
-      allowInsecure: allowPrivateMailHosts,
-    });
+    // 送信の設定の誤りも、追加する前に分かるようにする (受信専用なら確かめない)。
+    const smtpVerified = smtp
+      ? await verifySmtp({
+          ...smtp,
+          username: body.username,
+          password: body.password,
+          allowLegacyTls: body.allowLegacyTls,
+          allowInsecure: allowPrivateMailHosts,
+        })
+      : ({ ok: true } as const);
     if (!smtpVerified.ok) {
       return c.json(
         {
@@ -510,9 +521,9 @@ export function accountRoutes(
           imapHost: body.imap.host,
           imapPort: body.imap.port,
           imapSecure: body.imap.secure,
-          smtpHost: body.smtp.host,
-          smtpPort: body.smtp.port,
-          smtpSecure: body.smtp.secure,
+          smtpHost: smtp?.host ?? null,
+          smtpPort: smtp?.port ?? null,
+          smtpSecure: smtp?.secure ?? false,
           allowLegacyTls: body.allowLegacyTls,
           username: body.username,
           credentialsEncrypted: encryptCredentials(
@@ -1087,9 +1098,9 @@ export function accountRoutes(
             imapHost: settings.imap.host,
             imapPort: settings.imap.port,
             imapSecure: settings.imap.secure,
-            smtpHost: settings.smtp.host,
-            smtpPort: settings.smtp.port,
-            smtpSecure: settings.smtp.secure,
+            smtpHost: settings.smtp?.host ?? null,
+            smtpPort: settings.smtp?.port ?? null,
+            smtpSecure: settings.smtp?.secure ?? false,
             username: settings.username,
             provider: settings.provider,
             authType: "password",

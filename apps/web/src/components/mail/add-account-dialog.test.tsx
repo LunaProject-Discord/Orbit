@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   calls: [] as CreateAccountInput[],
   /** true の間、許可の無い接続は「古い TLS のサーバー」として断る。 */
   legacyServer: true,
+  /** true の間、送信サーバーを確かめる追加 (smtp が null でない) を「接続できない」で断る。 */
+  smtpFailure: false,
   /** 自動で見つかる設定。null なら見つからない。 */
   discovered: null as DiscoveredSettings | null,
   discoverCalls: [] as string[],
@@ -42,6 +44,12 @@ vi.mock("@/lib/api", async (original) => {
           error: "legacy_tls_required",
         });
       }
+      if (mocks.smtpFailure && input.smtp !== null) {
+        throw new actual.ApiError(422, "smtp_connection_failed", {
+          error: "smtp_connection_failed",
+          detail: "timeout",
+        });
+      }
       return { id: "account-1", email: input.email } as unknown as Account;
     },
   };
@@ -54,7 +62,8 @@ describe("AddAccountDialog の古い TLS のサーバー", () => {
 
   const query = <T extends Element>(selector: string) =>
     document.body.querySelector<T>(selector);
-  const legacySwitch = () => query<HTMLElement>('[role="switch"]');
+  const legacySwitch = () =>
+    query<HTMLElement>('[role="switch"][aria-labelledby$="-legacy-tls"]');
 
   async function type(selector: string, value: string) {
     const input = query<HTMLInputElement>(selector);
@@ -83,6 +92,7 @@ describe("AddAccountDialog の古い TLS のサーバー", () => {
     ).IS_REACT_ACT_ENVIRONMENT = true;
     mocks.calls.length = 0;
     mocks.legacyServer = true;
+    mocks.smtpFailure = false;
     mocks.discovered = null;
     mocks.discoverCalls.length = 0;
     created.mockClear();
@@ -149,7 +159,40 @@ describe("AddAccountDialog の古い TLS のサーバー", () => {
     });
     expect(created).toHaveBeenCalledTimes(1);
   });
+
+  it("受信専用にすると、送信の欄を隠して smtp: null で追加する", async () => {
+    mocks.legacyServer = false;
+    const toggle = receiveOnlySwitch();
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(receiveOnlySwitch()?.getAttribute("aria-checked")).toBe("true");
+    expect(query('input[placeholder="smtp.example.com"]')).toBeNull();
+    expect(document.body.textContent).toContain(
+      "このアカウントからは送信できません",
+    );
+    await submit();
+    expect(mocks.calls).toHaveLength(1);
+    expect(mocks.calls[0]).toMatchObject({
+      provider: "generic",
+      imap: { host: "imap.example.test" },
+      smtp: null,
+    });
+    expect(created).toHaveBeenCalledTimes(1);
+  });
 });
+
+/** 「受信専用にする」のスイッチ。 */
+function receiveOnlySwitch(): HTMLElement | null {
+  const label = [...document.body.querySelectorAll("p")].find((item) =>
+    item.textContent?.startsWith("受信専用にする"),
+  );
+  if (!label?.id) return null;
+  return document.body.querySelector<HTMLElement>(
+    `[role="switch"][aria-labelledby="${label.id}"]`,
+  );
+}
 
 describe("AddAccountDialog の設定の自動検出", () => {
   let container: HTMLDivElement;
@@ -190,6 +233,7 @@ describe("AddAccountDialog の設定の自動検出", () => {
     ).IS_REACT_ACT_ENVIRONMENT = true;
     mocks.calls.length = 0;
     mocks.legacyServer = false;
+    mocks.smtpFailure = false;
     mocks.discoverCalls.length = 0;
     mocks.discovered = {
       source: "autoconfig",
@@ -270,6 +314,30 @@ describe("AddAccountDialog の設定の自動検出", () => {
       port: 587,
       secure: false,
     });
+  });
+
+  it("送信サーバーにつながらなければ、案内を出して受信専用で追加できる", async () => {
+    // 一覧の段階では、はじめは「受信専用にする」を出さない。
+    expect(receiveOnlySwitch()).toBeNull();
+    mocks.smtpFailure = true;
+    await submit();
+    expect(created).not.toHaveBeenCalled();
+    const alert = document.body.querySelector('[role="alert"]')?.textContent;
+    expect(alert).toContain("送信 (SMTP) サーバーに接続できませんでした");
+    expect(alert).toContain("「受信専用にする」をオンにすると");
+
+    // 一覧の段階のまま、スイッチを入れて追加し直せる。
+    await act(async () => {
+      receiveOnlySwitch()?.click();
+    });
+    expect(document.body.textContent).toContain("受信専用");
+    await submit();
+    expect(mocks.calls).toHaveLength(2);
+    expect(mocks.calls[1]).toMatchObject({
+      imap: { host: "imap.shin.example", port: 993, secure: true },
+      smtp: null,
+    });
+    expect(created).toHaveBeenCalledTimes(1);
   });
 
   it("戻って同じアドレスで進んでも、探し直さず手直しを残す", async () => {

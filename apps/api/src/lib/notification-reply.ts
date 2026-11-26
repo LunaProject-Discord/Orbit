@@ -18,7 +18,7 @@ import { enqueueMessageAction } from "./message-actions.js";
 
 export type NotificationReplyResult =
   | { ok: true; id: string | null }
-  | { ok: false; error: "not_found" | "no_recipients" };
+  | { ok: false; error: "not_found" | "no_recipients" | "receive_only" };
 
 /**
  * 署名を選ぶ。画面 (apps/web の lib/signatures.ts) と同じ優先順位:
@@ -95,11 +95,17 @@ export async function queueNotificationReply(
       email: mailAccounts.email,
       displayName: mailAccounts.displayName,
       signatureHtml: mailAccounts.signatureHtml,
+      protocol: mailAccounts.protocol,
+      smtpHost: mailAccounts.smtpHost,
     })
     .from(messages)
     .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
     .where(and(eq(messages.id, messageId), eq(mailAccounts.userId, userId)));
   if (!source) return { ok: false, error: "not_found" };
+  // 受信専用のアカウント (送信サーバーが無い) からは送れない。
+  if (source.protocol !== "graph" && source.smtpHost === null) {
+    return { ok: false, error: "receive_only" };
+  }
 
   const own = await db
     .select({ email: mailAccounts.email })
