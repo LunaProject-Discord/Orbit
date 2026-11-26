@@ -6,7 +6,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { decryptCredentials, encryptCredentials } from "@orbit/core";
-import { createDb, type Database, mailAccounts, users } from "@orbit/db";
+import {
+  createDb,
+  type Database,
+  mailAccounts,
+  mailboxes,
+  messageMailboxes,
+  messages,
+  users,
+} from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Hono } from "hono";
@@ -14,6 +22,7 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEnv } from "../context.js";
 import type { ImapSettings } from "../lib/imap-verify.js";
+import type { Pop3VerifySettings } from "../lib/pop3-verify.js";
 import type { SmtpVerifySettings } from "../lib/smtp-verify.js";
 import { accountRoutes } from "./accounts.js";
 
@@ -33,6 +42,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
   /** 確認に使った設定と、そのときに返す結果。 */
   const seen = {
     imap: [] as ImapSettings[],
+    pop3: [] as Pop3VerifySettings[],
     smtp: [] as SmtpVerifySettings[],
   };
   let smtpFails = false;
@@ -143,6 +153,10 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
             seen.imap.push(settings);
             return { ok: true };
           },
+          verifyPop3: async (settings) => {
+            seen.pop3.push(settings);
+            return { ok: true };
+          },
           verifySmtp: async (settings) => {
             seen.smtp.push(settings);
             return smtpFails
@@ -167,6 +181,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
 
   beforeEach(() => {
     seen.imap.length = 0;
+    seen.pop3.length = 0;
     seen.smtp.length = 0;
     smtpFails = false;
   });
@@ -217,6 +232,76 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
       .from(mailAccounts)
       .where(eq(mailAccounts.id, id));
     expect(row?.imapHost).toBe("imap.old.example");
+  });
+
+  it("POP3 で受け取るアカウントを追加できる", async () => {
+    const response = await request("POST", "/accounts", {
+      email: "taro@docomo.ne.jp",
+      incomingProtocol: "pop3",
+      imap: { host: "mail.spmode.ne.jp", port: 995, secure: true },
+      smtp: { host: "mail.spmode.ne.jp", port: 465, secure: true },
+      username: "taro",
+      password: "secret",
+      pop: { leaveOnServer: true, deleteAfterDays: 30 },
+    });
+    expect(response.status).toBe(201);
+    expect(seen.imap).toHaveLength(0);
+    expect(seen.pop3[0]).toMatchObject({
+      host: "mail.spmode.ne.jp",
+      port: 995,
+      username: "taro",
+    });
+    const { account } = (await response.json()) as {
+      account: Record<string, unknown>;
+    };
+    expect(account).toMatchObject({
+      protocol: "pop3",
+      provider: "generic",
+      popLeaveOnServer: true,
+      popDeleteAfterDays: 30,
+      imapHost: "mail.spmode.ne.jp",
+    });
+  });
+
+  it("受信方式を POP3 に変えると、取り込み済みのメールとフォルダを消す", async () => {
+    const id = await addAccount(userId, "switch@old.example");
+    const [box] = await db
+      .insert(mailboxes)
+      .values({ accountId: id, path: "INBOX", name: "INBOX" })
+      .returning({ id: mailboxes.id });
+    const [mail] = await db
+      .insert(messages)
+      .values({ accountId: id, threadKey: "t", receivedAt: new Date() })
+      .returning({ id: messages.id });
+    await db.insert(messageMailboxes).values({
+      mailboxId: box?.id as string,
+      messageId: mail?.id as string,
+      uid: 1n,
+    });
+    const response = await request("PUT", `/accounts/${id}/server`, {
+      ...body,
+      incomingProtocol: "pop3",
+      imap: { host: "pop.new.example", port: 995, secure: true },
+      pop: { leaveOnServer: false, deleteAfterDays: 7 },
+    });
+    expect(response.status).toBe(200);
+    expect(seen.pop3[0]).toMatchObject({ host: "pop.new.example" });
+    const [row] = await db
+      .select()
+      .from(mailAccounts)
+      .where(eq(mailAccounts.id, id));
+    expect(row).toMatchObject({
+      protocol: "pop3",
+      popLeaveOnServer: false,
+      // サーバーに残さないなら、日数は使わない。
+      popDeleteAfterDays: null,
+    });
+    expect(
+      await db.select().from(messages).where(eq(messages.accountId, id)),
+    ).toHaveLength(0);
+    expect(
+      await db.select().from(mailboxes).where(eq(mailboxes.accountId, id)),
+    ).toHaveLength(0);
   });
 
   it("送信にログインできなければ保存しない", async () => {

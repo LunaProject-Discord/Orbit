@@ -4,6 +4,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  customType,
   index,
   integer,
   jsonb,
@@ -25,6 +26,11 @@ const updatedAt = () =>
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date());
+
+/** バイト列 (bytea)。node-postgres は Buffer で読み書きする。 */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
 
 /** メールアドレス 1 件分 (From / To / Cc / Bcc の要素) */
 export type Address = { name?: string; address: string };
@@ -260,9 +266,10 @@ export const mailAuthType = pgEnum("mail_auth_type", ["oauth2", "password"]);
 
 /**
  * サーバーとの通信方式。imap は IMAP / SMTP、graph は Microsoft Graph
- * (Exchange Online、Outlook.com)。
+ * (Exchange Online、Outlook.com)、pop3 は POP3 / SMTP。
+ * POP3 のアカウントでは、受信の接続先も imapHost / imapPort / imapSecure に入れる。
  */
-export const mailProtocol = pgEnum("mail_protocol", ["imap", "graph"]);
+export const mailProtocol = pgEnum("mail_protocol", ["imap", "graph", "pop3"]);
 
 export const mailAccountStatus = pgEnum("mail_account_status", [
   "active",
@@ -284,7 +291,10 @@ export const mailAccounts = pgTable(
     provider: mailProvider().notNull(),
     authType: mailAuthType().notNull(),
     protocol: mailProtocol().notNull().default("imap"),
-    /** IMAP / SMTP の接続先。protocol が imap のときだけ入る。 */
+    /**
+     * 受信 (IMAP または POP3) と送信 (SMTP) の接続先。protocol が imap か pop3 のときだけ入る。
+     * POP3 のアカウントでは、imap* の列に POP3 サーバーの接続先が入る。
+     */
     imapHost: text(),
     imapPort: integer(),
     imapSecure: boolean().notNull().default(true),
@@ -303,6 +313,13 @@ export const mailAccounts = pgTable(
      * 0 なら足さない。null は自動 (サービスに合わせた数)。IMAP のアカウントでだけ使う。
      */
     pushConnections: integer(),
+    /**
+     * POP3: 受け取ったメールをサーバーに残す。false なら、取り込んだあとサーバーから消す。
+     * true でも、アプリで完全に削除したメールはサーバーからも消す。
+     */
+    popLeaveOnServer: boolean().notNull().default(true),
+    /** POP3: サーバーに残したメールを、取り込んでからこの日数が過ぎたら消す。null なら消さない。 */
+    popDeleteAfterDays: integer(),
     username: text().notNull(),
     /** リフレッシュトークンまたはパスワードを AES-GCM で暗号化したもの。平文は保存しない。 */
     credentialsEncrypted: text().notNull(),
@@ -523,6 +540,39 @@ export const messageMailboxes = pgTable(
     index("message_mailboxes_message_idx").on(t.messageId),
   ],
 );
+
+/**
+ * POP3 で取り込んだメールの記録。UIDL (サーバーが付ける一意な ID) ごとに 1 行で、
+ * 同じメールを二度取り込まないために使う。messageId は取り込んだメール
+ * (アプリで完全に削除すると null になり、次の受信でサーバーからも消す)。
+ */
+export const popMessages = pgTable(
+  "pop_messages",
+  {
+    accountId: uuid()
+      .notNull()
+      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+    uidl: text().notNull(),
+    messageId: uuid().references(() => messages.id, { onDelete: "set null" }),
+    downloadedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.accountId, t.uidl] }),
+    index("pop_messages_message_idx").on(t.messageId),
+  ],
+);
+
+/**
+ * メールの原文 (RFC 5322 の形式)。POP3 のメールはサーバーから消えることがあるので、
+ * 取り込んだときの原文をここに残し、添付ファイルはここから取り出す。
+ */
+export const messageSources = pgTable("message_sources", {
+  messageId: uuid()
+    .primaryKey()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  raw: bytea().notNull(),
+  createdAt: createdAt(),
+});
 
 export const attachments = pgTable(
   "attachments",

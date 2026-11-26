@@ -195,7 +195,8 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
     if (body.parentId && !parent) {
       return c.json({ error: "not_found" }, 404);
     }
-    const imap = account.protocol === "imap";
+    // POP3 のアカウントのフォルダはこのアプリの中だけにあり、IMAP と同じくパスで指す。
+    const imap = account.protocol !== "graph";
     // 最上位に作るときは、アカウントのほかのフォルダと同じ区切り文字を使う。
     const delimiter = imap
       ? (parent?.delimiter ??
@@ -242,7 +243,7 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
       if (mailbox.specialUse || mailbox.detectedSpecialUse) {
         return c.json({ error: "special_mailbox" }, 400);
       }
-      const delimiter = mailbox.protocol === "imap" ? mailbox.delimiter : null;
+      const delimiter = mailbox.protocol !== "graph" ? mailbox.delimiter : null;
       if (mailboxNameError(name, delimiter)) {
         return c.json({ error: "invalid_name" }, 400);
       }
@@ -260,7 +261,7 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
           and(eq(mailboxes.accountId, mailbox.accountId), ne(mailboxes.id, id)),
         );
       const exists =
-        mailbox.protocol === "imap"
+        mailbox.protocol !== "graph"
           ? others.some(
               (other) => other.path.toLowerCase() === newPath.toLowerCase(),
             )
@@ -275,7 +276,7 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
       await enqueue(mailbox.accountId, "mailbox_rename", {
         mailboxId: id,
         path: mailbox.path,
-        newPath: mailbox.protocol === "imap" ? newPath : mailbox.path,
+        newPath: mailbox.protocol !== "graph" ? newPath : mailbox.path,
         name,
         delimiter,
         targets: [],

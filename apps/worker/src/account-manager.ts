@@ -23,6 +23,7 @@ import { notifyAttachmentReady } from "./attachment-fetch.js";
 import { GraphAccountSync } from "./graph-account-sync.js";
 import { type NewMailSender, parseNewMailNotification } from "./new-mail.js";
 import { accountsWithPendingOutbox } from "./outbox.js";
+import { PopAccountSync } from "./pop-account-sync.js";
 
 const RECONCILE_MS = 60_000;
 
@@ -49,6 +50,8 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
     row.smtpSecure,
     row.allowLegacyTls,
     row.pushConnections,
+    row.popLeaveOnServer,
+    row.popDeleteAfterDays,
     row.username,
     row.credentialsEncrypted,
   ].join("\n");
@@ -64,7 +67,10 @@ function connectionKey(row: typeof mailAccounts.$inferSelect) {
  * 新着メールの知らせは、Web Push で端末へ送る。
  */
 export class AccountManager {
-  private running = new Map<string, { sync: AccountSync | GraphAccountSync }>();
+  private running = new Map<
+    string,
+    { sync: AccountSync | GraphAccountSync | PopAccountSync }
+  >();
   private listener: pg.Client | null = null;
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
@@ -237,13 +243,20 @@ export class AccountManager {
               this.microsoft,
               this.graphWebhookBaseUrl,
             )
-          : new AccountSync(
-              this.db,
-              this.encryptionKey,
-              row,
-              this.allowInsecureSmtp,
-              this.google,
-            );
+          : row.protocol === "pop3"
+            ? new PopAccountSync(
+                this.db,
+                this.encryptionKey,
+                row,
+                this.allowInsecureSmtp,
+              )
+            : new AccountSync(
+                this.db,
+                this.encryptionKey,
+                row,
+                this.allowInsecureSmtp,
+                this.google,
+              );
       const entry = { sync };
       this.running.set(row.id, entry);
       sync.run().finally(() => {

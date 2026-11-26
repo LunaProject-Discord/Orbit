@@ -57,7 +57,7 @@ export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 type Placement = OutboxTarget & {
   accountId: string;
-  protocol: "imap" | "graph";
+  protocol: "imap" | "graph" | "pop3";
   /** フォルダの役割 (受信トレイ、ごみ箱など)。 */
   role: MailboxRole;
 };
@@ -149,10 +149,11 @@ export async function enqueueMessageAction(
         )
     )
       // 反映に必要な ID が無いものは扱えない (IMAP は UID、Graph はメッセージ ID)。
+      // POP3 のフォルダはこのアプリの中だけにあるので、ID は要らない。
       .filter((row) =>
         row.protocol === "graph"
           ? row.providerMessageId !== null
-          : row.uid !== null,
+          : row.protocol === "pop3" || row.uid !== null,
       )
       .map((row) => ({
         ...row,

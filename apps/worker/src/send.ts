@@ -45,10 +45,12 @@ type AccountRow = typeof mailAccounts.$inferSelect;
  * 送信済みフォルダへの保存を自分で行うか。Gmail と Microsoft の SMTP は
  * サーバーが自動で保存するので、こちらからも保存すると二重になる。
  * Microsoft Graph も自動で保存する。
+ * POP3 のアカウントは送信済みフォルダがこのアプリの中にしか無いので、いつも保存する。
  */
 export function savesSentCopy(
   account: Pick<AccountRow, "protocol" | "provider">,
 ): boolean {
+  if (account.protocol === "pop3") return true;
   return (
     account.protocol === "imap" &&
     account.provider !== "gmail" &&

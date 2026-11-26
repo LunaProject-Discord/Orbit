@@ -131,6 +131,35 @@ describe("parseThunderbirdConfig", () => {
         username: "taro@example.jp",
         auth: "password",
       },
+      incomingProtocol: "imap",
+    });
+  });
+
+  it("IMAP が無く POP3 しかなければ、POP3 を受信に使う", () => {
+    const popOnly = `<clientConfig version="1.1"><emailProvider id="spmode.ne.jp">
+      <incomingServer type="pop3"><hostname>mail.spmode.ne.jp</hostname><port>995</port>
+        <socketType>SSL</socketType><username>%EMAILLOCALPART%</username>
+        <authentication>password-cleartext</authentication></incomingServer>
+      <outgoingServer type="smtp"><hostname>mail.spmode.ne.jp</hostname><port>465</port>
+        <socketType>SSL</socketType><username>%EMAILLOCALPART%</username>
+        <authentication>password-cleartext</authentication></outgoingServer>
+    </emailProvider></clientConfig>`;
+    expect(parseThunderbirdConfig(popOnly, "taro@docomo.ne.jp")).toEqual({
+      imap: {
+        host: "mail.spmode.ne.jp",
+        port: 995,
+        security: "ssl",
+        username: "taro",
+        auth: "password",
+      },
+      smtp: {
+        host: "mail.spmode.ne.jp",
+        port: 465,
+        security: "ssl",
+        username: "taro",
+        auth: "password",
+      },
+      incomingProtocol: "pop3",
     });
   });
 
@@ -170,6 +199,7 @@ describe("parseAutodiscover", () => {
         username: "me@work.example",
         auth: "password",
       },
+      incomingProtocol: "imap",
     });
   });
 

@@ -194,6 +194,7 @@ describe("AddAccountDialog の設定の自動検出", () => {
     mocks.discovered = {
       source: "autoconfig",
       provider: "generic",
+      incomingProtocol: "imap",
       imap: {
         host: "imap.shin.example",
         port: 993,
@@ -324,6 +325,7 @@ describe("AddAccountDialog の Google / Microsoft への振り分け", () => {
     mocks.discovered = {
       source: "mx",
       provider: "gmail",
+      incomingProtocol: "imap",
       imap: {
         host: "imap.gmail.com",
         port: 993,
@@ -394,5 +396,194 @@ describe("AddAccountDialog の Google / Microsoft への振り分け", () => {
       imap: { host: "imap.gmail.com", port: 993, secure: true },
       password: "abcdefghijklmnop",
     });
+  });
+});
+
+describe("AddAccountDialog の POP3 での受信", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const created = vi.fn();
+
+  const query = <T extends Element>(selector: string) =>
+    document.body.querySelector<T>(selector);
+  const button = (text: string) =>
+    [...document.body.querySelectorAll("button")].find((item) =>
+      item.textContent?.includes(text),
+    );
+  const radio = (text: string) =>
+    [...document.body.querySelectorAll('[role="radio"]')].find(
+      (item) => item.textContent === text,
+    );
+
+  async function type(selector: string, value: string) {
+    const input = query<HTMLInputElement>(selector);
+    if (!input) throw new Error(`入力欄が見つかりません: ${selector}`);
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  async function submit() {
+    await act(async () => {
+      query<HTMLFormElement>("form")?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+  }
+
+  /** メールアドレスとパスワードを入れて、サーバーの設定の段階まで進む。 */
+  async function start(email: string) {
+    await act(async () => {
+      root.render(
+        <AddAccountDialog open onOpenChange={() => {}} onCreated={created} />,
+      );
+    });
+    await type('input[type="email"]', email);
+    await submit();
+    await type('input[type="password"]', "secret");
+  }
+
+  beforeEach(() => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    mocks.calls.length = 0;
+    mocks.legacyServer = false;
+    mocks.discovered = null;
+    mocks.discoverCalls.length = 0;
+    created.mockClear();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("POP3 を選ぶと、POP3 の決まった値に変わり、受信方式と POP3 の設定を送る", async () => {
+    await start("me@example.test");
+    expect(radio("IMAP")?.getAttribute("aria-checked")).toBe("true");
+    // IMAP のときは POP3 の設定を出さない。
+    expect(document.body.textContent).not.toContain(
+      "受信したメールをサーバーに残す",
+    );
+
+    await act(async () => {
+      (radio("POP3") as HTMLElement).click();
+    });
+    expect(radio("POP3")?.getAttribute("aria-checked")).toBe("true");
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("受信 (POP3)");
+    expect(text).toContain("受信したメールをサーバーに残す");
+    expect(text).toContain("サーバーから削除するまでの日数");
+    expect(text).toContain("IMAP をおすすめします");
+    // 推し量ったホスト名と決まったポート番号のままなので、POP3 の値にする。
+    expect(
+      query<HTMLInputElement>('input[placeholder="pop.example.com"]')?.value,
+    ).toBe("pop.example.test");
+    expect(query<HTMLInputElement>('input[inputmode="numeric"]')?.value).toBe(
+      "995",
+    );
+
+    await submit();
+    expect(mocks.calls[0]).toMatchObject({
+      provider: "generic",
+      incomingProtocol: "pop3",
+      pop: { leaveOnServer: true, deleteAfterDays: null },
+      imap: { host: "pop.example.test", port: 995, secure: true },
+    });
+    expect(created).toHaveBeenCalledTimes(1);
+  });
+
+  it("サーバーに残さない設定も送れ、IMAP に戻すと POP3 の設定は送らない", async () => {
+    // 追加できると画面が閉じるので、古い TLS のサーバーとして断らせて、同じ画面で送り直す。
+    mocks.legacyServer = true;
+    await start("me@example.test");
+    await act(async () => {
+      (radio("POP3") as HTMLElement).click();
+    });
+    await act(async () => {
+      query<HTMLElement>('[role="switch"]')?.click();
+    });
+    // サーバーに残さないときは、日数を選ばせない。
+    expect(document.body.textContent).not.toContain(
+      "サーバーから削除するまでの日数",
+    );
+    await submit();
+    expect(mocks.calls[0]).toMatchObject({
+      incomingProtocol: "pop3",
+      pop: { leaveOnServer: false },
+    });
+
+    await act(async () => {
+      (radio("IMAP") as HTMLElement).click();
+    });
+    expect(
+      query<HTMLInputElement>('input[placeholder="imap.example.com"]')?.value,
+    ).toBe("imap.example.test");
+    await submit();
+    expect(mocks.calls[1]).not.toHaveProperty("incomingProtocol");
+    expect(mocks.calls[1]).not.toHaveProperty("pop");
+    expect(mocks.calls[1]?.imap).toEqual({
+      host: "imap.example.test",
+      port: 993,
+      secure: true,
+    });
+  });
+
+  it("POP3 の設定が見つかったら、POP3 を選んだ状態にする", async () => {
+    mocks.discovered = {
+      source: "ispdb",
+      provider: "generic",
+      incomingProtocol: "pop3",
+      imap: {
+        host: "mail.spmode.ne.jp",
+        port: 995,
+        security: "ssl",
+        username: "comugi",
+        auth: "password",
+      },
+      smtp: {
+        host: "mail.spmode.ne.jp",
+        port: 465,
+        security: "ssl",
+        username: "comugi",
+        auth: "password",
+      },
+    };
+    await start("comugi@docomo.ne.jp");
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("POP3");
+    expect(text).toContain("POP3 で受信します");
+    expect(text).toContain("受信したメールをサーバーに残す");
+
+    await act(async () => {
+      button("設定を編集")?.click();
+    });
+    expect(radio("POP3")?.getAttribute("aria-checked")).toBe("true");
+    expect(
+      query<HTMLInputElement>('input[placeholder="pop.example.com"]')?.value,
+    ).toBe("mail.spmode.ne.jp");
+
+    await submit();
+    expect(mocks.calls).toEqual([
+      {
+        email: "comugi@docomo.ne.jp",
+        provider: "generic",
+        incomingProtocol: "pop3",
+        pop: { leaveOnServer: true, deleteAfterDays: null },
+        imap: { host: "mail.spmode.ne.jp", port: 995, secure: true },
+        smtp: { host: "mail.spmode.ne.jp", port: 465, secure: true },
+        username: "comugi",
+        password: "secret",
+      },
+    ]);
   });
 });

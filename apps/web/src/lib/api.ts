@@ -172,9 +172,15 @@ export type Account = {
   displayName: string | null;
   provider: "gmail" | "microsoft" | "icloud" | "generic";
   authType: "oauth2" | "password";
-  /** imap は IMAP / SMTP、graph は Microsoft Graph (Exchange Online、Outlook.com)。 */
-  protocol: "imap" | "graph";
-  /** IMAP / SMTP の接続先。protocol が graph のときは null。 */
+  /**
+   * imap は IMAP / SMTP、pop3 は POP3 で受信して SMTP で送信、
+   * graph は Microsoft Graph (Exchange Online、Outlook.com)。
+   */
+  protocol: "imap" | "graph" | "pop3";
+  /**
+   * 受信サーバー (protocol が pop3 なら POP3 サーバー) と SMTP の接続先。
+   * protocol が graph のときは null。
+   */
   imapHost: string | null;
   imapPort: number | null;
   imapSecure: boolean;
@@ -188,6 +194,13 @@ export type Account = {
    * null は自動。IMAP のアカウントでだけ使う。
    */
   pushConnections: number | null;
+  /** 受信したメールを POP3 サーバーに残す。POP3 のアカウントでだけ使う。 */
+  popLeaveOnServer: boolean;
+  /**
+   * サーバーに残すとき、受信してから何日たったらサーバーから消すか。null は消さない。
+   * アプリで完全に削除したメールは、この設定に関係なくサーバーからも消える。
+   */
+  popDeleteAfterDays: number | null;
   /** このアカウントに届いた新着メールを通知する。 */
   notifyNewMail: boolean;
   username: string;
@@ -206,11 +219,29 @@ export type Account = {
 
 export type ServerSettings = { host: string; port: number; secure: boolean };
 
+/** パスワードで追加するアカウントの受信方式。 */
+export type IncomingProtocol = "imap" | "pop3";
+
+/** POP3 で受信するときの、サーバーに残すメールの扱い。 */
+export type PopSettings = {
+  /** 受信したメールをサーバーに残す。 */
+  leaveOnServer: boolean;
+  /** サーバーに残すとき、何日たったらサーバーから消すか。null は消さない。 */
+  deleteAfterDays: number | null;
+};
+
 export type CreateAccountInput = {
   email: string;
   displayName?: string;
   provider: Account["provider"];
-  /** 接続先。provider が gmail か icloud なら省略でき、サーバーが決まった値を使う。 */
+  /** 受信方式。省略すると imap。 */
+  incomingProtocol?: IncomingProtocol;
+  /** POP3 で受信するときの設定。incomingProtocol が pop3 のときだけ使う。 */
+  pop?: PopSettings;
+  /**
+   * 接続先。imap は受信サーバー (POP3 で受信するなら POP3 サーバー)。
+   * IMAP で受信し provider が gmail か icloud なら省略でき、サーバーが決まった値を使う。
+   */
   imap?: ServerSettings;
   smtp?: ServerSettings;
   /** 省略するとメールアドレスを使う。 */
@@ -942,8 +973,8 @@ function pendingOAuthName(): { displayName?: string } {
 }
 
 /**
- * アカウントのログインし直しに使うサービス。パスワードで追加したアカウントは null
- * (ログイン画面へ移動する方法では直せない)。
+ * アカウントのログインし直しに使うサービス。パスワードで追加したアカウント
+ * (IMAP、POP3) は null (ログイン画面へ移動する方法では直せない)。
  */
 export function oauthProviderOf(
   account: Pick<Account, "protocol" | "provider" | "authType">,
@@ -1062,7 +1093,10 @@ export async function deleteSignatureRule(id: string): Promise<void> {
   await apiJson(`/v1/signatures/${id}`, { method: "DELETE" });
 }
 
-/** アカウントの表示名、色、アイコン、TLS の設定を変える。指定した項目だけが変わる。 */
+/**
+ * アカウントの表示名、色、アイコン、TLS、POP3 の設定を変える。指定した項目だけが変わる。
+ * popLeaveOnServer と popDeleteAfterDays は POP3 のアカウントでだけ変えられる。
+ */
 export async function updateAccount(
   id: string,
   patch: {
@@ -1071,6 +1105,8 @@ export async function updateAccount(
     icon?: AccountIconName | null;
     allowLegacyTls?: boolean;
     pushConnections?: number | null;
+    popLeaveOnServer?: boolean;
+    popDeleteAfterDays?: number | null;
     notifyNewMail?: boolean;
   },
 ): Promise<Account> {
@@ -1104,11 +1140,14 @@ export type DiscoveredSettings = {
     | "autodiscover"
     | "srv";
   provider: Account["provider"];
+  /** 受信方式。IMAP が見つからなかったドメインでだけ pop3 になる。 */
+  incomingProtocol: IncomingProtocol;
+  /** 受信サーバー (incomingProtocol が pop3 なら POP3 サーバー)。 */
   imap: DiscoveredServer;
   smtp: DiscoveredServer;
 };
 
-/** メールアドレスのドメインから、IMAP / SMTP の設定を探す。見つからなければ null。 */
+/** メールアドレスのドメインから、受信 (IMAP / POP3) と SMTP の設定を探す。見つからなければ null。 */
 export async function discoverAccountSettings(
   email: string,
 ): Promise<DiscoveredSettings | null> {
@@ -1120,6 +1159,14 @@ export async function discoverAccountSettings(
 }
 
 export type AccountServerInput = {
+  /**
+   * 受信方式。省くと今の方式のまま。今と違う方式にすると、取り込み済みのフォルダと
+   * メールをいったん消して、新しい方式で取り込み直す。
+   */
+  incomingProtocol?: IncomingProtocol;
+  /** POP3 で受信するときの設定。 */
+  pop?: PopSettings;
+  /** 受信サーバー (POP3 で受信するなら POP3 サーバー)。 */
   imap: ServerSettings;
   smtp: ServerSettings;
   username: string;
@@ -1143,6 +1190,7 @@ export type ServerCheck =
 
 export type ServerCheckResult = {
   ok: boolean;
+  /** 受信サーバー (IMAP または POP3) の結果。 */
   imap: ServerCheck;
   smtp: ServerCheck;
 };

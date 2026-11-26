@@ -22,6 +22,8 @@ import { type GraphClient, GraphError } from "./graph-client.js";
 /** 取得する添付ファイルと、それを持つメールの所在。 */
 export type AttachmentTarget = {
   id: string;
+  /** 添付ファイルを持つメール (messages.id)。POP3 では保存した原文を探すのに使う。 */
+  messageId: string;
   userId: string;
   /** IMAP では BODYSTRUCTURE 上の位置、Microsoft Graph では添付ファイルの ID。 */
   partId: string;
@@ -62,6 +64,7 @@ export async function loadAttachmentTarget(
   if (!row) return null;
   return {
     id: row.id,
+    messageId: row.messageId,
     userId: row.userId,
     partId: row.partId,
     providerMessageId: row.providerMessageId,

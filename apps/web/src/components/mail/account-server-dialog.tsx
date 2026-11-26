@@ -1,12 +1,15 @@
 "use client";
 
-import { CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, TriangleAlertIcon } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
 import {
+  IncomingProtocolPicker,
+  PopOptions,
   ServerFields,
   type ServerForm,
   ServerSummary,
   serverFormFromSaved,
+  switchIncomingServerForm,
   toServerSettings,
 } from "@/components/mail/server-settings";
 import { Button } from "@/components/ui/button";
@@ -25,7 +28,9 @@ import {
   type Account,
   type AccountServerInput,
   ApiError,
+  type IncomingProtocol,
   NetworkError,
+  type PopSettings,
   ServerCheckError,
   type ServerCheckResult,
   testAccountServer,
@@ -33,11 +38,15 @@ import {
 } from "@/lib/api";
 
 /**
- * 接続先を入力欄で変えられるか。Google でログインした Gmail は、アプリ パスワードへ
- * 切り替えるときだけ変えられる。Microsoft Graph のアカウントは IMAP / SMTP を使わない。
+ * 接続先を入力欄で変えられるか。パスワードで接続する IMAP と POP3 のアカウントが対象。
+ * Google でログインした Gmail は、アプリ パスワードへ切り替えるときだけ変えられる。
+ * Microsoft Graph のアカウントは IMAP / POP3 / SMTP を使わない。
  */
 export function canEditServer(account: Account): boolean {
-  return account.protocol === "imap" && account.authType === "password";
+  return (
+    (account.protocol === "imap" || account.protocol === "pop3") &&
+    account.authType === "password"
+  );
 }
 
 type Props = {
@@ -195,6 +204,16 @@ function AccountServerForm({
   const [smtp, setSmtp] = useState<ServerForm>(() =>
     serverFormFromSaved(account.smtpHost, account.smtpPort, account.smtpSecure),
   );
+  /** 今の受信方式。Google のログインから切り替えるときは IMAP のまま。 */
+  const savedProtocol: IncomingProtocol =
+    account.protocol === "pop3" ? "pop3" : "imap";
+  const [protocol, setProtocol] = useState<IncomingProtocol>(savedProtocol);
+  const [pop, setPop] = useState<PopSettings>({
+    leaveOnServer: account.popLeaveOnServer,
+    deleteAfterDays: account.popDeleteAfterDays,
+  });
+  /** 受信方式を変えると、取り込み済みのメールとフォルダを消して取り込み直す。 */
+  const switchingProtocol = protocol !== savedProtocol;
   const [allowLegacyTls, setAllowLegacyTls] = useState(account.allowLegacyTls);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [result, setResult] = useState<ServerCheckResult | null>(null);
@@ -209,6 +228,9 @@ function AccountServerForm({
         )));
 
   const input = (): AccountServerInput => ({
+    // Google のログインから切り替えるときは受信方式を選ばないので、今の方式のまま (省略)。
+    ...(requirePassword ? {} : { incomingProtocol: protocol }),
+    ...(protocol === "pop3" ? { pop } : {}),
     imap: toServerSettings(imap),
     smtp: toServerSettings(smtp),
     username: username.trim(),
@@ -311,14 +333,52 @@ function AccountServerForm({
             />
           </div>
         </div>
+        {!requirePassword && (
+          <IncomingProtocolPicker
+            value={protocol}
+            onChange={(next) => {
+              // 手で変えていなければ、ポート番号とホスト名を新しい方式に合わせる。
+              setImap((current) =>
+                switchIncomingServerForm(
+                  current,
+                  protocol,
+                  next,
+                  account.email,
+                ),
+              );
+              setProtocol(next);
+              setResult(null);
+            }}
+            disabled={busy !== null}
+          />
+        )}
+        {switchingProtocol && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+          >
+            <TriangleAlertIcon
+              className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+              aria-hidden="true"
+            />
+            <span className="min-w-0">
+              受信方式を変えると、このアカウントで取り込み済みのメールとフォルダをいったん消して、新しい方式で取り込み直します。POP3
+              でサーバーから削除済みのメールは戻りません。
+            </span>
+          </div>
+        )}
         <ServerFields
           idPrefix={`${id}-imap`}
           kind="imap"
+          protocol={protocol}
           value={imap}
           onChange={setImap}
           disabled={busy !== null}
           check={result?.imap}
         />
+        {protocol === "pop3" && (
+          <PopOptions value={pop} onChange={setPop} disabled={busy !== null} />
+        )}
         <ServerFields
           idPrefix={`${id}-smtp`}
           kind="smtp"
@@ -359,7 +419,9 @@ function AccountServerForm({
         )}
         {result?.ok && !error && (
           <p className="text-muted-foreground text-xs">
-            この設定で接続できます。「保存」を押すと、新しい設定で同期をやり直します。
+            {switchingProtocol
+              ? "この設定で接続できます。「保存して取り込み直す」を押すと、取り込み済みのメールを消して新しい受信方式で取り込み直します。"
+              : "この設定で接続できます。「保存」を押すと、新しい設定で同期をやり直します。"}
           </p>
         )}
         <DialogFooter className="gap-2 sm:justify-between">
@@ -381,7 +443,11 @@ function AccountServerForm({
               キャンセル
             </Button>
             <Button type="submit" disabled={busy !== null}>
-              {busy === "save" ? "接続を確認中…" : "保存"}
+              {busy === "save"
+                ? "接続を確認中…"
+                : switchingProtocol
+                  ? "保存して取り込み直す"
+                  : "保存"}
             </Button>
           </div>
         </DialogFooter>

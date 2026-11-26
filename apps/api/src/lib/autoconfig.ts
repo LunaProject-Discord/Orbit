@@ -4,7 +4,7 @@ import { XMLParser } from "fast-xml-parser";
 import { resolvesToPrivateAddress } from "./host-check.js";
 
 /**
- * メールアドレスのドメインから、IMAP / SMTP の設定を自動で見つける。
+ * メールアドレスのドメインから、受信 (IMAP、無ければ POP3) と送信 (SMTP) の設定を自動で見つける。
  * Thunderbird と同じ順で、次の場所を調べる。
  *
  * 1. よく使われるサービス (Gmail、iCloud、Outlook.com) の決まった設定
@@ -14,7 +14,7 @@ import { resolvesToPrivateAddress } from "./host-check.js";
  * 5. MX レコードの指すドメインで 2 と 4 (Google Workspace や Microsoft 365 の独自ドメイン)
  * 6. https://autodiscover.<ドメイン>/autodiscover/autodiscover.xml と
  *    https://<ドメイン>/autodiscover/autodiscover.xml (Outlook 形式)
- * 7. SRV レコード (RFC 6186 の _imaps._tcp、_submission._tcp など)
+ * 7. SRV レコード (RFC 6186 / 8314 の _imaps._tcp、_pop3s._tcp、_submission._tcp など)
  *
  * どれも並べて同時に問い合わせ、上の順で最初に見つかったものを使う。
  * パスワードはどこにも送らない (Outlook 形式の問い合わせでも認証は付けない)。
@@ -42,13 +42,21 @@ export type DiscoverySource =
   | "autodiscover"
   | "srv";
 
+/** 受信の方式。IMAP が使えるサービスでは IMAP を選び、POP3 しかないときだけ pop3 にする。 */
+export type IncomingProtocol = "imap" | "pop3";
+
+/** 見つかった受信と送信の接続先。imap は受信の接続先で、POP3 のときもここに入る。 */
+export type FoundServers = {
+  imap: DiscoveredServer;
+  smtp: DiscoveredServer;
+  incomingProtocol: IncomingProtocol;
+};
+
 export type DiscoveredSettings = {
   source: DiscoverySource;
   /** 見つかった接続先のサービス。gmail と microsoft は、それぞれのログインを勧める。 */
   provider: "gmail" | "microsoft" | "icloud" | "generic";
-  imap: DiscoveredServer;
-  smtp: DiscoveredServer;
-};
+} & FoundServers;
 
 export type SrvRecord = {
   name: string;
@@ -278,16 +286,18 @@ function securityOfSocketType(value: string | null): Security | null {
 export function parseThunderbirdConfig(
   body: string,
   email: string,
-): { imap: DiscoveredServer; smtp: DiscoveredServer } | null {
+): FoundServers | null {
   const root = parseXml(body)?.clientConfig as XmlNode | undefined;
   if (!root || typeof root !== "object") return null;
   const imaps: DiscoveredServer[] = [];
+  const pops: DiscoveredServer[] = [];
   const smtps: DiscoveredServer[] = [];
   for (const provider of asArray(root.emailProvider)) {
     if (!provider || typeof provider !== "object") continue;
     const node = provider as XmlNode;
     for (const [key, list, type] of [
       ["incomingServer", imaps, "imap"],
+      ["incomingServer", pops, "pop3"],
       ["outgoingServer", smtps, "smtp"],
     ] as const) {
       for (const item of asArray(node[key])) {
@@ -312,13 +322,28 @@ export function parseThunderbirdConfig(
       }
     }
   }
-  const imap = pickBest(imaps);
+  return combine(imaps, pops, smtps);
+}
+
+/**
+ * 受信と送信の候補から、使う接続先を選ぶ。受信は IMAP を優先し (フォルダや既読を
+ * どの端末とも合わせられる)、IMAP が無いときだけ POP3 を使う。
+ */
+function combine(
+  imaps: DiscoveredServer[],
+  pops: DiscoveredServer[],
+  smtps: DiscoveredServer[],
+): FoundServers | null {
   const smtp = pickBest(smtps);
-  return imap && smtp ? { imap, smtp } : null;
+  if (!smtp) return null;
+  const imap = pickBest(imaps);
+  if (imap) return { imap, smtp, incomingProtocol: "imap" };
+  const pop = pickBest(pops);
+  return pop ? { imap: pop, smtp, incomingProtocol: "pop3" } : null;
 }
 
 export type AutodiscoverResult =
-  | { kind: "settings"; imap: DiscoveredServer; smtp: DiscoveredServer }
+  | ({ kind: "settings" } & FoundServers)
   | { kind: "redirectUrl"; url: string }
   | { kind: "redirectAddr"; email: string };
 
@@ -343,12 +368,20 @@ export function parseAutodiscover(
     return address ? { kind: "redirectAddr", email: address } : null;
   }
   const imaps: DiscoveredServer[] = [];
+  const pops: DiscoveredServer[] = [];
   const smtps: DiscoveredServer[] = [];
   for (const item of asArray(account.Protocol)) {
     if (!item || typeof item !== "object") continue;
     const protocol = item as XmlNode;
     const type = text(protocol.Type)?.toUpperCase();
-    const list = type === "IMAP" ? imaps : type === "SMTP" ? smtps : null;
+    const list =
+      type === "IMAP"
+        ? imaps
+        : type === "POP3"
+          ? pops
+          : type === "SMTP"
+            ? smtps
+            : null;
     if (!list) continue;
     const host = text(protocol.Server)?.toLowerCase() ?? null;
     const port = Number(text(protocol.Port));
@@ -366,7 +399,7 @@ export function parseAutodiscover(
             ? "plain"
             : !ssl
               ? "plain"
-              : port === 993 || port === 465
+              : port === 993 || port === 995 || port === 465
                 ? "ssl"
                 : "starttls";
     list.push({
@@ -377,9 +410,8 @@ export function parseAutodiscover(
       auth: "password",
     });
   }
-  const imap = pickBest(imaps);
-  const smtp = pickBest(smtps);
-  return imap && smtp ? { kind: "settings", imap, smtp } : null;
+  const found = combine(imaps, pops, smtps);
+  return found ? { kind: "settings", ...found } : null;
 }
 
 function escapeXml(value: string): string {
@@ -429,21 +461,27 @@ async function discoverSrv(
   domain: string,
   email: string,
   deps: DiscoveryDeps,
-): Promise<{ imap: DiscoveredServer; smtp: DiscoveredServer } | null> {
-  const [imap, smtp] = await Promise.all([
+): Promise<FoundServers | null> {
+  const [imap, pop, smtp] = await Promise.all([
     firstSrv(deps, [
       [`_imaps._tcp.${domain}`, "ssl"],
       [`_imap._tcp.${domain}`, "starttls"],
+    ]),
+    firstSrv(deps, [
+      [`_pop3s._tcp.${domain}`, "ssl"],
+      [`_pop3._tcp.${domain}`, "starttls"],
     ]),
     firstSrv(deps, [
       [`_submissions._tcp.${domain}`, "ssl"],
       [`_submission._tcp.${domain}`, "starttls"],
     ]),
   ]);
-  if (!imap || !smtp) return null;
+  const incoming = imap ?? pop;
+  if (!incoming || !smtp) return null;
   return {
-    imap: { ...imap, username: email, auth: "password" },
+    imap: { ...incoming, username: email, auth: "password" },
     smtp: { ...smtp, username: email, auth: "password" },
+    incomingProtocol: imap ? "imap" : "pop3",
   };
 }
 
@@ -460,7 +498,7 @@ async function discoverAutodiscover(
   domain: string,
   email: string,
   deps: DiscoveryDeps,
-): Promise<{ imap: DiscoveredServer; smtp: DiscoveredServer } | null> {
+): Promise<FoundServers | null> {
   const post = (url: string, address: string) =>
     deps
       .fetchText(url, {
@@ -482,7 +520,8 @@ async function discoverAutodiscover(
       const result = body ? parseAutodiscover(body, address) : null;
       if (!result) break;
       if (result.kind === "settings") {
-        return { imap: result.imap, smtp: result.smtp };
+        const { kind: _, ...found } = result;
+        return found;
       }
       if (result.kind === "redirectUrl") {
         if (!result.url.startsWith("https://")) break;
@@ -499,9 +538,17 @@ async function discoverAutodiscover(
 
 function withProvider(
   source: DiscoverySource,
-  found: { imap: DiscoveredServer; smtp: DiscoveredServer },
+  found: FoundServers,
 ): DiscoveredSettings {
-  return { source, provider: providerOfHost(found.imap.host), ...found };
+  return {
+    source,
+    // POP3 で受け取るなら、どのサービスでも汎用のアカウントとして扱う。
+    provider:
+      found.incomingProtocol === "pop3"
+        ? "generic"
+        : providerOfHost(found.imap.host),
+    ...found,
+  };
 }
 
 function presetFor(
@@ -514,6 +561,7 @@ function presetFor(
     provider,
     imap: { ...preset.imap, username: email, auth: preset.auth },
     smtp: { ...preset.smtp, username: email, auth: preset.auth },
+    incomingProtocol: "imap",
   };
 }
 
