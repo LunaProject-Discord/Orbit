@@ -442,6 +442,8 @@ export function accountRoutes(
       }
     }
 
+    // 同じアドレスでも、受信サーバーかユーザー名が違えば別のアカウントとして扱う
+    // (ドコモメールの IMAP と、同じアドレスのメッセージR/S の POP3 など)。
     const [existing] = await db
       .select({ id: mailAccounts.id })
       .from(mailAccounts)
@@ -449,6 +451,8 @@ export function accountRoutes(
         and(
           eq(mailAccounts.userId, user.id),
           eq(mailAccounts.email, body.email),
+          sql`lower(${mailAccounts.imapHost}) = ${body.imap.host.toLowerCase()}`,
+          eq(mailAccounts.username, body.username),
         ),
       );
     if (existing) {
@@ -631,7 +635,7 @@ export function accountRoutes(
         user.id,
       );
       const result = await db.transaction(async (tx) => {
-        const [existing] = await tx
+        const sameAddress = await tx
           .select({ id: mailAccounts.id, protocol: mailAccounts.protocol })
           .from(mailAccounts)
           .where(
@@ -641,6 +645,9 @@ export function accountRoutes(
               sql`lower(${mailAccounts.email}) = ${profile.email.toLowerCase()}`,
             ),
           );
+        // 同じアドレスのアカウントが複数あれば、Microsoft Graph のものを選ぶ。
+        const existing =
+          sameAddress.find((row) => row.protocol === "graph") ?? sameAddress[0];
         // 同じアドレスを IMAP で追加済みなら、二重に取り込まないよう断る。
         if (existing && existing.protocol !== "graph") return null;
 
@@ -806,7 +813,7 @@ export function accountRoutes(
         ),
       };
       const result = await db.transaction(async (tx) => {
-        const [existing] = await tx
+        const sameAddress = await tx
           .select({ id: mailAccounts.id, provider: mailAccounts.provider })
           .from(mailAccounts)
           .where(
@@ -815,6 +822,9 @@ export function accountRoutes(
               sql`lower(${mailAccounts.email}) = ${email.toLowerCase()}`,
             ),
           );
+        // 同じアドレスのアカウントが複数あれば、Gmail のものを選ぶ。
+        const existing =
+          sameAddress.find((row) => row.provider === "gmail") ?? sameAddress[0];
         // 同じアドレスを Gmail 以外の設定で追加済みなら、二重に取り込まないよう断る。
         if (existing && existing.provider !== "gmail") return null;
 

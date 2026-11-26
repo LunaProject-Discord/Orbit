@@ -106,7 +106,7 @@ function messageOf(
       case "legacy_tls_required":
         return "このメールサーバーは、古い方式の TLS にしか対応していません。接続するには、下の「古い TLS のサーバーへの接続を許可する」をオンにして、もう一度「追加」を押してください。";
       case "account_exists":
-        return "このメールアドレスはすでに追加されています。";
+        return "このメールアドレスは、同じ受信サーバーとユーザー名ですでに追加されています。";
       case "host_not_allowed":
         return `このホストには接続できません${body.host ? `: ${body.host}` : ""}。`;
       case "microsoft_not_configured":
