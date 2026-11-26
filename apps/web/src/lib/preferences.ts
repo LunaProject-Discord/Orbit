@@ -42,6 +42,18 @@ export type Preferences = {
   accountMarkStyle: "icon" | "dot";
   /** メール一覧に、添付・スター・返信済みのマークを出す。 */
   showListIcons: boolean;
+  /**
+   * 差出人のアイコン (BIMI のロゴ、ドメインのファビコンなど、無ければ頭文字) を
+   * メール一覧 (カード表示) に出す。
+   */
+  senderIconInList: boolean;
+  /** 差出人のアイコンを、開いたメールの見出しと会話の各メールに出す。 */
+  senderIconInMessage: boolean;
+  /**
+   * 差出人のアイコンを Gravatar からも探す。アドレスのハッシュが Gravatar に送られる
+   * (取得はサーバーが行うので、端末の情報は送られない)。
+   */
+  senderIconGravatar: boolean;
   /** メールを開いたときに既読にするタイミング。 */
   markRead: "immediately" | "delay" | "never";
   /** markRead が delay のときに待つ秒数。 */
@@ -96,6 +108,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   showAccountMark: true,
   accountMarkStyle: "icon",
   showListIcons: true,
+  senderIconInList: true,
+  senderIconInMessage: true,
+  senderIconGravatar: false,
   markRead: "immediately",
   markReadDelay: 3,
   bodyFont: "sans",

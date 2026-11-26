@@ -36,6 +36,8 @@ import {
   BAND_IGNORE_ATTRIBUTE,
   useRubberBand,
 } from "@/components/mail/rubber-band";
+import { SenderAvatar } from "@/components/mail/sender-avatar";
+import { SenderWarningMark } from "@/components/mail/sender-check";
 import { SwipeRow } from "@/components/mail/swipe-row";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -287,7 +289,9 @@ function ThreadChildRow({
       onClick={onSelect}
       aria-current={selected ? "true" : undefined}
       className={cn(
-        "flex w-full select-none flex-col gap-0.5 py-1.5 pr-4 pl-9 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+        "flex w-full select-none flex-col gap-0.5 py-1.5 pr-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+        // 差出人のアイコンを出しているときは、会話の行の文字の位置に揃える。
+        preferences.senderIconInList ? "pl-16" : "pl-9",
         selected && "bg-muted",
       )}
     >
@@ -312,6 +316,9 @@ function ThreadChildRow({
               : "(宛先なし)"
             : addressLabel(child.from[0])}
         </span>
+        {!showRecipients && (
+          <SenderWarningMark check={child.senderCheck} className="size-3" />
+        )}
         <span className="flex-1" />
         {preferences.showListIcons && child.answered && (
           <ReplyIcon
@@ -405,6 +412,7 @@ const MessageRow = memo(function MessageRow({
   const location = locationLabel?.(message);
   const mark = preferences.showAccountMark ? accountMark?.(message) : undefined;
   const swipe = swipeFor?.(message);
+  const avatar = preferences.senderIconInList;
   return (
     <ContextMenu>
       <ContextMenuTrigger
@@ -557,105 +565,127 @@ const MessageRow = memo(function MessageRow({
               }}
               aria-current={selected ? "true" : undefined}
               className={cn(
-                "flex w-full select-none flex-col gap-0.5 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
+                "flex w-full select-none items-start gap-3 px-4 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
                 rowPadding[preferences.density],
                 selecting && "pl-11",
                 selected && "bg-muted",
                 checked && "bg-primary/10 hover:bg-primary/15",
               )}
             >
-              <span className="flex items-center gap-2">
-                {unread && (
-                  <span
-                    className="size-2 shrink-0 rounded-full bg-primary"
-                    aria-hidden="true"
-                  />
-                )}
-                <span
+              {avatar && (
+                <SenderAvatar
+                  address={showRecipients ? message.to[0] : message.from[0]}
+                  // 宛先を出す一覧 (送信済みなど) では、自分が送ったメールなので確認結果は使わない。
+                  check={showRecipients ? null : message.senderCheck}
                   className={cn(
-                    "min-w-0 truncate text-sm",
-                    unread ? "font-semibold" : "text-muted-foreground",
+                    "text-sm",
+                    preferences.density === "compact" ? "size-8" : "size-9",
                   )}
-                >
-                  {unread && <span className="sr-only">未読 </span>}
-                  {showRecipients
-                    ? message.to.length > 0
-                      ? `宛先: ${message.to.map(addressLabel).join("、")}`
-                      : "(宛先なし)"
-                    : addressLabel(message.from[0])}
-                </span>
-                {message.threadCount > 1 && (
+                />
+              )}
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="flex items-center gap-2">
+                  {unread && (
+                    <span
+                      className="size-2 shrink-0 rounded-full bg-primary"
+                      aria-hidden="true"
+                    />
+                  )}
                   <span
-                    role="img"
-                    className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
-                    aria-label={`${message.threadCount} 通のやり取り`}
+                    className={cn(
+                      "min-w-0 truncate text-sm",
+                      unread ? "font-semibold" : "text-muted-foreground",
+                    )}
                   >
-                    {message.threadCount}
+                    {unread && <span className="sr-only">未読 </span>}
+                    {showRecipients
+                      ? message.to.length > 0
+                        ? `宛先: ${message.to.map(addressLabel).join("、")}`
+                        : "(宛先なし)"
+                      : addressLabel(message.from[0])}
                   </span>
-                )}
-                {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
-                <span className="flex-1" />
-                {preferences.showListIcons && message.answered && (
-                  <ReplyIcon
-                    className="size-3.5 shrink-0 text-muted-foreground"
-                    aria-label="返信済み"
-                  />
-                )}
-                {preferences.showListIcons && message.flagged && (
-                  <StarIcon
-                    className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
-                    aria-label="スター付き"
-                  />
-                )}
-                {preferences.showListIcons && message.hasAttachments && (
-                  <PaperclipIcon
-                    className="size-3.5 shrink-0 text-muted-foreground"
-                    aria-label="添付ファイルあり"
-                  />
-                )}
-                {mark && (
-                  <Hint label={mark.name}>
+                  {!showRecipients && (
+                    <SenderWarningMark check={message.senderCheck} />
+                  )}
+                  {message.threadCount > 1 && (
                     <span
                       role="img"
-                      aria-label={mark.name}
-                      className="flex shrink-0"
+                      className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground tabular-nums leading-4"
+                      aria-label={`${message.threadCount} 通のやり取り`}
                     >
-                      {mark.mark}
+                      {message.threadCount}
                     </span>
-                  </Hint>
-                )}
-                <ExactTime
-                  value={message.receivedAt}
-                  className="shrink-0 text-muted-foreground text-xs tabular-nums"
-                >
-                  {formatListDate(message.receivedAt, new Date(), dateStyle)}
-                </ExactTime>
-              </span>
-              <span
-                className={cn("truncate text-sm", unread && "font-semibold")}
-              >
-                {message.subject ? (
-                  <Highlighted text={message.subject} terms={highlightTerms} />
-                ) : (
-                  "(件名なし)"
-                )}
-              </span>
-              {preview && preferences.previewLines > 0 && (
-                <span
-                  className={cn(
-                    "text-muted-foreground text-xs",
-                    previewClamp[preferences.previewLines],
                   )}
+                  {/* 差出人と件数を左に寄せ、残りを右端に置く。 */}
+                  <span className="flex-1" />
+                  {preferences.showListIcons && message.answered && (
+                    <ReplyIcon
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                      aria-label="返信済み"
+                    />
+                  )}
+                  {preferences.showListIcons && message.flagged && (
+                    <StarIcon
+                      className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+                      aria-label="スター付き"
+                    />
+                  )}
+                  {preferences.showListIcons && message.hasAttachments && (
+                    <PaperclipIcon
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                      aria-label="添付ファイルあり"
+                    />
+                  )}
+                  {mark && (
+                    <Hint label={mark.name}>
+                      <span
+                        role="img"
+                        aria-label={mark.name}
+                        className="flex shrink-0"
+                      >
+                        {mark.mark}
+                      </span>
+                    </Hint>
+                  )}
+                  <ExactTime
+                    value={message.receivedAt}
+                    className="shrink-0 text-muted-foreground text-xs tabular-nums"
+                  >
+                    {formatListDate(message.receivedAt, new Date(), dateStyle)}
+                  </ExactTime>
+                </span>
+                <span
+                  className={cn("truncate text-sm", unread && "font-semibold")}
                 >
-                  <Highlighted text={preview} terms={highlightTerms} />
+                  {message.subject ? (
+                    <Highlighted
+                      text={message.subject}
+                      terms={highlightTerms}
+                    />
+                  ) : (
+                    "(件名なし)"
+                  )}
                 </span>
-              )}
-              {location && (
-                <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
-                  <FolderIcon className="size-3 shrink-0" aria-hidden="true" />
-                  <span className="truncate">{location}</span>
-                </span>
-              )}
+                {preview && preferences.previewLines > 0 && (
+                  <span
+                    className={cn(
+                      "text-muted-foreground text-xs",
+                      previewClamp[preferences.previewLines],
+                    )}
+                  >
+                    <Highlighted text={preview} terms={highlightTerms} />
+                  </span>
+                )}
+                {location && (
+                  <span className="mt-0.5 flex items-center gap-1 text-muted-foreground text-xs">
+                    <FolderIcon
+                      className="size-3 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span className="truncate">{location}</span>
+                  </span>
+                )}
+              </span>
             </button>
           )}
         </SwipeRow>
