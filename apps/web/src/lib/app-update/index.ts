@@ -8,6 +8,19 @@
 import { useSyncExternalStore } from "react";
 import { apiUrl } from "@/lib/server-url";
 import {
+  type AndroidBodyInfo,
+  type AndroidRelease,
+  androidBody,
+  bodyPlatform,
+  type Compatibility,
+  compatibility,
+  type DesktopBodyStatus,
+  desktopBody,
+  fetchAndroidRelease,
+  fetchServerInfo,
+  type ServerInfo,
+} from "./body";
+import {
   BUILD_VERSION,
   isNewerVersion,
   MIN_NATIVE_API,
@@ -29,12 +42,31 @@ export type UpdateStatus =
   | { kind: "disabled" }
   | { kind: "error"; message: string };
 
+/** アプリ本体の更新の状態 (lib/app-update/body.ts)。 */
+export type BodyStatus =
+  /** ブラウザー、iOS、読み込む前 */
+  | { kind: "none" }
+  | { kind: "desktop"; status: DesktopBodyStatus }
+  | {
+      kind: "android";
+      info: AndroidBodyInfo;
+      /** サーバーが配っている、いまより新しい APK。 */
+      release: AndroidRelease | null;
+      phase: "idle" | "checking" | "downloading" | "ready" | "installing";
+      error: string | null;
+    };
+
 export type AppUpdateState = {
   /** アプリ側の情報。ブラウザー、または読み込む前は null。 */
   native: NativeUpdateInfo | null;
   /** アプリ側の機能が、この画面の必要とする版より古い (画面の更新を確かめられない)。 */
   nativeTooOld: boolean;
   status: UpdateStatus;
+  /** 接続先のサーバーの情報。読み込む前、または古いサーバーでは null。 */
+  server: ServerInfo | null;
+  /** 接続先のサーバーと、この画面の API の版の範囲が重なるか。 */
+  compatibility: Compatibility;
+  body: BodyStatus;
 };
 
 /** 起動してから最初に確かめるまでの時間と、その後の間隔 (デスクトップ版のアプリ本体の更新と同じ)。 */
@@ -45,6 +77,9 @@ let state: AppUpdateState = {
   native: null,
   nativeTooOld: false,
   status: { kind: "idle" },
+  server: null,
+  compatibility: "ok",
+  body: { kind: "none" },
 };
 const listeners = new Set<() => void>();
 
@@ -62,6 +97,9 @@ const serverState: AppUpdateState = {
   native: null,
   nativeTooOld: false,
   status: { kind: "idle" },
+  server: null,
+  compatibility: "ok",
+  body: { kind: "none" },
 };
 
 /** いまの状態 (テスト用)。 */
@@ -179,6 +217,134 @@ async function runCheck(): Promise<void> {
   }
 }
 
+// --- 接続先のサーバーの情報と、アプリ本体の更新 ---
+
+/** 新しい APK を知らせたことを伝える先 (components/app-update-boot.tsx がトーストを出す)。 */
+let onAndroidRelease: ((release: AndroidRelease) => void) | null = null;
+export function setAndroidReleaseListener(
+  listener: ((release: AndroidRelease) => void) | null,
+) {
+  onAndroidRelease = listener;
+}
+
+function setAndroid(
+  next: Partial<Extract<BodyStatus, { kind: "android" }>>,
+): void {
+  if (state.body.kind !== "android") return;
+  setState({ body: { ...state.body, ...next } });
+}
+
+/** 接続先のサーバーの情報を読み、アプリ本体の更新を確かめる。manual は設定から押したとき。 */
+export async function refreshServerInfo(manual = false): Promise<void> {
+  const server = apiUrl();
+  const info = await fetchServerInfo(server);
+  setState({
+    server: info,
+    compatibility: info ? compatibility(info.api) : "ok",
+  });
+  const platform = bodyPlatform();
+  if (!info || !platform) return;
+  const mode = info.updates.appUpdate;
+
+  if (platform === "desktop") {
+    try {
+      await desktopBody.configure(server, mode);
+    } catch {
+      // HTTPS ではないサーバー (開発中) や、この仕組みより前のアプリでは本体を更新しない。
+    }
+    try {
+      setState({
+        body: { kind: "desktop", status: await desktopBody.status() },
+      });
+    } catch {
+      setState({ body: { kind: "none" } });
+    }
+    if (manual) await desktopBody.check().catch(() => {});
+    return;
+  }
+
+  let androidInfo: AndroidBodyInfo;
+  try {
+    androidInfo = await androidBody.info();
+  } catch {
+    return; // この仕組みより前のアプリ
+  }
+  const previous = state.body.kind === "android" ? state.body : null;
+  setState({
+    body: {
+      kind: "android",
+      info: androidInfo,
+      release: previous?.release ?? null,
+      phase: previous?.phase ?? "idle",
+      error: null,
+    },
+  });
+  // Google Play から入れたアプリは Play が更新する (Play 以外からの自己更新は規約で禁止)。
+  if (androidInfo.fromPlayStore || mode === "off") return;
+  if (previous?.phase === "downloading" || previous?.phase === "installing") {
+    return;
+  }
+  setAndroid({ phase: "checking" });
+  let release: AndroidRelease | null;
+  try {
+    release = await fetchAndroidRelease(server, androidInfo.versionCode);
+  } catch (error) {
+    setAndroid({ phase: "idle", error: errorMessage(error) });
+    return;
+  }
+  if (!release) {
+    setAndroid({ phase: "idle", release: null });
+    return;
+  }
+  const known = previous?.release?.versionCode === release.versionCode;
+  setAndroid({ release, phase: known ? (previous?.phase ?? "idle") : "idle" });
+  if (mode === "auto" && !(known && previous?.phase === "ready")) {
+    await downloadAndroidRelease();
+  }
+  if (!known) onAndroidRelease?.(release);
+}
+
+/** サーバーが配っている APK を取得しておく。 */
+export async function downloadAndroidRelease(): Promise<boolean> {
+  const body = state.body;
+  if (body.kind !== "android" || !body.release) return false;
+  if (body.phase === "ready") return true;
+  setAndroid({ phase: "downloading", error: null });
+  try {
+    await androidBody.download(body.release);
+    setAndroid({ phase: "ready" });
+    return true;
+  } catch (error) {
+    setAndroid({ phase: "idle", error: errorMessage(error) });
+    return false;
+  }
+}
+
+/** 取得した APK を入れる (OS の確認画面が出る)。 */
+export async function installAndroidRelease(): Promise<void> {
+  if (!(await downloadAndroidRelease())) return;
+  const body = state.body;
+  if (body.kind !== "android" || !body.release) return;
+  setAndroid({ phase: "installing", error: null });
+  try {
+    const result = await androidBody.install(body.release);
+    setAndroid({
+      phase: "ready",
+      error:
+        result.status === "permission"
+          ? "「この提供元のアプリを許可」をオンにしてから、もう一度「入れる」を押してください。"
+          : null,
+    });
+  } catch (error) {
+    setAndroid({ phase: "ready", error: errorMessage(error) });
+  }
+}
+
+/** デスクトップ版: 取得済みの本体の更新をすぐ入れて再起動する。 */
+export async function installDesktopUpdateNow(): Promise<void> {
+  await desktopBody.installNow();
+}
+
 /** 取得済みの画面にすぐ切り替える。 */
 export async function applyAppUpdate(): Promise<void> {
   await nativeUpdater()?.apply();
@@ -203,11 +369,14 @@ export function startAppUpdates(): () => void {
         setState({ status: { kind: "ready", version: native.pending } });
       }
     });
+  // 接続先のサーバーの情報 (更新のしかた、互換性) は、起動してすぐ読む。
+  void refreshServerInfo();
   const first = window.setTimeout(() => {
     void checkForAppUpdate();
   }, FIRST_CHECK_MS);
   const interval = window.setInterval(() => {
     void checkForAppUpdate();
+    void refreshServerInfo();
   }, CHECK_INTERVAL_MS);
   return () => {
     started = false;

@@ -373,6 +373,8 @@ bash /opt/orbit/deploy/deploy.sh
 
 デスクトップ版とスマホアプリの画面も、ここで配置した画面に自動で更新されます。初めてのときは、表示される「画面の自動更新の公開鍵」を GitHub に登録してアプリをビルドし直す必要があります ([アプリの画面の自動更新](app-update.md))。
 
+リリース (`v1.2.0` などのタグ) を追う運用、版の固定、サーバー自身による毎日の自動更新、アプリ本体の配布は [サーバーとアプリの更新](updates.md) を見てください (`bash /opt/orbit/deploy/update.sh --now` で、`deploy/.env` の方針の版へ更新します)。
+
 ### GitHub Actions で自動更新する
 
 設定すると、main に入った変更の CI が通るたびに、GitHub Actions が SSH でサーバーに入って上のスクリプトを実行します。
@@ -504,6 +506,12 @@ scp <利用者名>@<サーバーの IP アドレス>:orbit-latest.dump.gpg .
 | `BACKUP_KEEP_DAYS` | | バックアップを残す日数。既定は 14 |
 | `BACKUP_PUBLIC_KEY` | | バックアップを暗号化する公開鍵 (`backup-key.sh` が書き込む)。空なら暗号化せずに書き出す |
 | `TZ` | | ログやバックアップの時刻の基準。既定は `Asia/Tokyo` |
+| `ORBIT_UPDATE_CHANNEL` | | 追う版。`stable` (正式版、既定)、`beta` (試験版も)、`edge` (main の最新)。[updates.md](updates.md) |
+| `ORBIT_UPDATE_VERSION` | | 版を固定する (例 `1.2.0`)。書くとチャネルより優先する |
+| `ORBIT_SERVER_AUTO_UPDATE` | | `true` なら、`deploy/auto-update.sh install` で入れたタイマーで毎日更新する。既定は `false` |
+| `ORBIT_UPDATE_TIME` | | 自動更新の時刻 (`HH:MM`)。既定は `04:30`。変えたら `auto-update.sh install` をやり直す |
+| `ORBIT_APP_UPDATE` | | アプリ本体の更新。`auto` (既定)、`notify` (知らせるだけ)、`off` (配らない) |
+| `ORBIT_RELEASES_REPO` / `ORBIT_RELEASES_TOKEN` | | アプリ本体のファイルを取り込むリポジトリ (既定は git の origin) と、非公開のときの読み取り用トークン |
 
 次の値は `DOMAIN` などから `deploy/compose.yml` が決めるので、`deploy/.env` に書く必要はありません (書いても上書きされます)。
 

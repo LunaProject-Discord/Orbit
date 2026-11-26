@@ -13,6 +13,7 @@ import {
 } from "./lib/auth-state.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import type { SystemMailer } from "./lib/system-mail.js";
+import type { BuildInfo, UpdatePolicy } from "./lib/update-policy.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { contactRoutes } from "./routes/contacts.js";
@@ -30,6 +31,7 @@ import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
 import { sendRoutes } from "./routes/send.js";
+import { serverInfoRoutes } from "./routes/server-info.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { signatureRoutes } from "./routes/signatures.js";
 import { syncRoutes } from "./routes/sync.js";
@@ -54,6 +56,14 @@ export type AppOptions = {
   webOrigin: string;
   /** 利用者へメールを送る手段。null なら再設定とメールアドレスの変更は使えない。 */
   mailer: SystemMailer | null;
+  /** 動いているサーバーの版。 */
+  build: BuildInfo;
+  /** サーバーとアプリの更新の方針 (deploy/.env の ORBIT_*)。 */
+  updatePolicy: UpdatePolicy;
+  /** アプリ本体の配布用のファイルの置き場 (APP_RELEASES_DIR)。null なら本体は配らない。 */
+  appReleasesDir: string | null;
+  /** 外から見た API の URL (API_PUBLIC_URL)。 */
+  publicUrl: string;
 };
 
 export function createApp({
@@ -70,6 +80,10 @@ export function createApp({
   fcmEnabled,
   webOrigin,
   mailer,
+  build,
+  updatePolicy,
+  appReleasesDir,
+  publicUrl,
 }: AppOptions) {
   const app = new Hono();
 
@@ -101,6 +115,16 @@ export function createApp({
 
   const v1 = new Hono<AppEnv>();
   v1.get("/", (c) => c.json({ name: "mail-api", version: 1 }));
+  // 版と更新の方針。ログイン前にも読めるようにする。
+  v1.route(
+    "/",
+    serverInfoRoutes({
+      build,
+      policy: updatePolicy,
+      releasesDir: appReleasesDir,
+      publicUrl,
+    }),
+  );
 
   // ログイン、ログアウト、セッション取得は Better Auth が処理する。
   // メールアドレスの変更は、パスワードを確かめる /v1/security/email からだけ受け付ける。

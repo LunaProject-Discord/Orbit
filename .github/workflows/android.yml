@@ -3,7 +3,8 @@ name: Android
 # Android アプリ (apps/mobile) をビルドする。
 # - プルリクエストと main: apps/mobile を変えたときに、確認用のアプリ (debug) を作る。
 # - 手動 (Run workflow): 最新の画面 (apps/web) を入れたアプリを作り直す。
-# - タグ android-v*: 配布用のアプリを作る (例: android-v0.1.0)。
+# - リリース (.github/workflows/release.yml から呼ばれる): その版の配布用のアプリ (APK) と android.json を作り、
+#   成果物 release-android として渡す (GitHub Releases へは release.yml がまとめて載せる)。
 # 署名鍵と Firebase の設定は、リポジトリのシークレットから渡す。無くてもビルドは通り、
 # その場合は確認用のアプリだけができて、プッシュ通知は使えない。
 # 準備の手順は docs/android-app.md を参照。
@@ -14,14 +15,19 @@ on:
       - .github/workflows/android.yml
   push:
     branches: [main]
-    tags: ["android-v*"]
     paths:
       - apps/mobile/**
       - .github/workflows/android.yml
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: リリースの版 (例 1.2.0)
+        type: string
+        required: true
 
 concurrency:
-  group: android-${{ github.ref }}
+  group: android-${{ github.ref }}${{ inputs.version && '-release' || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -36,7 +42,9 @@ jobs:
       NEXT_PUBLIC_API_URL: ${{ vars.MOBILE_SERVER_URL || 'https://orbit.lunaproject.jp' }}
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
       HAS_FIREBASE: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON != '' }}
-      # Google Play は、出すたびに大きい番号を求める。実行番号をそのまま使う。
+      RELEASE_VERSION: ${{ inputs.version || '' }}
+      # Google Play は、出すたびに大きい番号を求める。リリース以外は実行番号をそのまま使う
+      # (リリースは版から決める。下の「版の名前を決める」)。
       ANDROID_VERSION_CODE: ${{ github.run_number }}
       # 画面の自動更新の一覧の署名を確かめる公開鍵 (docs/app-update.md)。無ければ画面を更新しないアプリになる。
       APP_UPDATE_PUBLIC_KEY: ${{ vars.APP_UPDATE_PUBLIC_KEY }}
@@ -57,8 +65,9 @@ jobs:
 
       - name: 版の名前を決める
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
-            echo "ANDROID_VERSION_NAME=${GITHUB_REF_NAME#android-v}" >> "$GITHUB_ENV"
+          if [ -n "$RELEASE_VERSION" ]; then
+            echo "ANDROID_VERSION_NAME=$RELEASE_VERSION" >> "$GITHUB_ENV"
+            echo "ANDROID_VERSION_CODE=$(node scripts/android-version-code.mjs "$RELEASE_VERSION")" >> "$GITHUB_ENV"
           else
             echo "ANDROID_VERSION_NAME=0.1.0-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           fi
@@ -114,3 +123,36 @@ jobs:
             apps/mobile/android/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
           retention-days: 30
+
+      # リリースでは、サーバーが配る APK と、その情報 (android.json、apps/api/src/lib/app-releases.ts) を渡す。
+      # 端末に入れたアプリを入れ替えるには毎回同じ鍵で署名する必要があるので、署名鍵が無いときは載せない。
+      - name: リリース用にファイルを集める
+        if: env.RELEASE_VERSION != '' && env.HAS_KEYSTORE == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          apk="$(ls apps/mobile/android/app/build/outputs/apk/release/*.apk | head -n 1)"
+          name="Orbit-Mail-Android_${RELEASE_VERSION}.apk"
+          cp "$apk" "$RUNNER_TEMP/release/$name"
+          node -e '
+            const { createHash } = require("node:crypto");
+            const { readFileSync, writeFileSync } = require("node:fs");
+            const [dir, name, version, versionCode] = process.argv.slice(1);
+            const data = readFileSync(`${dir}/${name}`);
+            writeFileSync(`${dir}/android.json`, JSON.stringify({
+              version, versionCode: Number(versionCode), file: name,
+              sha256: createHash("sha256").update(data).digest("hex"), size: data.length,
+            }, null, 2) + "\n");
+          ' "$RUNNER_TEMP/release" "$name" "$RELEASE_VERSION" "$ANDROID_VERSION_CODE"
+          cat "$RUNNER_TEMP/release/android.json"
+
+      - name: リリースに載せられないことを知らせる
+        if: env.RELEASE_VERSION != '' && env.HAS_KEYSTORE != 'true'
+        run: echo "::warning::署名鍵 (ANDROID_KEYSTORE_BASE64) が無いので、Android の APK はリリースに載せません。"
+
+      - uses: actions/upload-artifact@v7
+        if: env.RELEASE_VERSION != '' && env.HAS_KEYSTORE == 'true'
+        with:
+          name: release-android
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          retention-days: 7

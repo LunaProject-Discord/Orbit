@@ -62,6 +62,10 @@ const app = createApp({
   google: env.google,
   webPushPublicKey: env.webPushPublicKey,
   fcmEnabled: env.fcmEnabled,
+  build: env.build,
+  updatePolicy: env.updatePolicy,
+  appReleasesDir: env.appReleasesDir,
+  publicUrl: env.publicUrl,
 });
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {

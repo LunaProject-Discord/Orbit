@@ -38,6 +38,19 @@
 		file_server
 	}
 
+	# アプリ本体 (デスクトップ版のインストーラー、Android の APK) の配布 (docs/updates.md)。
+	# どの版を配るかは API (/v1/app-update/*) が決め、ここはファイルを渡すだけ。
+	handle_path /app-update/releases/* {
+		root * /data/app-releases
+		header {
+			Content-Type application/octet-stream
+			Cache-Control "public, max-age=86400, no-transform"
+			X-Content-Type-Options "nosniff"
+			defer
+		}
+		file_server
+	}
+
 	# Web。Next.js の静的エクスポートなので、/login は login.html を返す。
 	# メールの画面はパス (/accounts/<ID>/folders/<ID> など) をブラウザー側で読み取るので、
 	# 対応するファイルの無いパスには最初の画面 (index.html) を返す。

@@ -122,7 +122,11 @@ Firebase の設定を入れてビルドし直したアプリを入れ、**設定
 
 登録後は、ビルドのたびに `orbit-mail-android-release` もできます。中の `app-release.apk` は端末へ直接入れる用、`app-release.aab` は Google Play へ出す用です。
 
-版の番号は、`android-v0.1.0` のようなタグを push すると `0.1.0` になります (それ以外は `0.1.0-<コミット>`)。Google Play が求める通し番号 (versionCode) には、GitHub Actions の実行番号を使っています。
+版の番号は、リリースのタグ (`v0.1.0`、[updates.md](updates.md)) を push すると `0.1.0` になります (それ以外は `0.1.0-<コミット>`)。通し番号 (versionCode) は、リリースでは版から決め (`scripts/android-version-code.mjs`、例 `1.2.0` → `10200999`)、それ以外は GitHub Actions の実行番号を使います。
+
+リリースの APK は GitHub Releases に載り、各サーバーが取り込んで、APK で入れたアプリへ配ります (アプリ本体の自動更新、[updates.md](updates.md))。入れ替えのたびに OS の確認が出ます。
+
+> Google Play に出す場合、このアプリは APK を入れ替えるための権限 (`REQUEST_INSTALL_PACKAGES`) を持っているため、Play の審査で申告が必要になるか、拒否される可能性があります (Play の規約では、Play から入れたアプリが Play 以外から自分を更新することは禁止されています)。Play に出すときは、この権限と `AppBodyUpdatePlugin` を外した版を作る必要があります (未対応)。
 
 ## 4. Google Play で配布する (任意)
 

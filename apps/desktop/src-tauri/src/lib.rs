@@ -46,8 +46,6 @@ pub(crate) struct AppState {
     pub unread: AtomicU32,
     /// トレイの「終了」などで、本当に終了しようとしている。
     pub quitting: AtomicBool,
-    /// この起動中に更新を尋ねたバージョン (自動確認で同じ版を何度も尋ねない)。
-    pub prompted_update: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -69,6 +67,8 @@ pub(crate) fn quit(app: &AppHandle) {
     app.state::<AppState>()
         .quitting
         .store(true, Ordering::SeqCst);
+    // 取得済みのアプリ本体の更新があれば、ここで入れる (Windows はインストーラーが動き、終わると起動し直す)。
+    updater::install_pending(app);
     app.exit(0);
 }
 
@@ -284,7 +284,11 @@ pub fn run() {
             web_bundle::app_update_fetch_manifest,
             web_bundle::app_update_download,
             web_bundle::app_update_ready,
-            web_bundle::app_update_apply
+            web_bundle::app_update_apply,
+            updater::native_update_configure,
+            updater::native_update_status,
+            updater::native_update_check,
+            updater::native_update_install_now
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -292,7 +296,6 @@ pub fn run() {
                 settings: Mutex::new(settings::load(&handle)),
                 unread: AtomicU32::new(0),
                 quitting: AtomicBool::new(false),
-                prompted_update: Mutex::new(None),
             });
 
             updater::setup(&handle)?;

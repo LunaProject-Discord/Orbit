@@ -20,6 +20,7 @@ public class MainActivity extends BridgeActivity {
         // このアプリ専用のプラグインは、画面を作る前に登録する。
         registerPlugin(AppShellPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
+        registerPlugin(AppBodyUpdatePlugin.class);
         super.onCreate(savedInstanceState);
         // ブラウザー標準の自動入力は出さない (パスワード欄がある間だけ、画面側から許す)。
         AppAutofill.apply(getBridge().getWebView(), false);

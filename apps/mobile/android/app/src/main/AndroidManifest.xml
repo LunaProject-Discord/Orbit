@@ -82,6 +82,11 @@
             android:name=".NotificationActionReceiver"
             android:exported="false" />
 
+        <!-- アプリ本体の入れ替え (AppBodyUpdatePlugin) の結果の受け口。このアプリの PendingIntent からだけ呼ばれる。 -->
+        <receiver
+            android:name=".AppBodyInstallReceiver"
+            android:exported="false" />
+
         <!-- 接続先サーバーとログインを、同じ鍵で署名した Orbit のアプリへ公開する (読み取り専用)。 -->
         <provider
             android:name=".SharedConfigProvider"
@@ -105,4 +110,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 13 以降で通知を出すための許可 (利用者が通知を有効にしたときに尋ねる)。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+        接続先のサーバーが配る APK でアプリ本体を入れ替える (AppBodyUpdatePlugin、docs/updates.md)。
+        実際に入れるときは、利用者が「この提供元のアプリを許可」したうえで、OS の確認が出る。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>

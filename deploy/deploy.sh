@@ -18,9 +18,23 @@ main() {
     exit 1
   fi
 
-  git fetch --prune origin main
+  git fetch --prune --tags origin main
   git checkout --detach "${sha:-origin/main}"
   echo "更新するコミット: $(git log -1 --format='%h %s')"
+
+  # サーバーの版。リリースのタグ (v1.2.0) の上なら、その版。それ以外 (main の途中) は
+  # package.json の版に -dev+<コミット> を付ける (docs/updates.md)。
+  local commit tag
+  commit="$(git rev-parse --short=12 HEAD)"
+  tag="$(git tag --points-at HEAD --list 'v[0-9]*' | head -n 1)"
+  if [ -n "$tag" ]; then
+    ORBIT_BUILD_VERSION="${tag#v}"
+  else
+    ORBIT_BUILD_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json | head -n 1)-dev+${commit}"
+  fi
+  export ORBIT_BUILD_VERSION
+  export ORBIT_BUILD_COMMIT="$commit"
+  echo "サーバーの版: $ORBIT_BUILD_VERSION"
 
   cd deploy
   # 名前を mail から orbit に変える前のデータ (ボリューム mail_postgres-data) が残っていて、新しい名前の
@@ -33,6 +47,8 @@ main() {
   fi
   # 画面の自動更新の署名の鍵。この仕組みより前に setup.sh を実行したサーバーでは、ここで作る。
   bash ./app-update-key.sh
+  # アプリ本体の配布用のファイルの置き場。無いまま起動すると Docker が root の持ち物として作ってしまう。
+  mkdir -p app-releases
   docker compose build
   # 未適用のマイグレーションは、API とワーカーの起動前に migrate サービスが流す。
   docker compose up -d --remove-orphans
@@ -42,6 +58,8 @@ main() {
     if [ "$(docker compose ps api --format '{{.Health}}')" = "healthy" ]; then
       docker image prune -f >/dev/null
       echo "更新しました。"
+      # アプリ本体の配布用のファイルを取り込む。失敗してもサーバーの更新は済んでいるので、知らせるだけにする。
+      bash ./app-release.sh || echo "アプリ本体の配布用のファイルを取り込めませんでした (サーバーの更新は済んでいます)。" >&2
       exit 0
     fi
     sleep 2
