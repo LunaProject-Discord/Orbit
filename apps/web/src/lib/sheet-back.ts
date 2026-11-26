@@ -13,6 +13,8 @@
  * 飛ばして、画面を戻す。
  */
 
+import { backLog } from "@/lib/back-log";
+
 type Watcher = {
   onclose: (() => void) | null;
   destroy: () => void;
@@ -22,6 +24,8 @@ type WatcherConstructor = new () => Watcher;
 type Entry = {
   close: () => void;
   isOpen?: () => boolean;
+  /** 記録に出す名前 (どの部品のシートか)。 */
+  label?: string;
   /** 戻る操作で閉じるよう頼んだ時刻。閉じれば登録ごと消える。 */
   requestedAt?: number;
 };
@@ -44,9 +48,11 @@ export function registerSheetBack(
   close: () => void,
   useWatcher = true,
   isOpen?: () => boolean,
+  label = "sheet",
 ): () => void {
-  const entry: Entry = { close, isOpen };
+  const entry: Entry = { close, isOpen, label };
   stack.push(entry);
+  backLog(`シートを登録 ${label} (${stack.length} 件)`);
   let watcher: Watcher | null = null;
   const Constructor = useWatcher
     ? (globalThis as { CloseWatcher?: WatcherConstructor }).CloseWatcher
@@ -65,7 +71,10 @@ export function registerSheetBack(
   }
   return () => {
     const index = stack.indexOf(entry);
-    if (index >= 0) stack.splice(index, 1);
+    if (index >= 0) {
+      stack.splice(index, 1);
+      backLog(`シートの登録を解除 ${label} (${stack.length} 件)`);
+    }
     const current = watcher;
     watcher = null;
     current?.destroy();
@@ -82,13 +91,22 @@ export function closeTopSheet(now = Date.now()): boolean {
     if (stale) {
       // 閉じ忘れた登録で、戻る操作を止めない。
       stack.pop();
+      backLog(`残っていたシートを飛ばす ${top.label}`);
       continue;
     }
     top.requestedAt ??= now;
+    backLog(`シートを閉じる ${top.label}`);
     top.close();
     return true;
   }
   return false;
+}
+
+/** 開いているシートの並び (記録用)。 */
+export function sheetSummary(): string {
+  return stack
+    .map((entry) => `${entry.label}${entry.isOpen?.() === false ? "(閉)" : ""}`)
+    .join(",");
 }
 
 /** 開いているシートの数 (テスト用)。 */

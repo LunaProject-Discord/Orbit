@@ -134,6 +134,7 @@ import {
   type UnifiedState,
   type User,
 } from "@/lib/api";
+import { backLog } from "@/lib/back-log";
 import {
   buildDraftFrom,
   type ComposeDraft,
@@ -2315,7 +2316,12 @@ const MailView = memo(function MailView({
   // 開いたままだと、後ろの画面が戻ってしまう。
   useEffect(() => {
     if (!sidebarOpen || !window.matchMedia(DRAWER_QUERY).matches) return;
-    return registerSheetBack(() => setSidebarOpen(false), !isNativeApp());
+    return registerSheetBack(
+      () => setSidebarOpen(false),
+      !isNativeApp(),
+      undefined,
+      "sidebar",
+    );
   }, [sidebarOpen]);
 
   async function handleLoadMore() {
@@ -2458,11 +2464,13 @@ const MailView = memo(function MailView({
       if (from === routeUrl) {
         // 開く前の表示が 1 つ前の履歴にあるので、そこへ戻る。
         backPendingRef.current = routeUrl;
+        backLog(`表示を閉じたので履歴を戻す → ${routeUrl}`);
         window.history.back();
         // 戻り終えた知らせ (popstate) が来なければ、待つのをやめて照らし合わせ直す。
         // 待ったままだと URL が更新されず、次に戻るボタンを押しても戻れなくなる。
         window.setTimeout(() => {
           if (backPendingRef.current !== routeUrl) return;
+          backLog("履歴を戻した知らせが来ないので、待つのをやめる");
           backPendingRef.current = null;
           setRouteSync((count) => count + 1);
         }, BACK_PENDING_TIMEOUT_MS);
@@ -2470,6 +2478,7 @@ const MailView = memo(function MailView({
       }
       mode = "replace";
     }
+    backLog(`URL を${mode === "push" ? "積む" : "書き換える"} ${routeUrl}`);
     if (mode === "push") {
       window.history.pushState({ mailFrom: currentUrl }, "", routeUrl);
     } else {
@@ -2528,6 +2537,13 @@ const MailView = memo(function MailView({
       const url = `${window.location.pathname}${window.location.search}`;
       const pending = backPendingRef.current;
       backPendingRef.current = null;
+      backLog(
+        pending === null
+          ? "popstate を表示に反映"
+          : pending === url
+            ? "自分で戻した分の popstate"
+            : `戻り先と違う popstate (待っていたのは ${pending})`,
+      );
       if (pending === url) {
         // 自分で戻した分。表示はすでに変えてあるので、URL と合っているかだけ確かめる。
         setRouteSync((count) => count + 1);
