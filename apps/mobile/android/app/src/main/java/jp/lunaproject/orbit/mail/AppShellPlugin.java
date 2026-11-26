@@ -84,4 +84,16 @@ public class AppShellPlugin extends Plugin {
             call.reject("フォントの一覧を取得できませんでした。", error);
         }
     }
+
+    /**
+     * Android の自動入力を許すかどうか。画面にログインなどのパスワード欄がある間だけ許す (AppAutofill)。
+     */
+    @PluginMethod
+    public void setAutofillAllowed(PluginCall call) {
+        boolean allowed = Boolean.TRUE.equals(call.getBoolean("allowed", false));
+        getActivity().runOnUiThread(() -> {
+            AppAutofill.apply(getBridge().getWebView(), allowed);
+            call.resolve();
+        });
+    }
 }

@@ -6,6 +6,7 @@ import "gen-interface-jp/700.css";
 import "gen-interface-jp/display-600.css";
 import "gen-interface-jp/display-700.css";
 import "./globals.css";
+import { AppAutofillGuard } from "@/components/app-autofill-guard";
 import { AppUpdateBoot } from "@/components/app-update-boot";
 import { AuthGate, AuthProvider } from "@/components/auth-provider";
 import { DesktopBoot } from "@/components/desktop/desktop-boot";
@@ -60,6 +61,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </AuthProvider>
         </ThemeProvider>
         <AppUpdateBoot />
+        <AppAutofillGuard />
       </body>
     </html>
   );

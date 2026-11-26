@@ -58,6 +58,8 @@ type AppShell = {
     serverUrl: string;
     sessionToken: string;
   }): Promise<void>;
+  /** Android の自動入力を許すかどうか (lib/app-autofill.ts)。 */
+  setAutofillAllowed(options: { allowed: boolean }): Promise<void>;
   /** ほかの Orbit のアプリの接続先とログインを探す。 */
   findSharedConfig(): Promise<{
     found: boolean;
