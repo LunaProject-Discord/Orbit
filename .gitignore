@@ -20,3 +20,9 @@ next-env.d.ts
 
 # 画面の自動更新の署名の秘密鍵 (deploy/app-update-key.sh が作る)
 /deploy/secrets
+
+# アプリ本体の配布用のファイル (deploy/deploy.sh が GitHub Releases から取り込む)
+/deploy/app-releases
+
+# 自動更新の記録 (deploy/update.sh)
+/deploy/.update-state

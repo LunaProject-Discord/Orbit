@@ -45,7 +45,12 @@ RUN --mount=type=secret,id=app_update_signing_key,required=false \
     pnpm --filter @orbit/web build
 
 FROM manifests AS server
-ENV NODE_ENV=production
+# 動いているサーバーの版 (deploy/deploy.sh が git のタグから決めて渡す)。/v1/server-info で返す。
+ARG ORBIT_VERSION=""
+ARG ORBIT_COMMIT=""
+ENV NODE_ENV=production \
+    ORBIT_VERSION=${ORBIT_VERSION} \
+    ORBIT_COMMIT=${ORBIT_COMMIT}
 # better-auth が「あれば使う」依存 (Next.js、Vitest、drizzle-kit など) まで入ってしまうので、
 # サーバーでは読み込まれないビルド・テスト用のものを消してイメージを小さくする (約 550 MB)。
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \

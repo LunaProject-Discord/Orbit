@@ -1,6 +1,9 @@
 "use client";
 
-/** 設定の「バージョン情報」。アプリと画面の版、接続先のサーバー、画面の自動更新の状態を出す。 */
+/**
+ * 設定の「バージョン情報」。アプリと画面の版、接続先のサーバーの版と更新の方針、
+ * 画面とアプリ本体の自動更新の状態を出す (docs/app-update.md、docs/updates.md)。
+ */
 
 import { cn } from "cn";
 import {
@@ -16,11 +19,15 @@ import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  type AppUpdateState,
   applyAppUpdate,
   checkForAppUpdate,
+  installDesktopUpdateNow,
+  refreshServerInfo,
   type UpdateStatus,
   useAppUpdate,
 } from "@/lib/app-update";
+import type { ServerInfo } from "@/lib/app-update/body";
 import { BUILD_VERSION, formatBuildVersion } from "@/lib/app-update/manifest";
 import {
   backLogEnabled,
@@ -32,32 +39,26 @@ import { isDesktopApp } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
 import { apiUrl } from "@/lib/server-url";
 
-type ServerInfo = { url: string; version: string | null };
-
-function useServerInfo(): ServerInfo | null {
-  const [info, setInfo] = useState<ServerInfo | null>(null);
-  useEffect(() => {
-    const url = apiUrl();
-    let cancelled = false;
-    setInfo({ url, version: null });
-    fetch(`${url}/v1`, { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body: unknown) => {
-        if (cancelled) return;
-        const version =
-          typeof body === "object" &&
-          body !== null &&
-          typeof (body as { version?: unknown }).version === "number"
-            ? `API v${(body as { version: number }).version}`
-            : null;
-        setInfo({ url, version });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return info;
+/** サーバーの更新の方針を、1 行の説明にする。 */
+export function policyText(info: ServerInfo): string {
+  const { channel, pinnedVersion, serverAutoUpdate, appUpdate } = info.updates;
+  const follow = pinnedVersion
+    ? `v${pinnedVersion} に固定`
+    : channel === "edge"
+      ? "開発版 (main の最新) を追う"
+      : channel === "beta"
+        ? "試験版 (beta) も含めて最新を追う"
+        : "正式版の最新を追う";
+  const server = serverAutoUpdate
+    ? "サーバーは自動で更新"
+    : "サーバーは手動で更新";
+  const app =
+    appUpdate === "auto"
+      ? "アプリ本体は自動で更新"
+      : appUpdate === "notify"
+        ? "アプリ本体は更新を知らせるだけ"
+        : "アプリ本体は配らない";
+  return `${follow}、${server}、${app}`;
 }
 
 function appKind(): string {
@@ -148,9 +149,13 @@ function StatusLine(props: {
 }
 
 export function AboutSettings() {
-  const { native, nativeTooOld, status } = useAppUpdate();
-  const server = useServerInfo();
+  const update = useAppUpdate();
+  const { native, nativeTooOld, status, server } = update;
+  const serverUrl = apiUrl();
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void refreshServerInfo();
+  }, []);
   const inApp = isDesktopApp() || isNativeApp();
   const builtAt = formatBuildVersion(BUILD_VERSION);
   const { text, tone } = statusText(status);
@@ -194,15 +199,27 @@ export function AboutSettings() {
             )}
           </Row>
           <Row label="接続先">
-            {server?.url ?? "—"}
-            {server?.version && (
+            {serverUrl}
+            {server && (
               <span className="ml-2 text-muted-foreground text-xs">
-                ({server.version})
+                (v{server.version})
               </span>
             )}
           </Row>
+          {server && <Row label="更新の方針">{policyText(server)}</Row>}
         </dl>
+        {update.compatibility !== "ok" && (
+          <div className="rounded-lg border px-3 py-2.5">
+            <StatusLine tone="error" icon={CircleAlertIcon}>
+              {update.compatibility === "client-too-old"
+                ? "このアプリは接続先のサーバーより古いため、正しく動かないことがあります。アプリを更新してください。"
+                : "接続先のサーバーがこのアプリより古いため、正しく動かないことがあります。サーバーの管理者に更新を依頼してください。"}
+            </StatusLine>
+          </div>
+        )}
       </section>
+
+      <BodyUpdateSection update={update} />
 
       <section className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
@@ -265,6 +282,109 @@ export function AboutSettings() {
 
       {isNativeApp() && backLogEnabled() && <BackLogSection />}
     </>
+  );
+}
+
+/**
+ * アプリ本体の更新 (lib/app-update/body.ts)。接続先のサーバーが配る版に揃える。
+ * デスクトップ版だけ。スマホアプリの本体はアプリストアで更新するので出さない。
+ */
+function BodyUpdateSection({ update }: { update: AppUpdateState }) {
+  const [busy, setBusy] = useState(false);
+  const { body, server } = update;
+  if (body.kind === "none") return null;
+
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      showNotice(
+        error instanceof Error ? error.message : "更新できませんでした。",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const mode = server?.updates.appUpdate ?? null;
+  let line: { text: string; tone: "muted" | "ok" };
+  const s = body.status;
+  let action: React.ReactNode = null;
+  if (!s.configured) {
+    line = {
+      text: "このビルドでは、アプリ本体の自動更新は無効です。",
+      tone: "muted",
+    };
+  } else if (mode === "off") {
+    line = {
+      text: "接続先のサーバーの設定で、アプリ本体の自動更新は止められています。",
+      tone: "muted",
+    };
+  } else if (s.pending) {
+    line = {
+      text: `${s.pending} を用意しました。アプリを終了するときに入れ替わります。`,
+      tone: "ok",
+    };
+    action = (
+      <Button
+        size="sm"
+        disabled={busy}
+        onClick={() => void run(installDesktopUpdateNow)}
+      >
+        <DownloadIcon />
+        今すぐ更新
+      </Button>
+    );
+  } else if (s.installed) {
+    line = {
+      text: `${s.installed} を入れました。次に起動したときに切り替わります。`,
+      tone: "ok",
+    };
+  } else {
+    line = {
+      text:
+        mode === "auto"
+          ? "接続先のサーバーに新しい版があれば、自動で取得して入れ替えます。"
+          : "接続先のサーバーに新しい版があれば、お知らせします。",
+      tone: "muted",
+    };
+  }
+  if (s.configured && mode !== "off") {
+    action = (
+      <>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => void run(() => refreshServerInfo(true))}
+        >
+          <RefreshCwIcon />
+          更新を確認
+        </Button>
+        {action}
+      </>
+    );
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h3 className="font-semibold text-base">アプリ本体の更新</h3>
+        <p className="text-muted-foreground text-sm">
+          アプリ本体は、接続先のサーバーが配る版に更新します。サーバーの版が固定されていれば、アプリもその版に揃います。
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5">
+        <StatusLine
+          tone={line.tone}
+          icon={line.tone === "ok" ? CircleCheckIcon : null}
+        >
+          {line.text}
+        </StatusLine>
+        {action && <div className="flex flex-wrap gap-2">{action}</div>}
+      </div>
+    </section>
   );
 }
 

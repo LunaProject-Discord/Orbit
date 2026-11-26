@@ -8,6 +8,7 @@ import {
 } from "@orbit/core";
 import { lanOrigins } from "./lib/lan-origins.js";
 import { loadSystemMail } from "./lib/system-mail.js";
+import { loadBuildInfo, loadUpdatePolicy } from "./lib/update-policy.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -68,6 +69,12 @@ export function loadEnv() {
   return {
     /** Web の URL。メールに書くリンクの先になる。 */
     webOrigin,
+    /** 動いているサーバーの版 (ビルド時に埋め込む)。 */
+    build: loadBuildInfo(process.env),
+    /** サーバーとアプリの更新の方針 (docs/updates.md)。 */
+    updatePolicy: loadUpdatePolicy(process.env),
+    /** アプリ本体の配布用のファイルの置き場 (docs/updates.md)。未設定なら本体は配らない。 */
+    appReleasesDir: process.env.APP_RELEASES_DIR?.trim() || null,
     /**
      * Orbit 自身が利用者へ送るメール (パスワードの再設定、メールアドレスの変更の確認)。
      * - graph: Microsoft 365 のメールボックスから、Microsoft Graph で送る (SYSTEM_MAIL_GRAPH_*)。

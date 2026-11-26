@@ -368,6 +368,15 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       fcmEnabled: true,
       webOrigin: ORIGIN,
       mailer: null,
+      build: { version: "0.0.0-test", commit: null },
+      updatePolicy: {
+        channel: "stable",
+        pinnedVersion: null,
+        serverAutoUpdate: false,
+        appUpdate: "auto",
+      },
+      appReleasesDir: null,
+      publicUrl: "http://localhost:8787",
     });
 
     const login = async (mark: string) => {

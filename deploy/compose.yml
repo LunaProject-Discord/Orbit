@@ -19,6 +19,10 @@ x-server: &server
   build:
     context: ..
     target: server
+    args:
+      # 版とコミット (deploy/deploy.sh が決める)。手で docker compose build したときは空 (版は 0.0.0-dev)。
+      ORBIT_VERSION: ${ORBIT_BUILD_VERSION:-}
+      ORBIT_COMMIT: ${ORBIT_BUILD_COMMIT:-}
   restart: unless-stopped
   init: true
   logging: *logging
@@ -37,6 +41,8 @@ x-server: &server
     ALLOW_PRIVATE_MAIL_HOSTS: "false"
     # API が受け取った添付ファイルをワーカーが読むので、同じボリュームを両方に付ける。
     ATTACHMENTS_DIR: /data/attachments
+    # アプリ本体の配布用のファイル (deploy/app-releases/、docs/updates.md)。
+    APP_RELEASES_DIR: /data/app-releases
     TZ: ${TZ:-Asia/Tokyo}
 
 services:
@@ -74,6 +80,8 @@ services:
         condition: service_completed_successfully
     volumes:
       - attachments:/data/attachments
+      # アプリ本体の配布用のファイル。API はどの版を配るかを読むだけ。
+      - ./app-releases:/data/app-releases:ro,z
     healthcheck:
       test:
         - CMD
@@ -109,6 +117,9 @@ services:
     # 待ち受けるアドレスとポートは、重ねるファイル (compose.relay.yml / compose.proxy.yml / compose.caddy.yml) が決める。
     environment:
       SITE_ADDRESS: ":80"
+    volumes:
+      # アプリ本体の配布用のファイル (/app-update/releases/ で配る)。
+      - ./app-releases:/data/app-releases:ro,z
     depends_on:
       - api
 

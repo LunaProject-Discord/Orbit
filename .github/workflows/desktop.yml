@@ -3,7 +3,8 @@ name: Desktop
 # デスクトップ版 (apps/desktop、Tauri) を Windows / macOS / Linux 向けにビルドする。
 # - プルリクエストと main: apps/desktop を変えたときに、インストーラーを作る。
 # - 手動 (Run workflow): 最新の画面 (apps/web) を入れたインストーラーを作り直す。
-# - タグ desktop-v*: その版のインストーラーを作り、GitHub Releases に載せる (例: desktop-v0.1.0)。
+# - リリース (.github/workflows/release.yml から呼ばれる): その版のインストーラーと自動更新の一覧を作り、
+#   成果物 release-desktop-* として渡す (GitHub Releases へは release.yml がまとめて載せる)。
 # 署名の証明書と自動更新の鍵は、リポジトリのシークレットから渡す。無くてもビルドは通り、
 # その場合は署名の無いインストーラーができて、自動更新は無効になる。
 # 準備の手順は docs/desktop-app.md を参照。
@@ -14,14 +15,19 @@ on:
       - .github/workflows/desktop.yml
   push:
     branches: [main]
-    tags: ["desktop-v*"]
     paths:
       - apps/desktop/**
       - .github/workflows/desktop.yml
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: リリースの版 (例 1.2.0)
+        type: string
+        required: true
 
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: desktop-${{ github.ref }}${{ inputs.version && '-release' || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -32,10 +38,8 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # タグのときに GitHub Releases へ載せるため、書き込みを許す (権限は式で切り替えられない)。
-    # トークンを渡すのは「ビルド」のステップだけで、checkout にも残さない。
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -43,29 +47,31 @@ jobs:
           - name: Windows
             os: windows-latest
             artifact: orbit-mail-windows
+            platform: windows
             args: ""
             rust-targets: ""
           # Apple シリコンと Intel の両方で動く 1 つのアプリにする。
           - name: macOS
             os: macos-latest
             artifact: orbit-mail-macos
+            platform: macos
             args: --target universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
           # 古めの Ubuntu でビルドしておくと、新しいディストリビューションでも動く。
           - name: Linux
             os: ubuntu-22.04
             artifact: orbit-mail-linux
+            platform: linux
             args: ""
             rust-targets: ""
     env:
       # アプリが最初に接続するサーバー。アプリの「接続先サーバー」の画面で後から変えられる。
       NEXT_PUBLIC_API_URL: ${{ vars.DESKTOP_SERVER_URL || vars.MOBILE_SERVER_URL || 'https://orbit.lunaproject.jp' }}
-      IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/desktop-v') }}
-      # 自動更新: 更新ファイルの署名に使う鍵の公開鍵 (秘密鍵はシークレットで、下のステップで渡す)。
+      RELEASE_VERSION: ${{ inputs.version || '' }}
+      # 本体の自動更新: 更新ファイルの署名に使う鍵の公開鍵 (秘密鍵はシークレットで、下のステップで渡す)。
+      # 更新は接続先のサーバーから受け取る (docs/updates.md)。
       HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
       TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
-      # 更新の確認先。既定はこのリポジトリの GitHub Releases (リポジトリが公開のときだけ届く)。
-      TAURI_UPDATER_ENDPOINT: ${{ vars.TAURI_UPDATER_ENDPOINT || format('https://github.com/{0}/releases/latest/download/latest.json', github.repository) }}
       # 画面の自動更新の一覧の署名を確かめる公開鍵 (docs/app-update.md)。無ければ画面を更新しないアプリになる。
       ORBIT_APP_UPDATE_PUBLIC_KEY: ${{ vars.APP_UPDATE_PUBLIC_KEY }}
       HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
@@ -101,12 +107,12 @@ jobs:
           mkdir -p ../../web/out
           cargo test --locked
 
-      # タグの名前 (desktop-v0.1.0) をそのままアプリの版にする。それ以外は package.json の版のまま。
+      # リリースの版をアプリの版にする。それ以外は package.json の版のまま。
       - name: 版を決める
-        if: env.IS_RELEASE == 'true'
+        if: env.RELEASE_VERSION != ''
         shell: bash
         working-directory: apps/desktop
-        run: npm pkg set version="${GITHUB_REF_NAME#desktop-v}"
+        run: npm pkg set version="$RELEASE_VERSION"
 
       - name: 署名の証明書を取り込む (Windows)
         if: runner.os == 'Windows' && env.HAS_WINDOWS_CERTIFICATE == 'true'
@@ -165,17 +171,22 @@ jobs:
       - name: ビルド
         id: tauri
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }} --config "${{ runner.temp }}/tauri.ci.conf.json"
-          # タグのときだけ GitHub Releases に載せる (tagName が空なら、ビルドだけ行う)。
-          tagName: ${{ env.IS_RELEASE == 'true' && github.ref_name || '' }}
-          releaseName: Orbit Mail デスクトップ版 __VERSION__
-          releaseBody: インストーラーは下の Assets からダウンロードできます。入れ方は docs/desktop-app.md を参照してください。
-          releaseDraft: false
-          prerelease: false
+
+      - name: リリース用にファイルを集める
+        if: env.RELEASE_VERSION != ''
+        shell: bash
+        run: node apps/desktop/scripts/release-assets.mjs "$RUNNER_TEMP/release" "${{ matrix.platform }}"
+
+      - uses: actions/upload-artifact@v7
+        if: env.RELEASE_VERSION != ''
+        with:
+          name: release-desktop-${{ matrix.platform }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          retention-days: 7
 
       - uses: actions/upload-artifact@v7
         with:

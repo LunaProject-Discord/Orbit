@@ -8,6 +8,15 @@
 import { useSyncExternalStore } from "react";
 import { apiUrl } from "@/lib/server-url";
 import {
+  bodyPlatform,
+  type Compatibility,
+  compatibility,
+  type DesktopBodyStatus,
+  desktopBody,
+  fetchServerInfo,
+  type ServerInfo,
+} from "./body";
+import {
   BUILD_VERSION,
   isNewerVersion,
   MIN_NATIVE_API,
@@ -29,12 +38,22 @@ export type UpdateStatus =
   | { kind: "disabled" }
   | { kind: "error"; message: string };
 
+/** アプリ本体の更新の状態 (lib/app-update/body.ts)。デスクトップ版だけ (スマホはストアで更新する)。 */
+export type BodyStatus =
+  /** ブラウザー、スマホアプリ、読み込む前 */
+  { kind: "none" } | { kind: "desktop"; status: DesktopBodyStatus };
+
 export type AppUpdateState = {
   /** アプリ側の情報。ブラウザー、または読み込む前は null。 */
   native: NativeUpdateInfo | null;
   /** アプリ側の機能が、この画面の必要とする版より古い (画面の更新を確かめられない)。 */
   nativeTooOld: boolean;
   status: UpdateStatus;
+  /** 接続先のサーバーの情報。読み込む前、または古いサーバーでは null。 */
+  server: ServerInfo | null;
+  /** 接続先のサーバーと、この画面の API の版の範囲が重なるか。 */
+  compatibility: Compatibility;
+  body: BodyStatus;
 };
 
 /** 起動してから最初に確かめるまでの時間と、その後の間隔 (デスクトップ版のアプリ本体の更新と同じ)。 */
@@ -45,6 +64,9 @@ let state: AppUpdateState = {
   native: null,
   nativeTooOld: false,
   status: { kind: "idle" },
+  server: null,
+  compatibility: "ok",
+  body: { kind: "none" },
 };
 const listeners = new Set<() => void>();
 
@@ -62,6 +84,9 @@ const serverState: AppUpdateState = {
   native: null,
   nativeTooOld: false,
   status: { kind: "idle" },
+  server: null,
+  compatibility: "ok",
+  body: { kind: "none" },
 };
 
 /** いまの状態 (テスト用)。 */
@@ -179,6 +204,36 @@ async function runCheck(): Promise<void> {
   }
 }
 
+// --- 接続先のサーバーの情報と、アプリ本体の更新 ---
+
+/** 接続先のサーバーの情報を読み、アプリ本体の更新を確かめる。manual は設定から押したとき。 */
+export async function refreshServerInfo(manual = false): Promise<void> {
+  const server = apiUrl();
+  const info = await fetchServerInfo(server);
+  setState({
+    server: info,
+    compatibility: info ? compatibility(info.api) : "ok",
+  });
+  if (!info || bodyPlatform() !== "desktop") return;
+
+  try {
+    await desktopBody.configure(server, info.updates.appUpdate);
+  } catch {
+    // HTTPS ではないサーバー (開発中) や、この仕組みより前のアプリでは本体を更新しない。
+  }
+  try {
+    setState({ body: { kind: "desktop", status: await desktopBody.status() } });
+  } catch {
+    setState({ body: { kind: "none" } });
+  }
+  if (manual) await desktopBody.check().catch(() => {});
+}
+
+/** デスクトップ版: 取得済みの本体の更新をすぐ入れて再起動する。 */
+export async function installDesktopUpdateNow(): Promise<void> {
+  await desktopBody.installNow();
+}
+
 /** 取得済みの画面にすぐ切り替える。 */
 export async function applyAppUpdate(): Promise<void> {
   await nativeUpdater()?.apply();
@@ -203,11 +258,14 @@ export function startAppUpdates(): () => void {
         setState({ status: { kind: "ready", version: native.pending } });
       }
     });
+  // 接続先のサーバーの情報 (更新のしかた、互換性) は、起動してすぐ読む。
+  void refreshServerInfo();
   const first = window.setTimeout(() => {
     void checkForAppUpdate();
   }, FIRST_CHECK_MS);
   const interval = window.setInterval(() => {
     void checkForAppUpdate();
+    void refreshServerInfo();
   }, CHECK_INTERVAL_MS);
   return () => {
     started = false;

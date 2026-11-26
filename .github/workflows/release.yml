@@ -1,0 +1,86 @@
+name: Release
+
+# 版のタグ (v1.2.0、試験版は v1.3.0-beta.1) を push すると、その版のリリースを作る (docs/updates.md)。
+# - GitHub Releases に v<版> を作り、デスクトップ版 (3 OS) と Android の APK を載せる。
+# - デスクトップ版の自動更新の一覧 (latest.json) と SHA256SUMS も載せる。
+#   各サーバーは deploy/app-release.sh でこれを取り込み、接続しているデスクトップ版へ配る。
+#   スマホアプリの本体はストアで更新する (APK は手で入れる用)。
+# サーバーは同じタグのコミットを deploy/update.sh で取得して更新する。
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: 版を決める
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "タグ $GITHUB_REF_NAME は版の形 (v1.2.0、v1.3.0-beta.1) ではありません。" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: prepare
+    uses: ./.github/workflows/desktop.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  android:
+    needs: prepare
+    uses: ./.github/workflows/android.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  publish:
+    needs: [prepare, desktop, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: 自動更新の一覧と SHA256SUMS を作る
+        run: node scripts/release-manifest.mjs release "$VERSION"
+      - name: GitHub Releases に載せる
+        run: |
+          # 実行し直したときは、作ってあるリリースのファイルを差し替える。
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" release/* --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
+          prerelease=""
+          if [[ "$VERSION" == *-* ]]; then prerelease="--prerelease"; fi
+          gh release create "v$VERSION" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Orbit $VERSION" \
+            --generate-notes \
+            $prerelease

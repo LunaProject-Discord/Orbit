@@ -68,6 +68,13 @@ bash deploy/setup.sh orbit.example.com caddy    # Caddy が 80 / 443 番で直�
 cd deploy && docker compose up -d --build
 ```
 
+## 更新と版の固定
+
+サーバーとアプリは同じ版 (`v1.2.0` などのタグ) でリリースします。サーバーは `deploy/.env` の方針 (チャネル、版の固定、自動更新) に従って
+自分を更新し、自分と同じ版のデスクトップ版を配ります。サーバーの版を固定すれば、デスクトップ版と画面もその版に揃います
+(スマホアプリの本体はアプリストアで更新します)。
+しくみと手順は [docs/updates.md](docs/updates.md) にまとめています。
+
 ## Android アプリ
 
 `apps/mobile` に、Web 版の画面をそのまま入れた Android アプリ (Capacitor) があります。GitHub Actions の **Android** ワークフローで
