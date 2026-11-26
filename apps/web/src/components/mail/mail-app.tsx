@@ -165,7 +165,7 @@ import {
   sortAccounts,
   withSortOrder,
 } from "@/lib/mailboxes";
-import { isNativeApp } from "@/lib/native/app";
+import { isNativeApp, setAppBackHandler } from "@/lib/native/app";
 import {
   notificationActionInput,
   refreshNotificationActions,
@@ -2023,6 +2023,17 @@ const MailView = memo(function MailView({
     if (window.history.state?.mailSearch === true) {
       // 開く前の表示が 1 つ前の履歴にある。戻ると、検索も終わる (popstate で反映)。
       window.history.back();
+      // Android の WebView では戻れないことがある。そのときは、ここで閉じる。
+      window.setTimeout(() => {
+        if (window.history.state?.mailSearch !== true) return;
+        window.history.replaceState(
+          { ...window.history.state, mailSearch: undefined },
+          "",
+        );
+        setSearchScreen(false);
+        setSearchInput(emptySearch);
+        setSearch(null);
+      }, BACK_PENDING_TIMEOUT_MS);
       return;
     }
     setSearchScreen(false);
@@ -2312,6 +2323,36 @@ const MailView = memo(function MailView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sidebarOpen]);
 
+  // Android の戻るボタン: 画面左上の「←」と同じく、開いている表示を 1 つ閉じる
+  // (lib/native/app.ts の setAppBackHandler)。閉じるものが無ければ false。
+  const appBackRef = useRef<() => boolean>(() => false);
+  appBackRef.current = () => {
+    if (standaloneCompose || standaloneMessage) return false;
+    if (draft && composeOpen) {
+      void closeCompose();
+      return true;
+    }
+    if (selectedMessageId) {
+      setSelectedMessageId(null);
+      return true;
+    }
+    if (special === "settings" && settingsCategory) {
+      setSettingsCategory(null);
+      return true;
+    }
+    if (special === "settings") {
+      // 設定の一覧からは、すべての受信トレイへ戻る (アプリを裏へ回さない)。
+      handleSelectFolder(null, null);
+      return true;
+    }
+    if (searchScreen) {
+      closeSearchScreen();
+      return true;
+    }
+    return false;
+  };
+  useEffect(() => setAppBackHandler(() => appBackRef.current()), []);
+
   // スマホ幅で引き出したサイドバーは、戻る操作 (Android の戻るボタンなど) で閉じる。
   // 開いたままだと、後ろの画面が戻ってしまう。
   useEffect(() => {
@@ -2472,6 +2513,8 @@ const MailView = memo(function MailView({
           if (backPendingRef.current !== routeUrl) return;
           backLog("履歴を戻した知らせが来ないので、待つのをやめる");
           backPendingRef.current = null;
+          // 戻れなかったので、いまの履歴を閉じた後の URL に書き換える (もう一度戻ろうとしない)。
+          replaceNextRef.current = true;
           setRouteSync((count) => count + 1);
         }, BACK_PENDING_TIMEOUT_MS);
         return;
