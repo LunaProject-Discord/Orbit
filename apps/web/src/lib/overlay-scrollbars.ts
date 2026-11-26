@@ -66,6 +66,11 @@ export function thumbMetrics(
   return { size, start: travel * position, ratio: max / travel };
 }
 
+/** CSS の px の値を、画面の画素 (拡大率 ratio) の境目に合わせる。 */
+export function snapToPixel(value: number, ratio: number): number {
+  return Math.round(value * ratio) / ratio;
+}
+
 type Axis = "x" | "y";
 
 type Bar = {
@@ -124,12 +129,9 @@ function scrollersAt(target: EventTarget | null): Set<HTMLElement> {
 
 /**
  * 重ねて表示するスクロールバーを有効にする。戻り値を呼ぶと元に戻る。
- * マウスなどで細かく指せる端末だけが対象 (タッチ操作の端末は OS のバーのまま)。
+ * パソコンだけが対象 (スマホやタブレットは OS のバーのまま。呼ぶ側の ScrollbarHover が決める)。
  */
 export function installOverlayScrollbars(): () => void {
-  if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
-    return () => {};
-  }
   const root = document.documentElement;
   root.setAttribute(ENABLED_ATTRIBUTE, "");
 
@@ -255,18 +257,23 @@ export function installOverlayScrollbars(): () => void {
     const top = rect.top + container.clientTop;
     const style = bar.element.style;
     const thumb = bar.thumb.style;
+    // 位置と長さは画面の画素に合わせる。画素の途中にかかると、つまみの丸い端だけがぼやけて
+    // ずれて見え、形がいびつになる (拡大率が 125% などのとき)。太さは globals.css が合わせる。
+    const ratio = window.devicePixelRatio || 1;
+    const px = (value: number) => `${snapToPixel(value, ratio)}px`;
+    style.setProperty("--device-px", `${1 / ratio}px`);
     if (vertical) {
-      style.left = `${left + container.clientWidth}px`;
-      style.top = `${top}px`;
-      style.height = `${viewport}px`;
-      thumb.height = `${metrics.size}px`;
-      thumb.transform = `translateY(${TRACK_INSET + metrics.start}px)`;
+      style.left = px(left + container.clientWidth);
+      style.top = px(top);
+      style.height = px(viewport);
+      thumb.height = px(metrics.size);
+      thumb.transform = `translateY(${px(TRACK_INSET + metrics.start)})`;
     } else {
-      style.left = `${left}px`;
-      style.top = `${top + container.clientHeight}px`;
-      style.width = `${viewport}px`;
-      thumb.width = `${metrics.size}px`;
-      thumb.transform = `translateX(${TRACK_INSET + metrics.start}px)`;
+      style.left = px(left);
+      style.top = px(top + container.clientHeight);
+      style.width = px(viewport);
+      thumb.width = px(metrics.size);
+      thumb.transform = `translateX(${px(TRACK_INSET + metrics.start)})`;
     }
     // カーソルの下にある領域は手前にあると分かっている。スクロールだけで出すときは、
     // 上にほかの要素が重なっていないかを確かめる。

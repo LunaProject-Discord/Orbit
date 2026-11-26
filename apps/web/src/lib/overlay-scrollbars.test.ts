@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { thumbMetrics } from "@/lib/overlay-scrollbars";
+import { snapToPixel, thumbMetrics } from "@/lib/overlay-scrollbars";
 
 describe("thumbMetrics", () => {
   it("中身が収まっていれば null を返す", () => {
@@ -30,5 +30,15 @@ describe("thumbMetrics", () => {
   it("行き過ぎたスクロール位置は、端に丸める", () => {
     expect(thumbMetrics(400, 1600, -50, 400)?.start).toBe(0);
     expect(thumbMetrics(400, 1600, 5000, 400)?.start).toBe(300);
+  });
+});
+
+describe("snapToPixel", () => {
+  it("画面の画素の境目に合わせる", () => {
+    expect(snapToPixel(10.3, 1)).toBe(10);
+    // 125% では 0.8px ごと。
+    expect(snapToPixel(10.3, 1.25)).toBeCloseTo(10.4);
+    expect(snapToPixel(6, 1.25)).toBeCloseTo(6.4);
+    expect(snapToPixel(7.1, 2)).toBe(7);
   });
 });

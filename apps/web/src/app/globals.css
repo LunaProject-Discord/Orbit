@@ -221,51 +221,50 @@
 }
 
 /*
- * スマホアプリ (Android / iOS) では、端末がマウスで指せると答えても OS のバーのままにする
- * (html[data-os-scrollbars]、components/scrollbar-hover.tsx が付ける)。
+ * パソコンだけ (html[data-desktop-scrollbars]、lib/scrollbar-hover.ts の usesDesktopScrollbars)。
+ * スマホやタブレットは OS のバーのまま。タッチ操作かどうかでは決めない
+ * (Windows のタブレットモードでも同じバーにする)。
  */
-@media (hover: hover) and (pointer: fine) {
-  @supports selector(::-webkit-scrollbar) {
-    :root:not([data-os-scrollbars])::-webkit-scrollbar,
-    :root:not([data-os-scrollbars]) *::-webkit-scrollbar {
-      width: 12px;
-      height: 12px;
-      background: transparent;
-    }
-    :root:not([data-os-scrollbars])::-webkit-scrollbar-track,
-    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-track {
-      background-color: var(--scrollbar-track-color);
-    }
-    :root:not([data-os-scrollbars])::-webkit-scrollbar-corner,
-    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-corner {
-      background: transparent;
-    }
-    :root:not([data-os-scrollbars])::-webkit-scrollbar-thumb,
-    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-thumb {
-      min-height: 36px;
-      min-width: 36px;
-      border: solid transparent;
-      border-width: 2px 2px 2px 4px;
-      border-radius: 999px;
-      background-color: var(--scrollbar-color);
-      background-clip: content-box;
-    }
-    :root:not([data-os-scrollbars])::-webkit-scrollbar-thumb:horizontal,
-    :root:not([data-os-scrollbars]) *::-webkit-scrollbar-thumb:horizontal {
-      border-width: 4px 2px 2px;
-    }
-    :root:not([data-os-scrollbars])
-      [data-scrollbar-hover]::-webkit-scrollbar-thumb {
-      border-width: 2px;
-    }
+@supports selector(::-webkit-scrollbar) {
+  :root[data-desktop-scrollbars]::-webkit-scrollbar,
+  :root[data-desktop-scrollbars] *::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+    background: transparent;
   }
+  :root[data-desktop-scrollbars]::-webkit-scrollbar-track,
+  :root[data-desktop-scrollbars] *::-webkit-scrollbar-track {
+    background-color: var(--scrollbar-track-color);
+  }
+  :root[data-desktop-scrollbars]::-webkit-scrollbar-corner,
+  :root[data-desktop-scrollbars] *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  :root[data-desktop-scrollbars]::-webkit-scrollbar-thumb,
+  :root[data-desktop-scrollbars] *::-webkit-scrollbar-thumb {
+    min-height: 36px;
+    min-width: 36px;
+    border: solid transparent;
+    border-width: 2px 2px 2px 4px;
+    border-radius: 999px;
+    background-color: var(--scrollbar-color);
+    background-clip: content-box;
+  }
+  :root[data-desktop-scrollbars]::-webkit-scrollbar-thumb:horizontal,
+  :root[data-desktop-scrollbars] *::-webkit-scrollbar-thumb:horizontal {
+    border-width: 4px 2px 2px;
+  }
+  :root[data-desktop-scrollbars]
+    [data-scrollbar-hover]::-webkit-scrollbar-thumb {
+    border-width: 2px;
+  }
+}
 
-  /* Firefox はつまみの太さと下地を細かく指定できないので、表示と非表示だけを切り替える。 */
-  @supports not selector(::-webkit-scrollbar) {
-    :root:not([data-os-scrollbars]) * {
-      scrollbar-width: thin;
-      scrollbar-color: var(--scrollbar-color) var(--scrollbar-track-color);
-    }
+/* Firefox はつまみの太さと下地を細かく指定できないので、表示と非表示だけを切り替える。 */
+@supports not selector(::-webkit-scrollbar) {
+  :root[data-desktop-scrollbars] * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-color) var(--scrollbar-track-color);
   }
 }
 
@@ -318,12 +317,12 @@ html[data-overlay-scrollbars]
     background-color 0.1s;
 
   &[data-axis="y"] {
-    width: 12px;
-    margin-left: -12px;
+    width: round(12px, var(--device-px, 1px));
+    margin-left: calc(-1 * round(12px, var(--device-px, 1px)));
   }
   &[data-axis="x"] {
-    height: 12px;
-    margin-top: -12px;
+    height: round(12px, var(--device-px, 1px));
+    margin-top: calc(-1 * round(12px, var(--device-px, 1px)));
   }
   &[data-visible] {
     opacity: 1;
@@ -346,15 +345,16 @@ html[data-overlay-scrollbars]
       height 0.1s,
       background-color 0.1s;
   }
+  /* 太さと端からの距離も画面の画素に合わせる (--device-px は overlay-scrollbars.ts が付ける)。 */
   &[data-axis="y"] > div {
     top: 0;
-    right: 2px;
-    width: 6px;
+    right: round(2px, var(--device-px, 1px));
+    width: round(6px, var(--device-px, 1px));
   }
   &[data-axis="x"] > div {
-    bottom: 2px;
+    bottom: round(2px, var(--device-px, 1px));
     left: 0;
-    height: 6px;
+    height: round(6px, var(--device-px, 1px));
   }
   &:hover > div,
   &[data-dragging] > div {
@@ -362,11 +362,11 @@ html[data-overlay-scrollbars]
   }
   &[data-axis="y"]:hover > div,
   &[data-axis="y"][data-dragging] > div {
-    width: 8px;
+    width: round(8px, var(--device-px, 1px));
   }
   &[data-axis="x"]:hover > div,
   &[data-axis="x"][data-dragging] > div {
-    height: 8px;
+    height: round(8px, var(--device-px, 1px));
   }
 }
 
