@@ -1,10 +1,29 @@
+import {
+  type AuthResults,
+  checkSender,
+  parseAuthenticationResults,
+  type SenderCheck,
+} from "@orbit/core";
+import type { Address } from "@orbit/db";
 import { clean } from "./message-parse.js";
 
-/** 取り込み時に IMAP へ要求するヘッダー (References はスレッドのまとめに使う)。 */
-export const FETCH_HEADERS = ["references", "list-id", "list-unsubscribe"];
+/**
+ * 取り込み時に IMAP へ要求するヘッダー (References はスレッドのまとめに使う)。
+ * Authentication-Results は送信元の認証結果 (SPF・DKIM・DMARC)。
+ */
+export const FETCH_HEADERS = [
+  "references",
+  "list-id",
+  "list-unsubscribe",
+  "authentication-results",
+];
 
 /** 後から補うときに IMAP へ要求するヘッダー。 */
-export const LIST_HEADERS = ["list-id", "list-unsubscribe"];
+export const LIST_HEADERS = [
+  "list-id",
+  "list-unsubscribe",
+  "authentication-results",
+];
 
 /** メーリングリストやメールマガジンの情報。 */
 export type ListInfo = {
@@ -54,35 +73,58 @@ function parseListUnsubscribe(value: string | undefined): string[] {
   return urls;
 }
 
-/** ヘッダーの名前 (小文字) と値の組から、メーリングリストの情報を取り出す。 */
-export function listInfoOf(
+/** メーリングリストの情報と、送信元の認証結果。 */
+export type HeaderInfo = ListInfo & {
+  /** つなぎ先のサーバーが付けた認証結果。ヘッダーが無ければ null。 */
+  authResults: AuthResults | null;
+  /** 認証結果と表示名から決めた、差出人の確認結果。 */
+  senderCheck: SenderCheck;
+};
+
+/**
+ * ヘッダーの名前 (小文字) と値の組から、メーリングリストの情報と認証結果を取り出す。
+ * header は、同じ名前のヘッダーが複数あれば、いちばん上 (最後に受け取ったサーバーが付けたもの) を返す。
+ * 認証結果は、送り主が偽のヘッダーを書き込むこともできるので、いちばん上だけを使う。
+ */
+export function headerInfoOf(
   header: (name: string) => string | undefined,
-): ListInfo {
+  from: Address[],
+): HeaderInfo {
+  const authResults = parseAuthenticationResults(
+    header("authentication-results"),
+  );
   return {
     listId: parseListId(header("list-id")),
     listUnsubscribe: parseListUnsubscribe(header("list-unsubscribe")),
+    authResults,
+    senderCheck: checkSender(from[0], authResults),
   };
 }
 
-/** IMAP で取得したヘッダー部分 (折り返しあり) から、メーリングリストの情報を取り出す。 */
-export function parseListHeaders(headers: Buffer | undefined): ListInfo {
+/** IMAP で取得したヘッダー部分 (折り返しあり) から、メーリングリストの情報と認証結果を取り出す。 */
+export function parseListHeaders(
+  headers: Buffer | undefined,
+  from: Address[],
+): HeaderInfo {
   const unfolded = (headers?.toString("latin1") ?? "").replace(
     /\r?\n[ \t]+/g,
     " ",
   );
-  return listInfoOf((name) => {
+  return headerInfoOf((name) => {
     const line = new RegExp(`^${name}:(.*)$`, "im").exec(unfolded);
     return line?.[1]?.trim();
-  });
+  }, from);
 }
 
-/** Microsoft Graph の internetMessageHeaders から、メーリングリストの情報を取り出す。 */
+/** Microsoft Graph の internetMessageHeaders から、メーリングリストの情報と認証結果を取り出す。 */
 export function listInfoFromGraph(
   headers: { name?: string | null; value?: string | null }[] | null | undefined,
-): ListInfo {
-  return listInfoOf(
+  from: Address[],
+): HeaderInfo {
+  return headerInfoOf(
     (name) =>
       headers?.find((item) => item.name?.toLowerCase() === name)?.value ??
       undefined,
+    from,
   );
 }

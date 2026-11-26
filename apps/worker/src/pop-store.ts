@@ -13,16 +13,17 @@ import {
   messages,
   popMessages,
 } from "@orbit/db";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import type { SpecialUse } from "./mailbox-list.js";
 import { renameMailboxPaths } from "./mailbox-operations.js";
 import { removePlacements, type SyncAccount } from "./mailbox-store.js";
+import { parseListHeaders } from "./message-headers.js";
 import { makeSnippet } from "./message-parse.js";
 import { buildMime } from "./mime.js";
 import { announceNewMail } from "./new-mail.js";
 import type { OutboxResult } from "./outbox.js";
-import { parseRawMessage } from "./pop-parse.js";
+import { headerSection, parseRawMessage } from "./pop-parse.js";
 import { resolveThreadKey } from "./thread-key.js";
 
 /**
@@ -161,6 +162,8 @@ export async function importRawMessage(
         sender: parsed.sender,
         listId: parsed.listId,
         listUnsubscribe: parsed.listUnsubscribe,
+        authResults: parsed.authResults,
+        senderCheck: parsed.senderCheck,
         headersFetchedAt: new Date(now),
         sentAt: parsed.sentAt,
         receivedAt,
@@ -430,4 +433,53 @@ async function deleteLocalMailbox(
     await tx.delete(mailboxes).where(inArray(mailboxes.id, ids));
     await recordChanges(tx, account.userId, "mailbox", "delete", ids);
   });
+}
+
+const HEADER_BACKFILL_BATCH = 200;
+
+/**
+ * ヘッダーの補完がまだのメール (項目を足す前に取り込んだもの) に、保存しておいた原文から
+ * 認証結果などを入れる。続きがあれば true。原文が無いメール (送信の控えなど) は、
+ * 表示名だけで確認結果を決める。
+ */
+export async function backfillPopHeaders(
+  db: Database,
+  account: Pick<SyncAccount, "id" | "userId">,
+): Promise<boolean> {
+  const pending = await db
+    .select({
+      id: messages.id,
+      from: messages.from,
+      raw: messageSources.raw,
+    })
+    .from(messages)
+    .leftJoin(messageSources, eq(messageSources.messageId, messages.id))
+    .where(
+      and(
+        eq(messages.accountId, account.id),
+        isNull(messages.headersFetchedAt),
+      ),
+    )
+    .orderBy(desc(messages.receivedAt))
+    .limit(HEADER_BACKFILL_BATCH + 1);
+  const batch = pending.slice(0, HEADER_BACKFILL_BATCH);
+  if (batch.length === 0) return false;
+  const changed: string[] = [];
+  await db.transaction(async (tx) => {
+    for (const row of batch) {
+      const info = parseListHeaders(
+        row.raw ? headerSection(row.raw) : undefined,
+        row.from,
+      );
+      await tx
+        .update(messages)
+        .set({ ...info, headersFetchedAt: new Date() })
+        .where(eq(messages.id, row.id));
+      if (info.authResults || info.senderCheck.warnings.length > 0) {
+        changed.push(row.id);
+      }
+    }
+    await recordChanges(tx, account.userId, "message", "upsert", changed);
+  });
+  return pending.length > HEADER_BACKFILL_BATCH;
 }

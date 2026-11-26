@@ -32,14 +32,22 @@ const account = {
 } as unknown as Account;
 
 /** 画面 (mail-app) と同じように、作成画面から届いた下書きを状態として持ち直す。 */
-function Harness({ onDraft }: { onDraft: (draft: ComposeDraft) => void }) {
-  const [draft, setDraft] = useState<ComposeDraft>(() => newDraft(account.id));
+function Harness({
+  onDraft,
+  accounts = [account],
+  initial = () => newDraft(account.id),
+}: {
+  onDraft: (draft: ComposeDraft) => void;
+  accounts?: Account[];
+  initial?: () => ComposeDraft;
+}) {
+  const [draft, setDraft] = useState<ComposeDraft>(initial);
   onDraft(draft);
   return (
     <ComposeWindow
       draft={draft}
       open
-      accounts={[account]}
+      accounts={accounts}
       notice={null}
       savedAt={null}
       saveProblem={null}
@@ -148,5 +156,84 @@ describe("ComposeWindow の添付ファイル", () => {
 
     expect(latest.subject).toBe("打ち合わせの件");
     expect(latest.attachments.map((file) => file.filename)).toEqual(["a.txt"]);
+  });
+});
+
+describe("ComposeWindow の受信専用のアカウント", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latest: ComposeDraft;
+
+  const receiveOnly = {
+    id: "account-ro",
+    protocol: "pop3",
+    email: "ro@example.test",
+    displayName: "受信だけ",
+    smtpHost: null,
+    signatureHtml: null,
+    createdAt: "2026-01-02T00:00:00.000Z",
+  } as unknown as Account;
+  const sendable = {
+    ...account,
+    smtpHost: "smtp.example.test",
+    signatureHtml: "<div>自分の署名</div>",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  } as unknown as Account;
+
+  beforeEach(() => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function render(accounts: Account[], accountId: string) {
+    await act(async () => {
+      root.render(
+        <Harness
+          accounts={accounts}
+          initial={() => newDraft(accountId)}
+          onDraft={(draft) => {
+            latest = draft;
+          }}
+        />,
+      );
+    });
+  }
+
+  const sendButtons = () => [
+    ...container.querySelectorAll<HTMLButtonElement>('button[type="submit"]'),
+  ];
+
+  it("受信専用のアカウントが差出人なら、送信できるアカウントに切り替える", async () => {
+    await render([receiveOnly, sendable], receiveOnly.id);
+    expect(latest.accountId).toBe(sendable.id);
+    // 切り替えたアカウントの署名が入る。
+    expect(latest.html).toContain("自分の署名");
+    // 差出人の欄には、送信できるアカウントが出る。
+    const from = container.querySelector('[id$="-from"]')?.textContent ?? "";
+    expect(from).toContain("me@example.test");
+    expect(from).not.toContain("ro@example.test");
+    expect(container.textContent).not.toContain(
+      "送信できるアカウントがありません",
+    );
+    expect(sendButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it("送信できるアカウントが無ければ、案内を出して送信できなくする", async () => {
+    await render([receiveOnly], receiveOnly.id);
+    expect(latest.accountId).toBe(receiveOnly.id);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "送信できるアカウントがありません。送信サーバーを設定したアカウントを追加してください。",
+    );
+    expect(sendButtons().length).toBeGreaterThan(0);
+    expect(sendButtons().every((button) => button.disabled)).toBe(true);
   });
 });

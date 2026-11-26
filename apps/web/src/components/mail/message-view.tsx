@@ -51,6 +51,13 @@ import {
   ProfileNames,
 } from "@/components/mail/profile-card";
 import { QuickReply } from "@/components/mail/quick-reply";
+import { SenderAvatar } from "@/components/mail/sender-avatar";
+import {
+  AuthResultsRows,
+  SenderWarningBanner,
+  SenderWarningMark,
+  VerifiedSenderMark,
+} from "@/components/mail/sender-check";
 import { swipeLooks } from "@/components/mail/swipe-row";
 import {
   ToolbarButton,
@@ -89,7 +96,7 @@ import {
   replaceCidReferences,
   splitAttachments,
 } from "@/lib/attachments";
-import type { ComposeMode } from "@/lib/compose";
+import { type ComposeMode, senderAccount } from "@/lib/compose";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { isDesktopApp } from "@/lib/desktop/app";
 import { attachTextMenu } from "@/lib/desktop/text-menu";
@@ -676,15 +683,27 @@ export function MessageView({
     sender && own.has(sender.address.toLowerCase())
       ? (last?.to[0] ?? sender)
       : sender;
+  // 返信に使うアカウント。受信専用のアカウントに届いたメールは、送信できるほかのアカウントから返す。
+  // 送信できるアカウントが無ければ、返信欄は出さない (作成画面の「返信」で理由を知らせる)。
+  const replyAccount = last ? senderAccount(accounts, last.accountId) : null;
   const quickReplyBox = preferences.quickReply &&
     last &&
     replyTo &&
+    replyAccount &&
     !last.draft && (
       <div className="shrink-0 px-4 pt-2 pb-4 sm:px-6">
         <QuickReply
           // 別のメールを開いたり、新しいメールが届いたりしたら、宛先が変わるので作り直す。
           key={last.id}
           recipient={addressLabel(replyTo)}
+          from={
+            replyAccount.id === last.accountId ||
+            !accounts.some((item) => item.id === last.accountId)
+              ? undefined
+              : replyAccount.displayName
+                ? `${replyAccount.displayName} <${replyAccount.email}>`
+                : replyAccount.email
+          }
           onSend={quickReply}
           onExpand={(text) => compose("reply", text)}
         />
@@ -1104,12 +1123,12 @@ function ThreadItem({
           onClick={onToggle}
           className="flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 pl-4 text-left outline-none focus-visible:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset sm:pl-6"
         >
-          <span
-            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-sm"
-            aria-hidden="true"
-          >
-            {Array.from(name)[0] ?? "?"}
-          </span>
+          <SenderAvatar
+            address={sender}
+            check={message.senderCheck}
+            enabled={preferences.senderIconInMessage}
+            className="size-9 text-sm"
+          />
           <span className="min-w-0 flex-1">
             <span
               className={cn(
@@ -1136,6 +1155,7 @@ function ThreadItem({
                 : message.snippet}
             </span>
           </span>
+          <SenderWarningMark check={message.senderCheck} />
           {message.flagged && (
             <StarIcon
               className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
@@ -1852,6 +1872,7 @@ function MessageContent({
           addressLabel(undefined)
         )}
       </dd>
+      <AuthResultsRows auth={message.authResults} check={message.senderCheck} />
       {senderShown && (
         <>
           <dt className="text-muted-foreground">代理送信</dt>
@@ -1978,7 +1999,18 @@ function MessageContent({
           {collapsed ? (
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
-                <UserRoundIcon className="size-4 shrink-0" aria-hidden="true" />
+                {preferences.senderIconInMessage ? (
+                  <SenderAvatar
+                    address={message.from[0]}
+                    check={message.senderCheck}
+                    className="size-5 text-[10px]"
+                  />
+                ) : (
+                  <UserRoundIcon
+                    className="size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                )}
                 <span className="sr-only">差出人</span>
                 {/* 長い差出人名は省略する (日時と広げるボタンは必ず収める)。 */}
                 <span className="flex min-w-0 font-medium text-foreground">
@@ -1992,6 +2024,8 @@ function MessageContent({
                     <span className="truncate">{addressLabel(undefined)}</span>
                   )}
                 </span>
+                <VerifiedSenderMark check={message.senderCheck} />
+                <SenderWarningMark check={message.senderCheck} />
                 {message.to.length > 0 && (
                   <>
                     <span aria-hidden="true" className="shrink-0">
@@ -2046,7 +2080,18 @@ function MessageContent({
                 {toggle}
               </div>
               {meta}
-              {detailRows}
+              {preferences.senderIconInMessage ? (
+                <div className="flex items-start gap-3">
+                  <SenderAvatar
+                    address={message.from[0]}
+                    check={message.senderCheck}
+                    className="size-10 text-base"
+                  />
+                  <div className="min-w-0 flex-1">{detailRows}</div>
+                </div>
+              ) : (
+                detailRows
+              )}
             </div>
           )}
         </header>
@@ -2060,6 +2105,8 @@ function MessageContent({
           {detailRows}
         </div>
       )}
+
+      <SenderWarningBanner check={message.senderCheck} from={message.from[0]} />
 
       {message.bodyFetchedAt === null ? (
         <output className="block p-4 text-muted-foreground text-sm sm:p-6">

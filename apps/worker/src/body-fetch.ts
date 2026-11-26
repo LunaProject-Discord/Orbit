@@ -37,6 +37,7 @@ export async function loadBodyTarget(
     .select({
       messageId: messages.id,
       providerMessageId: messages.providerMessageId,
+      from: messages.from,
       snippet: messages.snippet,
       hasAttachments: messages.hasAttachments,
       bodyFetchedAt: messages.bodyFetchedAt,

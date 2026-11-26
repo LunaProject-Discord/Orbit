@@ -82,6 +82,7 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
         email: mailAccounts.email,
         displayName: mailAccounts.displayName,
         protocol: mailAccounts.protocol,
+        smtpHost: mailAccounts.smtpHost,
       })
       .from(mailAccounts)
       .where(
@@ -92,6 +93,10 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
       );
     if (!account) {
       return c.json({ error: "account_not_found" }, 404);
+    }
+    // 受信専用のアカウント (送信サーバーが無い) からは送れない。
+    if (account.protocol !== "graph" && account.smtpHost === null) {
+      return c.json({ error: "receive_only" }, 400);
     }
 
     // 添付ファイルは、本人が受け取り済みのものだけを使える。
