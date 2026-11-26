@@ -3,7 +3,8 @@
  * Capacitor のプラグインは、アプリの中でだけ読み込む (Web 版の読み込みを重くしない)。
  */
 
-import { closeTopSheet } from "@/lib/sheet-back";
+import { backLog, enableBackLog, locationSummary } from "@/lib/back-log";
+import { closeTopSheet, sheetSummary } from "@/lib/sheet-back";
 
 type CapacitorWindow = {
   Capacitor?: {
@@ -121,25 +122,41 @@ export function listenAppUrl(listener: (url: string) => void): () => void {
 /** 戻るボタンの処理を登録する。戻り値の関数で解除する。 */
 export function listenBackButton(): () => void {
   if (!isNativeApp()) return () => {};
+  enableBackLog();
+  const onPopState = () => backLog(`popstate ${locationSummary()}`);
+  window.addEventListener("popstate", onPopState);
   let cancelled = false;
   let remove: (() => void) | null = null;
   void (async () => {
     try {
       const { App } = await import("@capacitor/app");
       const handle = await App.addListener("backButton", ({ canGoBack }) => {
+        backLog(
+          `戻るボタン canGoBack=${canGoBack} ${locationSummary()} シート=[${sheetSummary()}]`,
+        );
         // 下から出るシートが開いていれば、画面は戻さずにシートだけを閉じる。
         if (closeTopSheet()) return;
-        if (backAction(canGoBack) === "back") window.history.back();
-        else void App.minimizeApp();
+        if (backAction(canGoBack) === "back") {
+          backLog("history.back()");
+          window.history.back();
+        } else {
+          backLog("アプリを裏へ回す");
+          void App.minimizeApp();
+        }
       });
       if (cancelled) void handle.remove();
-      else remove = () => void handle.remove();
-    } catch {
+      else {
+        remove = () => void handle.remove();
+        backLog("戻るボタンの受け取りを登録");
+      }
+    } catch (error) {
+      backLog(`戻るボタンの受け取りを登録できない: ${String(error)}`);
       // 登録できなければ、端末の既定の動き (画面内で戻る) になる。
     }
   })();
   return () => {
     cancelled = true;
     remove?.();
+    window.removeEventListener("popstate", onPopState);
   };
 }

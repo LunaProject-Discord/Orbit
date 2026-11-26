@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
+import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -21,6 +22,12 @@ import {
   useAppUpdate,
 } from "@/lib/app-update";
 import { BUILD_VERSION, formatBuildVersion } from "@/lib/app-update/manifest";
+import {
+  backLogEnabled,
+  backLogText,
+  clearBackLog,
+  useBackLogCount,
+} from "@/lib/back-log";
 import { isDesktopApp } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
 import { apiUrl } from "@/lib/server-url";
@@ -255,6 +262,54 @@ export function AboutSettings() {
           </div>
         )}
       </section>
+
+      {isNativeApp() && backLogEnabled() && <BackLogSection />}
     </>
+  );
+}
+
+/**
+ * 戻るボタンの記録 (lib/back-log.ts)。戻るボタンが効かないことがある原因を調べるため、
+ * 押したときの状態をコピーして送ってもらう。
+ */
+function BackLogSection() {
+  const count = useBackLogCount();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(backLogText());
+      showNotice(`${count} 件の記録をコピーしました。`, "info");
+    } catch {
+      showNotice("記録をコピーできませんでした。");
+    }
+  };
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h3 className="font-semibold text-base">戻るボタンの記録</h3>
+        <p className="text-muted-foreground text-sm">
+          戻るボタンが効かないことがある原因を調べるためのものです。効かなかったあとにここを開いて「コピー」を押し、内容を送ってください。最新の
+          300
+          件だけをこの端末に残し、ほかへは送りません。アプリを閉じると消えます。
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5">
+        <span className="text-muted-foreground text-sm tabular-nums">
+          {count} 件
+        </span>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={count === 0}
+            onClick={() => void copy()}
+          >
+            コピー
+          </Button>
+          <Button variant="ghost" size="sm" onClick={clearBackLog}>
+            消去
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 }

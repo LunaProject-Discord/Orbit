@@ -159,6 +159,7 @@ export function useSheetSwipe(onDismiss?: () => void, enabled = true) {
           () => back.current?.(),
           !isNativeApp(),
           isOpen,
+          sheet.dataset.slot,
         );
       } else if (!open && unregister) {
         unregister();
