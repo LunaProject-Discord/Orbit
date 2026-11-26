@@ -35,6 +35,25 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 /** メールアドレス 1 件分 (From / To / Cc / Bcc の要素) */
 export type Address = { name?: string; address: string };
 
+/** 認証の 1 つの方式の結果 (@orbit/core の AuthMethodResult と同じ形)。 */
+export type StoredAuthMethodResult = { result: string; domain: string | null };
+
+/** 送信元の認証結果 (@orbit/core の AuthResults と同じ形)。 */
+export type StoredAuthResults = {
+  authservId: string;
+  spf: StoredAuthMethodResult | null;
+  dkim: StoredAuthMethodResult[];
+  dmarc: StoredAuthMethodResult | null;
+  compauth: StoredAuthMethodResult | null;
+};
+
+/** 差出人の確認結果 (@orbit/core の SenderCheck と同じ形)。 */
+export type StoredSenderCheck = {
+  verified: boolean;
+  warnings: ("dmarc_fail" | "auth_fail" | "name_mismatch")[];
+  claimed: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // ユーザーと端末
 // ---------------------------------------------------------------------------
@@ -455,7 +474,14 @@ export const messages = pgTable(
     /** List-Unsubscribe ヘッダーにあった配信停止の宛先 (https / mailto の URL)。 */
     listUnsubscribe: jsonb().$type<string[]>().notNull().default([]),
     /**
-     * sender / listId / listUnsubscribe を取り込んだ時刻。
+     * つなぎ先のメールサーバーが付けた送信元の認証結果 (Authentication-Results)。
+     * ヘッダーが無いメールや、取り込む前のメールは null。
+     */
+    authResults: jsonb().$type<StoredAuthResults>(),
+    /** 認証結果と表示名から決めた、差出人の確認結果 (確認済みか、なりすましの疑い)。 */
+    senderCheck: jsonb().$type<StoredSenderCheck>(),
+    /**
+     * sender / listId / listUnsubscribe / authResults を取り込んだ時刻。
      * これらの項目を足す前に取り込んだメールは null で、同期ワーカーが後から補う。
      */
     headersFetchedAt: timestamp({ withTimezone: true }),
@@ -962,3 +988,19 @@ export const signatureRules = pgTable(
     index("signature_rules_user_idx").on(t.userId),
   ],
 );
+
+/**
+ * 差出人のアイコン (BIMI のロゴ、Gravatar、ドメインのファビコン) のキャッシュ。
+ * どれも公開されている情報なので、利用者をまたいで共有する。
+ * 見つからなかったことも data = null で覚え、同じ問い合わせを繰り返さない。
+ */
+export const senderIcons = pgTable("sender_icons", {
+  /** 「bimi:example.com」「gravatar:<SHA-256>」「favicon:example.com」の形。 */
+  key: text().primaryKey(),
+  /** 画像の種類 (image/png など)。見つからなかったときは null。 */
+  contentType: text(),
+  data: bytea(),
+  fetchedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** この時刻を過ぎたら取り直す。 */
+  expiresAt: timestamp({ withTimezone: true }).notNull(),
+});

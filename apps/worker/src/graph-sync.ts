@@ -1,5 +1,6 @@
 import type { NewMailCandidate } from "@orbit/core";
 import {
+  type Address,
   attachments,
   type Database,
   mailboxes,
@@ -407,6 +408,8 @@ export async function listGraphAttachments(
 /** 本文を取得するメッセージ。 */
 export type GraphBodyTarget = {
   messageId: string;
+  /** 差出人 (認証結果と合わせて、なりすましの疑いを調べる)。 */
+  from: Address[];
   providerMessageId: string | null;
   snippet: string;
   hasAttachments: boolean;
@@ -467,7 +470,7 @@ export async function fetchGraphBody(
         snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
         bodyFetchedAt: new Date(),
         // メーリングリストの情報は、本文と同じ取得で受け取る。
-        ...listInfoFromGraph(headers),
+        ...listInfoFromGraph(headers, row.from),
         headersFetchedAt: new Date(),
       })
       .where(eq(messages.id, row.messageId));
@@ -489,6 +492,7 @@ export async function fetchGraphBodies(
   const columns = {
     messageId: messages.id,
     providerMessageId: messages.providerMessageId,
+    from: messages.from,
     snippet: messages.snippet,
     hasAttachments: messages.hasAttachments,
   };
@@ -591,7 +595,10 @@ export async function fetchGraphHeaders(
           id: row.providerMessageId ?? "",
           sender: message?.sender ?? null,
         }).sender;
-        const list = listInfoFromGraph(message?.internetMessageHeaders);
+        const list = listInfoFromGraph(
+          message?.internetMessageHeaders,
+          row.from,
+        );
         await db
           .update(messages)
           .set({ sender, ...list, headersFetchedAt: new Date() })
@@ -603,6 +610,8 @@ export async function fetchGraphHeaders(
         if (
           list.listId !== null ||
           list.listUnsubscribe.length > 0 ||
+          list.authResults !== null ||
+          list.senderCheck.warnings.length > 0 ||
           sender?.some((item) => !fromAddresses.has(item.address.toLowerCase()))
         ) {
           changed.push(row.messageId);

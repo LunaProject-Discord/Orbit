@@ -253,6 +253,13 @@
       "when": 1795664435588,
       "tag": "0035_account_same_address",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795708897321,
+      "tag": "0036_sender_auth",
+      "breakpoints": true
     }
   ]
 }

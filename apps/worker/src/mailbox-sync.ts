@@ -215,7 +215,7 @@ export async function fetchHeaders(
       // サーバーから消えていた場合は、空のまま取り込み済みにする (次の同期でメッセージごと消える)。
       const message = fetched.get(Number(row.uid));
       const sender = toAddresses(message?.envelope?.sender);
-      const list = parseListHeaders(message?.headers);
+      const list = parseListHeaders(message?.headers, row.from);
       await tx
         .update(messages)
         .set({ sender, ...list, headersFetchedAt: new Date() })
@@ -227,6 +227,8 @@ export async function fetchHeaders(
       if (
         list.listId !== null ||
         list.listUnsubscribe.length > 0 ||
+        list.authResults !== null ||
+        list.senderCheck.warnings.length > 0 ||
         sender.some((item) => !fromAddresses.has(item.address.toLowerCase()))
       ) {
         changed.push(row.messageId);
@@ -695,7 +697,7 @@ export async function insertMessages(
           bcc: toAddresses(envelope.bcc),
           replyTo: toAddresses(envelope.replyTo),
           sender: toAddresses(envelope.sender),
-          ...parseListHeaders(message.headers),
+          ...parseListHeaders(message.headers, toAddresses(envelope.from)),
           headersFetchedAt: new Date(),
           sentAt,
           receivedAt,

@@ -5,7 +5,7 @@ import {
   type EmailAddress,
   simpleParser,
 } from "mailparser";
-import { parseListHeaders } from "./message-headers.js";
+import { type HeaderInfo, parseListHeaders } from "./message-headers.js";
 import { clean, makeSnippet, threadKeyOf, toDate } from "./message-parse.js";
 
 /** 本文 1 つあたりの上限 (文字数)。IMAP の取り込み (2 MiB) とそろえる。 */
@@ -37,6 +37,8 @@ export type ParsedRawMessage = {
   sender: Address[];
   listId: string | null;
   listUnsubscribe: string[];
+  authResults: HeaderInfo["authResults"];
+  senderCheck: HeaderInfo["senderCheck"];
   sentAt: Date | null;
   bodyText: string | null;
   bodyHtml: string | null;
@@ -70,7 +72,7 @@ function limit(value: string | null): string | null {
 }
 
 /** 原文のヘッダー部分 (最初の空行まで)。 */
-function headerSection(raw: Buffer): Buffer {
+export function headerSection(raw: Buffer): Buffer {
   const crlf = raw.indexOf("\r\n\r\n");
   const lf = raw.indexOf("\n\n");
   const end = crlf === -1 ? lf : lf === -1 ? crlf : Math.min(crlf, lf);
@@ -125,7 +127,7 @@ export async function parseRawMessage(
     bcc: toAddresses(mail.bcc),
     replyTo: toAddresses(mail.replyTo),
     sender: toAddresses(sender),
-    ...parseListHeaders(headers),
+    ...parseListHeaders(headers, toAddresses(mail.from)),
     sentAt: toDate(mail.date),
     bodyText,
     bodyHtml,
