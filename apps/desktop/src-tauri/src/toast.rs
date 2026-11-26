@@ -128,7 +128,9 @@ fn handle_activation(
     let _ = app.emit_to(MAIN_WINDOW, NOTIFICATION_ACTION_EVENT, action);
 }
 
-/// 送信ボタンの絵 (アプリに埋め込んだ PNG)。トーストは絵をファイルで受け取るので、
+/// 送信ボタンの絵 (アプリに埋め込んだ PNG)。作成画面の送信ボタンと同じ Lucide の send を黒で描いたもの。
+/// Windows はダークモードのトーストでこの絵の色を反転させる (黒は白になる) ので、色は付けない。
+/// トーストは絵をファイルで受け取るので、
 /// アプリのキャッシュのフォルダへ書き出して file:/// の URL を返す。書き出せなければ None
 /// (そのときは送信ボタンを文字のボタンにする)。
 fn send_icon(app: &AppHandle) -> Option<String> {
