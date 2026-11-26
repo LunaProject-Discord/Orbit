@@ -18,6 +18,7 @@ import { ScrollbarHover } from "@/components/scrollbar-hover";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { DESKTOP_SCROLLBARS_SCRIPT } from "@/lib/scrollbar-hover";
 
 export const metadata: Metadata = {
   title: "Orbit",
@@ -43,6 +44,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className="h-full font-sans antialiased"
       suppressHydrationWarning
     >
+      <head>
+        {/* スクロールバーの種類は、描画前に決める (後から変えると幅が変わって中身がずれる)。 */}
+        <script
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: 自前の固定の文字列だけを入れる。
+          dangerouslySetInnerHTML={{ __html: DESKTOP_SCROLLBARS_SCRIPT }}
+        />
+      </head>
       <body className="flex min-h-full flex-col">
         <OfflineBoot />
         <PreferencesEffect />

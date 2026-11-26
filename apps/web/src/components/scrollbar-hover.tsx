@@ -1,22 +1,24 @@
 "use client";
 
 import { useEffect } from "react";
-import { isNativeApp } from "@/lib/native/app";
 import { installOverlayScrollbars } from "@/lib/overlay-scrollbars";
 import {
-  OS_SCROLLBARS_ATTRIBUTE,
+  DESKTOP_SCROLLBARS_ATTRIBUTE,
   overScrollbar,
   SCROLLBAR_HIDE_DELAY,
   SCROLLBAR_HOVER_ATTRIBUTE,
   SCROLLING_ATTRIBUTE,
 } from "@/lib/scrollbar-hover";
 
+function desktopScrollbars(): boolean {
+  return document.documentElement.hasAttribute(DESKTOP_SCROLLBARS_ATTRIBUTE);
+}
+
 /**
  * スクロールバーの表示を受け持つ。描画はせず、ページ全体で 1 つだけ置く。
  *
- * - スマホアプリ (Android / iOS) では何もせず、OS のバーのままにする。端末によっては
- *   マウスで指せる端末だと答える (hover: hover / pointer: fine) ことがあり、そのまま
- *   重ねるバーやパソコン向けのバーにすると、タッチでのスクロール中にバーが見えなくなる。
+ * - スマホやタブレット、スマホアプリでは何もせず、OS のバーのままにする
+ *   (layout.tsx が html に data-desktop-scrollbars を付けたときだけ動く。usesDesktopScrollbars)。
  * - 内容の上に重ねて表示するバーを有効にする (lib/overlay-scrollbars.ts)。
  * - ダイアログやメニューの中などブラウザーのバーを使う場所のために、スクロールしている要素と、
  *   バーにカーソルが乗っている要素へ目印の属性を付ける。globals.css がこの属性を見て
@@ -24,13 +26,11 @@ import {
  */
 export function ScrollbarHover() {
   useEffect(() => {
-    if (!isNativeApp()) return installOverlayScrollbars();
-    const root = document.documentElement;
-    root.setAttribute(OS_SCROLLBARS_ATTRIBUTE, "");
-    return () => root.removeAttribute(OS_SCROLLBARS_ATTRIBUTE);
+    if (!desktopScrollbars()) return;
+    return installOverlayScrollbars();
   }, []);
   useEffect(() => {
-    if (isNativeApp()) return;
+    if (!desktopScrollbars()) return;
     let current: Element | null = null;
     const set = (next: Element | null) => {
       if (next === current) return;

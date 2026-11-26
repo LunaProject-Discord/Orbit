@@ -130,6 +130,7 @@ import {
   updatePreferences,
   usePreferences,
 } from "@/lib/preferences";
+import { DESKTOP_SCROLLBARS_ATTRIBUTE } from "@/lib/scrollbar-hover";
 import { shortcutLabels } from "@/lib/shortcuts";
 import { findContactRule, findThreadRule } from "@/lib/signatures";
 import { resolveSwipe, useSwipeSettings } from "@/lib/swipe";
@@ -158,7 +159,6 @@ export function hasRemoteImages(html: string): boolean {
  */
 const BODY_SCROLLBAR_STYLE = [
   '<style>@property --mail-sb{syntax:"<color>";inherits:true;initial-value:transparent}',
-  "@media (hover:hover) and (pointer:fine){",
   "html{--mail-sb:transparent;transition:--mail-sb .5s ease-out}",
   "html:hover{--mail-sb:rgb(0 0 0/.35);transition-duration:.1s}",
   "@supports selector(::-webkit-scrollbar){",
@@ -168,7 +168,7 @@ const BODY_SCROLLBAR_STYLE = [
   "::-webkit-scrollbar-thumb:horizontal{border-width:4px 2px 2px}",
   "::-webkit-scrollbar-thumb:hover,::-webkit-scrollbar-thumb:active{border-width:2px;background-color:rgb(0 0 0/.5)}}",
   "@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:var(--mail-sb) transparent}}",
-  "}</style>",
+  "</style>",
 ].join("");
 
 /**
@@ -202,7 +202,11 @@ export function buildSrcDoc(
     // 高さは BodyFrame が中身に合わせる。
     // html と body の高さの指定 (100% など) は外す。残すと、枠を伸ばすたびに中身も伸びて高さが定まらない。
     `<style>html{background:#fff;color:#111;overflow-y:hidden}html,body{height:auto!important}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}${extraCss}</style>`,
-    BODY_SCROLLBAR_STYLE,
+    // パソコンだけ。スマホやタブレットは OS のバーのまま (アプリ側の globals.css と同じ)。
+    typeof document !== "undefined" &&
+    document.documentElement.hasAttribute(DESKTOP_SCROLLBARS_ATTRIBUTE)
+      ? BODY_SCROLLBAR_STYLE
+      : "",
     "</head><body>",
     html,
     "</body></html>",
