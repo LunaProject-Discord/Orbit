@@ -30,7 +30,7 @@ import {
   removePlacements,
   type SyncAccount,
 } from "./mailbox-store.js";
-import { listInfoFromGraph } from "./message-headers.js";
+import { headersPending, listInfoFromGraph } from "./message-headers.js";
 import { type AttachmentInfo, clean, makeSnippet } from "./message-parse.js";
 import { announceNewMail } from "./new-mail.js";
 import { loadPendingGuard } from "./outbox.js";
@@ -566,7 +566,7 @@ export async function fetchGraphHeaders(
     .where(
       and(
         eq(messages.accountId, account.id),
-        isNull(messages.headersFetchedAt),
+        headersPending,
         isNotNull(messages.bodyFetchedAt),
       ),
     )

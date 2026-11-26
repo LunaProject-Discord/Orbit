@@ -546,6 +546,10 @@ export const messages = pgTable(
     index("messages_headers_pending_idx")
       .on(t.accountId)
       .where(sql`${t.headersFetchedAt} is null`),
+    // 認証結果を足す前に取り込んだメール (同期ワーカーが補う) を探すための索引。補完が終われば空になる。
+    index("messages_sender_check_pending_idx")
+      .on(t.accountId)
+      .where(sql`${t.senderCheck} is null`),
   ],
 );
 
