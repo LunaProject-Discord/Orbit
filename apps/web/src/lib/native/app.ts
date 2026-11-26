@@ -119,6 +119,24 @@ export function listenAppUrl(listener: (url: string) => void): () => void {
   };
 }
 
+/**
+ * 戻るボタンで、画面の中の 1 つ上の表示へ戻る処理 (メールを閉じるなど)。閉じたら true。
+ * 画面左上の「←」と同じ閉じ方をする。Android の WebView では、URL の履歴を戻す
+ * (history.back) が何も起こさないことがあるため、履歴には頼らない。
+ */
+let appBack: (() => boolean) | null = null;
+
+/** 画面の中で戻る処理を登録する。戻り値の関数で解除する。 */
+export function setAppBackHandler(handler: () => boolean): () => void {
+  appBack = handler;
+  return () => {
+    if (appBack === handler) appBack = null;
+  };
+}
+
+/** history.back() のあと、戻れたか (popstate) を待つ長さ (ミリ秒)。戻れなければアプリを裏へ回す。 */
+const HISTORY_BACK_TIMEOUT_MS = 500;
+
 /** 戻るボタンの処理を登録する。戻り値の関数で解除する。 */
 export function listenBackButton(): () => void {
   if (!isNativeApp()) return () => {};
@@ -136,9 +154,26 @@ export function listenBackButton(): () => void {
         );
         // 下から出るシートが開いていれば、画面は戻さずにシートだけを閉じる。
         if (closeTopSheet()) return;
+        // 開いているメールや設定のページなどは、画面の中で閉じる。
+        if (appBack?.()) {
+          backLog("画面の中で戻る");
+          return;
+        }
         if (backAction(canGoBack) === "back") {
           backLog("history.back()");
+          // 戻れなかったとき (popstate が来ない) は、端末の既定と同じくアプリを裏へ回す。
+          let moved = false;
+          const onMoved = () => {
+            moved = true;
+          };
+          window.addEventListener("popstate", onMoved, { once: true });
           window.history.back();
+          window.setTimeout(() => {
+            window.removeEventListener("popstate", onMoved);
+            if (moved) return;
+            backLog("履歴を戻せなかったので、アプリを裏へ回す");
+            void App.minimizeApp();
+          }, HISTORY_BACK_TIMEOUT_MS);
         } else {
           backLog("アプリを裏へ回す");
           void App.minimizeApp();
