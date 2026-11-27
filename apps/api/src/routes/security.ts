@@ -5,9 +5,10 @@ import { count, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Auth } from "../auth.js";
-import type { AppEnv } from "../context.js";
+import { type AppEnv, withoutCookies } from "../context.js";
 import { listEnabledSsoProviders } from "../lib/sso-providers.js";
 import type { SystemMailer } from "../lib/system-mail.js";
+import { hasPassword, isFreshSession } from "./security-sso.js";
 
 /** メールのリンクを開いたあとに戻る Web の画面。 */
 export function emailChangedUrl(webOrigin: string): string {
@@ -20,6 +21,10 @@ const noControl = /^[^\u0000-\u001f\u007f]*$/;
 /** 表示名。前後の空白は除き、改行などの制御文字は受け付けない。 */
 const nameBody = z.object({
   name: z.string().trim().min(1).max(100).regex(noControl),
+});
+
+const setPasswordBody = z.object({
+  newPassword: z.string().min(1).max(1024),
 });
 
 const emailBody = z.object({
@@ -83,7 +88,35 @@ export function securityRoutes({
       twoFactorEnabled: row?.twoFactorEnabled ?? false,
       passkeyCount: passkeyRow?.value ?? 0,
       mail: mailEnabled,
+      /** パスワードを持っているか (IdP で作った利用者は持たない)。 */
+      hasPassword: await hasPassword(db, c.var.user.id),
     });
+  });
+
+  /**
+   * パスワードを持たない利用者 (IdP で作った人) が、パスワードを設定する。
+   * すでにあれば PASSWORD_ALREADY_SET (変更は /v1/auth/change-password)。
+   * 最近ログインした端末だけ (漏れた古いトークンで、持ち主の知らないパスワードを足されないように)。
+   */
+  app.post("/password", zValidator("json", setPasswordBody), async (c) => {
+    if (!(await isFreshSession(auth, c.req.raw.headers))) {
+      return c.json({ error: "SESSION_NOT_FRESH" }, 403);
+    }
+    const { newPassword } = c.req.valid("json");
+    try {
+      await auth.api.setPassword({
+        body: { newPassword },
+        headers: withoutCookies(c.req.raw.headers),
+      });
+    } catch (error) {
+      if (isAPIError(error)) {
+        const code =
+          (error.body as { code?: string } | undefined)?.code ?? "set_failed";
+        return c.json({ error: code }, 400);
+      }
+      throw error;
+    }
+    return c.json({ status: "set" });
   });
 
   /**

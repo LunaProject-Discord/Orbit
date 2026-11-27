@@ -51,6 +51,7 @@ import { notificationActionRoutes } from "./routes/notification-actions.js";
 import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
+import { securitySsoRoutes } from "./routes/security-sso.js";
 import { sendRoutes } from "./routes/send.js";
 import {
   ICON_REFRESH_HEADER,
@@ -168,6 +169,8 @@ export function createApp({
   // ログイン、ログアウト、セッション取得は Better Auth が処理する。
   // メールアドレスの変更は、パスワードを確かめる /v1/security/email からだけ受け付ける。
   v1.all("/auth/change-email", (c) => c.json({ error: "not_found" }, 404));
+  // ログインの方法 (パスワード、IdP の結び付け) を外すのは、最後の 1 つを残す /v1/security/sso からだけ。
+  v1.all("/auth/unlink-account", (c) => c.json({ error: "not_found" }, 404));
   // IdP (SSO) でのログイン。Better Auth の受け口 (/auth/*) より先に登録する。
   const ssoClients = createSsoClientResolver({
     encryptionKey,
@@ -259,6 +262,17 @@ export function createApp({
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/unified", unifiedRoutes(deps));
   authed.route("/settings", settingsRoutes(deps));
+  // /security より先に登録する。
+  authed.route(
+    "/security/sso",
+    securitySsoRoutes({
+      db,
+      auth,
+      encryptionKey,
+      webOrigin,
+      clients: ssoClients,
+    }),
+  );
   authed.route(
     "/security",
     securityRoutes({

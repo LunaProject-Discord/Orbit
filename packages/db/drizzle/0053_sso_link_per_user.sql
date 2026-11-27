@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "auth_accounts_user_sso_idx" ON "auth_accounts" USING btree ("user_id","provider_id") WHERE "auth_accounts"."provider_id" like 'sso:%';
