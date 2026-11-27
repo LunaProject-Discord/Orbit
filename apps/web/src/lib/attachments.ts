@@ -221,6 +221,33 @@ export function patchCidReferences(
   return changed;
 }
 
+function baseType(file: FileInfo): string {
+  return file.contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+}
+
+/**
+ * 招待のカード (components/mail/invite-card.tsx) で読む添付があるか。text/calendar か、
+ * 名前が .ics で終わるもの (API の選び方と同じ)。
+ */
+export function hasInvitePart(files: readonly FileInfo[]): boolean {
+  return files.some(
+    (file) =>
+      baseType(file) === "text/calendar" ||
+      baseType(file) === "application/ics" ||
+      /\.ics$/i.test(file.filename ?? ""),
+  );
+}
+
+/**
+ * 招待のカードを出せたときの添付の一覧。名前の無い text/calendar (招待の本体) は外す。
+ * .ics のファイルは保存できるように残す。
+ */
+export function withoutInvitePart<T extends FileInfo>(files: T[]): T[] {
+  return files.filter(
+    (file) => !(baseType(file) === "text/calendar" && !file.filename?.trim()),
+  );
+}
+
 /** 添付ファイルを取得できなかった理由の説明。code は API が返すエラーコード。 */
 export function attachmentErrorMessage(code: string | null): string {
   switch (code) {

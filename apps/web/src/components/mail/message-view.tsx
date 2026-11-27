@@ -37,6 +37,7 @@ import {
 } from "react";
 import { Hint } from "@/components/hint";
 import { ExactTime } from "@/components/mail/exact-time";
+import { InviteCard, useMessageInvite } from "@/components/mail/invite-card";
 import { MailboxMark, MoveTarget } from "@/components/mail/mailbox-icon";
 import { MessageAttachments } from "@/components/mail/message-attachments";
 import { MessageFindBar } from "@/components/mail/message-find-bar";
@@ -95,6 +96,7 @@ import {
   patchCidReferences,
   replaceCidReferences,
   splitAttachments,
+  withoutInvitePart,
 } from "@/lib/attachments";
 import { type ComposeMode, senderAccount } from "@/lib/compose";
 import { useDateStyle } from "@/lib/date-format-settings";
@@ -1849,6 +1851,8 @@ function MessageContent({
     [message.bodyHtml, message.attachments],
   );
   const embeddedUrls = useEmbeddedImages(message.id, embedded);
+  // 招待のカードを出せたときは、招待の本体 (名前の無い text/calendar) を添付の一覧から外す。
+  const { invite } = useMessageInvite(message);
   // 埋め込み画像が届くたびに本文を読み込み直すと、そのたびに本文が消えて大きさも決め直しになる。
   // 組み立てた時点で届いている分だけを入れ、後から届いた分は BodyFrame が差し込む。
   const embeddedUrlsRef = useRef(embeddedUrls);
@@ -2144,6 +2148,8 @@ function MessageContent({
 
       <SenderWarningBanner check={message.senderCheck} from={message.from[0]} />
 
+      {invite && <InviteCard invite={invite} accountId={message.accountId} />}
+
       {message.bodyFetchedAt === null ? (
         <output className="block p-4 text-muted-foreground text-sm sm:p-6">
           本文を取得中です。取得が終わると自動で表示されます。
@@ -2196,7 +2202,7 @@ function MessageContent({
       )}
       <MessageAttachments
         messageId={message.id}
-        files={listed}
+        files={invite ? withoutInvitePart(listed) : listed}
         inThread={inThread}
       />
     </article>

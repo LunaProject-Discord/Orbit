@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { Attachment } from "@/lib/api";
 import {
   attachmentKind,
+  hasInvitePart,
   previewOf,
   referencedContentIds,
   replaceCidReferences,
   splitAttachments,
+  withoutInvitePart,
 } from "@/lib/attachments";
 
 const file = (values: Partial<Attachment>): Attachment => ({
@@ -119,5 +121,32 @@ describe("cid の参照", () => {
     // 取得していない画像と、本文の文字はそのまま。
     expect(replaced).toContain("cid:photo%201");
     expect(replaced).toContain("cid:本文の文字は対象外");
+  });
+});
+
+describe("招待の添付", () => {
+  const body = file({ id: "a", contentType: "text/calendar; method=REQUEST" });
+  const ics = file({
+    id: "b",
+    contentType: "application/ics",
+    filename: "invite.ics",
+  });
+  const pdf = file({ id: "c", contentType: "application/pdf" });
+
+  it("text/calendar か .ics があれば招待として読む", () => {
+    expect(hasInvitePart([pdf, body])).toBe(true);
+    expect(hasInvitePart([ics])).toBe(true);
+    expect(
+      hasInvitePart([
+        file({ contentType: "application/octet-stream", filename: "a.ICS" }),
+      ]),
+    ).toBe(true);
+    expect(hasInvitePart([pdf])).toBe(false);
+  });
+
+  it("名前の無い text/calendar だけを一覧から外し、.ics のファイルは残す", () => {
+    expect(withoutInvitePart([body, ics, pdf])).toEqual([ics, pdf]);
+    const named = file({ contentType: "text/calendar", filename: "a.ics" });
+    expect(withoutInvitePart([named])).toEqual([named]);
   });
 });
