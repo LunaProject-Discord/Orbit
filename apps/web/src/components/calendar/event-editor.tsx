@@ -288,7 +288,11 @@ export function EventEditor({
           "max-sm:inset-0 max-sm:top-(--titlebar-height) max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:gap-0 max-sm:rounded-none max-sm:p-0 max-sm:ring-0 max-sm:data-closed:animate-none max-sm:data-open:animate-none",
         )}
       >
-        <div className="flex shrink-0 items-center gap-1 max-sm:h-14 max-sm:border-b max-sm:px-2 sm:pr-8">
+        <div
+          // 狭い画面の全画面の帯は、デスクトップ版ではタイトルバーを兼ねる。
+          data-titlebar=""
+          className="flex shrink-0 items-center gap-1 max-sm:h-14 max-sm:border-b max-sm:px-2 sm:pr-8"
+        >
           <Button
             type="button"
             variant="ghost"

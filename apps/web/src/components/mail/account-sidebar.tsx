@@ -748,8 +748,11 @@ export function AccountSidebar({
 
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      {/* デスクトップ版では、タイトルバーにハンバーガーとアプリ名があるので出さない。 */}
-      <div className="flex h-14 shrink-0 items-center gap-2 px-4 in-[[data-desktop]]:hidden">
+      {/* デスクトップ版では、この行がタイトルバーを兼ねる (components/desktop/title-bar.tsx)。 */}
+      <div
+        data-titlebar=""
+        className="flex h-14 shrink-0 items-center gap-2 px-4"
+      >
         {headerStart}
         <span className="flex flex-1 items-center">
           <AppSwitcher current="mail" className="-ml-2" />
@@ -757,7 +760,7 @@ export function AccountSidebar({
       </div>
       {onCompose && (
         // 左右の端は、下の項目の行 (選択中の背景) と同じ位置にする。
-        <div className="shrink-0 px-2 pb-2 in-[[data-desktop]]:pt-2">
+        <div className="shrink-0 px-2 pb-2">
           <ComposeButton accounts={accounts ?? []} onCompose={onCompose} />
         </div>
       )}

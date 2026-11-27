@@ -128,7 +128,11 @@ export function CalendarSidebar({
   return (
     <div className="relative flex h-full flex-col bg-sidebar text-sidebar-foreground">
       {/* 余白と並びはメールのサイドバー (account-sidebar.tsx) と同じにする。 */}
-      <div className="flex h-14 shrink-0 items-center gap-2 px-4">
+      {/* デスクトップ版では、この行がタイトルバーを兼ねる (components/desktop/title-bar.tsx)。 */}
+      <div
+        data-titlebar=""
+        className="flex h-14 shrink-0 items-center gap-2 px-4"
+      >
         {onToggleSidebar && (
           <Hint label="サイドバーを閉じる">
             <Button

@@ -1180,7 +1180,9 @@ export function CalendarApp({ user }: { user: User }) {
         className={cn(
           "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-72 max-w-[85vw] transition-transform md:translate-x-0",
           // 広い画面で閉じたときは、帯を残さずに消す (ハンバーガーはヘッダーの左端に出す)。
-          sidebarShown ? "md:static md:z-auto md:w-64" : "md:hidden",
+          sidebarShown
+            ? "md:static md:z-auto md:w-(--sidebar-width)"
+            : "md:hidden",
           sidebarOpen
             ? "translate-x-0"
             : "invisible -translate-x-full md:visible",
@@ -1196,7 +1198,10 @@ export function CalendarApp({ user }: { user: User }) {
           className="pointer-events-none absolute top-1/4 left-1/3 size-0"
         />
         {medium ? (
-          <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+          <header
+            data-titlebar=""
+            className="flex h-14 shrink-0 items-center gap-2 border-b px-4"
+          >
             {!showSidebar && (
               // Mail の折りたたんだサイドバーの帯のハンバーガーと同じ位置 (x8) と大きさ。
               <ToolbarButton
@@ -1263,7 +1268,10 @@ export function CalendarApp({ user }: { user: User }) {
           </header>
         ) : searchOpen ? (
           // スマホの検索画面。アプリバーを検索欄にする (Mail と同じ)。
-          <header className="flex h-14 shrink-0 items-center border-b px-4">
+          <header
+            data-titlebar=""
+            className="flex h-14 shrink-0 items-center border-b px-4"
+          >
             <SearchField
               variant="screen"
               inputId={SEARCH_INPUT_ID}
@@ -1282,7 +1290,10 @@ export function CalendarApp({ user }: { user: User }) {
           </header>
         ) : (
           <>
-            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+            <header
+              data-titlebar=""
+              className="flex h-14 shrink-0 items-center gap-2 border-b px-4"
+            >
               <Button
                 variant="ghost"
                 size="icon-sm"

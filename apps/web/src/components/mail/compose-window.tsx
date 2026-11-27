@@ -945,7 +945,8 @@ export function ComposeWindow({
         standalone
           ? "sm:shadow-none"
           : maximized
-            ? "sm:inset-4 sm:top-[calc(var(--titlebar-height)+1rem)] sm:rounded-xl sm:border"
+            ? // デスクトップ版では、右上のキャプションボタン (左上の信号機) の下から始める。
+              "sm:inset-4 sm:top-[calc(var(--desktop-caption-height)+1rem)] sm:rounded-xl sm:border"
             : "sm:inset-auto sm:right-4 sm:bottom-0 sm:h-[min(44rem,calc(100dvh-5rem))] sm:w-[min(40rem,calc(100vw-2rem))] sm:rounded-t-xl sm:border sm:border-b-0",
       )}
     >
@@ -965,7 +966,10 @@ export function ComposeWindow({
         className="relative flex min-h-0 flex-1 flex-col"
       >
         {/* 狭い画面: 閉じる、題名、添付、送信を上に並べる。 */}
-        <header className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:hidden">
+        <header
+          data-titlebar=""
+          className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:hidden"
+        >
           {!standalone && (
             <Button
               type="button"
