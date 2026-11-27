@@ -181,6 +181,7 @@ export function AdminLogin() {
   if (step === "two-factor") {
     return (
       <AuthShell
+        brand="orbit"
         lead={
           codeKind === "totp"
             ? "認証アプリに表示されている 6 桁のコードを入力してください。"
@@ -267,7 +268,10 @@ export function AdminLogin() {
   }
 
   return (
-    <AuthShell lead="管理画面です。管理者のアカウントでログインしてください。">
+    <AuthShell
+      brand="orbit"
+      lead="管理画面です。管理者のアカウントでログインしてください。"
+    >
       {notice && (
         <output className="mt-6 block rounded-lg border bg-muted/50 p-3 text-sm">
           {notice}
@@ -348,7 +352,7 @@ export function AdminLogin() {
         </>
       )}
       <p className="mt-6 text-center text-muted-foreground text-sm">
-        メールを使う方は{" "}
+        Orbit を使う方 (管理者以外) は{" "}
         <a
           href="/login"
           className="font-medium text-foreground underline underline-offset-4"

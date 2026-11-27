@@ -95,7 +95,10 @@ export function AdminSetup() {
 
   if (loadError) {
     return (
-      <AuthShell lead="サーバーに接続できませんでした。ネットワークの状態を確認して、もう一度お試しください。">
+      <AuthShell
+        brand="orbit"
+        lead="サーバーに接続できませんでした。ネットワークの状態を確認して、もう一度お試しください。"
+      >
         <Button
           className="mt-8 w-full"
           onClick={() => window.location.reload()}
@@ -108,7 +111,7 @@ export function AdminSetup() {
 
   if (needed === null) {
     return (
-      <AuthShell lead="読み込み中…">
+      <AuthShell brand="orbit" lead="読み込み中…">
         <span />
       </AuthShell>
     );
@@ -116,7 +119,10 @@ export function AdminSetup() {
 
   if (!needed) {
     return (
-      <AuthShell lead="管理者はすでにいます。初回セットアップは使えません。">
+      <AuthShell
+        brand="orbit"
+        lead="管理者はすでにいます。初回セットアップは使えません。"
+      >
         <Button
           className="mt-8 w-full"
           onClick={() => window.location.assign("/admin")}
@@ -128,7 +134,10 @@ export function AdminSetup() {
   }
 
   return (
-    <AuthShell lead="最初の管理者を作ります。管理者は、利用者の招待などサーバーの管理だけを行う専用のアカウントで、メールは使えません。">
+    <AuthShell
+      brand="orbit"
+      lead="最初の管理者を作ります。管理者は、利用者の招待などサーバーの管理だけを行う専用のアカウントで、メール・カレンダー・連絡先は使えません。"
+    >
       <form
         onSubmit={handleSubmit}
         className="mt-8 flex flex-col gap-5"

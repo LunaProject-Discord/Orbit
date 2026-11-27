@@ -56,7 +56,7 @@ const SECTION_INFO: Record<
   users: {
     label: "利用者",
     description:
-      "このサーバーでメールを使っている人です。メールやメールアカウントは利用者ごとに分かれていて、管理画面からも中身は見えません。",
+      "このサーバーで Orbit (メール・カレンダー・連絡先) を使っている人です。データは利用者ごとに分かれていて、管理画面からも中身は見えません。",
     icon: UsersIcon,
   },
   invitations: {
@@ -68,7 +68,7 @@ const SECTION_INFO: Record<
   admins: {
     label: "管理者",
     description:
-      "管理画面にログインできるアカウントです。管理者はメールを使えません。追加と削除は、サーバー上のコマンド (admin create / admin delete) で行います。",
+      "管理画面にログインできるアカウントです。管理者は Orbit のメール・カレンダー・連絡先は使えません。追加と削除は、サーバー上のコマンド (admin create / admin delete) で行います。",
     icon: UserCogIcon,
   },
   security: {
@@ -169,7 +169,7 @@ function AdminShell({ admin }: { admin: Admin }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
-        <OrbitLogo className="h-7" />
+        <OrbitLogo className="h-7" product="orbit" />
         <Badge variant="secondary">管理画面</Badge>
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden truncate text-muted-foreground text-sm sm:inline">
