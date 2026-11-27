@@ -1,4 +1,9 @@
-import { MAX_NOTIFICATION_ACTIONS, NOTIFICATION_ACTIONS } from "@orbit/core";
+import {
+  ALL_DAY_MIN_MINUTES,
+  MAX_NOTIFICATION_ACTIONS,
+  NOTIFICATION_ACTIONS,
+  REMINDER_MAX_MINUTES,
+} from "@orbit/core";
 import type { DateFormatSettings, SwipeSettings } from "@orbit/db";
 import { z } from "zod";
 
@@ -88,4 +93,51 @@ export const senderIconSettings = z.object({
 /** メールを書くときの既定の形式。 */
 export const composeFormatSettings = z.object({
   format: z.enum(["html", "text"]),
+});
+
+/**
+ * 予定の通知の設定 (段取り 9、設計 6.2)。項目ごとに省略でき、省いた項目は今の値を残す。
+ * allDay は終日の予定の通知 (開始日の 0:00 の何分前か。負は当日。null はオフ)。
+ */
+export const calendarNotificationSettingsPatch = z
+  .object({
+    invites: z.boolean(),
+    changes: z.boolean(),
+    replies: z.boolean(),
+    allDay: z
+      .object({
+        minutes: z
+          .number()
+          .int()
+          .min(ALL_DAY_MIN_MINUTES)
+          .max(REMINDER_MAX_MINUTES),
+      })
+      .nullable(),
+    detail: z.enum(["full", "private"]),
+  })
+  .partial();
+
+/** IANA のタイムゾーン名か。 */
+export function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PUT /settings/calendar-notifications の本文 (CalendarNotificationSettingsBody)。
+ * どちらの項目も省略でき、省いた項目は今の値を残す。timeZone の null は未設定に戻す。
+ */
+export const calendarNotificationSettingsBody = z.object({
+  calendarNotifications: calendarNotificationSettingsPatch.optional(),
+  timeZone: z
+    .string()
+    .min(1)
+    .max(100)
+    .refine(isTimeZone, { message: "invalid_time_zone" })
+    .nullable()
+    .optional(),
 });

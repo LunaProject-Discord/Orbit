@@ -51,8 +51,10 @@ export function syncRoutes({
   });
 
   /**
-   * 変更があったこと (change) と新着メール (mail) を SSE で知らせる。
-   * 変更の内容は GET /v1/sync で取得する。mail には通知に出す内容が入っている。
+   * 変更があったこと (change)、新着メール (mail)、予定の招待・変更・取り消し (calendar、段取り 9)
+   * を SSE で知らせる。変更の内容は GET /v1/sync で取得する。mail と calendar には通知に出す
+   * 内容が入っている (calendar は { notifications: CalendarPushMessage[] }、出欠の合言葉は無い)。
+   * 古い端末は知らないイベント名 (calendar) を受け取っても、addEventListener していないので無視する。
    */
   app.get("/events", zValidator("query", eventsQuery), (c) => {
     const userId = c.var.user.id;

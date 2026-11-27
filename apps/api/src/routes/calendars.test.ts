@@ -257,6 +257,68 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     ).toBe(200);
   });
 
+  it("予定の通知のオン・オフと既定のリマインダーを変えられる (段取り 9)", async () => {
+    const list = await call("GET", "");
+    const find = (id: string) =>
+      (list.body.calendars as Json[]).find((row) => row.id === id) as Json;
+    // null は種類ごとの既定。Orbit 内はオン、祝日はオフ。
+    expect(find(calendarId)).toMatchObject({
+      notify: true,
+      notifyDefault: true,
+      defaultRemindersEditable: true,
+    });
+    expect(find(readOnlyId)).toMatchObject({
+      notify: false,
+      notifyDefault: false,
+      defaultRemindersEditable: false,
+    });
+    const off = await call("PATCH", `/${calendarId}`, { notify: false });
+    expect(off.status).toBe(200);
+    expect(off.body.calendar).toMatchObject({
+      notify: false,
+      notifyDefault: true,
+    });
+    // 祝日は読み取り専用でも、通知だけは変えられる。
+    const holidaysOn = await call("PATCH", `/${readOnlyId}`, { notify: true });
+    expect(holidaysOn.body.calendar).toMatchObject({ notify: true });
+    const reset = await call("PATCH", `/${readOnlyId}`, { notify: null });
+    expect(reset.body.calendar).toMatchObject({ notify: false });
+    const reminders = [{ method: "display", minutes: 10 }];
+    const saved = await call("PATCH", `/${calendarId}`, {
+      defaultReminders: reminders,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.calendar).toMatchObject({ defaultReminders: reminders });
+    expect(
+      (
+        await call("PATCH", `/${calendarId}`, {
+          defaultReminders: [{ method: "display", minutes: -5 }],
+        })
+      ).status,
+    ).toBe(400);
+    // 既定のリマインダーを変えられるのは Orbit 内と購読だけ (祝日は不可)。
+    expect(
+      (
+        await call("PATCH", `/${readOnlyId}`, {
+          defaultReminders: reminders,
+        })
+      ).status,
+    ).toBe(409);
+    // ほかの利用者のカレンダーには届かない。
+    expect(
+      (await call("PATCH", `/${calendarId}`, { notify: true }, otherApp))
+        .status,
+    ).toBe(404);
+    const after = await call("PATCH", `/${calendarId}`, {
+      notify: null,
+      defaultReminders: null,
+    });
+    expect(after.body.calendar).toMatchObject({
+      notify: true,
+      defaultReminders: [],
+    });
+  });
+
   it("予定を作って期間で引く。終日と時刻付き、範囲の外は出ない", async () => {
     const timed = await call("POST", "/events", {
       calendarId,

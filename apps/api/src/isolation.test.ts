@@ -15,9 +15,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DEFAULT_CALENDAR_NOTIFICATION_SETTINGS,
   NOTIFICATION_ACTION_PATH,
+  NOTIFICATION_EVENT_ACTION_PATH,
   NOTIFICATION_REPLY_PATH,
   type SendPayload,
+  signEventNotificationAction,
   signNotificationAction,
 } from "@orbit/core";
 import {
@@ -27,6 +30,7 @@ import {
   changes,
   createDb,
   type Database,
+  devices,
   drafts,
   eventAttendees,
   events,
@@ -1193,6 +1197,424 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       sql`delete from outbox where account_id = ${b.account} and idempotency_key = ${idempotencyKey}`,
     );
     expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  describe("予定の通知 (段取り 9)", () => {
+    const postEventAction = (body: unknown) =>
+      app.request(`/v1${NOTIFICATION_EVENT_ACTION_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    /** A の Google のカレンダーに、A が招待された予定を作る。 */
+    const inviteOfA = async (mark: string, status?: "cancelled") => {
+      await db
+        .update(accounts)
+        .set({ calendarEnabled: true })
+        .where(sql`${accounts.id} = ${a.account}`);
+      const [calendar] = await db
+        .insert(calendars)
+        .values({
+          userId: a.userId,
+          accountId: a.account,
+          source: "google",
+          remoteId: `alice-private-${mark}`,
+          name: `alice-private-${mark}`,
+        })
+        .returning({ id: calendars.id });
+      const [event] = await db
+        .insert(events)
+        .values({
+          userId: a.userId,
+          calendarId: calendar?.id as string,
+          uid: `alice-private-${mark}@remote`,
+          remoteId: `alice-private-${mark}`,
+          summary: `alice-private-${mark}`,
+          startAt: new Date("2027-04-01T01:00:00Z"),
+          endAt: new Date("2027-04-01T02:00:00Z"),
+          organizer: { email: "boss@example.com", self: false },
+          ...(status ? { status } : {}),
+        })
+        .returning({ id: events.id });
+      const eventId = event?.id as string;
+      await db.insert(eventAttendees).values([
+        { eventId, email: "boss@example.com", status: "accepted" },
+        { eventId, email: "alice-private@example.com", self: true },
+      ]);
+      return eventId;
+    };
+    const myStatus = async (eventId: string) =>
+      (
+        await db
+          .select({ status: eventAttendees.status })
+          .from(eventAttendees)
+          .where(
+            sql`${eventAttendees.eventId} = ${eventId} and ${eventAttendees.self}`,
+          )
+      )[0]?.status;
+    const respondOps = (eventId: string) =>
+      db
+        .select({ key: outbox.idempotencyKey })
+        .from(outbox)
+        .where(
+          sql`${outbox.kind} = 'event_respond' and ${outbox.payload}->>'eventId' = ${eventId}`,
+        );
+
+    it("通知からの出欠の合言葉は、別の利用者・別の予定・期限切れ・メールの合言葉では通らない", async () => {
+      const eventId = await inviteOfA("notice-invite");
+      const otherEvent = await inviteOfA("notice-other");
+      const before = await snapshot(db, a.userId);
+      const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60_000;
+      const tokens: [string, string][] = [
+        [
+          "別の利用者",
+          signEventNotificationAction(encryptionKey, b.userId, eventId),
+        ],
+        [
+          "別の予定",
+          signEventNotificationAction(encryptionKey, a.userId, otherEvent),
+        ],
+        [
+          "期限切れ",
+          signEventNotificationAction(
+            encryptionKey,
+            a.userId,
+            eventId,
+            eightDaysAgo,
+          ),
+        ],
+        [
+          "メールの合言葉",
+          signNotificationAction(encryptionKey, a.userId, eventId),
+        ],
+        ["でたらめ", "123.abc"],
+      ];
+      for (const [label, token] of tokens) {
+        const response = await postEventAction({
+          eventId,
+          status: "declined",
+          token,
+        });
+        const text = await response.text();
+        expect(response.status, `${label}: ${text}`).toBe(403);
+        expect(text).not.toContain("alice-private");
+      }
+      // 無い予定は 404 (済んだ扱い)。
+      const missing = randomUUID();
+      expect(
+        (
+          await postEventAction({
+            eventId: missing,
+            status: "declined",
+            token: signEventNotificationAction(
+              encryptionKey,
+              a.userId,
+              missing,
+            ),
+          })
+        ).status,
+      ).toBe(404);
+      expect(await myStatus(eventId)).toBe("needs_action");
+      expect(await respondOps(eventId)).toEqual([]);
+      expect(await snapshot(db, a.userId)).toEqual(before);
+    });
+
+    it("正しい合言葉なら出欠を書き、同じ要求の再送は 1 回として扱う", async () => {
+      const eventId = await inviteOfA("notice-respond");
+      const token = signEventNotificationAction(
+        encryptionKey,
+        a.userId,
+        eventId,
+      );
+      const idempotencyKey = randomUUID();
+      const first = await postEventAction({
+        eventId,
+        status: "accepted",
+        token,
+        idempotencyKey,
+      });
+      expect(first.status).toBe(200);
+      expect(await first.json()).toMatchObject({
+        ok: true,
+        applied: true,
+        notifiesOrganizer: true,
+        notify: "server",
+      });
+      expect(await myStatus(eventId)).toBe("accepted");
+      expect(await respondOps(eventId)).toEqual([
+        {
+          key: `event_respond:${eventId}:accepted:notification:${idempotencyKey}`,
+        },
+      ]);
+      // respondedAt の無い再送 (既に同じ出欠) は何もしない。
+      const again = await postEventAction({
+        eventId,
+        status: "accepted",
+        token,
+        idempotencyKey,
+      });
+      expect(await again.json()).toMatchObject({ ok: true, applied: false });
+      expect(await respondOps(eventId)).toHaveLength(1);
+      // respondedAt 付きは /respond と同じ決まり (同じ時刻の再送と、古い返事は反映しない)。
+      const respondedAt = new Date().toISOString();
+      const tentative = { eventId, status: "tentative", token, respondedAt };
+      expect(await (await postEventAction(tentative)).json()).toMatchObject({
+        applied: true,
+      });
+      expect(await (await postEventAction(tentative)).json()).toMatchObject({
+        applied: false,
+      });
+      expect(await myStatus(eventId)).toBe("tentative");
+      expect(await respondOps(eventId)).toHaveLength(2);
+      // B のデータは何も変わっていない (書いたのは A の予定だけ)。
+      const ofB = await db
+        .select({ id: outbox.id })
+        .from(outbox)
+        .where(
+          sql`${outbox.accountId} = ${b.account} and ${outbox.kind} = 'event_respond'`,
+        );
+      expect(ofB).toEqual([]);
+    });
+
+    it("取り消された予定は 409 cancelled", async () => {
+      const eventId = await inviteOfA("notice-cancelled", "cancelled");
+      const response = await postEventAction({
+        eventId,
+        status: "accepted",
+        token: signEventNotificationAction(encryptionKey, a.userId, eventId),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "cancelled",
+        code: "cancelled",
+      });
+      expect(await myStatus(eventId)).toBe("needs_action");
+    });
+
+    it("端末の登録は旗を省くと今までどおり (メールだけ)。未知の項目は無視する", async () => {
+      const token = `bob-private-device-${"x".repeat(20)}`;
+      const register = (body: Record<string, unknown>) =>
+        request(tokenB, "POST", "/push/devices", {
+          platform: "android",
+          token,
+          ...body,
+        });
+      const row = async () =>
+        (
+          await db
+            .select()
+            .from(devices)
+            .where(sql`${devices.pushToken} = ${token}`)
+        )[0];
+      expect((await register({ futureField: { nested: true } })).status).toBe(
+        204,
+      );
+      expect(await row()).toMatchObject({
+        userId: b.userId,
+        app: "mail",
+        notifyMail: true,
+        notifyCalendar: false,
+        installId: null,
+        reminderCoverUntil: null,
+      });
+      const installId = randomUUID();
+      expect(
+        (
+          await register({
+            app: "calendar",
+            mail: false,
+            calendar: true,
+            installId,
+          })
+        ).status,
+      ).toBe(204);
+      expect(await row()).toMatchObject({
+        app: "calendar",
+        notifyMail: false,
+        notifyCalendar: true,
+        installId,
+      });
+      // 予約の範囲の報告。今 + 8 日より先は丸める。
+      const now = Date.now();
+      const report = await request(tokenB, "POST", "/push/devices/reminders", {
+        token,
+        coverUntil: now + 30 * 24 * 60 * 60_000,
+        coverSeq: "42",
+        exact: true,
+      });
+      expect(report.status).toBe(204);
+      const reported = await row();
+      expect(reported?.reminderCoverSeq).toBe(42n);
+      expect(reported?.exactAlarms).toBe(true);
+      expect(reported?.reminderCoverUntil?.getTime()).toBeLessThanOrEqual(
+        Date.now() + 8 * 24 * 60 * 60_000,
+      );
+      // 同じ利用者の登録し直し (installId を省く) は、予約の範囲と installId を残す。
+      expect((await register({ calendar: true })).status).toBe(204);
+      expect(await row()).toMatchObject({
+        installId,
+        reminderCoverSeq: 42n,
+        exactAlarms: true,
+        app: "mail",
+      });
+      // 自分の端末でない token の報告は 404 (他人の行も変えない)。
+      const before = await snapshot(db, b.userId);
+      expect(
+        (
+          await request(tokenA, "POST", "/push/devices/reminders", {
+            token,
+            coverUntil: now,
+            coverSeq: "1",
+            exact: false,
+          })
+        ).status,
+      ).toBe(404);
+      expect(await snapshot(db, b.userId)).toEqual(before);
+      // 別の利用者が同じ端末でログインし直すと付け替わり、前の利用者の予約の範囲は引き継がない。
+      expect(
+        (
+          await request(tokenA, "POST", "/push/devices", {
+            platform: "android",
+            token,
+          })
+        ).status,
+      ).toBe(204);
+      expect(await row()).toMatchObject({
+        userId: a.userId,
+        installId: null,
+        reminderCoverUntil: null,
+        reminderCoverSeq: null,
+        exactAlarms: false,
+        notifyCalendar: false,
+      });
+      await db.delete(devices).where(sql`${devices.pushToken} = ${token}`);
+    });
+
+    it("Web Push の登録は旗を省くとメールだけ。予定の通知は明示したときだけ", async () => {
+      const endpoint = "https://fcm.googleapis.com/fcm/send/bob-calendar";
+      const subscribe = (extra: Record<string, unknown>) =>
+        request(tokenB, "POST", "/push/subscriptions", {
+          endpoint,
+          keys: { p256dh: "key", auth: "auth" },
+          ...extra,
+        });
+      const flags = async () =>
+        (
+          await db
+            .select({
+              notifyMail: pushSubscriptions.notifyMail,
+              notifyCalendar: pushSubscriptions.notifyCalendar,
+            })
+            .from(pushSubscriptions)
+            .where(sql`${pushSubscriptions.endpoint} = ${endpoint}`)
+        )[0];
+      expect((await subscribe({ unknown: 1 })).status).toBe(204);
+      expect(await flags()).toEqual({
+        notifyMail: true,
+        notifyCalendar: false,
+      });
+      expect((await subscribe({ calendar: true })).status).toBe(204);
+      expect(await flags()).toEqual({ notifyMail: true, notifyCalendar: true });
+      expect((await subscribe({ mail: false, calendar: true })).status).toBe(
+        204,
+      );
+      expect(await flags()).toEqual({
+        notifyMail: false,
+        notifyCalendar: true,
+      });
+      await db
+        .delete(pushSubscriptions)
+        .where(sql`${pushSubscriptions.endpoint} = ${endpoint}`);
+    });
+
+    it("予定の通知の設定は自分の分だけに保存され、省いた項目は残る", async () => {
+      const before = await snapshot(db, a.userId);
+      const initial = (await (
+        await request(tokenB, "GET", "/settings")
+      ).json()) as Record<string, unknown>;
+      expect(initial.calendarNotifications).toEqual(
+        DEFAULT_CALENDAR_NOTIFICATION_SETTINGS,
+      );
+      expect(initial.timeZone).toBeNull();
+      const saved = await request(
+        tokenB,
+        "PUT",
+        "/settings/calendar-notifications",
+        {
+          calendarNotifications: { allDay: null, detail: "private" },
+          timeZone: "America/New_York",
+        },
+      );
+      expect(saved.status).toBe(200);
+      const expected = {
+        calendarNotifications: {
+          ...DEFAULT_CALENDAR_NOTIFICATION_SETTINGS,
+          allDay: null,
+          detail: "private",
+        },
+        timeZone: "America/New_York",
+      };
+      expect(await saved.json()).toEqual(expected);
+      const partial = await request(
+        tokenB,
+        "PUT",
+        "/settings/calendar-notifications",
+        { calendarNotifications: { invites: false } },
+      );
+      expect(await partial.json()).toEqual({
+        ...expected,
+        calendarNotifications: {
+          ...expected.calendarNotifications,
+          invites: false,
+        },
+      });
+      const read = (await (
+        await request(tokenB, "GET", "/settings")
+      ).json()) as Record<string, unknown>;
+      expect(read.timeZone).toBe("America/New_York");
+      expect(read.calendarNotifications).toMatchObject({
+        invites: false,
+        allDay: null,
+      });
+      for (const body of [
+        { timeZone: "Not/AZone" },
+        { calendarNotifications: { allDay: { minutes: -1440 } } },
+        { calendarNotifications: { detail: "none" } },
+      ]) {
+        const response = await request(
+          tokenB,
+          "PUT",
+          "/settings/calendar-notifications",
+          body,
+        );
+        expect(response.status, JSON.stringify(body)).toBe(400);
+      }
+      expect(await snapshot(db, a.userId)).toEqual(before);
+    });
+
+    it("他の利用者のカレンダーの通知は変えられない", async () => {
+      const [calendar] = await db
+        .insert(calendars)
+        .values({
+          userId: a.userId,
+          source: "local",
+          name: "alice-private-notify",
+        })
+        .returning();
+      const response = await request(
+        tokenB,
+        "PATCH",
+        `/calendars/${calendar?.id}`,
+        { notify: false, defaultReminders: [] },
+      );
+      expect(response.status).toBe(404);
+      const [after] = await db
+        .select()
+        .from(calendars)
+        .where(sql`${calendars.id} = ${calendar?.id}`);
+      expect(after).toEqual(calendar);
+    });
   });
 
   it("名前の変更は、自分の名前だけを変える", async () => {

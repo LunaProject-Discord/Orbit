@@ -1,7 +1,11 @@
 import { zValidator } from "@hono/zod-validator";
 import {
+  type CalendarNotificationSettingsBody,
+  type CalendarNotificationSettingsNotification,
+  CHANNEL_CALENDAR_NOTIFICATION_SETTINGS,
   CHANNEL_CHANGES,
   type ChangeNotification,
+  readCalendarNotificationSettings,
   readNotificationActions,
 } from "@orbit/core";
 import { type Database, userSettings } from "@orbit/db";
@@ -9,6 +13,7 @@ import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv, RouteDeps } from "../context.js";
 import {
+  calendarNotificationSettingsBody,
   composeFormatSettings,
   dateFormatSettings,
   notificationActionSettings,
@@ -42,6 +47,8 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
         dateFormat: userSettings.dateFormat,
         senderIconGravatar: userSettings.senderIconGravatar,
         composeFormat: userSettings.composeFormat,
+        calendarNotifications: userSettings.calendarNotifications,
+        timeZone: userSettings.timeZone,
       })
       .from(userSettings)
       .where(eq(userSettings.userId, c.var.user.id));
@@ -52,8 +59,61 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
       dateFormat: readDateFormat(row?.dateFormat),
       senderIconGravatar: row?.senderIconGravatar ?? false,
       composeFormat: row?.composeFormat ?? "html",
+      // 予定の通知 (段取り 9)。保存していなければ標準の値。timeZone は未設定なら null。
+      calendarNotifications: readCalendarNotificationSettings(
+        row?.calendarNotifications,
+      ),
+      timeZone: row?.timeZone ?? null,
     });
   });
+
+  /**
+   * 予定の通知の設定と利用者のタイムゾーンを保存する (段取り 9、設計 6.2・6.3)。
+   * 省いた項目は今の値を残す。保存したら worker に終日の通知の作り直しを頼む。
+   */
+  app.put(
+    "/calendar-notifications",
+    zValidator("json", calendarNotificationSettingsBody),
+    async (c) => {
+      const body = c.req.valid("json");
+      const userId = c.var.user.id;
+      const saved = await db.transaction(async (tx) => {
+        await tx
+          .insert(userSettings)
+          .values({ userId })
+          .onConflictDoNothing({ target: userSettings.userId });
+        const [current] = await tx
+          .select({
+            calendarNotifications: userSettings.calendarNotifications,
+            timeZone: userSettings.timeZone,
+          })
+          .from(userSettings)
+          .where(eq(userSettings.userId, userId))
+          .for("update");
+        const calendarNotifications = readCalendarNotificationSettings({
+          ...readCalendarNotificationSettings(current?.calendarNotifications),
+          ...body.calendarNotifications,
+        });
+        const timeZone =
+          body.timeZone === undefined
+            ? (current?.timeZone ?? null)
+            : body.timeZone;
+        await tx
+          .update(userSettings)
+          .set({ calendarNotifications, timeZone })
+          .where(eq(userSettings.userId, userId));
+        const notification: CalendarNotificationSettingsNotification = {
+          userId,
+        };
+        await tx.execute(
+          sql`select pg_notify(${CHANNEL_CALENDAR_NOTIFICATION_SETTINGS}, ${JSON.stringify(notification)})`,
+        );
+        return { calendarNotifications, timeZone };
+      });
+      await announce(db, userId);
+      return c.json(saved satisfies CalendarNotificationSettingsBody);
+    },
+  );
 
   /** 一覧の行を左右にスワイプしたときの操作を保存する。 */
   app.put("/swipe", zValidator("json", swipeSettings), async (c) => {

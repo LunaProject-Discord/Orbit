@@ -1,7 +1,10 @@
 import {
   type AttachmentFetchError,
   type AttachmentReadyNotification,
+  type CalendarHubEvent,
+  type CalendarNoticeNotification,
   CHANNEL_ATTACHMENT_READY,
+  CHANNEL_CALENDAR_NOTICE,
   CHANNEL_CHANGES,
   CHANNEL_NEW_MAIL,
   type ChangeNotification,
@@ -13,12 +16,14 @@ import pg from "pg";
 
 /**
  * 端末へ伝える内容。change は変更があったこと、mail は新着メールの通知、
- * devices は同じ利用者で接続している端末の数が変わったこと。
+ * devices は同じ利用者で接続している端末の数が変わったこと、calendar は予定の招待・変更・
+ * 取り消しの通知 (段取り 9。リマインダーは載せない)。
  */
 export type HubEvent =
   | { type: "change"; seq: string }
   | { type: "mail"; notifications: PushMessage[] }
-  | { type: "devices"; count: number };
+  | { type: "devices"; count: number }
+  | CalendarHubEvent;
 
 type Listener = (event: HubEvent) => void;
 type AttachmentWaiter = (error: AttachmentFetchError | null) => void;
@@ -73,6 +78,29 @@ export class EventsHub {
           }
           return;
         }
+        if (message.channel === CHANNEL_CALENDAR_NOTICE) {
+          const payload = JSON.parse(
+            message.payload,
+          ) as CalendarNoticeNotification;
+          if (
+            typeof payload.userId !== "string" ||
+            !Array.isArray(payload.notifications) ||
+            payload.notifications.length === 0
+          ) {
+            return;
+          }
+          // 出欠の合言葉は SSE に載せない (worker も付けない約束だが、念のため落とす)。
+          const event: HubEvent = {
+            type: "calendar",
+            notifications: payload.notifications.map(
+              ({ rsvp: _rsvp, ...notification }) => notification,
+            ),
+          };
+          for (const listener of this.listeners.get(payload.userId) ?? []) {
+            listener(event);
+          }
+          return;
+        }
         if (message.channel !== CHANNEL_CHANGES) return;
         const { userId, seq } = JSON.parse(
           message.payload,
@@ -96,6 +124,7 @@ export class EventsHub {
     await client.query(`LISTEN ${CHANNEL_CHANGES}`);
     await client.query(`LISTEN ${CHANNEL_NEW_MAIL}`);
     await client.query(`LISTEN ${CHANNEL_ATTACHMENT_READY}`);
+    await client.query(`LISTEN ${CHANNEL_CALENDAR_NOTICE}`);
     this.client = client;
     // 切れていた間の通知は失われるので、接続中の全端末に再取得を促す。
     for (const listeners of this.listeners.values()) {
