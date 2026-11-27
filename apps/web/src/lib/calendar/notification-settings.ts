@@ -18,6 +18,7 @@ import {
   updateCalendar,
 } from "@/lib/calendar/api";
 import { CALENDAR_NOTIFICATIONS_STORAGE_KEY } from "@/lib/calendar/notifications/bridge";
+import { setCalendarNotificationsEnabled } from "@/lib/notifications";
 
 /**
  * 予定の通知の画面側の決まり (段取り 9 の D2)。
@@ -314,16 +315,15 @@ export function useStoredDeviceCalendarNotifications(): string | null {
   return useSyncExternalStore(subscribeDevice, readStored, () => null);
 }
 
-/** この端末の予定の通知を切り替える。 */
+/**
+ * この端末の予定の通知を切り替える。保存と、送り先の登録 (calendar の旗) の組み直しは
+ * lib/notifications.ts の setCalendarNotificationsEnabled が行い、予約 (ReminderAgent) は
+ * onCalendarNotificationsChange で組み直される。ここでは画面の描き直しとイベントだけを足す。
+ */
 export function setDeviceCalendarNotifications(enabled: boolean) {
-  try {
-    window.localStorage.setItem(
-      CALENDAR_NOTIFICATIONS_STORAGE_KEY,
-      enabled ? "on" : "off",
-    );
-  } catch {
-    // 保存できなければ、このページを開いている間も変わらない。
-  }
+  void setCalendarNotificationsEnabled(enabled).finally(() => {
+    for (const listener of deviceListeners) listener();
+  });
   for (const listener of deviceListeners) listener();
   window.dispatchEvent(
     new CustomEvent(DEVICE_CALENDAR_NOTIFICATIONS_EVENT, {
