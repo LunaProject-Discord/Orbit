@@ -8,8 +8,9 @@ type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export async function recordChanges(
   tx: Tx,
   userId: string,
-  entity: "account" | "mailbox",
+  entity: "account" | "mailbox" | "calendar" | "event",
   entityIds: string[],
+  op: "upsert" | "delete" = "upsert",
 ) {
   if (entityIds.length === 0) return;
   const rows = await tx
@@ -19,7 +20,7 @@ export async function recordChanges(
         userId,
         entity,
         entityId,
-        op: "upsert" as const,
+        op,
       })),
     )
     .returning({ seq: changes.seq });
