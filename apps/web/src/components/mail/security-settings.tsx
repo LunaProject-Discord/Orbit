@@ -8,9 +8,11 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import {
+  createContext,
   type FormEvent,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -59,10 +61,8 @@ import {
   regenerateBackupCodes,
   renamePasskey,
   requestEmailChange,
-  type SecurityStatus,
   startTwoFactor,
   type TwoFactorSetup,
-  type User,
 } from "@/lib/api";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { type DateStyle, formatShortDate } from "@/lib/format";
@@ -73,6 +73,66 @@ import {
   registerPasskey,
 } from "@/lib/passkey";
 import { isBundledApp } from "@/lib/server-url";
+
+/** ログインの設定の状態。 */
+export type SecurityState = {
+  twoFactorEnabled: boolean;
+  passkeyCount: number;
+  /** サーバーが利用者へメールを送れるか (メールアドレスの変更が使えるか)。 */
+  mail: boolean;
+};
+
+/**
+ * ログインの設定を読み書きする先。一般の利用者 (/v1/auth) と管理者 (/v1/admin/auth) で
+ * 同じ画面を使うため、呼び出す API をここで差し替える。
+ */
+export type SecurityClient = {
+  fetchStatus: (signal?: AbortSignal) => Promise<SecurityState>;
+  changeName: (name: string) => Promise<string>;
+  /** null ならメールアドレスの欄を出さない (管理者はメールを持たない)。 */
+  requestEmailChange:
+    | ((newEmail: string, password: string) => Promise<void>)
+    | null;
+  changePassword: (
+    currentPassword: string,
+    newPassword: string,
+    revokeOtherSessions: boolean,
+  ) => Promise<void>;
+  startTwoFactor: (password: string) => Promise<TwoFactorSetup>;
+  confirmTwoFactor: (code: string) => Promise<void>;
+  disableTwoFactor: (password: string) => Promise<void>;
+  regenerateBackupCodes: (password: string) => Promise<string[]>;
+  listPasskeys: (signal?: AbortSignal) => Promise<Passkey[]>;
+  registerPasskey: (name: string) => Promise<Passkey>;
+  renamePasskey: (id: string, name: string) => Promise<void>;
+  deletePasskey: (id: string) => Promise<void>;
+  /** 名前などが変わったあとに、ログイン中のアカウントの情報を取り直す。 */
+  refreshUser: () => Promise<void>;
+};
+
+/** 一般の利用者のログインの設定 (refreshUser は画面側で useAuth から足す)。 */
+const userSecurityClient: Omit<SecurityClient, "refreshUser"> = {
+  fetchStatus: fetchSecurity,
+  changeName,
+  requestEmailChange,
+  changePassword,
+  startTwoFactor,
+  confirmTwoFactor,
+  disableTwoFactor,
+  regenerateBackupCodes,
+  listPasskeys,
+  registerPasskey: (name) => registerPasskey(name),
+  renamePasskey,
+  deletePasskey,
+};
+
+const SecurityClientContext = createContext<SecurityClient | null>(null);
+
+function useSecurityClient(): SecurityClient {
+  const client = useContext(SecurityClientContext);
+  if (!client) throw new Error("SecurityClient がありません。");
+  return client;
+}
 
 /** サーバーの応答を、画面に出す文にする。null は「何も出さない」(利用者が取りやめた)。 */
 function messageOf(error: unknown): string | null {
@@ -112,7 +172,7 @@ function messageOf(error: unknown): string | null {
 }
 
 type Props = {
-  user: User;
+  user: { name: string; email: string };
 };
 
 /**
@@ -120,9 +180,57 @@ type Props = {
  * Orbit へのログインに使うメールアドレス、パスワード、2 段階認証、パスキーを扱う。
  */
 export function SecuritySettings({ user }: Props) {
-  const dateStyle = useDateStyle();
   const { refreshUser } = useAuth();
-  const [status, setStatus] = useState<SecurityStatus | null>(null);
+  const client = useMemo<SecurityClient>(
+    () => ({ ...userSecurityClient, refreshUser }),
+    [refreshUser],
+  );
+  return (
+    <SecurityPanel
+      client={client}
+      name={user.name}
+      email={user.email}
+      loginName={null}
+    />
+  );
+}
+
+/**
+ * ログインの設定の画面の本体。管理画面からは、管理者の API を使う client を渡す。
+ */
+export function SecurityPanel({
+  client,
+  name,
+  email,
+  loginName,
+}: {
+  client: SecurityClient;
+  name: string;
+  /** null ならメールアドレスの欄を出さない。 */
+  email: string | null;
+  /** ログインに使う名前 (管理者)。null なら出さない。 */
+  loginName: string | null;
+}) {
+  return (
+    <SecurityClientContext.Provider value={client}>
+      <SecurityRows name={name} email={email} loginName={loginName} />
+    </SecurityClientContext.Provider>
+  );
+}
+
+function SecurityRows({
+  name,
+  email,
+  loginName,
+}: {
+  name: string;
+  email: string | null;
+  loginName: string | null;
+}) {
+  const dateStyle = useDateStyle();
+  const client = useSecurityClient();
+  const { refreshUser } = client;
+  const [status, setStatus] = useState<SecurityState | null>(null);
   const [passkeys, setPasskeys] = useState<Passkey[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [dialog, setDialog] = useState<
@@ -145,21 +253,24 @@ export function SecuritySettings({ user }: Props) {
     setBundled(isBundledApp());
   }, []);
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const [nextStatus, nextPasskeys] = await Promise.all([
-        fetchSecurity(signal),
-        listPasskeys(signal),
-      ]);
-      setStatus(nextStatus);
-      setPasskeys(nextPasskeys);
-      setLoadError(false);
-    } catch (error) {
-      if (signal?.aborted) return;
-      if (error instanceof ApiError && error.status === 401) return;
-      setLoadError(true);
-    }
-  }, []);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const [nextStatus, nextPasskeys] = await Promise.all([
+          client.fetchStatus(signal),
+          client.listPasskeys(signal),
+        ]);
+        setStatus(nextStatus);
+        setPasskeys(nextPasskeys);
+        setLoadError(false);
+      } catch (error) {
+        if (signal?.aborted) return;
+        if (error instanceof ApiError && error.status === 401) return;
+        setLoadError(true);
+      }
+    },
+    [client],
+  );
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
@@ -185,28 +296,36 @@ export function SecuritySettings({ user }: Props) {
         </p>
       )}
       <div className="flex flex-col divide-y rounded-lg border">
-        <Row label="名前" description={user.name}>
+        {loginName !== null && (
+          <Row
+            label="ログインに使う名前"
+            description={`${loginName} (変更できません)`}
+          />
+        )}
+        <Row label="名前" description={name}>
           <Button variant="outline" size="sm" onClick={() => setDialog("name")}>
             変更
           </Button>
         </Row>
-        <Row
-          label="メールアドレス"
-          description={
-            status && !mail
-              ? `${user.email} (このサーバーはメールを送信できないため、変更できません)`
-              : user.email
-          }
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!mail}
-            onClick={() => setDialog("email")}
+        {email !== null && client.requestEmailChange && (
+          <Row
+            label="メールアドレス"
+            description={
+              status && !mail
+                ? `${email} (このサーバーはメールを送信できないため、変更できません)`
+                : email
+            }
           >
-            変更
-          </Button>
-        </Row>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!mail}
+              onClick={() => setDialog("email")}
+            >
+              変更
+            </Button>
+          </Row>
+        )}
         <Row
           label="パスワード"
           description={`${MIN_PASSWORD_LENGTH} 文字以上。`}
@@ -318,16 +437,14 @@ export function SecuritySettings({ user }: Props) {
         </div>
       </div>
 
-      <NameDialog
-        open={dialog === "name"}
-        currentName={user.name}
-        onClose={close}
-      />
-      <EmailDialog
-        open={dialog === "email"}
-        currentEmail={user.email}
-        onClose={close}
-      />
+      <NameDialog open={dialog === "name"} currentName={name} onClose={close} />
+      {email !== null && (
+        <EmailDialog
+          open={dialog === "email"}
+          currentEmail={email}
+          onClose={close}
+        />
+      )}
       <PasswordDialog open={dialog === "password"} onClose={close} />
       <TwoFactorSetupDialog
         open={dialog === "two-factor-setup"}
@@ -345,7 +462,7 @@ export function SecuritySettings({ user }: Props) {
         destructive
         onClose={close}
         onConfirm={async (password) => {
-          await disableTwoFactor(password);
+          await client.disableTwoFactor(password);
           await load();
           showNotice("2 段階認証を無効にしました。", "info");
         }}
@@ -388,7 +505,7 @@ function Row(props: {
   label: string;
   badge?: ReactNode;
   description?: string;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2.5">
@@ -485,7 +602,7 @@ function NameForm(props: {
   onClose: () => void;
   onBusy: (busy: boolean) => void;
 }) {
-  const { refreshUser } = useAuth();
+  const client = useSecurityClient();
   const [name, setName] = useState(props.currentName);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -505,9 +622,9 @@ function NameForm(props: {
     setBusy(true);
     props.onBusy(true);
     try {
-      await changeName(next);
+      await client.changeName(next);
       // 画面に出している名前 (サイドバーなど) を取り直す。
-      await refreshUser().catch(() => {});
+      await client.refreshUser().catch(() => {});
       props.onBusy(false);
       props.onClose();
     } catch (cause) {
@@ -584,6 +701,7 @@ function EmailForm(props: {
   onClose: () => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const client = useSecurityClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -596,7 +714,7 @@ function EmailForm(props: {
     setBusy(true);
     props.onBusy(true);
     try {
-      await requestEmailChange(email.trim(), password);
+      await client.requestEmailChange?.(email.trim(), password);
       setSentTo(email.trim());
     } catch (cause) {
       setError(messageOf(cause));
@@ -701,6 +819,7 @@ function PasswordForm(props: {
   onClose: () => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const client = useSecurityClient();
   const revokeId = useId();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -719,7 +838,7 @@ function PasswordForm(props: {
     setBusy(true);
     props.onBusy(true);
     try {
-      await changePassword(current, next, revoke);
+      await client.changePassword(current, next, revoke);
       showNotice(
         revoke
           ? "パスワードを変更し、ほかの端末からログアウトしました。"
@@ -874,6 +993,7 @@ function TwoFactorSetupForm(props: {
   onEnabled: () => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const client = useSecurityClient();
   const [step, setStep] = useState<"password" | "scan" | "codes">("password");
   const [password, setPassword] = useState("");
   const [setup, setSetup] = useState<TwoFactorSetup | null>(null);
@@ -923,7 +1043,7 @@ function TwoFactorSetupForm(props: {
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
-            setSetup(await startTwoFactor(password));
+            setSetup(await client.startTwoFactor(password));
             setStep("scan");
           });
         }}
@@ -975,7 +1095,7 @@ function TwoFactorSetupForm(props: {
           event.preventDefault();
           void run(async () => {
             try {
-              await confirmTwoFactor(code);
+              await client.confirmTwoFactor(code);
             } catch (cause) {
               // 間違えたコードは消して、すぐに入れ直せるようにする。
               setCode("");
@@ -1159,6 +1279,7 @@ function BackupCodesForm(props: {
   onClose: () => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const client = useSecurityClient();
   const [codes, setCodes] = useState<string[] | null>(null);
   if (codes) {
     return (
@@ -1184,7 +1305,7 @@ function BackupCodesForm(props: {
       // 作り直したコードを見せるので、確認のあとも閉じない。
       onClose={() => {}}
       onConfirm={async (password) => {
-        setCodes(await regenerateBackupCodes(password));
+        setCodes(await client.regenerateBackupCodes(password));
       }}
       onBusy={props.onBusy}
     />
@@ -1232,6 +1353,7 @@ function PasskeyAddForm(props: {
   onAdded: () => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const client = useSecurityClient();
   const [name, setName] = useState(defaultPasskeyName);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1242,7 +1364,7 @@ function PasskeyAddForm(props: {
     setBusy(true);
     props.onBusy(true);
     try {
-      await registerPasskey(name.trim() || defaultPasskeyName());
+      await client.registerPasskey(name.trim() || defaultPasskeyName());
       props.onAdded();
       showNotice("パスキーを追加しました。", "info");
       props.onBusy(false);
@@ -1330,6 +1452,7 @@ function PasskeyRenameForm(props: {
   onRenamed: () => void;
   onBusy: (busy: boolean) => void;
 }) {
+  const client = useSecurityClient();
   const [name, setName] = useState(props.passkey.name ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1341,7 +1464,7 @@ function PasskeyRenameForm(props: {
     setBusy(true);
     props.onBusy(true);
     try {
-      await renamePasskey(props.passkey.id, name.trim());
+      await client.renamePasskey(props.passkey.id, name.trim());
       props.onRenamed();
       props.onBusy(false);
       props.onClose();
@@ -1395,6 +1518,7 @@ function PasskeyDeleteDialog(props: {
   onClose: () => void;
   onDeleted: () => void;
 }) {
+  const client = useSecurityClient();
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shown, setShown] = useState<Passkey | null>(props.passkey);
@@ -1405,7 +1529,7 @@ function PasskeyDeleteDialog(props: {
     setDeleting(true);
     setError(null);
     try {
-      await deletePasskey(props.passkey.id);
+      await client.deletePasskey(props.passkey.id);
       props.onDeleted();
       props.onClose();
     } catch (cause) {

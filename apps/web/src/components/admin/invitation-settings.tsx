@@ -33,17 +33,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ApiError,
   createInvitation,
   deleteInvitation,
   type Invitation,
   listInvitations,
-  type Member,
-  NetworkError,
-  type User,
-} from "@/lib/api";
+} from "@/lib/admin-api";
+import { ApiError, NetworkError } from "@/lib/api";
 import { useDateStyle } from "@/lib/date-format-settings";
-import { type DateStyle, formatFullDate, formatShortDate } from "@/lib/format";
+import { type DateStyle, formatFullDate } from "@/lib/format";
 
 /** 有効期限の選択肢 (日数)。 */
 const EXPIRY_OPTIONS = [
@@ -64,9 +61,6 @@ function messageOf(error: unknown): string {
     }
     if (error.code === "too_many") {
       return "未使用の招待が多すぎます。不要な招待を取り消してください。";
-    }
-    if (error.status === 403) {
-      return "この機能は管理者だけが使えます。";
     }
   }
   return "処理できませんでした。時間をおいてもう一度お試しください。";
@@ -108,11 +102,10 @@ function detailOf(
     : `${limit} まで有効${only}`;
 }
 
-/** 設定の「利用者と招待」のページ。管理者だけが使える。 */
-export function InvitationSettings({ user }: { user: User }) {
+/** 管理画面の「招待」のページ。 */
+export function InvitationSettings() {
   const dateStyle = useDateStyle();
   const [invitations, setInvitations] = useState<Invitation[] | null>(null);
-  const [members, setMembers] = useState<Member[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   /** 発行した直後のリンク。この画面を閉じると、もう表示できない。 */
@@ -124,9 +117,7 @@ export function InvitationSettings({ user }: { user: User }) {
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const data = await listInvitations(signal);
-      setInvitations(data.invitations);
-      setMembers(data.users);
+      setInvitations(await listInvitations(signal));
       setNow(Date.now());
       setError(null);
     } catch (cause) {
@@ -136,19 +127,10 @@ export function InvitationSettings({ user }: { user: User }) {
   }, []);
 
   useEffect(() => {
-    if (!user.isAdmin) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load, user.isAdmin]);
-
-  if (!user.isAdmin) {
-    return (
-      <p className="rounded-lg border px-3 py-2.5 text-muted-foreground text-sm">
-        このページは、管理者だけが使えます。利用者を追加したいときは、このサーバーの管理者に依頼してください。
-      </p>
-    );
-  }
+  }, [load]);
 
   return (
     <>
@@ -220,40 +202,6 @@ export function InvitationSettings({ user }: { user: User }) {
                 </li>
               );
             })}
-          </ul>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
-          <h3 className="font-semibold text-base">利用者</h3>
-          <p className="text-muted-foreground text-sm">
-            このサーバーに登録している人です。メールやメールアカウントは利用者ごとに分かれていて、ほかの利用者からは見えません。
-          </p>
-        </div>
-        {members.length > 0 && (
-          <ul className="flex flex-col divide-y rounded-lg border" data-members>
-            {members.map((member) => (
-              <li key={member.id} className="px-3 py-2">
-                <p className="flex items-center gap-2 font-medium text-sm">
-                  <span className="truncate">{member.name}</span>
-                  {member.isAdmin && (
-                    <Badge variant="secondary" className="shrink-0">
-                      管理者
-                    </Badge>
-                  )}
-                  {member.id === user.id && (
-                    <Badge variant="outline" className="shrink-0">
-                      自分
-                    </Badge>
-                  )}
-                </p>
-                <p className="truncate text-muted-foreground text-xs">
-                  {member.email} ・{" "}
-                  {formatShortDate(member.createdAt, dateStyle)} に登録
-                </p>
-              </li>
-            ))}
           </ul>
         )}
       </section>

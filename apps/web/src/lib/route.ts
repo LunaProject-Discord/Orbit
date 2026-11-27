@@ -53,7 +53,6 @@ export const SETTINGS_CATEGORIES = [
   "notifications",
   "signatures",
   "security",
-  "users",
   "system",
   "about",
 ] as const;

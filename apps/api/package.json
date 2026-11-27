@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "user:create": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/create-user.ts",
-    "user:password": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/set-password.ts"
+    "user:password": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/set-password.ts",
+    "admin": "tsx --conditions=mail-source --env-file-if-exists=../../.env src/cli/admin.ts"
   },
   "dependencies": {
     "@better-auth/passkey": "1.7.27",
