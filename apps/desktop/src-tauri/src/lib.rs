@@ -1,10 +1,11 @@
-//! Orbit Mail のデスクトップ版。
+//! Orbit のデスクトップ版 (いまは Orbit Mail のみ。カレンダーと連絡先は同じアプリのウィンドウとして足す)。
 //! 画面は apps/web の静的出力をそのまま載せ、ここでは OS との橋渡しだけを受け持つ
 //! (ウィンドウ枠、トレイ、未読数のバッジ、新着メールの通知、外部リンク、自動更新)。
 
 mod badge;
 mod browser;
 mod fonts;
+mod launch;
 mod settings;
 mod system_menu;
 #[cfg(windows)]
@@ -18,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
+use tauri::image::Image;
 use tauri::webview::NewWindowResponse;
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -273,6 +275,11 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
         // 守らないことがあるので、WebView ごと止める。パスワードの保存は WebView2 の既定で切れている。
         // この設定が効くのは Windows のみ (macOS / Linux は Tauri が対応していない。入力欄の autocomplete="off" で止める)。
         .general_autofill_enabled(false)
+        // タスクバーなどに出すウィンドウのアイコン。アプリ本体のアイコンは Orbit 共通のものなので、
+        // メールのウィンドウにはメールのアイコンを付ける。
+        .icon(Image::from_bytes(include_bytes!(
+            "../icons/apps/orbit-mail.png"
+        ))?)?
         // アプリの画面の外へは移動させず、外部の URL はブラウザーで開く
         // (Google / Microsoft のログイン画面もここを通る)。
         .on_navigation(move |url| {
@@ -293,9 +300,13 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
 
 pub fn run() {
     let app = tauri::Builder::default()
-        // 二重に起動されたら、すでに開いているウィンドウを前に出す。
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app);
+        // 二重に起動されたら、すでに開いているウィンドウを前に出す。ショートカットから
+        // 起動されたときは、そのアプリ (--app=mail など) のウィンドウを出す (src/launch.rs)。
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            launch::open_app(
+                app,
+                launch::requested_app(&args).unwrap_or(launch::OrbitApp::Mail),
+            );
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -396,7 +407,7 @@ pub fn run() {
             context.set_assets(Box::new(web_bundle::OverlayAssets::new(embedded)));
             context
         })
-        .expect("Orbit Mail を起動できませんでした");
+        .expect("Orbit を起動できませんでした");
 
     app.run(|app, event| match event {
         // macOS で Dock のアイコンが押されたら、閉じていたウィンドウを戻す。

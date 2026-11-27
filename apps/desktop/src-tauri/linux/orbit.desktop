@@ -1,0 +1,21 @@
+# Linux のメニューに出す項目 (tauri.conf.json の bundle.linux の desktopTemplate)。
+# 本体の「Orbit」に、アプリごとの起動 (アクション) を付ける。カレンダーと連絡先は、できたら Actions に足す (src/launch.rs)。
+[Desktop Entry]
+Categories={{categories}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}}
+StartupWMClass={{exec}}
+Icon={{icon}}
+Name={{name}}
+Terminal=false
+Type=Application
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}
+Actions=mail;
+
+[Desktop Action mail]
+Name=Orbit Mail
+Exec={{exec}} --app=mail

@@ -210,7 +210,7 @@ pub fn install_pending(app: &AppHandle) {
 fn info(app: &AppHandle, message: impl Into<String>) {
     app.dialog()
         .message(message)
-        .title("Orbit Mail の更新")
+        .title("Orbit の更新")
         .kind(MessageDialogKind::Info)
         .show(|_| {});
 }
@@ -334,7 +334,7 @@ fn prompt(app: &AppHandle, update: Update, manual: bool) {
             "新しいバージョン {} があります (現在は {})。\n更新して再起動しますか?",
             update.version, update.current_version
         ))
-        .title("Orbit Mail の更新")
+        .title("Orbit の更新")
         .buttons(MessageDialogButtons::OkCancelCustom(
             "更新して再起動".into(),
             "あとで".into(),
