@@ -53,6 +53,7 @@ import { navigateApp } from "@/lib/app-navigation";
 import {
   type Calendar,
   type CalendarEvent,
+  createCaldavAccount,
   createCalendar,
   createEvent,
   deleteCalendar,
@@ -506,6 +507,31 @@ export function CalendarApp({ user }: { user: User }) {
     setAddBusy(true);
     setAddError(null);
     try {
+      if (input.kind === "caldav") {
+        // アカウントを足すだけ。カレンダーは同期ワーカーが取り込み、変更の通知で現れる。
+        const { merged } = await createCaldavAccount(
+          input.service === "icloud"
+            ? {
+                provider: "icloud",
+                appleId: input.username,
+                password: input.password,
+              }
+            : {
+                provider: "generic",
+                url: input.url,
+                username: input.username,
+                password: input.password,
+              },
+        );
+        setAddOpen(false);
+        showNotice(
+          merged
+            ? "iCloud のメールのアカウントで、カレンダーの同期を始めました。"
+            : "アカウントを追加しました。カレンダーを同期しています。",
+        );
+        void loadCalendars();
+        return;
+      }
       const created =
         input.kind === "local"
           ? await createCalendar({
