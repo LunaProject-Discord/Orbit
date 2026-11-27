@@ -338,6 +338,12 @@ export const accounts = pgTable(
     mailEnabled: boolean().notNull().default(true),
     /** このアカウントでカレンダーを使う。 */
     calendarEnabled: boolean().notNull().default(false),
+    /** OAuth で許可されたスコープ (空白区切り)。null は不明 (記録する前に追加したアカウント)。 */
+    oauthScopes: text(),
+    /** カレンダーの同期のアカウント単位の失敗 (認証、スコープ不足、設定なし)。無ければ null。 */
+    calendarError: text(),
+    /** 一般の CalDAV サーバーの起点の URL。iCloud や CalDAV を使わないアカウントは null。 */
+    caldavUrl: text(),
     /**
      * 受信トレイ以外のフォルダの変化をすぐ受け取るために足す IMAP 接続の本数の上限 (0〜8)。
      * 0 なら足さない。null は自動 (サービスに合わせた数)。IMAP のアカウントでだけ使う。
@@ -686,6 +692,10 @@ export const outboxKind = pgEnum("outbox_kind", [
   "mailbox_create",
   "mailbox_rename",
   "mailbox_delete",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "event_respond",
 ]);
 
 export const outboxStatus = pgEnum("outbox_status", [
@@ -1096,6 +1106,11 @@ export const calendars = pgTable(
     pushChannelId: text(),
     pushExpiresAt: timestamp({ withTimezone: true }),
     defaultReminders: jsonb().$type<CalendarReminder[]>(),
+    /**
+     * プロバイダが自由に使う欄 (Google の watch の resourceId、CalDAV が sync-collection に
+     * 対応しているか、など)。
+     */
+    providerState: jsonb().$type<Record<string, unknown>>(),
     /** 繰り返しの回を event_occurrences に展開済みの範囲の終わり (この日の前日まで)。 */
     expandedUntil: date({ mode: "string" }),
     createdAt: createdAt(),
