@@ -150,9 +150,6 @@ export function CalendarSidebar({
           <AppSwitcher
             current="calendar"
             className="-ml-2"
-            // 「Orbit Calendar」は「Orbit Mail」より長く、開閉ボタンと並ぶと幅 256px に
-            // 28px の高さでは収まらない (矢印が切れる)。そのときだけ 24px にする。
-            logoClassName={onToggleSidebar ? "h-6" : undefined}
             onNavigate={onNavigate}
           />
         </span>

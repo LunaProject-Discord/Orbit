@@ -40,7 +40,7 @@ const APPS: {
 export function AppSwitcher({
   current,
   className,
-  logoClassName = "h-7",
+  logoClassName = "h-6",
   onNavigate,
 }: {
   current: OrbitProduct;
