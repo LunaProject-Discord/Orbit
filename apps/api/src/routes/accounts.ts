@@ -19,6 +19,7 @@ import {
   openGoogleState,
   openMicrosoftState,
   providerOfImapHost,
+  resolvesToPrivateAddress,
 } from "@orbit/core";
 import {
   accounts,
@@ -39,7 +40,6 @@ import {
   discoverMailSettings,
 } from "../lib/autoconfig.js";
 import { isDistinct, recordChanges } from "../lib/changes.js";
-import { resolvesToPrivateAddress } from "../lib/host-check.js";
 import { verifyImap as defaultVerifyImap } from "../lib/imap-verify.js";
 import { verifyPop3 as defaultVerifyPop3 } from "../lib/pop3-verify.js";
 import { verifySmtp as defaultVerifySmtp } from "../lib/smtp-verify.js";

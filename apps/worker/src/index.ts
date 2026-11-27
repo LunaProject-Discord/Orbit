@@ -16,6 +16,10 @@ import { createDb, drafts, outbox } from "@orbit/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { AccountManager } from "./account-manager.js";
 import {
+  refreshDueSubscriptions,
+  SUBSCRIPTION_BATCH,
+} from "./calendar-subscriptions.js";
+import {
   combineSenders,
   DevicePushSender,
   PushSender,
@@ -122,9 +126,32 @@ const sweep = async () => {
 void sweep();
 const sweepTimer = setInterval(sweep, 60 * 60_000);
 
+// ICS の購読を、カレンダーごとの間隔 (既定 1 時間) で取得し直す。1 分ごとに時期を確かめる。
+let refreshing = false;
+const refreshSubscriptions = async () => {
+  if (refreshing || stopping) return;
+  refreshing = true;
+  try {
+    // 一度に確かめる数を超えて溜まっていれば、続けて確かめる。
+    while (!stopping) {
+      const count = await refreshDueSubscriptions(db, {
+        allowPrivate: process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
+      });
+      if (count < SUBSCRIPTION_BATCH) break;
+    }
+  } catch (error) {
+    console.error("カレンダーの購読を確かめられませんでした。", error);
+  } finally {
+    refreshing = false;
+  }
+};
+void refreshSubscriptions();
+const subscriptionTimer = setInterval(refreshSubscriptions, 60_000);
+
 async function shutdown() {
   stopping = true;
   clearInterval(sweepTimer);
+  clearInterval(subscriptionTimer);
   await manager.stop();
   await pool.end();
   process.exit(0);

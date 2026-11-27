@@ -12,7 +12,7 @@ export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export async function recordChanges(
   tx: Tx,
   userId: string,
-  entity: "account" | "mailbox" | "message",
+  entity: "account" | "mailbox" | "message" | "calendar" | "event",
   op: "upsert" | "delete",
   entityIds: string[],
 ) {

@@ -4,15 +4,25 @@ import { cn } from "cn";
 import {
   CheckIcon,
   ChevronDownIcon,
+  CircleAlertIcon,
+  EllipsisIcon,
   MenuIcon,
   PlusIcon,
+  RefreshCwIcon,
   SettingsIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { useState } from "react";
 import type { Temporal } from "temporal-polyfill";
 import { AppSwitcher } from "@/components/brand/app-switcher";
 import { MiniMonth } from "@/components/calendar/mini-month";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { User } from "@/lib/api";
 import type { Calendar } from "@/lib/calendar/api";
 import type { CalendarGroup } from "@/lib/calendar/groups";
@@ -30,6 +40,8 @@ export function CalendarSidebar({
   onCreateEvent,
   onToggleCalendar,
   onAddCalendar,
+  onRefreshCalendar,
+  onRemoveCalendar,
   onOpenSettings,
   onToggleSidebar,
   onNavigate,
@@ -46,6 +58,10 @@ export function CalendarSidebar({
   onCreateEvent: () => void;
   onToggleCalendar: (calendar: Calendar) => void;
   onAddCalendar: () => void;
+  /** 購読を今すぐ取得し直す。 */
+  onRefreshCalendar: (calendar: Calendar) => void;
+  /** カレンダーを消す (購読ならやめる)。確認は呼んだ側で出す。 */
+  onRemoveCalendar: (calendar: Calendar) => void;
   onOpenSettings: () => void;
   /** 広い画面でサイドバーを閉じる。null なら出さない。 */
   onToggleSidebar: (() => void) | null;
@@ -123,41 +139,86 @@ export function CalendarSidebar({
                 {!isFolded &&
                   group.calendars.map((calendar) => {
                     const color = colorOf(calendar);
+                    const subscription = calendar.source === "ics";
+                    const removable =
+                      calendar.source === "local" || subscription;
                     return (
-                      // biome-ignore lint/a11y/useSemanticElements: 色付きの四角を出すため、ボタンにチェックボックスの役割を持たせる
-                      <button
+                      <div
                         key={calendar.id}
-                        type="button"
-                        role="checkbox"
-                        aria-checked={calendar.visible}
-                        onClick={() => onToggleCalendar(calendar)}
-                        className="flex h-8 w-full items-center gap-2.5 rounded-md pr-2 pl-7 text-left text-sm hover:bg-sidebar-accent"
+                        className="group/calendar relative flex items-center rounded-md hover:bg-sidebar-accent has-[[aria-expanded=true]]:bg-sidebar-accent"
                       >
-                        <span
-                          className="flex size-4 shrink-0 items-center justify-center rounded-[4px] border-2"
-                          style={{
-                            borderColor: color,
-                            background: calendar.visible
-                              ? color
-                              : "transparent",
-                          }}
-                        >
-                          {calendar.visible && (
-                            <CheckIcon
-                              className="size-3 text-white"
-                              strokeWidth={3}
-                            />
-                          )}
-                        </span>
-                        <span
+                        {/* biome-ignore lint/a11y/useSemanticElements: 色付きの四角を出すため、ボタンにチェックボックスの役割を持たせる */}
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={calendar.visible}
+                          onClick={() => onToggleCalendar(calendar)}
                           className={cn(
-                            "flex-1 truncate",
-                            !calendar.visible && "text-muted-foreground",
+                            "flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-md pr-2 pl-7 text-left text-sm",
+                            removable && "pr-9",
                           )}
                         >
-                          {calendar.name}
-                        </span>
-                      </button>
+                          <span
+                            className="flex size-4 shrink-0 items-center justify-center rounded-[4px] border-2"
+                            style={{
+                              borderColor: color,
+                              background: calendar.visible
+                                ? color
+                                : "transparent",
+                            }}
+                          >
+                            {calendar.visible && (
+                              <CheckIcon
+                                className="size-3 text-white"
+                                strokeWidth={3}
+                              />
+                            )}
+                          </span>
+                          <span
+                            className={cn(
+                              "flex-1 truncate",
+                              !calendar.visible && "text-muted-foreground",
+                            )}
+                          >
+                            {calendar.name}
+                          </span>
+                          {subscription && calendar.lastError && (
+                            <CircleAlertIcon
+                              className="size-4 shrink-0 text-destructive"
+                              aria-label={calendar.lastError}
+                            >
+                              <title>{calendar.lastError}</title>
+                            </CircleAlertIcon>
+                          )}
+                        </button>
+                        {removable && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              aria-label={`「${calendar.name}」のメニュー`}
+                              className="absolute right-1 flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar hover:text-foreground focus-visible:opacity-100 focus-visible:ring-3 focus-visible:ring-ring/50 group-hover/calendar:opacity-100 aria-expanded:opacity-100 [@media(hover:none)]:opacity-100"
+                            >
+                              <EllipsisIcon className="size-4" />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-52">
+                              {subscription && (
+                                <DropdownMenuItem
+                                  onClick={() => onRefreshCalendar(calendar)}
+                                >
+                                  <RefreshCwIcon />
+                                  今すぐ更新
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onClick={() => onRemoveCalendar(calendar)}
+                              >
+                                <Trash2Icon />
+                                {subscription ? "購読をやめる" : "削除"}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </div>
                     );
                   })}
               </div>

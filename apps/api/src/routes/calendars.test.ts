@@ -4,14 +4,15 @@
  */
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { calendars, createDb, type Database, users } from "@orbit/db";
-import { sql } from "drizzle-orm";
+import { HOLIDAYS_VERSION } from "@orbit/core";
+import { calendars, createDb, type Database, events, users } from "@orbit/db";
+import { and, eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Hono } from "hono";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AppEnv } from "../context.js";
-import { calendarRoutes, mergeFields } from "./calendars.js";
+import { calendarRoutes, ensureHolidays, mergeFields } from "./calendars.js";
 
 const adminUrl = process.env.DATABASE_URL;
 
@@ -69,6 +70,11 @@ describe.skipIf(!adminUrl)("予定の API", () => {
   let app: Hono<AppEnv>;
   let otherApp: Hono<AppEnv>;
   let readOnlyId: string;
+  let thirdId: string;
+  let icsApp: Hono<AppEnv>;
+  /** 購読の取得で返す中身 (null なら 304)。 */
+  let feed: string | null = null;
+  let feedRequests: Record<string, string>[] = [];
 
   const call = async (
     method: string,
@@ -123,10 +129,23 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       .insert(users)
       .values({ email: "other@example.com", name: "other" })
       .returning({ id: users.id });
-    if (!user || !other) throw new Error("利用者を作れませんでした。");
+    const [third] = await db
+      .insert(users)
+      .values({ email: "third@example.com", name: "third" })
+      .returning({ id: users.id });
+    if (!user || !other || !third) {
+      throw new Error("利用者を作れませんでした。");
+    }
+    thirdId = third.id;
     const [holidays] = await db
       .insert(calendars)
-      .values({ userId: user.id, source: "holidays", name: "日本の祝日" })
+      .values({
+        userId: user.id,
+        source: "holidays",
+        name: "日本の祝日",
+        // 予定の確かめに祝日が混ざらないよう、入れ直し済みにしておく。
+        etag: `${HOLIDAYS_VERSION}/${new Date().toISOString().slice(0, 4)}`,
+      })
       .returning({ id: calendars.id });
     readOnlyId = holidays?.id as string;
 
@@ -140,6 +159,28 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       return target;
     };
     app = build(user.id, "owner@example.com");
+    icsApp = new Hono<AppEnv>();
+    icsApp.use(async (c, next) => {
+      c.set("user", {
+        id: third.id,
+        email: "third@example.com",
+        name: "third",
+      });
+      await next();
+    });
+    icsApp.route(
+      "/calendars",
+      calendarRoutes({
+        db,
+        // 名前解決をしないで済むように、内部のアドレスの確認を外す。
+        allowPrivateMailHosts: true,
+        fetchImpl: (async (_url: string, init: RequestInit) => {
+          feedRequests.push(init.headers as Record<string, string>);
+          if (feed === null) return new Response(null, { status: 304 });
+          return new Response(feed, { headers: { etag: `"${feed.length}"` } });
+        }) as typeof fetch,
+      }),
+    );
     otherApp = build(other.id, "other@example.com");
   }, 120_000);
 
@@ -177,8 +218,11 @@ describe.skipIf(!adminUrl)("予定の API", () => {
         ["日本の祝日", true],
       ]),
     );
+    // ほかの利用者には、その人の祝日のカレンダーだけが出る。
     const others = await call("GET", "", undefined, otherApp);
-    expect(others.body.calendars).toEqual([]);
+    expect(
+      (others.body.calendars as Json[]).map((row) => [row.source, row.id]),
+    ).toEqual([["holidays", expect.not.stringMatching(readOnlyId)]]);
     expect(
       (await call("PATCH", `/${calendarId}`, { name: "x" }, undefined)).status,
     ).toBe(200);
@@ -457,9 +501,15 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     expect(removed.body.events).toEqual([]);
     expect(removed.body.deleted).toEqual({ calendars: [], events: [id] });
 
+    // ほかの利用者には、その人の祝日のカレンダーと祝日だけが届く。
     const others = await call("GET", "/sync?since=0", undefined, otherApp);
-    expect(others.body.events).toEqual([]);
-    expect(others.body.calendars).toEqual([]);
+    const otherCalendars = others.body.calendars as Json[];
+    expect(otherCalendars.map((row) => row.source)).toEqual(["holidays"]);
+    expect(
+      (others.body.events as Json[]).every(
+        (event) => event.calendarId === otherCalendars[0]?.id,
+      ),
+    ).toBe(true);
   });
 
   it("カレンダーを消すと予定も消える", async () => {
@@ -469,5 +519,125 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     ).toBe(404);
     expect((await call("DELETE", `/${calendarId}`)).status).toBe(204);
     expect((await range("2026-11-29", "2027-01-01")).occurrences).toEqual([]);
+  });
+
+  it("祝日のカレンダーを用意し、版が同じなら入れ直さない", async () => {
+    await ensureHolidays(db, thirdId, "2026-11-27");
+    const [holidays] = await db
+      .select()
+      .from(calendars)
+      .where(
+        and(eq(calendars.userId, thirdId), eq(calendars.source, "holidays")),
+      );
+    expect(holidays).toMatchObject({ readOnly: true, name: "日本の祝日" });
+    const rows = await db
+      .select({ summary: events.summary, startDate: events.startDate })
+      .from(events)
+      .where(eq(events.calendarId, holidays?.id as string));
+    expect(rows).toContainEqual({
+      summary: "勤労感謝の日",
+      startDate: "2026-11-23",
+    });
+    // 2036 年 (今年の 10 年後) まで入る。
+    expect(rows.some((row) => row.startDate?.startsWith("2036-"))).toBe(true);
+    const updatedAt = holidays?.updatedAt;
+    await ensureHolidays(db, thirdId, "2026-11-28");
+    const [again] = await db
+      .select({ updatedAt: calendars.updatedAt })
+      .from(calendars)
+      .where(eq(calendars.id, holidays?.id as string));
+    expect(again?.updatedAt).toEqual(updatedAt);
+    // 祝日のカレンダーは消せない。
+    const removed = await icsApp.request(`/calendars/${holidays?.id}`, {
+      method: "DELETE",
+    });
+    expect(removed.status).toBe(409);
+  });
+
+  it("ICS を購読し、取り直しで変わった予定だけ入れ替える", async () => {
+    const ics = (summary: string, extra: string[] = []) =>
+      [
+        "BEGIN:VCALENDAR",
+        "X-WR-CALNAME:チームの予定",
+        "BEGIN:VEVENT",
+        "UID:keep",
+        "DTSTART;TZID=Asia/Tokyo:20261201T100000",
+        "DTEND;TZID=Asia/Tokyo:20261201T110000",
+        `SUMMARY:${summary}`,
+        "END:VEVENT",
+        ...extra,
+        "END:VCALENDAR",
+      ].join("\r\n");
+    const post = (body: Json) =>
+      icsApp.request("/calendars/subscriptions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    feed = "<html>not a calendar</html>";
+    const bad = await post({ url: "webcal://calendar.example.com/a.ics" });
+    expect(bad.status).toBe(400);
+
+    feed = ics("最初", [
+      "BEGIN:VEVENT",
+      "UID:gone",
+      "DTSTART;VALUE=DATE:20261202",
+      "SUMMARY:消える予定",
+      "END:VEVENT",
+    ]);
+    const created = await post({ url: "webcal://calendar.example.com/a.ics" });
+    expect(created.status).toBe(201);
+    const calendar = ((await created.json()) as { calendar: Json }).calendar;
+    expect(calendar).toMatchObject({
+      source: "ics",
+      name: "チームの予定",
+      readOnly: true,
+      url: "https://calendar.example.com/a.ics",
+    });
+    const id = calendar.id as string;
+    const before = await db
+      .select({ id: events.id, uid: events.uid, summary: events.summary })
+      .from(events)
+      .where(eq(events.calendarId, id));
+    expect(before.map((row) => row.summary).sort()).toEqual([
+      "最初",
+      "消える予定",
+    ]);
+
+    // 304 なら何もしない。送るときは前回の ETag を付ける。
+    feed = null;
+    feedRequests = [];
+    const unchanged = await icsApp.request(`/calendars/${id}/refresh`, {
+      method: "POST",
+    });
+    expect(unchanged.status).toBe(200);
+    expect(feedRequests[0]?.["if-none-match"]).toMatch(/^"\d+"$/);
+
+    feed = ics("変えた");
+    await icsApp.request(`/calendars/${id}/refresh`, { method: "POST" });
+    const after = await db
+      .select({ id: events.id, uid: events.uid, summary: events.summary })
+      .from(events)
+      .where(eq(events.calendarId, id));
+    expect(after).toEqual([
+      {
+        id: before.find((row) => row.uid === "keep")?.id,
+        uid: "keep",
+        summary: "変えた",
+      },
+    ]);
+
+    // 購読の予定は書き換えられないが、カレンダーの名前は変えられ、購読は消せる。
+    const rename = await icsApp.request(`/calendars/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "チーム" }),
+    });
+    expect(rename.status).toBe(200);
+    const remove = await icsApp.request(`/calendars/${id}`, {
+      method: "DELETE",
+    });
+    expect(remove.status).toBe(204);
   });
 });

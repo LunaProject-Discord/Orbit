@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import { resolveTxt } from "node:dns/promises";
-import { addressDomain, organizationalDomain } from "@orbit/core";
+import {
+  addressDomain,
+  organizationalDomain,
+  resolvesToPrivateAddress,
+} from "@orbit/core";
 import { type Database, senderIcons } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { XMLBuilder, XMLParser } from "fast-xml-parser";
-import { resolvesToPrivateAddress } from "./host-check.js";
 import { verifyMarkCertificate } from "./mark-certificate.js";
 
 /**
