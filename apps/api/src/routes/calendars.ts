@@ -69,6 +69,11 @@ import {
   isProviderCalendar,
   lockCalendarAccount,
 } from "../lib/event-outbox.js";
+import {
+  eventFieldColumns,
+  insertEvent,
+  replaceEventExtras,
+} from "../lib/event-rows.js";
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type EventRow = typeof events.$inferSelect;
@@ -505,29 +510,6 @@ async function publicEvents(db: Database | Tx, rows: EventRow[]) {
   );
 }
 
-/** 時刻の項目を列の値にする。 */
-function timingColumns(value: z.infer<typeof timing>) {
-  return value.allDay
-    ? {
-        allDay: true,
-        startDate: value.startDate,
-        endDate: value.endDate,
-        startAt: null,
-        endAt: null,
-        startTimeZone: null,
-        endTimeZone: null,
-      }
-    : {
-        allDay: false,
-        startAt: new Date(value.startAt),
-        endAt: new Date(value.endAt),
-        startDate: null,
-        endDate: null,
-        startTimeZone: value.startTimeZone,
-        endTimeZone: value.endTimeZone ?? value.startTimeZone,
-      };
-}
-
 function rowTiming(row: EventRow): EventTiming | null {
   if (row.allDay) {
     if (!row.startDate) return null;
@@ -550,74 +532,6 @@ function nextDay(date: string): string {
   const value = new Date(`${date}T00:00:00Z`);
   value.setUTCDate(value.getUTCDate() + 1);
   return value.toISOString().slice(0, 10);
-}
-
-/** 項目の値を列の値にする (予定の行に入る項目だけ。リマインダーと参加者は別の表)。 */
-function fieldColumns(
-  fields: EventFields,
-): Partial<typeof events.$inferInsert> {
-  const columns: Partial<typeof events.$inferInsert> = {};
-  if (fields.summary !== undefined) columns.summary = fields.summary;
-  if (fields.location !== undefined) columns.location = fields.location;
-  if (fields.description !== undefined)
-    columns.description = fields.description;
-  if (fields.status !== undefined) columns.status = fields.status;
-  if (fields.busy !== undefined) columns.busy = fields.busy;
-  if (fields.conferenceUrl !== undefined)
-    columns.conferenceUrl = fields.conferenceUrl;
-  if (fields.useDefaultReminders !== undefined)
-    columns.useDefaultReminders = fields.useDefaultReminders;
-  if (fields.time !== undefined)
-    Object.assign(columns, timingColumns(fields.time));
-  if (fields.recurrence !== undefined) {
-    columns.rrule = fields.recurrence.rrule?.replace(/^RRULE:/i, "") ?? null;
-    columns.rdates =
-      fields.recurrence.rdates?.map(normalizeRecurrenceId) ?? null;
-    columns.exdates =
-      fields.recurrence.exdates?.map(normalizeRecurrenceId) ?? null;
-  }
-  return columns;
-}
-
-async function replaceExtras(tx: Tx, eventId: string, fields: EventFields) {
-  if (fields.reminders !== undefined) {
-    await tx.delete(eventReminders).where(eq(eventReminders.eventId, eventId));
-    if (fields.reminders.length > 0) {
-      await tx
-        .insert(eventReminders)
-        .values(fields.reminders.map((value) => ({ eventId, ...value })));
-    }
-  }
-  if (fields.attendees !== undefined) {
-    // 出欠は、同じアドレスの参加者が残るなら引き継ぐ。
-    const before = await tx
-      .select()
-      .from(eventAttendees)
-      .where(eq(eventAttendees.eventId, eventId));
-    const previous = new Map(
-      before.map((row) => [row.email.toLowerCase(), row]),
-    );
-    await tx.delete(eventAttendees).where(eq(eventAttendees.eventId, eventId));
-    const unique = new Map(
-      fields.attendees.map((value) => [value.email, value]),
-    );
-    if (unique.size > 0) {
-      await tx.insert(eventAttendees).values(
-        [...unique.values()].map((value) => {
-          const old = previous.get(value.email);
-          return {
-            eventId,
-            email: value.email,
-            name: value.name,
-            role: value.role,
-            status: old?.status ?? "needs_action",
-            self: old?.self ?? false,
-            comment: old?.comment ?? null,
-          };
-        }),
-      );
-    }
-  }
 }
 
 /**
@@ -710,7 +624,7 @@ async function unchangedFields(
   );
   const next: EventFieldSource = {
     ...current,
-    ...(fieldColumns(incoming) as Partial<EventFieldSource>),
+    ...(eventFieldColumns(incoming) as Partial<EventFieldSource>),
     reminders: incoming.reminders ?? current.reminders,
     attendees:
       incoming.attendees?.map((attendee) => ({
@@ -1581,19 +1495,14 @@ export function calendarRoutes({
         Object.keys(fields).map((key) => [key, createdAt]),
       );
       const eventId = id ?? randomUUID();
-      const [row] = await tx
-        .insert(events)
-        .values({
-          id: eventId,
-          userId,
-          calendarId,
-          uid: `${eventId}@orbit`,
-          ...fieldColumns(fields),
-          organizer,
-          fieldUpdatedAt,
-        })
-        .onConflictDoNothing()
-        .returning();
+      const row = await insertEvent(tx, {
+        id: eventId,
+        userId,
+        calendarId,
+        fields,
+        organizer,
+        fieldUpdatedAt,
+      });
       if (!row) {
         // 同じ作成が同時に届き、先の方が確定した。同じ利用者の行なら再送と同じに、その行を返す。
         const existing = await ownEvent(tx, userId, eventId);
@@ -1601,7 +1510,6 @@ export function calendarRoutes({
         // 別の利用者が同じ ID を使っていた (ほぼ起きない)。
         return "conflict" as const;
       }
-      await replaceExtras(tx, row.id, fields);
       await recordChanges(tx, userId, "event", [row.id]);
       // プロバイダのカレンダーなら、作成を書き戻す (中身は実行時に行から読む)。
       await enqueueEventOperation(
@@ -2081,7 +1989,7 @@ async function applyChanges(
   const [next] = await tx
     .update(events)
     .set({
-      ...fieldColumns(accepted),
+      ...eventFieldColumns(accepted),
       fieldUpdatedAt,
       ...(accepted.time !== undefined || accepted.recurrence !== undefined
         ? { sequence: row.sequence + 1 }
@@ -2089,7 +1997,7 @@ async function applyChanges(
     })
     .where(eq(events.id, row.id))
     .returning();
-  await replaceExtras(tx, row.id, accepted);
+  await replaceEventExtras(tx, row.id, accepted);
   await recordChanges(tx, userId, "event", [row.id]);
   return { row: next ?? row, rejected, accepted };
 }
@@ -2168,28 +2076,24 @@ async function findOrCreateException(
     })
     .returning();
   if (!row) return null;
-  // リマインダーと参加者も原本から写す。
+  // リマインダーと参加者も原本から写す (出欠と、最後に反映した返事も)。
   const extras = (await loadExtras(tx, [master.id])).get(master.id);
-  if (extras) {
-    if (extras.reminders.length > 0) {
-      await tx
-        .insert(eventReminders)
-        .values(
-          extras.reminders.map((value) => ({ eventId: row.id, ...value })),
-        );
-    }
-    if (extras.attendees.length > 0) {
-      await tx.insert(eventAttendees).values(
-        extras.attendees.map((value) => ({
-          eventId: row.id,
-          email: value.email,
-          name: value.name,
-          role: value.role as "required",
-          status: value.status as "needs_action",
-          self: value.self,
-        })),
-      );
-    }
+  if (extras && extras.reminders.length > 0) {
+    await tx
+      .insert(eventReminders)
+      .values(extras.reminders.map((value) => ({ eventId: row.id, ...value })));
+  }
+  const attendees = await tx
+    .select()
+    .from(eventAttendees)
+    .where(eq(eventAttendees.eventId, master.id));
+  if (attendees.length > 0) {
+    await tx.insert(eventAttendees).values(
+      attendees.map(({ id: _id, eventId: _eventId, ...value }) => ({
+        ...value,
+        eventId: row.id,
+      })),
+    );
   }
   return row;
 }
