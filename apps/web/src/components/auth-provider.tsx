@@ -23,6 +23,10 @@ import {
   type User,
   verifyTwoFactorSignIn,
 } from "@/lib/api";
+import {
+  clearCalendarOffline,
+  openCalendarOffline,
+} from "@/lib/calendar/offline";
 import { releasePush } from "@/lib/notifications";
 import { clearOffline, openOffline } from "@/lib/offline";
 import { signInWithPasskey } from "@/lib/passkey";
@@ -55,6 +59,7 @@ function rememberUser(user: User): void {
   }
   // 端末内の保存先 (オフライン用) を、この利用者のものにする。
   void openOffline(user.id);
+  void openCalendarOffline(user.id);
 }
 
 /** ログアウトした利用者の、端末内に保存した内容を消す。 */
@@ -66,6 +71,7 @@ function forgetUser(): void {
     // 消せなくても、トークンが無ければ画面は開かない。
   }
   if (user) void clearOffline(user.id);
+  if (user) void clearCalendarOffline(user.id);
 }
 
 import { isAppOAuthReturn, usesAppOAuth } from "@/lib/native/oauth";
