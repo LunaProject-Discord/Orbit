@@ -7,7 +7,14 @@
 ; アンインストールも確認 1 つだけ。色は assets/brand/README.md の暗い背景に合わせる。
 
 ; インストーラーの画像 (scripts/generate-assets.mjs が作る)。
-!define ORBIT_IMAGES "${__FILEDIR__}/images"
+; Windows の makensis は区切りが / のパスを見つけられないので、OS に合わせる (Linux でのビルドは / のみ)。
+!ifdef NSIS_WIN32_MAKENSIS
+  !define ORBIT_IMAGES "${__FILEDIR__}\images"
+  !define ORBIT_LOGO "${ORBIT_IMAGES}\logo"
+!else
+  !define ORBIT_IMAGES "${__FILEDIR__}/images"
+  !define ORBIT_LOGO "${ORBIT_IMAGES}/logo"
+!endif
 
 ; 旧名。v0.2.0 までは「Orbit Mail」という名前で入っていた (識別子は同じ jp.lunaproject.orbit)。
 !define ORBIT_LEGACY_NAME "Orbit Mail"
@@ -93,10 +100,10 @@ Var OrbitLegacyDir
 ; インストーラーとアンインストーラーに画像を入れ、一時フォルダーへ取り出す (.onInit / un.onInit)。
 !macro ORBIT_EXTRACT_IMAGES
   InitPluginsDir
-  File "/oname=$PLUGINSDIR\orbit-logo-100.bmp" "${ORBIT_IMAGES}/logo-100.bmp"
-  File "/oname=$PLUGINSDIR\orbit-logo-125.bmp" "${ORBIT_IMAGES}/logo-125.bmp"
-  File "/oname=$PLUGINSDIR\orbit-logo-150.bmp" "${ORBIT_IMAGES}/logo-150.bmp"
-  File "/oname=$PLUGINSDIR\orbit-logo-200.bmp" "${ORBIT_IMAGES}/logo-200.bmp"
+  File "/oname=$PLUGINSDIR\orbit-logo-100.bmp" "${ORBIT_LOGO}-100.bmp"
+  File "/oname=$PLUGINSDIR\orbit-logo-125.bmp" "${ORBIT_LOGO}-125.bmp"
+  File "/oname=$PLUGINSDIR\orbit-logo-150.bmp" "${ORBIT_LOGO}-150.bmp"
+  File "/oname=$PLUGINSDIR\orbit-logo-200.bmp" "${ORBIT_LOGO}-200.bmp"
 !macroend
 
 ; 100% のときの px を、画面の拡大率に合わせた px にする。
