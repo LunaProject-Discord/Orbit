@@ -1,14 +1,27 @@
 "use client";
 
 import { useEffect, useLayoutEffect } from "react";
-import { preloadLocalFonts, useFontFaceCss } from "@/lib/local-fonts";
+import {
+  preloadLocalFonts,
+  useFontFaceCss,
+  useLocalFonts,
+} from "@/lib/local-fonts";
 import { isNativeApp } from "@/lib/native/app";
 import { appFontFamily, usePreferences } from "@/lib/preferences";
+import { loadWebFonts } from "@/lib/web-fonts";
 
 /** 設定したフォント、文字の大きさ、動きの有無を、画面全体に反映する。 */
 export function PreferencesEffect() {
-  const { font, customFont, sansFont, serifFont, monoFont, fontSize, motion } =
-    usePreferences();
+  const {
+    font,
+    customFont,
+    sansFont,
+    serifFont,
+    monoFont,
+    bodyCustomFont,
+    fontSize,
+    motion,
+  } = usePreferences();
   useLayoutEffect(() => {
     const root = document.documentElement;
     const family = appFontFamily({
@@ -33,6 +46,13 @@ export function PreferencesEffect() {
     if (motion === "off") root.dataset.motion = "off";
     else delete root.dataset.motion;
   }, [font, customFont, sansFont, serifFont, monoFont, fontSize, motion]);
+  // 選んでいるフォント (候補に出している Noto Sans JP / Noto Serif JP) が端末に無ければ、
+  // Web フォントとして読み込む。フォントの一覧が届くと、一覧にあるかで判断できるので調べ直す。
+  const { fonts } = useLocalFonts();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 一覧 (fonts) が届いたら調べ直す
+  useEffect(() => {
+    loadWebFonts([customFont, sansFont, serifFont, monoFont, bodyCustomFont]);
+  }, [customFont, sansFont, serifFont, monoFont, bodyCustomFont, fonts]);
   return <NativeFontFaces />;
 }
 

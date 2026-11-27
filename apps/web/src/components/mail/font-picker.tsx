@@ -13,6 +13,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { type FontKind, matchesFontKind } from "@/lib/font-kind";
 import {
   type LocalFont,
   loadLocalFonts,
@@ -21,15 +22,58 @@ import {
   useLocalFonts,
 } from "@/lib/local-fonts";
 import { cleanFontName } from "@/lib/preferences";
+import { loadWebFonts, WEB_FONTS, withWebFonts } from "@/lib/web-fonts";
 
 const ROW_HEIGHT = 34;
 /** スマホ幅のシートでは、指で押しやすい高さにする。 */
 const NARROW_ROW_HEIGHT = 44;
+/** 候補の区切り線の行の高さ。 */
+const SEPARATOR_HEIGHT = 9;
 
 type Row =
   | { kind: "empty" }
   | { kind: "typed"; family: string }
-  | { kind: "font"; font: LocalFont };
+  | { kind: "font"; font: LocalFont }
+  | { kind: "separator" };
+
+/**
+ * 一覧の行を組み立てる。種類 (fontKind) を指定すると、
+ * 「自動」→ 区切り線 → その種類に合うフォント → 区切り線 → 残りのフォント、の順にする。
+ */
+export function buildFontRows(
+  fonts: readonly LocalFont[],
+  {
+    query,
+    fontKind,
+    canType,
+  }: { query: string; fontKind?: FontKind; canType: boolean },
+): Row[] {
+  const found = searchFonts(fonts, query);
+  const groups = fontKind
+    ? [
+        found.filter((font) => matchesFontKind(font, fontKind)),
+        found.filter((font) => !matchesFontKind(font, fontKind)),
+      ]
+    : [found];
+  const result: Row[] = [];
+  if (!query.trim()) result.push({ kind: "empty" });
+  // 一覧に無い名前でも、入力した名前をそのまま使える
+  // (一覧を取れなかったときや、あとから入れるフォントのため)。
+  const typed = cleanFontName(query);
+  if (
+    canType &&
+    typed &&
+    !fonts.some((font) => font.family.toLowerCase() === typed.toLowerCase())
+  ) {
+    result.push({ kind: "typed", family: typed });
+  }
+  for (const group of groups) {
+    if (group.length === 0) continue;
+    if (fontKind && result.length > 0) result.push({ kind: "separator" });
+    for (const font of group) result.push({ kind: "font", font });
+  }
+  return result;
+}
 
 /**
  * この端末に入っているフォントから 1 つ選ぶボタン。押すと、検索欄付きの一覧が開く。
@@ -41,7 +85,7 @@ export function FontPicker({
   onChange,
   labelledBy,
   emptyLabel,
-  monospaceFirst = false,
+  fontKind,
 }: {
   /** 選んでいるフォントの名前。空なら未指定。 */
   value: string;
@@ -50,15 +94,17 @@ export function FontPicker({
   labelledBy: string;
   /** 未指定を表す選択肢の名前。 */
   emptyLabel: string;
-  /** 等幅のフォントを先に並べる (等幅かどうかが分かる環境だけ)。 */
-  monospaceFirst?: boolean;
+  /** この種類 (ゴシック体・明朝体・等幅) に合うフォントを、区切り線で分けて先に並べる。 */
+  fontKind?: FontKind;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const { status, fonts } = useLocalFonts();
+  const { status, fonts: localFonts } = useLocalFonts();
+  // 端末に無くても選べる Web フォント (Gen Interface JP、Noto Sans JP、Noto Serif JP) も候補に出す。
+  const fonts = useMemo(() => withWebFonts(localFonts), [localFonts]);
   // Android アプリでは、フォントはファイルを読み込んで使うので、一覧に無い名前は指定できない。
   const canType = useFontListSupport() !== "native";
   // 一覧の枠は開いてから描かれるので、描かれたときに並べ直せるよう state で持つ。
@@ -66,37 +112,24 @@ export function FontPicker({
     null,
   );
 
-  const rows = useMemo<Row[]>(() => {
-    const found = searchFonts(fonts, query);
-    const ordered = monospaceFirst
-      ? [
-          ...found.filter((font) => font.monospace === true),
-          ...found.filter((font) => font.monospace !== true),
-        ]
-      : found;
-    const result: Row[] = [];
-    if (!query.trim()) result.push({ kind: "empty" });
-    // 一覧に無い名前でも、入力した名前をそのまま使える
-    // (一覧を取れなかったときや、あとから入れるフォントのため)。
-    const typed = cleanFontName(query);
-    if (
-      canType &&
-      typed &&
-      !fonts.some((font) => font.family.toLowerCase() === typed.toLowerCase())
-    ) {
-      result.push({ kind: "typed", family: typed });
-    }
-    for (const font of ordered) result.push({ kind: "font", font });
-    return result;
-  }, [fonts, query, monospaceFirst, canType]);
+  const rows = useMemo(
+    () => buildFontRows(fonts, { query, fontKind, canType }),
+    [fonts, query, fontKind, canType],
+  );
 
   const rowHeight = useNarrowScreen() ? NARROW_ROW_HEIGHT : ROW_HEIGHT;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollElement,
-    estimateSize: () => rowHeight,
+    estimateSize: (index) =>
+      rows[index]?.kind === "separator" ? SEPARATOR_HEIGHT : rowHeight,
     overscan: 8,
   });
+  // 行の高さが行ごとに違うので、並びが変わったら測り直す。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rows と rowHeight が変わったときだけ測り直す
+  useEffect(() => {
+    virtualizer.measure();
+  }, [rows, rowHeight]);
 
   // 開いたときは、いま選んでいるフォントの位置から見せる。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 開いたときと一覧が届いたときだけ合わせる
@@ -119,7 +152,7 @@ export function FontPicker({
     if (next !== value) onChange(next);
   };
   const chooseRow = (row: Row | undefined) => {
-    if (!row) return;
+    if (!row || row.kind === "separator") return;
     choose(
       row.kind === "empty"
         ? ""
@@ -129,7 +162,11 @@ export function FontPicker({
     );
   };
   const move = (next: number) => {
-    const index = Math.max(0, Math.min(next, rows.length - 1));
+    const step = next < active ? -1 : 1;
+    let index = Math.max(0, Math.min(next, rows.length - 1));
+    // 区切り線は飛ばす。端まで行っても選べる行が無ければ動かない。
+    while (rows[index]?.kind === "separator") index += step;
+    if (index < 0 || index >= rows.length) return;
     setActive(index);
     virtualizer.scrollToIndex(index);
   };
@@ -144,6 +181,8 @@ export function FontPicker({
           setQuery("");
           // ボタンを押した操作の中で呼ぶ (ブラウザーが許可を尋ねられるのは、このときだけ)。
           void loadLocalFonts();
+          // 端末に無い Web フォントも、その字形で候補を見せる。
+          loadWebFonts(WEB_FONTS.map((font) => font.family));
         }
         setOpen(next);
       }}
@@ -240,6 +279,18 @@ export function FontPicker({
             {virtualizer.getVirtualItems().map((item) => {
               const row = rows[item.index];
               if (!row) return null;
+              if (row.kind === "separator") {
+                return (
+                  <div
+                    key={item.key}
+                    aria-hidden="true"
+                    className="absolute left-0 flex w-full items-center px-1"
+                    style={{ top: item.start, height: SEPARATOR_HEIGHT }}
+                  >
+                    <div className="h-px w-full bg-border" />
+                  </div>
+                );
+              }
               const family =
                 row.kind === "empty"
                   ? ""
@@ -279,6 +330,13 @@ export function FontPicker({
                         ? `「${row.family}」を使う`
                         : row.font.label}
                   </span>
+                  {row.kind === "font" && row.font.source && (
+                    <span className="shrink-0 text-muted-foreground text-xs">
+                      {row.font.source === "web"
+                        ? "Web フォント"
+                        : "アプリ内蔵"}
+                    </span>
+                  )}
                   {isSelected && (
                     <CheckIcon aria-hidden="true" className="size-4 shrink-0" />
                   )}
