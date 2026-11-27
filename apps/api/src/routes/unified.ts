@@ -1,8 +1,8 @@
 import { zValidator } from "@hono/zod-validator";
 import { CHANNEL_CHANGES, type ChangeNotification } from "@orbit/core";
 import {
+  accounts,
   type Database,
-  mailAccounts,
   mailboxes,
   messages,
   sidebarLayouts,
@@ -358,7 +358,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
         .from(messages)
         .innerJoin(unifiedHeads(userId, folder), sql`heads.id = ${messages.id}`)
         .innerJoin(mailboxes, sql`${mailboxes.id} = heads.mailbox_id`)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+        .innerJoin(accounts, eq(accounts.id, messages.accountId))
         .where(and(...conditions))
         .orderBy(...order.orderBy)
         .limit(query.limit + 1);

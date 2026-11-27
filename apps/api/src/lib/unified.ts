@@ -1,6 +1,6 @@
 import {
+  accounts,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -145,10 +145,10 @@ export async function unifiedUnreadCount(
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(messages)
-    .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+    .innerJoin(accounts, eq(accounts.id, messages.accountId))
     .where(
       and(
-        eq(mailAccounts.userId, userId),
+        eq(accounts.userId, userId),
         eq(messages.seen, false),
         ...filterConditions(folder.filters),
         inScope(folder.scope),
@@ -197,11 +197,11 @@ export function unifiedHeads(userId: string, folder: Folder): SQL {
         ${messages.hasAttachments} as has_attachments,
         ${mailboxes.id} as mailbox_id
       from ${messages}
-      inner join ${mailAccounts} on ${mailAccounts.id} = ${messages.accountId}
+      inner join ${accounts} on ${accounts.id} = ${messages.accountId}
       inner join ${messageMailboxes} on ${messageMailboxes.messageId} = ${messages.id}
       inner join ${mailboxes} on ${mailboxes.id} = ${messageMailboxes.mailboxId}
       where ${and(
-        eq(mailAccounts.userId, userId),
+        eq(accounts.userId, userId),
         scopeCondition(folder.scope),
         ...filterConditions(folder.filters),
       )}
@@ -246,10 +246,10 @@ export async function ownScope(
   const rows = await db
     .select({ id: mailboxes.id })
     .from(mailboxes)
-    .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+    .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
     .where(
       and(
-        eq(mailAccounts.userId, userId),
+        eq(accounts.userId, userId),
         inArray(mailboxes.id, normalized.mailboxIds),
       ),
     );

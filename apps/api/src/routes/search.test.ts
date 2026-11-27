@@ -10,9 +10,9 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  accounts,
   createDb,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messageSearch,
@@ -150,7 +150,7 @@ describe.skipIf(!adminUrl)("検索 (PostgreSQL)", () => {
       .returning({ id: users.id });
     userId = user?.id as string;
     const [account] = await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId,
         email: "me@example.com",
@@ -160,7 +160,7 @@ describe.skipIf(!adminUrl)("検索 (PostgreSQL)", () => {
         credentialsEncrypted: "x",
         status: "disabled",
       })
-      .returning({ id: mailAccounts.id });
+      .returning({ id: accounts.id });
     const [inbox] = await db
       .insert(mailboxes)
       .values({

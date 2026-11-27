@@ -4,7 +4,7 @@ import {
   attachmentsDir,
   type OutgoingMessage,
 } from "@orbit/core";
-import { type Database, drafts, type mailAccounts } from "@orbit/db";
+import { type accounts, type Database, drafts } from "@orbit/db";
 import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import { lockAccount } from "./outbox.js";
@@ -21,7 +21,7 @@ import { lockAccount } from "./outbox.js";
  */
 export const DRAFT_SETTLE_MS = 20_000;
 
-type AccountRow = typeof mailAccounts.$inferSelect;
+type AccountRow = typeof accounts.$inferSelect;
 export type DraftRow = typeof drafts.$inferSelect;
 
 /** メールサーバーに置いた控えの場所。IMAP はフォルダと UID、Graph はメッセージの ID。 */

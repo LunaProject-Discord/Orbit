@@ -4,7 +4,7 @@ import { normalizeHex, readableOn, textOn } from "@/lib/color";
 
 /**
  * アカウントを見分けるための色。一覧の点、サイドバー、作成画面の差出人で同じ色を使う。
- * 保存するのは "#rrggbb" の色そのもの (mail_accounts.color)。見本から選んでも、
+ * 保存するのは "#rrggbb" の色そのもの (accounts.color)。見本から選んでも、
  * 自由に作った色でもよい。
  */
 

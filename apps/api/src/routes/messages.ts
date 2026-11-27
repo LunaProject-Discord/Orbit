@@ -12,8 +12,8 @@ import {
   sanitizeFilename,
 } from "@orbit/core";
 import {
+  accounts,
   attachments,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -72,9 +72,9 @@ export function messageRoutes({
 
   app.get("/", zValidator("query", listQuery), async (c) => {
     const query = c.req.valid("query");
-    const conditions = [eq(mailAccounts.userId, c.var.user.id)];
+    const conditions = [eq(accounts.userId, c.var.user.id)];
     if (query.accountId) {
-      conditions.push(eq(mailAccounts.id, query.accountId));
+      conditions.push(eq(accounts.id, query.accountId));
     }
     conditions.push(
       query.mailboxId
@@ -123,7 +123,7 @@ export function messageRoutes({
       .from(messages)
       .innerJoin(messageMailboxes, eq(messageMailboxes.messageId, messages.id))
       .innerJoin(mailboxes, eq(mailboxes.id, messageMailboxes.mailboxId))
-      .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+      .innerJoin(accounts, eq(accounts.id, messages.accountId))
       .where(and(...conditions))
       .orderBy(...order.orderBy)
       .limit(query.limit + 1);
@@ -172,11 +172,11 @@ export function messageRoutes({
     const rows = await db
       .select({ id: messages.id, accountId: messages.accountId })
       .from(messages)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+      .innerJoin(accounts, eq(accounts.id, messages.accountId))
       .where(
         and(
           inArray(messages.id, ids),
-          eq(mailAccounts.userId, c.var.user.id),
+          eq(accounts.userId, c.var.user.id),
           // 送信元の確認結果を足す前に取り込んだメールは、見られたときに認証結果を補う。
           or(isNull(messages.bodyFetchedAt), isNull(messages.senderCheck)),
         ),
@@ -221,10 +221,8 @@ export function messageRoutes({
           threadKey: messages.threadKey,
         })
         .from(messages)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
-        .where(
-          and(eq(messages.id, id), eq(mailAccounts.userId, c.var.user.id)),
-        );
+        .innerJoin(accounts, eq(accounts.id, messages.accountId))
+        .where(and(eq(messages.id, id), eq(accounts.userId, c.var.user.id)));
       if (!origin) {
         return c.json({ error: "not_found" }, 404);
       }
@@ -302,10 +300,8 @@ export function messageRoutes({
           draft: messages.draft,
         })
         .from(messages)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
-        .where(
-          and(eq(messages.id, id), eq(mailAccounts.userId, c.var.user.id)),
-        );
+        .innerJoin(accounts, eq(accounts.id, messages.accountId))
+        .where(and(eq(messages.id, id), eq(accounts.userId, c.var.user.id)));
       if (!message) {
         return c.json({ error: "not_found" }, 404);
       }

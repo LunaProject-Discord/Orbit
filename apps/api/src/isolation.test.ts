@@ -21,12 +21,12 @@ import {
   signNotificationAction,
 } from "@orbit/core";
 import {
+  accounts,
   attachments,
   changes,
   createDb,
   type Database,
   drafts,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -71,7 +71,7 @@ async function seed(db: Database, userId: string, mark: string) {
   };
   const account = one(
     await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId,
         email: `${mark}@example.com`,
@@ -88,7 +88,7 @@ async function seed(db: Database, userId: string, mark: string) {
         status: "disabled",
         signatureHtml: `<p>${mark}-signature</p>`,
       })
-      .returning({ id: mailAccounts.id }),
+      .returning({ id: accounts.id }),
   ).id;
   const [inbox, folder] = (
     await db
@@ -247,9 +247,9 @@ async function seed(db: Database, userId: string, mark: string) {
 
 /** その利用者に属する行を、すべての表から集める (変わっていないことの比較用)。 */
 async function snapshot(db: Database, userId: string) {
-  const own = sql`select id from mail_accounts where user_id = ${userId}`;
+  const own = sql`select id from accounts where user_id = ${userId}`;
   const queries = {
-    mail_accounts: sql`select * from mail_accounts where user_id = ${userId}`,
+    accounts: sql`select * from accounts where user_id = ${userId}`,
     mailboxes: sql`select * from mailboxes where account_id in (${own})`,
     messages: sql`select * from messages where account_id in (${own})`,
     message_mailboxes: sql`select mm.* from message_mailboxes mm join mailboxes b on b.id = mm.mailbox_id where b.account_id in (${own})`,
@@ -1014,8 +1014,8 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       expect(carol).not.toBe("");
       // 新しい利用者は管理者ではなく、ほかの利用者のデータも見えない。
       expect((await request(carol, "GET", "/invitations")).status).toBe(403);
-      const accounts = await request(carol, "GET", "/accounts");
-      expect(await accounts.json()).toEqual({ accounts: [] });
+      const accountList = await request(carol, "GET", "/accounts");
+      expect(await accountList.json()).toEqual({ accounts: [] });
 
       expect((await lookup(invite.token)).status).toBe(404);
       const again = await publicPost("/invitations/accept", {

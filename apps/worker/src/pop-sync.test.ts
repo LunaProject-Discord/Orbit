@@ -6,10 +6,10 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  accounts,
   attachments,
   createDb,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messageSources,
@@ -109,7 +109,7 @@ describe.skipIf(!adminUrl)("POP3 の受信", () => {
   let admin: pg.Client;
   let pool: pg.Pool;
   let db: Database;
-  let account: typeof mailAccounts.$inferSelect;
+  let account: typeof accounts.$inferSelect;
   let inbox: string;
   const stopped = () => false;
   const log = () => {};
@@ -137,7 +137,7 @@ describe.skipIf(!adminUrl)("POP3 の受信", () => {
       .values({ email: "pop@example.com", name: "pop" })
       .returning({ id: users.id });
     const [created] = await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId: user?.id as string,
         email: "me@example.jp",
@@ -155,7 +155,7 @@ describe.skipIf(!adminUrl)("POP3 の受信", () => {
         status: "disabled",
       })
       .returning();
-    account = created as typeof mailAccounts.$inferSelect;
+    account = created as typeof accounts.$inferSelect;
   });
 
   afterAll(async () => {

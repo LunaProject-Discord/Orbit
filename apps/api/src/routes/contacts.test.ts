@@ -5,9 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  accounts,
   createDb,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -68,7 +68,7 @@ describe.skipIf(!adminUrl)("宛先の候補", () => {
 
     const addAccount = async (userId: string, email: string) => {
       const [account] = await db
-        .insert(mailAccounts)
+        .insert(accounts)
         .values({
           userId,
           email,
@@ -83,7 +83,7 @@ describe.skipIf(!adminUrl)("宛先の候補", () => {
           credentialsEncrypted: "x",
           status: "disabled",
         })
-        .returning({ id: mailAccounts.id });
+        .returning({ id: accounts.id });
       if (!account) throw new Error("アカウントを作れませんでした。");
       const boxes = await db
         .insert(mailboxes)

@@ -12,9 +12,9 @@ import {
   type WebPushConfig,
 } from "@orbit/core";
 import {
+  accounts,
   type Database,
   devices,
-  mailAccounts,
   pushSubscriptions,
   userSettings,
 } from "@orbit/db";
@@ -37,12 +37,12 @@ export async function announceNewMail(
   // 通知するかと、通知に出すアカウントの名前は、届いた時点の設定で決める。
   const [settings] = await tx
     .select({
-      notify: mailAccounts.notifyNewMail,
-      displayName: mailAccounts.displayName,
-      email: mailAccounts.email,
+      notify: accounts.notifyNewMail,
+      displayName: accounts.displayName,
+      email: accounts.email,
     })
-    .from(mailAccounts)
-    .where(eq(mailAccounts.id, account.id));
+    .from(accounts)
+    .where(eq(accounts.id, account.id));
   if (settings && !settings.notify) return;
   const notification = toNewMailNotification(
     {
@@ -224,11 +224,11 @@ export class DevicePushSender {
     // 受信専用のアカウント (送信サーバーが無い) のメールには、返信欄を付けない。
     const [sender] = await this.db
       .select({
-        protocol: mailAccounts.protocol,
-        smtpHost: mailAccounts.smtpHost,
+        protocol: accounts.protocol,
+        smtpHost: accounts.smtpHost,
       })
-      .from(mailAccounts)
-      .where(eq(mailAccounts.id, notification.accountId));
+      .from(accounts)
+      .where(eq(accounts.id, notification.accountId));
     const signer = await actionSigner(
       this.db,
       this.actions,

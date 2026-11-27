@@ -8,9 +8,9 @@ import {
   storeReceivedAttachment,
 } from "@orbit/core";
 import {
+  accounts,
   attachments,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -53,11 +53,11 @@ export async function loadAttachmentTarget(
       partId: attachments.partId,
       messageId: messages.id,
       providerMessageId: messages.providerMessageId,
-      userId: mailAccounts.userId,
+      userId: accounts.userId,
     })
     .from(attachments)
     .innerJoin(messages, eq(messages.id, attachments.messageId))
-    .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+    .innerJoin(accounts, eq(accounts.id, messages.accountId))
     .where(
       and(eq(attachments.id, attachmentId), eq(messages.accountId, accountId)),
     );

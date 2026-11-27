@@ -12,7 +12,7 @@ import {
   readAttachmentMeta,
   type SendPayload,
 } from "@orbit/core";
-import { drafts, mailAccounts, messages, outbox } from "@orbit/db";
+import { accounts, drafts, messages, outbox } from "@orbit/db";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -107,18 +107,15 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
 
     const [account] = await db
       .select({
-        id: mailAccounts.id,
-        email: mailAccounts.email,
-        displayName: mailAccounts.displayName,
-        protocol: mailAccounts.protocol,
-        smtpHost: mailAccounts.smtpHost,
+        id: accounts.id,
+        email: accounts.email,
+        displayName: accounts.displayName,
+        protocol: accounts.protocol,
+        smtpHost: accounts.smtpHost,
       })
-      .from(mailAccounts)
+      .from(accounts)
       .where(
-        and(
-          eq(mailAccounts.id, body.accountId),
-          eq(mailAccounts.userId, user.id),
-        ),
+        and(eq(accounts.id, body.accountId), eq(accounts.userId, user.id)),
       );
     if (!account) {
       return c.json({ error: "account_not_found" }, 404);
@@ -158,11 +155,11 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
           references: messages.references,
         })
         .from(messages)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+        .innerJoin(accounts, eq(accounts.id, messages.accountId))
         .where(
           and(
             eq(messages.id, body.sourceMessageId),
-            eq(mailAccounts.userId, user.id),
+            eq(accounts.userId, user.id),
           ),
         );
       if (source?.messageIdHeader) {
@@ -264,10 +261,10 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
         payload: outbox.payload,
       })
       .from(outbox)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
+      .innerJoin(accounts, eq(accounts.id, outbox.accountId))
       .where(
         and(
-          eq(mailAccounts.userId, c.var.user.id),
+          eq(accounts.userId, c.var.user.id),
           eq(outbox.kind, "send"),
           inArray(outbox.status, ["pending", "processing", "failed"]),
         ),
@@ -312,12 +309,12 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
       const [row] = await tx
         .select({ id: outbox.id, accountId: outbox.accountId })
         .from(outbox)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
+        .innerJoin(accounts, eq(accounts.id, outbox.accountId))
         .where(
           and(
             eq(outbox.id, id),
             eq(outbox.kind, "send"),
-            eq(mailAccounts.userId, user.id),
+            eq(accounts.userId, user.id),
           ),
         );
       if (!row) return "not_found" as const;
@@ -362,12 +359,12 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
             scheduledAt: outbox.scheduledAt,
           })
           .from(outbox)
-          .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
+          .innerJoin(accounts, eq(accounts.id, outbox.accountId))
           .where(
             and(
               eq(outbox.id, id),
               eq(outbox.kind, "send"),
-              eq(mailAccounts.userId, user.id),
+              eq(accounts.userId, user.id),
             ),
           );
         if (!row) return "not_found" as const;

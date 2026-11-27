@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
 import { CHANNEL_FOCUS, type FocusNotification } from "@orbit/core";
-import { mailAccounts, mailboxes } from "@orbit/db";
+import { accounts, mailboxes } from "@orbit/db";
 import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -25,24 +25,21 @@ export function focusRoutes({ db }: Pick<RouteDeps, "db">) {
    */
   app.post("/", zValidator("json", focusBody), async (c) => {
     const { accountId, mailboxId, refresh } = c.req.valid("json");
-    const accounts = await db
-      .select({ id: mailAccounts.id })
-      .from(mailAccounts)
-      .where(eq(mailAccounts.userId, c.var.user.id));
+    const ownAccounts = await db
+      .select({ id: accounts.id })
+      .from(accounts)
+      .where(eq(accounts.userId, c.var.user.id));
     let focused: { accountId: string; id: string } | undefined;
     if (mailboxId) {
       [focused] = await db
         .select({ accountId: mailboxes.accountId, id: mailboxes.id })
         .from(mailboxes)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+        .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
         .where(
-          and(
-            eq(mailboxes.id, mailboxId),
-            eq(mailAccounts.userId, c.var.user.id),
-          ),
+          and(eq(mailboxes.id, mailboxId), eq(accounts.userId, c.var.user.id)),
         );
     }
-    for (const account of accounts) {
+    for (const account of ownAccounts) {
       // アカウントを選んでいる間は、他のアカウントには知らせない (通常の間隔のままにする)。
       if (accountId && account.id !== accountId) continue;
       const payload: FocusNotification = {

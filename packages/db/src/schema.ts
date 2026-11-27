@@ -127,7 +127,7 @@ export const sessions = pgTable(
 
 /**
  * ログイン手段 (メール + パスワードなら providerId = "credential")。
- * 外部メールアカウントの mail_accounts とは別物。
+ * 外部アカウントの accounts とは別物。
  */
 export const authAccounts = pgTable(
   "auth_accounts",
@@ -300,9 +300,12 @@ export const mailAccountStatus = pgEnum("mail_account_status", [
 /** メールを書く形式。html は書式付き、text はテキストだけ (プレーンテキスト)。 */
 export type ComposeFormat = "html" | "text";
 
-/** 利用者が登録した外部メールアカウント (Gmail など)。 */
-export const mailAccounts = pgTable(
-  "mail_accounts",
+/**
+ * 利用者が登録した外部アカウント (Gmail など)。
+ * メールとカレンダー (将来は連絡先) をアカウントごとにオンにする。
+ */
+export const accounts = pgTable(
+  "accounts",
   {
     id: id(),
     userId: uuid()
@@ -330,6 +333,10 @@ export const mailAccounts = pgTable(
     allowLegacyTls: boolean().notNull().default(false),
     /** このアカウントに届いた新着メールを通知する。 */
     notifyNewMail: boolean().notNull().default(true),
+    /** このアカウントでメールを使う。 */
+    mailEnabled: boolean().notNull().default(true),
+    /** このアカウントでカレンダーを使う。 */
+    calendarEnabled: boolean().notNull().default(false),
     /**
      * 受信トレイ以外のフォルダの変化をすぐ受け取るために足す IMAP 接続の本数の上限 (0〜8)。
      * 0 なら足さない。null は自動 (サービスに合わせた数)。IMAP のアカウントでだけ使う。
@@ -370,13 +377,13 @@ export const mailAccounts = pgTable(
     // 同じアドレスでも、受信サーバーかユーザー名が違えば別のアカウントとして追加できる
     // (例: ドコモメールを IMAP で、同じアドレスのメッセージR/S を POP3 で)。
     // Microsoft Graph のアカウントは受信サーバーが無い (null) ので、空文字として比べる。
-    uniqueIndex("mail_accounts_user_email_server_idx").on(
+    uniqueIndex("accounts_user_email_server_idx").on(
       t.userId,
       t.email,
       sql`coalesce(lower(${t.imapHost}), '')`,
       t.username,
     ),
-    index("mail_accounts_user_email_idx").on(t.userId, t.email),
+    index("accounts_user_email_idx").on(t.userId, t.email),
   ],
 );
 
@@ -402,7 +409,7 @@ export const mailboxes = pgTable(
     id: id(),
     accountId: uuid()
       .notNull()
-      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+      .references(() => accounts.id, { onDelete: "cascade" }),
     path: text().notNull(),
     parentId: uuid().references((): AnyPgColumn => mailboxes.id, {
       onDelete: "set null",
@@ -461,7 +468,7 @@ export const messages = pgTable(
     id: id(),
     accountId: uuid()
       .notNull()
-      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+      .references(() => accounts.id, { onDelete: "cascade" }),
     /** プロバイダ固有の不変 ID (Gmail の X-GM-MSGID、Microsoft Graph の不変 ID など)。無ければ null。 */
     providerMessageId: text(),
     /** スレッドをまとめるキー (Gmail の X-GM-THRID、Graph の conversationId、または References から算出)。 */
@@ -592,7 +599,7 @@ export const popMessages = pgTable(
   {
     accountId: uuid()
       .notNull()
-      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+      .references(() => accounts.id, { onDelete: "cascade" }),
     uidl: text().notNull(),
     messageId: uuid().references(() => messages.id, { onDelete: "set null" }),
     downloadedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -695,7 +702,7 @@ export const outbox = pgTable(
     id: id(),
     accountId: uuid()
       .notNull()
-      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+      .references(() => accounts.id, { onDelete: "cascade" }),
     kind: outboxKind().notNull(),
     payload: jsonb().$type<Record<string, unknown>>().notNull(),
     /** 端末が操作ごとに付ける一意な ID。再送されても二重に実行しない。 */
@@ -751,7 +758,7 @@ export const drafts = pgTable(
     /** 差出人にするメールアカウント。 */
     accountId: uuid()
       .notNull()
-      .references(() => mailAccounts.id, { onDelete: "cascade" }),
+      .references(() => accounts.id, { onDelete: "cascade" }),
     to: jsonb().$type<DraftRecipients>().notNull(),
     cc: jsonb().$type<DraftRecipients>().notNull(),
     bcc: jsonb().$type<DraftRecipients>().notNull(),
@@ -963,7 +970,7 @@ export const userSettings = pgTable("user_settings", {
    * 端末ごとではなく利用者ごとに決める (アドレスのハッシュが Gravatar に送られるため、標準はオフ)。
    */
   senderIconGravatar: boolean().notNull().default(false),
-  /** メールを書くときの既定の形式。アカウントごとの指定 (mail_accounts.compose_format) が優先。 */
+  /** メールを書くときの既定の形式。アカウントごとの指定 (accounts.compose_format) が優先。 */
   composeFormat: text().$type<ComposeFormat>().notNull().default("html"),
   updatedAt: updatedAt(),
 });
@@ -984,7 +991,7 @@ export const signatureRules = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text().$type<SignatureRuleKind>().notNull(),
     /** 会話のあるアカウント。連絡先の決まりでは null。 */
-    accountId: uuid().references(() => mailAccounts.id, {
+    accountId: uuid().references(() => accounts.id, {
       onDelete: "cascade",
     }),
     /** 連絡先は小文字にしたメールアドレス、会話は会話のキー (messages.thread_key)。 */

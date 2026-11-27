@@ -10,7 +10,7 @@ import {
   MicrosoftOAuthError,
   refreshMicrosoftToken,
 } from "@orbit/core";
-import { type Database, mailAccounts, mailboxes } from "@orbit/db";
+import { accounts, type Database, mailboxes } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import {
   AttachmentRequests,
@@ -75,7 +75,7 @@ const TOKEN_MARGIN_MS = 5 * 60_000;
 /** 利用者が見ているメールの本文を、同期とは別に先に取得するときの同時数。 */
 const ON_DEMAND_BODY_CONCURRENCY = 2;
 
-type AccountRow = typeof mailAccounts.$inferSelect;
+type AccountRow = typeof accounts.$inferSelect;
 type Status = AccountRow["status"];
 
 /** 画面に出すエラーの説明。DB のエラーは SQL や値を含むので、利用者には見せない。 */
@@ -323,12 +323,12 @@ export class GraphAccountSync {
 
   private async savePush() {
     await this.db
-      .update(mailAccounts)
+      .update(accounts)
       .set({
         pushSubscriptionId: this.push.subscriptionId,
         pushExpiresAt: this.push.expiresAt,
       })
-      .where(eq(mailAccounts.id, this.account.id));
+      .where(eq(accounts.id, this.account.id));
   }
 
   private sleep(ms: number) {
@@ -347,10 +347,10 @@ export class GraphAccountSync {
     try {
       await this.db.transaction(async (tx) => {
         const [row] = await tx
-          .update(mailAccounts)
+          .update(accounts)
           .set({ status, lastError })
-          .where(eq(mailAccounts.id, this.account.id))
-          .returning({ id: mailAccounts.id });
+          .where(eq(accounts.id, this.account.id))
+          .returning({ id: accounts.id });
         if (row) {
           await recordChanges(tx, this.account.userId, "account", "upsert", [
             row.id,
@@ -413,13 +413,13 @@ export class GraphAccountSync {
       );
       // 本人が再ログインして認証情報が入れ替わっていた場合は上書きしない。
       await this.db
-        .update(mailAccounts)
+        .update(accounts)
         .set({ credentialsEncrypted })
         .where(
           and(
-            eq(mailAccounts.id, this.account.id),
+            eq(accounts.id, this.account.id),
             eq(
-              mailAccounts.credentialsEncrypted,
+              accounts.credentialsEncrypted,
               this.account.credentialsEncrypted,
             ),
           ),

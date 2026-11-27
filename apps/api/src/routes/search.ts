@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { mailAccounts, mailboxes, messageMailboxes, messages } from "@orbit/db";
+import { accounts, mailboxes, messageMailboxes, messages } from "@orbit/db";
 import { and, eq, inArray, type SQL, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -164,7 +164,7 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
       return c.json({ messages: [], nextCursor: null, terms });
     }
 
-    const conditions: SQL[] = [eq(mailAccounts.userId, c.var.user.id)];
+    const conditions: SQL[] = [eq(accounts.userId, c.var.user.id)];
     if (query.accountId) {
       conditions.push(eq(messages.accountId, query.accountId));
     }
@@ -224,7 +224,7 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
           sortKey: order.key,
         })
         .from(messages)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+        .innerJoin(accounts, eq(accounts.id, messages.accountId))
         .where(and(...where))
         .orderBy(...order.orderBy)
         .limit(limit);

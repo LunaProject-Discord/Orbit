@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
 import { CHANNEL_CHANGES, type ChangeNotification } from "@orbit/core";
-import { type Database, mailAccounts, signatureRules } from "@orbit/db";
+import { accounts, type Database, signatureRules } from "@orbit/db";
 import { and, asc, count, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -117,14 +117,9 @@ export function signatureRoutes({ db }: Pick<RouteDeps, "db">) {
     const body = c.req.valid("json");
     const userId = c.var.user.id;
     const [account] = await db
-      .select({ id: mailAccounts.id })
-      .from(mailAccounts)
-      .where(
-        and(
-          eq(mailAccounts.id, body.accountId),
-          eq(mailAccounts.userId, userId),
-        ),
-      );
+      .select({ id: accounts.id })
+      .from(accounts)
+      .where(and(eq(accounts.id, body.accountId), eq(accounts.userId, userId)));
     if (!account) {
       return c.json({ error: "account_not_found" }, 404);
     }

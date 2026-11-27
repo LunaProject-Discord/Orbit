@@ -6,8 +6,8 @@ import type {
   SetFlagsPayload,
 } from "@orbit/core";
 import {
+  type accounts,
   type Database,
-  type mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -39,7 +39,7 @@ export type SendOutcome =
 
 export type Sender = (message: OutgoingMessage) => Promise<SendOutcome>;
 
-type AccountRow = typeof mailAccounts.$inferSelect;
+type AccountRow = typeof accounts.$inferSelect;
 
 /**
  * 送信済みフォルダへの保存を自分で行うか。Gmail と Microsoft の SMTP は

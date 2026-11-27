@@ -23,7 +23,7 @@ const MIN_RETRY_MS = 10_000;
 const MAX_RETRY_MS = 5 * 60_000;
 
 /**
- * フォルダ用に足す接続の本数。設定 (mail_accounts.push_connections) があればそれを、
+ * フォルダ用に足す接続の本数。設定 (accounts.push_connections) があればそれを、
  * 無ければサービスに合わせた数を使う。
  * 同期用 1 本、開いているフォルダ用 1 本、本文や添付の取得用 1 本を別に使うので、
  * 他のメールソフトの分を残せるよう控えめにしてある。Gmail は「すべてのメール」と

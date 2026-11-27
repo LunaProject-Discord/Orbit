@@ -7,9 +7,9 @@ import {
   type OutboxTarget,
 } from "@orbit/core";
 import {
+  accounts,
   changes,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -105,11 +105,11 @@ export async function enqueueMessageAction(
     const owned = await tx
       .selectDistinct({ accountId: messages.accountId })
       .from(messages)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+      .innerJoin(accounts, eq(accounts.id, messages.accountId))
       .where(
         and(
           inArray(messages.id, action.messageIds),
-          eq(mailAccounts.userId, userId),
+          eq(accounts.userId, userId),
         ),
       );
     const accountIds = owned.map((row) => row.accountId).sort();
@@ -126,7 +126,7 @@ export async function enqueueMessageAction(
         .select({
           messageId: messages.id,
           accountId: messages.accountId,
-          protocol: mailAccounts.protocol,
+          protocol: accounts.protocol,
           providerMessageId: messages.providerMessageId,
           mailboxId: mailboxes.id,
           mailboxPath: mailboxes.path,
@@ -135,7 +135,7 @@ export async function enqueueMessageAction(
           role: mailboxes.specialUse,
         })
         .from(messages)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+        .innerJoin(accounts, eq(accounts.id, messages.accountId))
         .innerJoin(
           messageMailboxes,
           eq(messageMailboxes.messageId, messages.id),
@@ -210,13 +210,13 @@ export async function enqueueMessageAction(
     const labelAccounts = new Set(
       (
         await tx
-          .select({ id: mailAccounts.id })
-          .from(mailAccounts)
+          .select({ id: accounts.id })
+          .from(accounts)
           .where(
             and(
-              inArray(mailAccounts.id, accountIds),
-              eq(mailAccounts.provider, "gmail"),
-              eq(mailAccounts.protocol, "imap"),
+              inArray(accounts.id, accountIds),
+              eq(accounts.provider, "gmail"),
+              eq(accounts.protocol, "imap"),
             ),
           )
       ).map((row) => row.id),
