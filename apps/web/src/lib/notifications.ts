@@ -1,4 +1,9 @@
 import {
+  type CalendarPushMessage,
+  isCalendarNotificationKind,
+  RSVP_BUTTONS,
+} from "@orbit/core/calendar-notifications";
+import {
   ApiError,
   deletePushSubscription,
   getMessage,
@@ -7,9 +12,18 @@ import {
   type MailNotification,
   type NotificationAction,
   savePushSubscription,
+  setPushRegistrationFlags,
 } from "@/lib/api";
 import {
+  CALENDAR_NOTIFICATIONS_STORAGE_KEY,
+  type CalendarNotificationData,
+  DESKTOP_REMINDER_COMMANDS,
+  type DesktopCalendarNotification,
+} from "@/lib/calendar/notifications/bridge";
+import { openCalendarEvent, toCalendarEventTarget } from "@/lib/calendar/route";
+import {
   dismissDesktopNotifications,
+  invokeDesktop,
   isDesktopApp,
   listenDesktop,
   NOTIFICATION_ACTION_EVENT,
@@ -23,6 +37,7 @@ import {
   isNotificationAction,
   NOTIFICATION_ACTIONS,
 } from "@/lib/notification-actions";
+import { deviceId } from "@/lib/sync-status";
 
 /**
  * 新着メールの通知。
@@ -111,6 +126,117 @@ function setEnabled(enabled: boolean) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 予定の通知の、端末ごとのオン・オフ (段取り 9、設計 3.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * 保存した値から、予定の通知が有効かどうかを決める。予定の通知は新着メールの通知と同じ送り先
+ * (Web Push・OS の通知の許可) を使うので、メールの通知が有効な端末でだけ有効にできる。
+ * 未設定はメールの通知と同じ (設計 13 章の 14、推奨 A)。
+ */
+export function calendarEnabledFrom(
+  stored: string | null,
+  mailEnabled: boolean,
+): boolean {
+  return mailEnabled && stored !== "off";
+}
+
+/** この端末で予定の通知を出すか。 */
+export function calendarNotificationsEnabled(): boolean {
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(CALENDAR_NOTIFICATIONS_STORAGE_KEY);
+  } catch {
+    // 読めなければ未設定として扱う。
+  }
+  return calendarEnabledFrom(stored, isEnabled());
+}
+
+const calendarSettingListeners = new Set<() => void>();
+
+/** 予定の通知のオン・オフが変わったら呼ぶ。戻り値の関数で解除する。 */
+export function onCalendarNotificationsChange(listener: () => void) {
+  calendarSettingListeners.add(listener);
+  return () => {
+    calendarSettingListeners.delete(listener);
+  };
+}
+
+function emitCalendarSetting() {
+  for (const listener of calendarSettingListeners) listener();
+}
+
+/**
+ * この端末の予定の通知を切り替える (設定画面から呼ぶ)。サーバーの送り先の旗 (calendar) も
+ * 登録し直す。メールの通知が無効な端末では、オンにしても届かない (calendarEnabledFrom)。
+ */
+export async function setCalendarNotificationsEnabled(
+  enabled: boolean,
+): Promise<NotificationStatus> {
+  try {
+    window.localStorage.setItem(
+      CALENDAR_NOTIFICATIONS_STORAGE_KEY,
+      enabled ? "on" : "off",
+    );
+  } catch {
+    // 保存できなければ、このページを開いている間だけ切り替わる。
+  }
+  const status = isEnabled() ? await syncNotifications() : "off";
+  emitCalendarSetting();
+  return status;
+}
+
+/**
+ * 予定の通知をこの端末のほかのアプリが受け持つ (Android で Calendar アプリが入っていて、
+ * Mail アプリの reminderCapabilities が none を返した)。送り先の calendar を下ろす。
+ */
+let calendarHandledElsewhere = false;
+
+export function setCalendarHandledElsewhere(value: boolean): void {
+  if (calendarHandledElsewhere === value) return;
+  calendarHandledElsewhere = value;
+  if (isEnabled()) void syncNotifications();
+}
+
+// 送り先を登録するとき (Web Push・Android) に、mail / calendar の旗と端末の ID を付ける。
+// 送り先はメールの通知が有効なときだけ登録するので、mail は常に true。
+setPushRegistrationFlags(() => ({
+  mail: true,
+  calendar: calendarNotificationsEnabled() && !calendarHandledElsewhere,
+  installId: deviceId(),
+}));
+
+// ---------------------------------------------------------------------------
+// 通知の状態 (push / page など) を、ほかの仕組み (予定のリマインダーの Agent) へ知らせる
+// ---------------------------------------------------------------------------
+
+let lastStatus: NotificationStatus | null = null;
+const statusListeners = new Set<(status: NotificationStatus) => void>();
+
+/** 最後に整えた通知の状態。まだ整えていなければ null。 */
+export function currentNotificationStatus(): NotificationStatus | null {
+  return lastStatus;
+}
+
+/** 通知の状態が変わったら呼ぶ。戻り値の関数で解除する。 */
+export function onNotificationStatusChange(
+  listener: (status: NotificationStatus) => void,
+) {
+  statusListeners.add(listener);
+  return () => {
+    statusListeners.delete(listener);
+  };
+}
+
+function publishStatus(status: NotificationStatus): NotificationStatus {
+  if (status !== lastStatus) {
+    lastStatus = status;
+    for (const listener of statusListeners) listener(status);
+  }
+  return status;
+}
+
 function supported(): boolean {
   return typeof window !== "undefined" && "Notification" in window;
 }
@@ -175,6 +301,10 @@ async function subscribePush(
  * 画面を開いたときに呼ぶ (ログインし直したあとの送り先の登録もここで行う)。
  */
 export async function syncNotifications(): Promise<NotificationStatus> {
+  return publishStatus(await syncNotificationsNow());
+}
+
+async function syncNotificationsNow(): Promise<NotificationStatus> {
   if (isNativeApp()) {
     const { syncNativePush } = await import("@/lib/native/push");
     return syncNativePush(isEnabled());
@@ -190,6 +320,12 @@ export async function syncNotifications(): Promise<NotificationStatus> {
 
 /** 通知を有効にする。ブラウザーが許可を尋ねるので、ボタンを押した操作の中で呼ぶ。 */
 export async function enableNotifications(): Promise<NotificationStatus> {
+  const status = publishStatus(await enableNotificationsNow());
+  emitCalendarSetting();
+  return status;
+}
+
+async function enableNotificationsNow(): Promise<NotificationStatus> {
   if (isNativeApp()) {
     const { enableNativePush } = await import("@/lib/native/push");
     const status = await enableNativePush();
@@ -240,6 +376,12 @@ export async function releasePush(toServer: boolean): Promise<void> {
 }
 
 export async function disableNotifications(): Promise<NotificationStatus> {
+  const status = publishStatus(await disableNotificationsNow());
+  emitCalendarSetting();
+  return status;
+}
+
+async function disableNotificationsNow(): Promise<NotificationStatus> {
   setEnabled(false);
   await releasePush(true);
   if (isNativeApp()) {
@@ -496,6 +638,122 @@ export function parseMailEvent(data: string): MailNotification[] {
     );
   } catch {
     return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 予定の通知 (段取り 9): SSE の calendar イベント (招待・変更・取り消し)
+// ---------------------------------------------------------------------------
+
+/** SSE の calendar イベントの中身を取り出す。形式が違うものは捨てる。 */
+export function parseCalendarEvent(data: string): CalendarPushMessage[] {
+  try {
+    const parsed = JSON.parse(data) as { notifications?: unknown };
+    if (!Array.isArray(parsed.notifications)) return [];
+    return parsed.notifications.filter((item): item is CalendarPushMessage => {
+      if (!item || typeof item !== "object") return false;
+      const message = item as Record<string, unknown>;
+      return (
+        isCalendarNotificationKind(message.kind) &&
+        typeof message.title === "string" &&
+        typeof message.body === "string" &&
+        typeof message.tag === "string" &&
+        (message.eventId === null || typeof message.eventId === "string")
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Web の通知の data (サービスワーカーの notificationclick が読む形)。 */
+export function calendarNotificationData(
+  message: CalendarPushMessage,
+): CalendarNotificationData {
+  return {
+    kind: message.kind,
+    eventId: message.eventId,
+    recurrenceId: message.recurrenceId ?? null,
+    ...(message.rsvp ? { action: message.rsvp } : {}),
+  };
+}
+
+/** 出欠のボタン。並べられる数が 3 つ未満なら、参加と不参加の 2 つ。 */
+export function rsvpActions(max: number): { action: string; title: string }[] {
+  const buttons =
+    max >= RSVP_BUTTONS.length
+      ? RSVP_BUTTONS
+      : RSVP_BUTTONS.filter((button) => button.id !== "tentative");
+  return buttons
+    .slice(0, Math.max(0, max))
+    .map((button) => ({ action: button.id, title: button.title }));
+}
+
+/** Desktop の notify_calendar に渡す形。rsvp はボタンを付けるか (Windows だけが使う)。 */
+export function toDesktopCalendarNotification(
+  message: CalendarPushMessage,
+  rsvp: boolean,
+): DesktopCalendarNotification {
+  return {
+    kind: message.kind,
+    title: message.title,
+    body: message.body,
+    tag: message.tag,
+    eventId: message.eventId,
+    recurrenceId: message.recurrenceId ?? null,
+    expiresAt: message.expiresAt ?? null,
+    rsvp,
+  };
+}
+
+/**
+ * 予定の通知を出す (Web Push が使えないブラウザーと、Desktop)。
+ * canRespond は、通知から出欠を返してよい予定か (Desktop のボタンを付けるか)。
+ */
+export async function showCalendarNotification(
+  message: CalendarPushMessage,
+  canRespond: (eventId: string) => boolean = () => false,
+): Promise<void> {
+  if (isDesktopApp()) {
+    const rsvp =
+      message.kind === "event-invite" &&
+      message.eventId !== null &&
+      canRespond(message.eventId);
+    await invokeDesktop(DESKTOP_REMINDER_COMMANDS.notify, {
+      notification: toDesktopCalendarNotification(message, rsvp),
+    });
+    return;
+  }
+  if (!supported() || Notification.permission !== "granted") return;
+  const maxActions = (Notification as { maxActions?: unknown }).maxActions;
+  const max = typeof maxActions === "number" ? maxActions : 2;
+  const options: NotificationOptions & {
+    actions?: { action: string; title: string }[];
+  } = {
+    body: message.body,
+    tag: message.tag,
+    icon: "/icons/icon-192.png",
+    data: calendarNotificationData(message),
+    ...(message.kind === "event-invite" && message.rsvp
+      ? { actions: rsvpActions(max) }
+      : {}),
+  };
+  try {
+    const registration = await existingRegistration();
+    if (registration?.active) {
+      await registration.showNotification(message.title, options);
+      return;
+    }
+    const shown = new Notification(message.title, options);
+    shown.onclick = () => {
+      window.focus();
+      shown.close();
+      openCalendarEvent(
+        toCalendarEventTarget(message.eventId, message.recurrenceId),
+      );
+    };
+  } catch {
+    // 通知を出せなくても、カレンダーには反映される。
   }
 }
 

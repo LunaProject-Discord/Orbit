@@ -24,6 +24,10 @@ import {
   verifyTwoFactorSignIn,
 } from "@/lib/api";
 import {
+  clearCalendarReminders,
+  startCalendarNotifications,
+} from "@/lib/calendar/notifications";
+import {
   clearCalendarOffline,
   openCalendarOffline,
 } from "@/lib/calendar/offline";
@@ -159,6 +163,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onUnauthorized(() => {
       // セッションが切れた端末に、新着メールの通知が届き続けないようにする。
       void releasePush(false);
+      // 端末に予約した予定のリマインダーも消す (次にログインする人に出さない)。
+      void clearCalendarReminders();
       // 端末に保存した内容は消さない (接続後に送るメールを預かっているかもしれない)。
       // 消すのは、自分でログアウトしたときだけにする。
       setState({ status: "signed-out", user: null });
@@ -176,6 +182,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void publishSharedConfig();
     }
   }, [status]);
+
+  // ログインしているあいだ、予定の通知 (端末の予約・招待の通知) を動かす。
+  // 画面 (メール・カレンダー) に関わらず動かす。止めても予約は残す (アプリを閉じても鳴らすため)。
+  const userId = state.user?.id ?? null;
+  useEffect(() => {
+    if (!userId) return;
+    return startCalendarNotifications(userId);
+  }, [userId]);
 
   /** セッショントークンを受け取ったあと、利用者を確かめて画面を開く。 */
   const enter = useCallback(async () => {
@@ -204,6 +218,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut: async () => {
         // ログアウトした端末に新着メールの通知が届かないよう、先に送り先を消す。
         await releasePush(true);
+        // 端末に予約した予定のリマインダーを消す (OS に残ると次の利用者に出る)。
+        await clearCalendarReminders();
         await apiSignOut();
         forgetUser();
         setState({ status: "signed-out", user: null });

@@ -4,6 +4,15 @@
  * セッショントークンを localStorage に置いて Authorization ヘッダーで送る。
  */
 
+import {
+  type CalendarNotificationSettings,
+  type CalendarNotificationSettingsBody,
+  type DeviceRegistrationFlags,
+  PUSH_DEVICE_REMINDERS_PATH,
+  type PushSubscriptionFlags,
+  type ReminderCoverReport,
+  readCalendarNotificationSettings,
+} from "@orbit/core/calendar-notifications";
 import type {
   InviteApplyRequest,
   InviteApplyResult,
@@ -1732,7 +1741,43 @@ export type SharedSettings = {
   senderIconGravatar?: boolean;
   /** メールを書くときの既定の形式。古いサーバーには無い (書式付き)。 */
   composeFormat?: ComposeFormat;
+  /** 予定の通知の設定 (段取り 9)。古いサーバーには無い。 */
+  calendarNotifications?: CalendarNotificationSettings;
+  /** 利用者のタイムゾーン (段取り 9)。null は未設定。古いサーバーには無い (undefined)。 */
+  timeZone?: string | null;
 };
+
+/**
+ * 予定の通知の設定とタイムゾーン (GET /v1/settings の一部)。形の合わない項目は標準の値にする。
+ * timeZone が undefined なら、サーバーがまだ対応していない (保存しに行かない)。
+ */
+export async function getCalendarNotificationSettings(
+  signal?: AbortSignal,
+): Promise<{
+  calendarNotifications: CalendarNotificationSettings;
+  timeZone: string | null | undefined;
+}> {
+  const settings = await getSettings(signal);
+  return {
+    calendarNotifications: readCalendarNotificationSettings(
+      settings.calendarNotifications,
+    ),
+    timeZone:
+      typeof settings.timeZone === "string" || settings.timeZone === null
+        ? settings.timeZone
+        : undefined,
+  };
+}
+
+/** 予定の通知の設定とタイムゾーンを保存する (PUT /v1/settings/calendar-notifications)。 */
+export async function saveCalendarNotificationSettings(
+  body: CalendarNotificationSettingsBody,
+): Promise<void> {
+  await apiFetch("/v1/settings/calendar-notifications", {
+    method: "PUT",
+    body,
+  });
+}
 
 /** どの端末でも同じにする設定を取得する。 */
 export async function getSettings(
@@ -2077,13 +2122,50 @@ export async function getNativePushAvailable(): Promise<boolean> {
   return fcm === true;
 }
 
-/** この端末 (スマホアプリ) を、新着メールの通知の送り先として登録する。 */
-export async function savePushDevice(device: {
-  platform: "android";
-  token: string;
-  name?: string;
-}): Promise<void> {
-  await apiFetch("/v1/push/devices", { method: "POST", body: device });
+/**
+ * 通知の送り先を登録するときに付ける旗 (段取り 9: mail / calendar、端末の ID)。
+ * lib/notifications.ts が端末の設定から決める関数を置く。古いサーバーは知らない項目を無視する。
+ */
+let pushRegistrationFlags: () => DeviceRegistrationFlags = () => ({});
+
+export function setPushRegistrationFlags(
+  flags: () => DeviceRegistrationFlags,
+): void {
+  pushRegistrationFlags = flags;
+}
+
+/** この端末 (スマホアプリ) を、新着メールと予定の通知の送り先として登録する。 */
+export async function savePushDevice(
+  device: {
+    platform: "android";
+    token: string;
+    name?: string;
+  } & DeviceRegistrationFlags,
+): Promise<void> {
+  await apiFetch("/v1/push/devices", {
+    method: "POST",
+    // 旗は毎回明示する (省略するとサーバーは mail = true、calendar = false にする)。
+    body: {
+      app: "mail",
+      mail: true,
+      calendar: false,
+      ...pushRegistrationFlags(),
+      ...device,
+    },
+  });
+}
+
+/**
+ * 端末 (Android) が予約したリマインダーの範囲を報告する (段取り 9)。サーバーはこの範囲の
+ * リマインダーの push を、この端末には送らない。1 分に 1 回までに呼ぶ側でまとめる。
+ */
+export async function reportReminderCover(
+  report: ReminderCoverReport,
+): Promise<void> {
+  await apiFetch(`/v1${PUSH_DEVICE_REMINDERS_PATH}`, {
+    method: "POST",
+    body: report,
+  });
 }
 
 export async function deletePushDevice(token: string): Promise<void> {
@@ -2094,14 +2176,21 @@ export async function deletePushDevice(token: string): Promise<void> {
   });
 }
 
-/** このブラウザーを、新着メールの通知 (Web Push) の送り先として登録する。 */
-export async function savePushSubscription(subscription: {
-  endpoint: string;
-  keys: { p256dh: string; auth: string };
-}): Promise<void> {
+/**
+ * このブラウザーを、新着メールと予定の通知 (Web Push) の送り先として登録する。
+ * calendar を立てるのは、予定の通知を出せる新しいサービスワーカーだけ (段取り 9)。
+ */
+export async function savePushSubscription(
+  subscription: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+  } & PushSubscriptionFlags,
+): Promise<void> {
+  // 旗は毎回明示する (省略するとサーバーは mail = true、calendar = false にする)。
+  const { mail = true, calendar = false } = pushRegistrationFlags();
   await apiFetch("/v1/push/subscriptions", {
     method: "POST",
-    body: subscription,
+    body: { mail, calendar, ...subscription },
   });
 }
 
