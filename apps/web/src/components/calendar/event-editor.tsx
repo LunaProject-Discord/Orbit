@@ -236,49 +236,54 @@ export function EventEditor({
           />
           <Field icon={ClockIcon}>
             <div className="flex flex-wrap items-center gap-2">
-              <Input
-                type="date"
-                aria-label="開始日"
-                disabled={locked}
-                value={form.startDate}
-                onChange={(event) =>
-                  moveStart(event.target.value, form.startTime)
-                }
-                className="w-auto"
-              />
-              {!form.allDay && (
+              {/* 開始・終了をそれぞれ「日付 時刻」でまとめ、狭い画面では行ごとに折り返す */}
+              <div className="flex items-center gap-2">
                 <Input
-                  type="time"
-                  aria-label="開始時刻"
+                  type="date"
+                  aria-label="開始日"
                   disabled={locked}
-                  step={300}
-                  value={form.startTime}
+                  value={form.startDate}
                   onChange={(event) =>
-                    moveStart(form.startDate, event.target.value)
+                    moveStart(event.target.value, form.startTime)
                   }
-                  className="w-auto tabular-nums"
+                  className="w-auto"
                 />
-              )}
-              <span className="text-muted-foreground">〜</span>
-              {!form.allDay && (
+                {!form.allDay && (
+                  <Input
+                    type="time"
+                    aria-label="開始時刻"
+                    disabled={locked}
+                    step={300}
+                    value={form.startTime}
+                    onChange={(event) =>
+                      moveStart(form.startDate, event.target.value)
+                    }
+                    className="w-auto tabular-nums"
+                  />
+                )}
+                <span className="text-muted-foreground">〜</span>
+              </div>
+              <div className="flex items-center gap-2">
                 <Input
-                  type="time"
-                  aria-label="終了時刻"
+                  type="date"
+                  aria-label="終了日"
                   disabled={locked}
-                  step={300}
-                  value={form.endTime}
-                  onChange={(event) => set("endTime", event.target.value)}
-                  className="w-auto tabular-nums"
+                  value={form.endDate}
+                  onChange={(event) => set("endDate", event.target.value)}
+                  className="w-auto"
                 />
-              )}
-              <Input
-                type="date"
-                aria-label="終了日"
-                disabled={locked}
-                value={form.endDate}
-                onChange={(event) => set("endDate", event.target.value)}
-                className="w-auto"
-              />
+                {!form.allDay && (
+                  <Input
+                    type="time"
+                    aria-label="終了時刻"
+                    disabled={locked}
+                    step={300}
+                    value={form.endTime}
+                    onChange={(event) => set("endTime", event.target.value)}
+                    className="w-auto tabular-nums"
+                  />
+                )}
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
               {/* biome-ignore lint/a11y/noLabelWithoutControl: Checkbox が中の入力になる */}
