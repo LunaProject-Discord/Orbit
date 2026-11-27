@@ -110,6 +110,7 @@ export function makeCalendarRow(
     syncToken: null,
     etag: null,
     lastSyncedAt: null,
+    syncAttemptedAt: null,
     lastError: null,
     pushChannelId: null,
     pushExpiresAt: null,
@@ -173,6 +174,7 @@ export function makeEventSnapshot(
     useDefaultReminders: true,
     remoteUpdatedAt: null,
     fieldUpdatedAt: null,
+    remoteDeletedAfter: null,
     raw: null,
     createdAt: now,
     updatedAt: now,
@@ -197,6 +199,7 @@ export async function readAllPages(
       syncToken,
       pageCursor,
       knownEtags: async () => new Map(),
+      knownEvents: async () => new Map(),
     });
     pages.push(delta);
     pageCursor = delta.nextPageCursor;
@@ -207,10 +210,17 @@ export async function readAllPages(
   throw new Error(`syncEvents が ${maxPages} ページで終わりませんでした。`);
 }
 
-/** 予定 1 行分の形を確かめる。 */
+/** 原本 (繰り返さない予定) の uid。原本は uid を省けない。 */
+function masterUid(event: RemoteEvent): string {
+  if (!event.uid) throw new Error("原本の予定に uid がありません。");
+  return event.uid;
+}
+
+/** 予定 1 行分の形を確かめる。例外は uid を省いてよい (土台が原本から補う)。 */
 function expectRemoteEvent(event: RemoteEvent) {
   expect(event.remoteId).toBeTruthy();
-  expect(event.uid).toBeTruthy();
+  if (event.recurrenceId === null) expect(event.uid).toBeTruthy();
+  else expect(event.parentRemoteId).toBeTruthy();
   expect(typeof event.raw).toBe("string");
   if (event.recurrenceId !== null) {
     expect(normalizeRecurrenceId(event.recurrenceId)).toBe(event.recurrenceId);
@@ -277,7 +287,8 @@ export function describeCalendarProviderContract(
         const parsed = provider.parseRaw(event.raw, calendar);
         const match = parsed.find(
           (item) =>
-            item.uid === event.uid && item.recurrenceId === event.recurrenceId,
+            (item.uid ?? null) === (event.uid ?? null) &&
+            item.recurrenceId === event.recurrenceId,
         );
         expect(match).toBeDefined();
         expect(match?.summary).toBe(event.summary);
@@ -305,7 +316,7 @@ export function describeCalendarProviderContract(
       const fetched = await provider.getEvent(ctx, calendar, {
         remoteId: event.remoteId,
         etag: event.etag,
-        uid: event.uid,
+        uid: masterUid(event),
         recurrenceId: null,
         parentRemoteId: null,
       });
@@ -320,6 +331,34 @@ export function describeCalendarProviderContract(
       }
     });
 
+    it("create は events.id から決まる ID で冪等で、2 回呼んでも予定は 1 つ", async () => {
+      const { provider, ctx, calendar } = await prepare();
+      const snapshot = makeEventSnapshot();
+      const write = {
+        event: snapshot,
+        master: null,
+        exceptions: [],
+        fields: [],
+      };
+      const first = await provider.createEvent(ctx, calendar, write);
+      expect(first.status).toBe("ok");
+      if (first.status !== "ok") return;
+      const remoteId = first.events[0]?.remoteId;
+      // 結果を保存する前に止まり、もう一度呼ばれた。
+      const second = await provider.createEvent(ctx, calendar, write);
+      if (second.status === "ok") {
+        expect(second.events[0]?.remoteId).toBe(remoteId);
+      } else {
+        expect(second).toEqual({ status: "conflict", remoteId });
+      }
+      const { events } = await readAllPages(provider, ctx, calendar, null);
+      expect(
+        events.filter(
+          (item) => item.remoteId === remoteId && item.recurrenceId === null,
+        ),
+      ).toHaveLength(1);
+    });
+
     it("変更、古い etag での競合、削除、削除後の gone", async () => {
       const { provider, ctx, calendar } = await prepare();
       const created = await provider.createEvent(ctx, calendar, {
@@ -331,10 +370,11 @@ export function describeCalendarProviderContract(
       if (created.status !== "ok") throw new Error("作れませんでした。");
       const [event] = created.events;
       if (!event) throw new Error("作った予定が返りませんでした。");
+      const uid = masterUid(event);
       const ref = {
         remoteId: event.remoteId,
         etag: event.etag,
-        uid: event.uid,
+        uid,
         recurrenceId: null,
         parentRemoteId: null,
       };
@@ -342,7 +382,7 @@ export function describeCalendarProviderContract(
         event: makeEventSnapshot({
           remoteId: event.remoteId,
           etag: event.etag,
-          uid: event.uid,
+          uid,
           summary: "変えた",
         }),
         master: null,
@@ -356,7 +396,7 @@ export function describeCalendarProviderContract(
 
       if (options.conflicts !== false && event.etag !== null) {
         const stale = await provider.updateEvent(ctx, calendar, ref, {
-          event: makeEventSnapshot({ uid: event.uid, summary: "古い" }),
+          event: makeEventSnapshot({ uid, summary: "古い" }),
           master: null,
           exceptions: [],
           fields: ["summary"],
@@ -377,7 +417,7 @@ export function describeCalendarProviderContract(
         calendar,
         { ...ref, etag: null },
         {
-          event: makeEventSnapshot({ uid: event.uid }),
+          event: makeEventSnapshot({ uid }),
           master: null,
           exceptions: [],
           fields: ["summary"],

@@ -62,6 +62,7 @@ describe("calendarProviderFor", () => {
           syncToken: null,
           pageCursor: null,
           knownEtags: async () => new Map(),
+          knownEvents: async () => new Map(),
         }),
       ).rejects.toBeInstanceOf(CalendarNotImplementedError);
       expect(() => provider.parseRaw("", calendar)).toThrow(

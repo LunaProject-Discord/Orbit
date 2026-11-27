@@ -13,6 +13,7 @@ import {
   subscriptionUrlCandidates,
 } from "@orbit/core";
 import {
+  accounts,
   calendars,
   changes,
   type Database,
@@ -473,6 +474,30 @@ async function replaceExtras(tx: Tx, eventId: string, fields: EventFields) {
 }
 
 /**
+ * プロバイダのカレンダーに書き込めない状態なら、その理由を返す (API は 409 にする)。
+ * - calendar_disabled: アカウントの calendarEnabled が false (同期が動かず、書き戻しが溜まるだけ)。
+ * - calendar_sync_stopped: 認証の失敗などで同期が止まっている (accounts.calendarError がある。
+ *   同期ワーカーは、止まったときだけ calendarError を書く)。
+ * Orbit 内のカレンダーなどは null。
+ */
+async function providerWriteBlocked(
+  tx: Tx,
+  calendar: Pick<CalendarRow, "source" | "accountId">,
+): Promise<"calendar_disabled" | "calendar_sync_stopped" | null> {
+  if (!isProviderCalendar(calendar)) return null;
+  const [account] = await tx
+    .select({
+      calendarEnabled: accounts.calendarEnabled,
+      calendarError: accounts.calendarError,
+    })
+    .from(accounts)
+    .where(eq(accounts.id, calendar.accountId));
+  if (!account || !account.calendarEnabled) return "calendar_disabled";
+  if (account.calendarError !== null) return "calendar_sync_stopped";
+  return null;
+}
+
+/**
  * 変更を項目ごとにまとめる。サーバーにある同じ項目の変更の方が新しければ、その項目は捨てる。
  * 返すのは、採用する項目と、項目ごとの変更時刻 (更新後) と、捨てた項目。
  */
@@ -549,7 +574,12 @@ export function calendarRoutes({
           fields: fields satisfies EventFieldName[],
         },
       },
-      eventUpdateKey(row.id, fields, row.fieldUpdatedAt ?? {}),
+      eventUpdateKey(
+        row.id,
+        fields,
+        row.fieldUpdatedAt ?? {},
+        Object.fromEntries(fields.map((key) => [key, accepted[key]])),
+      ),
     );
   };
 
@@ -583,7 +613,9 @@ export function calendarRoutes({
           fields: ["recurrence"],
         },
       },
-      eventUpdateKey(master.id, ["recurrence"], fieldUpdatedAt),
+      eventUpdateKey(master.id, ["recurrence"], fieldUpdatedAt, {
+        recurrence: { exdates },
+      }),
     );
   };
 
@@ -1171,6 +1203,8 @@ export function calendarRoutes({
       const calendar = await ownCalendar(tx, userId, body.calendarId);
       if (!calendar) return "not_found" as const;
       if (!canWrite(calendar)) return "read_only" as const;
+      const blocked = await providerWriteBlocked(tx, calendar);
+      if (blocked) return blocked;
       if (isProviderCalendar(calendar)) {
         await lockCalendarAccount(tx, calendar.accountId);
       }
@@ -1211,6 +1245,8 @@ export function calendarRoutes({
     });
     if (result === "not_found") return c.json({ error: "not_found" }, 404);
     if (result === "read_only") return c.json({ error: "read_only" }, 409);
+    if (result === "calendar_disabled" || result === "calendar_sync_stopped")
+      return c.json({ error: result }, 409);
     if (result === "conflict") return c.json({ error: "conflict" }, 409);
     const [event] = await publicEvents(db, [result]);
     return c.json({ event }, 201);
@@ -1234,6 +1270,8 @@ export function calendarRoutes({
         if (!row) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, row.calendarId);
         if (!canWrite(calendar)) return "read_only" as const;
+        const blocked = await providerWriteBlocked(tx, calendar);
+        if (blocked) return blocked;
         // 例外では繰り返しを変えられない。
         if (row.parentId && body.changes.recurrence !== undefined) {
           return "invalid" as const;
@@ -1250,6 +1288,8 @@ export function calendarRoutes({
       });
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
+      if (result === "calendar_disabled" || result === "calendar_sync_stopped")
+        return c.json({ error: result }, 409);
       if (result === "invalid") return c.json({ error: "invalid" }, 400);
       const [event] = await publicEvents(db, [result.row]);
       return c.json({ event, rejected: result.rejected });
@@ -1276,6 +1316,8 @@ export function calendarRoutes({
         if (!master || master.parentId) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, master.calendarId);
         if (!canWrite(calendar)) return "read_only" as const;
+        const blocked = await providerWriteBlocked(tx, calendar);
+        if (blocked) return blocked;
         const exception = await findOrCreateException(
           tx,
           userId,
@@ -1297,6 +1339,8 @@ export function calendarRoutes({
       });
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
+      if (result === "calendar_disabled" || result === "calendar_sync_stopped")
+        return c.json({ error: result }, 409);
       if (result === "invalid") return c.json({ error: "invalid" }, 400);
       const [event] = await publicEvents(db, [result.row]);
       return c.json({ event, rejected: result.rejected });
@@ -1316,6 +1360,8 @@ export function calendarRoutes({
         if (!master || master.parentId) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, master.calendarId);
         if (!canWrite(calendar)) return "read_only" as const;
+        const blocked = await providerWriteBlocked(tx, calendar);
+        if (blocked) return blocked;
         await excludeOccurrence(tx, calendar, master, normalized);
         const removed = await tx
           .delete(events)
@@ -1343,6 +1389,8 @@ export function calendarRoutes({
       });
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
+      if (result === "calendar_disabled" || result === "calendar_sync_stopped")
+        return c.json({ error: result }, 409);
       return c.body(null, 204);
     },
   );
@@ -1359,6 +1407,8 @@ export function calendarRoutes({
         if (!row) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, row.calendarId);
         if (!canWrite(calendar)) return "read_only" as const;
+        const blocked = await providerWriteBlocked(tx, calendar);
+        if (blocked) return blocked;
         let master: EventRow | undefined;
         if (row.parentId && row.recurrenceId) {
           // 例外を消す = その回を消す。プロバイダへは原本の繰り返しの変更として書き戻す。
@@ -1394,6 +1444,8 @@ export function calendarRoutes({
       });
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
+      if (result === "calendar_disabled" || result === "calendar_sync_stopped")
+        return c.json({ error: result }, 409);
       return c.body(null, 204);
     },
   );

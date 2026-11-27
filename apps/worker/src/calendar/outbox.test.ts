@@ -145,7 +145,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
       eventId: local.id,
       calendarId: calendar.id,
     });
-    expect(await run()).toEqual({ done: 1, failed: 0 });
+    expect(await run()).toMatchObject({ done: 1, failed: 0 });
     const row = await rowOf(local.id);
     expect(row?.remoteId).toMatch(/^r\d+$/);
     expect(row?.etag).not.toBeNull();
@@ -184,7 +184,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
         remoteUpdatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
       },
     ]);
-    expect(await run()).toEqual({ done: 1, failed: 0 });
+    expect(await run()).toMatchObject({ done: 1, failed: 0 });
     const updates = fake.calls.filter((call) => call.method === "updateEvent");
     expect(updates).toHaveLength(2);
     expect(updates[1]?.write?.fields).toEqual(["summary"]);
@@ -206,7 +206,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
       { status: "conflict" },
       { status: "conflict" },
     );
-    expect(await run()).toEqual({ done: 0, failed: 1 });
+    expect(await run()).toMatchObject({ done: 0, failed: 1 });
     expect(
       fake.calls.filter((call) => call.method === "updateEvent"),
     ).toHaveLength(3);
@@ -249,7 +249,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
       fields: ["summary"],
     });
     fake.removeRemote(remoteId(), "ev");
-    expect(await run()).toEqual({ done: 1, failed: 0 });
+    expect(await run()).toMatchObject({ done: 1, failed: 0 });
     expect(await rowOf(row.id)).toBeUndefined();
   });
 
@@ -270,7 +270,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
     expect(a?.status).toBe("pending");
     expect(a?.attempts).toBe(1);
     expect(b?.attempts).toBe(0);
-    expect(await run()).toEqual({ done: 2, failed: 0 });
+    expect(await run()).toMatchObject({ done: 2, failed: 0 });
     const created = fake.calls
       .filter((call) => call.method === "createEvent")
       .map((call) => call.write?.event.summary);
@@ -298,7 +298,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
       },
       deletedAt: new Date().toISOString(),
     });
-    expect(await run()).toEqual({ done: 2, failed: 0 });
+    expect(await run()).toMatchObject({ done: 2, failed: 0 });
     expect(fake.remote(remoteId(), "ev")).toBeNull();
     expect(fake.calls.some((call) => call.method === "updateEvent")).toBe(
       false,
@@ -346,7 +346,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
     await editSummary(row.id, "ローカルの題");
     fake.enqueue("updateEvent", { status: "rejected", reason: "拒否された" });
     fake.enqueue("getEvent", new Error("取り直せない"));
-    expect(await run()).toEqual({ done: 0, failed: 1 });
+    expect(await run()).toMatchObject({ done: 0, failed: 1 });
     const [after] = await db
       .select()
       .from(calendars)

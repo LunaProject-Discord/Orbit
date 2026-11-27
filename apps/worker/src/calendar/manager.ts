@@ -36,7 +36,12 @@ const SYNC_REASONS: readonly CalendarSyncReason[] = [
 export const UNSUPPORTED_CALENDAR_ERROR =
   "このアカウントのカレンダーの同期には対応していません。";
 
-/** カレンダーの接続に関わる設定をまとめた値。これが変わったら同期を作り直す。 */
+/**
+ * カレンダーの接続に関わる設定をまとめた値。これが変わったら同期を作り直す。
+ * Microsoft (Graph) は credentialsEncrypted を含めない。メールの同期がリフレッシュトークンを
+ * 入れ替えるたびに変わるが、カレンダーのトークン (MicrosoftCalendarTokens) は毎回 DB の
+ * 最新を読むので、作り直す必要が無い (作り直すと、実行中の書き戻しを中断してしまう)。
+ */
 export function calendarConnectionKey(row: AccountRow) {
   return [
     row.provider,
@@ -44,9 +49,17 @@ export function calendarConnectionKey(row: AccountRow) {
     row.protocol,
     row.username,
     row.caldavUrl,
-    row.credentialsEncrypted,
+    row.protocol === "graph" ? "" : row.credentialsEncrypted,
     row.oauthScopes,
   ].join("\n");
+}
+
+/**
+ * 認証の失敗などで止めた同期を、起動し直してよいかを決める値。ログインし直しで
+ * 認証情報が変われば起動し直すため、Microsoft でも credentialsEncrypted を含める。
+ */
+export function calendarParkKey(row: AccountRow) {
+  return `${calendarConnectionKey(row)}\n${row.credentialsEncrypted}`;
 }
 
 export type CalendarSyncManagerOptions = {
@@ -188,10 +201,13 @@ export class CalendarSyncManager {
 
     for (const [id, entry] of this.running) {
       const row = wanted.get(id);
-      // 対象から外れたもの (calendarEnabled=false、削除など) と、接続設定が変わったものは止める。
+      // 対象から外れたもの (calendarEnabled=false、削除など) は、変更通知を止めてから止める。
+      // 接続設定が変わったものは作り直す (変更通知は新しい同期が作り直す)。
       // 比較相手は同期側が持つ行 (自分で保存したリフレッシュトークンでは作り直さない)。
-      if (
-        !row ||
+      if (!row) {
+        this.running.delete(id);
+        await entry.sync.shutdown();
+      } else if (
         calendarConnectionKey(row) !== calendarConnectionKey(entry.sync.account)
       ) {
         entry.sync.stop();
@@ -200,7 +216,7 @@ export class CalendarSyncManager {
     }
     for (const [id, key] of this.parked) {
       const row = wanted.get(id);
-      if (!row || calendarConnectionKey(row) !== key) this.parked.delete(id);
+      if (!row || calendarParkKey(row) !== key) this.parked.delete(id);
     }
 
     for (const row of rows) {
@@ -211,7 +227,7 @@ export class CalendarSyncManager {
       );
       if (!provider) {
         await this.markUnsupported(row);
-        this.parked.set(row.id, calendarConnectionKey(row));
+        this.parked.set(row.id, calendarParkKey(row));
         continue;
       }
       const sync = new AccountCalendarSync(this.db, row, provider, {
@@ -232,7 +248,7 @@ export class CalendarSyncManager {
         if (this.running.get(row.id) !== entry) return;
         this.running.delete(row.id);
         if (sync.parked && !this.stopped) {
-          this.parked.set(row.id, calendarConnectionKey(sync.account));
+          this.parked.set(row.id, calendarParkKey(sync.account));
         }
       });
     }

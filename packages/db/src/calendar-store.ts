@@ -523,6 +523,8 @@ export async function upsertCalendarEvents(
           ...columns(input, parentId),
           remoteId: input.remoteId,
           etag: input.etag,
+          // 相手側にあるので、削除を見送った印は外す。
+          remoteDeletedAfter: null,
           ...(input.fieldUpdatedAt === undefined
             ? {}
             : { fieldUpdatedAt: input.fieldUpdatedAt }),
@@ -732,6 +734,81 @@ export async function deleteCalendarEventsNotIn(
     .filter((row) => row.remoteId !== null && !seenRemoteIds.has(row.remoteId))
     .map((row) => row.id);
   return { deleted: await deleteEventRows(tx, calendarId, ids) };
+}
+
+/**
+ * CalDAV のように 1 つの remoteId (リソース) に原本と例外が入る形で、リソースから消えた行を消す。
+ * present は今回届いた行 (remoteId、uid、recurrenceId)。届いた remoteId を持つ既存の行のうち、
+ * present に無い (uid, recurrenceId) の行と、その子を消す。keepEventIds の行は消さない
+ * (書き戻し待ち)。1 remoteId が 1 行のプロバイダ (Google、Graph) では何も消えない。
+ * 返すのは消した全行の ID。
+ */
+export async function deleteCalendarEventsMissingFromResources(
+  tx: Executor,
+  calendarId: string,
+  present: readonly {
+    remoteId: string;
+    uid: string;
+    recurrenceId: string | null;
+  }[],
+  options: { keepEventIds?: ReadonlySet<string> } = {},
+): Promise<{ deleted: string[] }> {
+  if (present.length === 0) return { deleted: [] };
+  const keys = new Set(
+    present.map(
+      (item) => `${item.remoteId}\u0000${keyOf(item.uid, item.recurrenceId)}`,
+    ),
+  );
+  const ids: string[] = [];
+  for (const batch of chunks([
+    ...new Set(present.map((item) => item.remoteId)),
+  ])) {
+    const rows = await tx
+      .select({
+        id: events.id,
+        remoteId: events.remoteId,
+        uid: events.uid,
+        recurrenceId: events.recurrenceId,
+      })
+      .from(events)
+      .where(
+        and(eq(events.calendarId, calendarId), inArray(events.remoteId, batch)),
+      );
+    for (const row of rows) {
+      if (row.remoteId === null) continue;
+      const key = `${row.remoteId}\u0000${keyOf(row.uid, row.recurrenceId)}`;
+      if (!keys.has(key)) ids.push(row.id);
+    }
+  }
+  return {
+    deleted: await deleteEventRows(tx, calendarId, ids, options.keepEventIds),
+  };
+}
+
+/**
+ * カレンダーの予定の remoteId → uid と etag。1 つの remoteId に複数の行があるとき (CalDAV) は、
+ * 原本の値を返す。プロバイダが、例外の uid を原本から補うのに使う。
+ */
+export async function listEventKeys(
+  tx: Executor,
+  calendarId: string,
+): Promise<Map<string, { uid: string; etag: string | null }>> {
+  const rows = await tx
+    .select({
+      remoteId: events.remoteId,
+      uid: events.uid,
+      etag: events.etag,
+      recurrenceId: events.recurrenceId,
+    })
+    .from(events)
+    .where(and(eq(events.calendarId, calendarId), isNotNull(events.remoteId)));
+  const result = new Map<string, { uid: string; etag: string | null }>();
+  for (const row of rows) {
+    if (row.remoteId === null) continue;
+    if (row.recurrenceId === null || !result.has(row.remoteId))
+      result.set(row.remoteId, { uid: row.uid, etag: row.etag });
+  }
+  return result;
 }
 
 /**

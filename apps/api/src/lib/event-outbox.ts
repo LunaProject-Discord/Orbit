@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type CalendarSyncNotification,
   CHANNEL_CALENDAR_SYNC,
@@ -80,14 +81,28 @@ export function eventDeleteKey(eventId: string): string {
   return `event_delete:${eventId}`;
 }
 
+/** キーや順番に依らない JSON (オブジェクトのキーを名前順に並べる)。 */
+function stableJson(value: unknown): string {
+  if (value === undefined) return "null";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+}
+
 /**
- * 予定の変更の idempotencyKey。採用した項目 (名前順) と、その変更時刻の最大から作る。
- * 端末が同じ changedAt で再送すれば同じキーになり、二重に積まれない。
+ * 予定の変更の idempotencyKey。採用した項目 (名前順) と、その変更時刻の最大と、
+ * 採用した値のハッシュから作る。端末が同じ変更を同じ changedAt で再送すれば同じキーになり、
+ * 二重に積まれない。同じ項目を同じ changedAt で別の値に変えたときは、値が違うので積まれる。
  */
 export function eventUpdateKey(
   eventId: string,
   fields: readonly string[],
   fieldUpdatedAt: Record<string, string>,
+  values: Record<string, unknown>,
 ): string {
   const sorted = [...fields].sort();
   let latest = "";
@@ -100,5 +115,9 @@ export function eventUpdateKey(
       latestTime = time;
     }
   }
-  return `event_update:${eventId}:${sorted.join(",")}:${latest}`;
+  const hash = createHash("sha256")
+    .update(stableJson(Object.fromEntries(sorted.map((f) => [f, values[f]]))))
+    .digest("hex")
+    .slice(0, 16);
+  return `event_update:${eventId}:${sorted.join(",")}:${latest}:${hash}`;
 }

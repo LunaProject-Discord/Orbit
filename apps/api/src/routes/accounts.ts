@@ -7,6 +7,7 @@ import {
   createGoogleAuthorizeUrl,
   createMicrosoftAuthorizeUrl,
   decryptCredentials,
+  EVENT_OUTBOX_KINDS,
   encryptCredentials,
   exchangeGoogleCode,
   exchangeMicrosoftCode,
@@ -31,7 +32,7 @@ import {
   outbox,
   popMessages,
 } from "@orbit/db";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
@@ -295,9 +296,16 @@ type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
  * 消したものは変更履歴に載せ、端末からも消えるようにする。
  */
 async function resetMailData(tx: Tx, userId: string, accountId: string) {
+  // 予定の書き戻し (event_*) はメールのデータではないので残す。
   await tx
     .delete(outbox)
-    .where(and(eq(outbox.accountId, accountId), ne(outbox.kind, "send")));
+    .where(
+      and(
+        eq(outbox.accountId, accountId),
+        ne(outbox.kind, "send"),
+        notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
+      ),
+    );
   await tx.delete(popMessages).where(eq(popMessages.accountId, accountId));
   const removedMessages = await tx
     .delete(messages)

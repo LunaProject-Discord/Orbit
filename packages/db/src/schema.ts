@@ -725,6 +725,11 @@ export const outbox = pgTable(
     lastError: text(),
     runAfter: timestamp({ withTimezone: true }).notNull().defaultNow(),
     /**
+     * 一時的な失敗が最初に起きた時刻 (予定の書き戻し event_* で使う)。ここからの経過時間で
+     * 打ち切る。失敗していなければ null。
+     */
+    firstFailedAt: timestamp({ withTimezone: true }),
+    /**
      * 予約送信で利用者が指定した日時 (send のみ)。予約でなければ null。
      * 予約の間は runAfter も同じ日時になる。「今すぐ送信」にすると null に戻す。
      */
@@ -1100,7 +1105,10 @@ export const calendars = pgTable(
     syncToken: text(),
     /** CalDAV の getctag や ICS の ETag / Last-Modified。変わっていなければ取得を省く。 */
     etag: text(),
+    /** 最後に同期が最後まで成功した時刻。失敗では進めない (書き戻しの gone の決まりの基準)。 */
     lastSyncedAt: timestamp({ withTimezone: true }),
+    /** 最後に同期を試みた時刻 (成功も失敗も)。失敗したカレンダーの次の確認の時期に使う。 */
+    syncAttemptedAt: timestamp({ withTimezone: true }),
     lastError: text(),
     /** 変更通知 (Google の watch、Graph の subscription) の ID と期限。 */
     pushChannelId: text(),
@@ -1196,6 +1204,13 @@ export const events = pgTable(
      * 後から変更した方を残すために使う。
      */
     fieldUpdatedAt: jsonb().$type<Record<string, string>>(),
+    /**
+     * 相手側で消えたのを取り込みが見たが、書き戻し待ちなので消すのを見送った予定に付ける。
+     * 値は、その前に相手側にあると確かめていた時刻 (直前に成功した同期の時刻)。
+     * 相手側の削除はこの時刻より後に起きた。書き戻しの gone の決まりで、ローカルの変更と比べる。
+     * 相手側の内容を書き込むと null に戻る。
+     */
+    remoteDeletedAfter: timestamp({ withTimezone: true }),
     raw: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

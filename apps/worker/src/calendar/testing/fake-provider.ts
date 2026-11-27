@@ -30,7 +30,8 @@ type Method =
   | "updateEvent"
   | "deleteEvent"
   | "respond"
-  | "maintainPush";
+  | "maintainPush"
+  | "stopPush";
 
 type Outcome = WriteResult | Error;
 
@@ -62,8 +63,8 @@ export function snapshotToRemote(
     etag: string | null;
     parentRemoteId: string | null;
   },
-): RemoteEvent {
-  const event: RemoteEvent = {
+): RemoteEvent & { uid: string } {
+  const event: RemoteEvent & { uid: string } = {
     remoteId: remote.remoteId,
     etag: remote.etag,
     parentRemoteId: remote.parentRemoteId,
@@ -112,6 +113,16 @@ export class FakeCalendarProvider implements CalendarProvider {
   readonly calls: FakeCall[] = [];
   /** createEvent で、相手側が付け替える UID (Graph の真似)。null なら付け替えない。 */
   rewriteUid: ((uid: string) => string) | null = null;
+  /**
+   * 同じ events.id で作り直されたとき (相手側に残っている) の返し方。create は events.id から
+   * 決まる ID で冪等に行う約束なので、"ok" は既にある予定を返し (Graph の transactionId の真似)、
+   * "conflict" は { status: "conflict", remoteId } を返す (Google の 409、CalDAV の 412 の真似)。
+   */
+  existingCreate: "ok" | "conflict" = "ok";
+  /** syncEvents の結果で、例外 (recurrenceId がある行) の uid を省く (Google / Graph の真似)。 */
+  omitExceptionUid = false;
+  /** events.id → 作った予定の remoteId。 */
+  private readonly createdByEventId = new Map<string, string>();
   /** カレンダーの remoteId → (予定の remoteId → その予定の行)。 */
   private readonly store = new Map<string, Map<string, RemoteEvent[]>>();
   private readonly changes: {
@@ -284,7 +295,13 @@ export class FakeCalendarProvider implements CalendarProvider {
     const more = offset + this.pageSize < items.length;
     return {
       events: page.flatMap((item) =>
-        "event" in item ? [{ ...item.event }] : [],
+        "event" in item
+          ? [
+              this.omitExceptionUid && item.event.recurrenceId !== null
+                ? { ...item.event, uid: undefined }
+                : { ...item.event },
+            ]
+          : [],
       ),
       deletedRemoteIds: page.flatMap((item) =>
         "deleted" in item ? [item.deleted] : [],
@@ -327,7 +344,18 @@ export class FakeCalendarProvider implements CalendarProvider {
     const queued = this.take("createEvent");
     if (queued) return queued;
     const calendarRemoteId = calendar.remoteId ?? "";
+    const previous = this.createdByEventId.get(write.event.id);
+    const existing = previous
+      ? this.bucket(calendarRemoteId).get(previous)
+      : undefined;
+    if (previous && existing) {
+      if (this.existingCreate === "conflict") {
+        return { status: "conflict", remoteId: previous };
+      }
+      return { status: "ok", events: existing.map((event) => ({ ...event })) };
+    }
     const remoteId = `r${++this.sequence}`;
+    this.createdByEventId.set(write.event.id, remoteId);
     const base = snapshotToRemote(write.event, {
       remoteId,
       etag: null,
@@ -458,5 +486,13 @@ export class FakeCalendarProvider implements CalendarProvider {
   ): Promise<void> {
     this.calls.push({ method: "maintainPush" });
     this.take("maintainPush");
+  }
+
+  async stopPush(_ctx: ProviderContext, calendar: CalendarRow): Promise<void> {
+    this.calls.push({
+      method: "stopPush",
+      calendarRemoteId: calendar.remoteId,
+    });
+    this.take("stopPush");
   }
 }

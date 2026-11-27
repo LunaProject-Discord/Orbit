@@ -817,8 +817,10 @@ describe.skipIf(!adminUrl)("予定の API", () => {
         calendarId: googleCalendarId,
         fields: ["location", "summary"],
       });
-      expect(rows[0]?.idempotencyKey).toBe(
-        `event_update:${id}:location,summary:${changedAt}`,
+      expect(rows[0]?.idempotencyKey).toMatch(
+        new RegExp(
+          `^event_update:${id}:location,summary:${changedAt}:[0-9a-f]{16}$`,
+        ),
       );
       // 全部の項目が負けた変更は積まない。
       const stale = await send("PATCH", `/events/${id}`, {
@@ -850,6 +852,100 @@ describe.skipIf(!adminUrl)("予定の API", () => {
           parentRemoteId: null,
         },
       });
+    });
+
+    it("指摘 13: 同じ項目を同じ changedAt で別の値に変えても積む (同じ値の再送は積まない)", async () => {
+      const id = randomUUID();
+      expect(
+        (
+          await send("POST", "/events", {
+            id,
+            calendarId: googleCalendarId,
+            summary: "元",
+            time: timed(
+              "2027-01-10T10:00:00+09:00",
+              "2027-01-10T11:00:00+09:00",
+            ),
+          })
+        ).status,
+      ).toBe(201);
+      await db
+        .update(events)
+        .set({ remoteId: "remote-13", etag: '"1"' })
+        .where(eq(events.id, id));
+      await db.update(outbox).set({ status: "done" });
+      const changedAt = new Date().toISOString();
+      const patch = (summary: string) =>
+        send("PATCH", `/events/${id}`, {
+          changes: { summary },
+          changedAt: { summary: changedAt },
+        });
+      expect((await patch("一つ目")).status).toBe(200);
+      // 1 つ目を書き戻し終えた。
+      await db.update(outbox).set({ status: "done" });
+      expect((await patch("一つ目")).status).toBe(200);
+      expect((await patch("二つ目")).status).toBe(200);
+      const updates = (await queued()).filter(
+        (row) => row.kind === "event_update",
+      );
+      expect(updates.map((row) => row.status)).toEqual(["done", "pending"]);
+      const [row] = await db.select().from(events).where(eq(events.id, id));
+      expect(row?.summary).toBe("二つ目");
+    });
+
+    it("指摘 12: calendarEnabled が false か、同期が calendarError で止まっていれば 409", async () => {
+      const created = await send("POST", "/events", {
+        calendarId: googleCalendarId,
+        summary: "止まる前",
+        time: { allDay: true, startDate: "2027-01-11", endDate: "2027-01-12" },
+      });
+      expect(created.status).toBe(201);
+      const id = (created.body.event as Json).id as string;
+      await db.delete(outbox);
+      const attempts = () =>
+        Promise.all([
+          send("POST", "/events", {
+            calendarId: googleCalendarId,
+            summary: "止まっている間",
+            time: {
+              allDay: true,
+              startDate: "2027-01-11",
+              endDate: "2027-01-12",
+            },
+          }),
+          send("PATCH", `/events/${id}`, { changes: { summary: "変更" } }),
+          send("DELETE", `/events/${id}`),
+        ]);
+      try {
+        await db
+          .update(accounts)
+          .set({ calendarEnabled: false })
+          .where(eq(accounts.id, accountId));
+        for (const result of await attempts()) {
+          expect(result.status).toBe(409);
+          expect(result.body.error).toBe("calendar_disabled");
+        }
+        await db
+          .update(accounts)
+          .set({ calendarEnabled: true, calendarError: "認証が切れました" })
+          .where(eq(accounts.id, accountId));
+        for (const result of await attempts()) {
+          expect(result.status).toBe(409);
+          expect(result.body.error).toBe("calendar_sync_stopped");
+        }
+        expect(await queued()).toEqual([]);
+        const [row] = await db.select().from(events).where(eq(events.id, id));
+        expect(row?.summary).toBe("止まる前");
+      } finally {
+        await db
+          .update(accounts)
+          .set({ calendarEnabled: true, calendarError: null })
+          .where(eq(accounts.id, accountId));
+      }
+      expect(
+        (await send("PATCH", `/events/${id}`, { changes: { summary: "再開" } }))
+          .status,
+      ).toBe(200);
     });
 
     it("作成を書き戻す前に消すと、作成の行を消して何も積まない", async () => {

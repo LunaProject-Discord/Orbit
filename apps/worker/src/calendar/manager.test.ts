@@ -5,7 +5,12 @@
 import { accounts, calendars, type Database } from "@orbit/db";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { CalendarSyncManager, UNSUPPORTED_CALENDAR_ERROR } from "./manager.js";
+import {
+  CalendarSyncManager,
+  calendarConnectionKey,
+  calendarParkKey,
+  UNSUPPORTED_CALENDAR_ERROR,
+} from "./manager.js";
 import { CalendarAuthError } from "./provider.js";
 import { FakeCalendarProvider } from "./testing/fake-provider.js";
 import {
@@ -221,5 +226,188 @@ describe.skipIf(!adminUrl)("CalendarSyncManager", () => {
           .slice(before)
           .some((call) => call.method === "syncEvents"),
     );
+  });
+
+  describe("土台のレビューの指摘", () => {
+    const pushed = (accountId: string) =>
+      (providers.get(accountId)?.calls ?? []).filter(
+        (call) => call.method === "stopPush",
+      );
+
+    it("指摘 8: Microsoft はリフレッシュトークンが入れ替わっても同期を作り直さない", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+        provider: "microsoft",
+        protocol: "graph",
+      });
+      expect(
+        calendarConnectionKey({ ...account, credentialsEncrypted: "z" }),
+      ).toBe(calendarConnectionKey(account));
+      // 止めた同期を起動し直すかの判断には、認証情報も含める (ログインし直しで起動する)。
+      expect(
+        calendarParkKey({ ...account, credentialsEncrypted: "z" }),
+      ).not.toBe(calendarParkKey(account));
+      const target = createManager();
+      await target.reconcile();
+      const before = target.syncFor(account.id);
+      expect(before).toBeDefined();
+      // メールの同期がリフレッシュトークンを入れ替えた。
+      await db
+        .update(accounts)
+        .set({ credentialsEncrypted: "rotated" })
+        .where(eq(accounts.id, account.id));
+      await target.reconcile();
+      expect(target.syncFor(account.id)).toBe(before);
+    });
+
+    it("指摘 8: Google は認証情報が変われば作り直す (これまでどおり)", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+      });
+      const target = createManager();
+      await target.reconcile();
+      const before = target.syncFor(account.id);
+      await db
+        .update(accounts)
+        .set({ credentialsEncrypted: "rotated" })
+        .where(eq(accounts.id, account.id));
+      await target.reconcile();
+      expect(target.syncFor(account.id)).not.toBe(before);
+    });
+
+    it("指摘 10: calendarEnabled を切って同期を止めるとき、変更通知を止める", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+      });
+      const target = createManager();
+      await target.reconcile();
+      await waitFor(async () => (await calendarCount(account.id)) === 1);
+      await db
+        .update(calendars)
+        .set({ pushChannelId: "channel-1" })
+        .where(eq(calendars.accountId, account.id));
+      await db
+        .update(accounts)
+        .set({ calendarEnabled: false })
+        .where(eq(accounts.id, account.id));
+      await target.reconcile();
+      expect(target.isRunning(account.id)).toBe(false);
+      expect(pushed(account.id).map((call) => call.calendarRemoteId)).toEqual([
+        "primary",
+      ]);
+    });
+
+    it("指摘 10: アカウントが消えても、最後に読んだカレンダーの変更通知を止める", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+      });
+      const target = createManager();
+      await target.reconcile();
+      await waitFor(async () => (await calendarCount(account.id)) === 1);
+      await db
+        .update(calendars)
+        .set({ pushChannelId: "channel-1" })
+        .where(eq(calendars.accountId, account.id));
+      // 周回でカレンダーの行を読み直させる。
+      target.notify({ accountId: account.id, reason: "refresh" });
+      await waitFor(
+        async () =>
+          (providers.get(account.id)?.calls ?? []).filter(
+            (call) => call.method === "listCalendars",
+          ).length >= 2,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await db.delete(accounts).where(eq(accounts.id, account.id));
+      await target.reconcile();
+      expect(pushed(account.id)).toHaveLength(1);
+    });
+
+    it("指摘 10: カレンダーが一覧から消えたら、行を消す前に変更通知を止める", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+      });
+      const target = createManager();
+      await target.reconcile();
+      await waitFor(async () => (await calendarCount(account.id)) === 1);
+      await db
+        .update(calendars)
+        .set({ pushChannelId: "channel-1" })
+        .where(eq(calendars.accountId, account.id));
+      const provider = providers.get(account.id);
+      if (!provider) throw new Error("プロバイダがありません。");
+      provider.calendars = [];
+      target.notify({ accountId: account.id, reason: "refresh" });
+      await waitFor(async () => (await calendarCount(account.id)) === 0);
+      expect(pushed(account.id).map((call) => call.calendarRemoteId)).toEqual([
+        "primary",
+      ]);
+    });
+
+    it("指摘 9: 同期が失敗しても lastSyncedAt は進めず、syncAttemptedAt を進める", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+      });
+      const provider = new FakeCalendarProvider();
+      provider.calendars = [
+        {
+          remoteId: "primary",
+          name: "主のカレンダー",
+          description: null,
+          color: null,
+          timeZone: "Asia/Tokyo",
+          readOnly: false,
+          url: null,
+          defaultReminders: null,
+          kind: "normal",
+        },
+      ];
+      provider.enqueue("syncEvents", new Error("503 Service Unavailable"));
+      providers.set(account.id, provider);
+      const target = createManager();
+      await target.reconcile();
+      const calendarRow = async () => {
+        const [row] = await db
+          .select()
+          .from(calendars)
+          .where(eq(calendars.accountId, account.id));
+        return row;
+      };
+      await waitFor(async () => (await calendarRow())?.lastError != null);
+      const row = await calendarRow();
+      expect(row?.lastSyncedAt).toBeNull();
+      expect(row?.syncAttemptedAt).not.toBeNull();
+    });
+
+    it("指摘 12: 一時的な失敗では calendarError を書かない (止まった状態だけを表す)", async () => {
+      const account = await insertAccount(db, userId, {
+        calendarEnabled: true,
+      });
+      const provider = new FakeCalendarProvider();
+      provider.enqueue("listCalendars", new Error("回線が切れました"));
+      providers.set(account.id, provider);
+      const messages: string[] = [];
+      manager = new CalendarSyncManager(db, test.url, {
+        encryptionKey: Buffer.alloc(32),
+        google: null,
+        microsoft: null,
+        webhookBaseUrl: null,
+        allowPrivateHosts: false,
+        // ほかのテストのアカウントも起動するので、このアカウントにだけ失敗を返す。
+        providerFor: (row) =>
+          row.id === account.id ? provider : new FakeCalendarProvider(),
+        createAuth: () => ({ type: "oauth2", getAccessToken: async () => "t" }),
+        log: (message) => messages.push(message),
+      });
+      await manager.reconcile();
+      await waitFor(async () =>
+        messages.some(
+          (message) =>
+            message.includes(account.email) &&
+            message.includes("回線が切れました"),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect((await accountRow(account.id))?.calendarError).toBeNull();
+    });
   });
 });

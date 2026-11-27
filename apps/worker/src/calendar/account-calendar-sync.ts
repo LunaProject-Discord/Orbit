@@ -10,6 +10,7 @@ import {
   calendars,
   type Database,
   listEventEtags,
+  listEventKeys,
   upsertAccountCalendars,
 } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
@@ -24,6 +25,7 @@ import {
   type CalendarProvider,
   type CalendarRow,
   type ProviderContext,
+  type RemoteEvent,
   toAccountCalendarInput,
 } from "./provider.js";
 import { createCalendarAuth } from "./tokens.js";
@@ -40,6 +42,8 @@ const PRESENT_POLL_MS = 60_000;
 const MAX_SLEEP_MS = 10 * 60_000;
 /** 1 回の同期で読むページ数の上限 (プロバイダの不具合で終わらないときの保険)。 */
 const MAX_PAGES = 1_000;
+/** 同期を止めるときの、変更通知の停止 (stopPush) 1 回分の時間の上限。 */
+const STOP_PUSH_TIMEOUT_MS = 10_000;
 
 export type AccountCalendarSyncOptions = {
   encryptionKey: Buffer;
@@ -80,6 +84,8 @@ export class AccountCalendarSync {
   private requested = new Set<string>();
   private requestedAll = false;
   private presentUntil = 0;
+  /** 最後に読んだカレンダーの行 (アカウントが消えた後に変更通知を止めるため)。 */
+  private knownCalendars: CalendarRow[] = [];
 
   constructor(
     private readonly db: Database,
@@ -113,8 +119,9 @@ export class AccountCalendarSync {
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
+        // 一時的な失敗は calendarError に書かない (calendarError は同期が止まった状態だけを表し、
+        // API はそれを見て書き込みを断る)。
         this.log(`同期中にエラーが発生しました: ${message}`);
-        await this.setCalendarError(describeError(error));
         nextAt = Date.now() + this.backoff * (0.75 + Math.random() * 0.5);
         this.backoff = Math.min(this.backoff * 2, MAX_BACKOFF_MS);
       }
@@ -134,6 +141,71 @@ export class AccountCalendarSync {
     this.stopped = true;
     this.abort.abort();
     this.wake?.();
+  }
+
+  /**
+   * 同期をやめる (calendarEnabled を切った、アカウントが対象から外れた)。変更通知を止めてから
+   * 停止する。失敗しても停止はする。アカウントやカレンダーの行が消えていれば、最後に読んだ行を使う。
+   */
+  async shutdown() {
+    this.stopped = true;
+    this.wake?.();
+    try {
+      if (this.provider.stopPush) {
+        const rows = await this.db
+          .select()
+          .from(calendars)
+          .where(
+            and(
+              eq(calendars.accountId, this.account.id),
+              eq(calendars.source, this.provider.source),
+            ),
+          );
+        const targets = rows.length > 0 ? rows : this.knownCalendars;
+        await this.stopPushFor(
+          {
+            ...this.context(),
+            signal: AbortSignal.timeout(STOP_PUSH_TIMEOUT_MS),
+          },
+          targets,
+          false,
+        );
+      }
+    } catch (error) {
+      this.log(
+        `変更通知を止められませんでした: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.stop();
+    }
+  }
+
+  /**
+   * pushChannelId のあるカレンダーの変更通知を止める。失敗はログに残して続ける。
+   * rethrow が true なら、認証の失敗と停止は投げ直す。
+   */
+  private async stopPushFor(
+    ctx: ProviderContext,
+    rows: readonly CalendarRow[],
+    rethrow: boolean,
+  ) {
+    if (!this.provider.stopPush) return;
+    for (const row of rows) {
+      if (row.pushChannelId === null) continue;
+      try {
+        await this.provider.stopPush(ctx, row);
+      } catch (error) {
+        if (
+          rethrow &&
+          (error instanceof CalendarAuthError || this.abort.signal.aborted)
+        ) {
+          throw error;
+        }
+        this.log(
+          `「${row.name}」の変更通知を止められませんでした: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
 
   /**
@@ -231,6 +303,8 @@ export class AccountCalendarSync {
     if (outboxResult.done > 0) {
       this.log(`予定の変更を ${outboxResult.done} 件書き戻しました`);
     }
+    // 一時的な失敗で待っている書き戻しがあれば、その時刻に起きる。
+    const outboxRetryAt = outboxResult.retryAt?.getTime() ?? null;
 
     // 2. カレンダーの一覧。
     const now = Date.now();
@@ -250,6 +324,7 @@ export class AccountCalendarSync {
           eq(calendars.source, this.provider.source),
         ),
       );
+    this.knownCalendars = rows;
     const requestedAll = this.requestedAll;
     const requested = new Set(this.requested);
     this.requestedAll = false;
@@ -299,23 +374,46 @@ export class AccountCalendarSync {
     for (const calendar of after) {
       nextAt = Math.min(nextAt, this.dueAt(calendar));
     }
+    if (outboxRetryAt !== null) nextAt = Math.min(nextAt, outboxRetryAt);
     return nextAt;
   }
 
-  /** カレンダーの次の確認の時刻。未同期ならいま。 */
+  /** カレンダーの次の確認の時刻。一度も試していなければいま。 */
   private dueAt(calendar: CalendarRow): number {
-    if (!calendar.lastSyncedAt) return 0;
+    // 失敗しているカレンダーも、最後に試した時刻から間隔をあけてやり直す。
+    const base = Math.max(
+      calendar.lastSyncedAt?.getTime() ?? 0,
+      calendar.syncAttemptedAt?.getTime() ?? 0,
+    );
+    if (base === 0) return 0;
     let interval =
       (calendar.pollIntervalSeconds ?? this.provider.defaultPollSeconds) * 1000;
     if (Date.now() < this.presentUntil) {
       interval = Math.min(interval, PRESENT_POLL_MS);
     }
-    // 失敗しているカレンダーも、間隔をあけてやり直す。
-    return calendar.lastSyncedAt.getTime() + interval;
+    return base + interval;
   }
 
   private async syncCalendarList(ctx: ProviderContext) {
     const remote = await this.provider.listCalendars(ctx);
+    // 一覧から消えるカレンダーの変更通知を、行を消す前に止める (ロックを持ったまま呼ばない)。
+    const wanted = new Set(remote.map((calendar) => calendar.remoteId));
+    const existing = await this.db
+      .select()
+      .from(calendars)
+      .where(
+        and(
+          eq(calendars.accountId, this.account.id),
+          eq(calendars.source, this.provider.source),
+        ),
+      );
+    await this.stopPushFor(
+      ctx,
+      existing.filter(
+        (row) => row.remoteId === null || !wanted.has(row.remoteId),
+      ),
+      true,
+    );
     await this.db.transaction(async (tx) => {
       await lockCalendarAccount(tx, this.account.id);
       const { upserted, deleted } = await upsertAccountCalendars(
@@ -350,6 +448,7 @@ export class AccountCalendarSync {
    */
   private async syncCalendar(ctx: ProviderContext, calendar: CalendarRow) {
     const seen = new Set<string>();
+    const carry: RemoteEvent[] = [];
     let pageCursor: string | null = null;
     try {
       // 途中のページでは同期の位置 (syncToken) を変えない。最後のページで保存する。
@@ -358,6 +457,7 @@ export class AccountCalendarSync {
           syncToken: calendar.syncToken,
           pageCursor,
           knownEtags: () => listEventEtags(this.db, calendar.id),
+          knownEvents: () => listEventKeys(this.db, calendar.id),
         });
         await ingestEventDelta(this.db, {
           account: this.account,
@@ -365,6 +465,7 @@ export class AccountCalendarSync {
           provider: this.provider,
           delta,
           seen,
+          carry,
           log: (message) => this.log(message),
         });
         pageCursor = delta.nextPageCursor;
@@ -384,8 +485,9 @@ export class AccountCalendarSync {
       await this.db.transaction(async (tx) => {
         await tx
           .update(calendars)
-          // 確認した時刻は進め、確認間隔をあけてからやり直す。
-          .set({ lastError: message, lastSyncedAt: new Date() })
+          // 試した時刻は進め、確認間隔をあけてからやり直す。lastSyncedAt (最後に成功した時刻) は
+          // 書き戻しの gone の決まりの基準なので、失敗では進めない。
+          .set({ lastError: message, syncAttemptedAt: new Date() })
           .where(eq(calendars.id, calendar.id));
         if (calendar.lastError !== message) {
           await recordChanges(tx, this.account.userId, "calendar", "upsert", [

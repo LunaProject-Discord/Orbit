@@ -1,7 +1,12 @@
-import { calendars, type Database, listEventEtags } from "@orbit/db";
+import {
+  calendars,
+  type Database,
+  listEventEtags,
+  listEventKeys,
+} from "@orbit/db";
 import { eq } from "drizzle-orm";
 import { ingestEventDelta } from "../ingest.js";
-import type { AccountRow, CalendarProvider } from "../provider.js";
+import type { AccountRow, CalendarProvider, RemoteEvent } from "../provider.js";
 import { makeProviderContext } from "./provider-contract.js";
 
 /**
@@ -21,6 +26,7 @@ export async function syncCalendar(
   if (!calendar) throw new Error("カレンダーがありません。");
   const ctx = makeProviderContext({ account });
   const seen = new Set<string>();
+  const carry: RemoteEvent[] = [];
   let pageCursor: string | null = null;
   const results = [];
   do {
@@ -28,6 +34,7 @@ export async function syncCalendar(
       syncToken: calendar.syncToken,
       pageCursor,
       knownEtags: () => listEventEtags(db, calendar.id),
+      knownEvents: () => listEventKeys(db, calendar.id),
     });
     results.push(
       await ingestEventDelta(db, {
@@ -36,6 +43,7 @@ export async function syncCalendar(
         provider,
         delta,
         seen,
+        carry,
       }),
     );
     pageCursor = delta.nextPageCursor;

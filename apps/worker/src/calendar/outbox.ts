@@ -15,12 +15,14 @@ import {
   findCalendarEvents,
   outbox,
 } from "@orbit/db";
-import { and, asc, eq, inArray, lt, ne } from "drizzle-orm";
-import { recordChanges } from "../changes.js";
+import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
+import { recordChanges, type Tx } from "../changes.js";
 import {
   isDeletePending,
   loadPendingEventGuard,
   lockCalendarAccount,
+  type ResolvedRemoteEvent,
+  resolveRemoteUids,
   writeRemoteEvents,
 } from "./ingest.js";
 import {
@@ -29,6 +31,7 @@ import {
   CalendarNotImplementedError,
   type CalendarProvider,
   type CalendarRow,
+  CalendarTransientError,
   type EventSnapshot,
   type EventWrite,
   type ProviderContext,
@@ -37,8 +40,13 @@ import {
   type WriteResult,
 } from "./provider.js";
 
-/** 一時的な失敗でやり直す回数の上限。超えたら失敗として扱う (メールの outbox と同じ)。 */
-const MAX_ATTEMPTS = 5;
+/**
+ * 一時的な失敗でやり直す期間。最初の一時的な失敗からこれだけたっても反映できなければ、
+ * 確定した失敗として扱う (回数では打ち切らない。429 や数分の障害で利用者の変更を巻き戻さないため)。
+ */
+export const TRANSIENT_GIVE_UP_MS = 6 * 60 * 60_000;
+/** CalendarTransientError に待つ時間が無いときの待ち時間。 */
+export const DEFAULT_RETRY_AFTER_MS = 30_000;
 /** 反映済みの記録を残す期間 (メールの outbox と同じ)。 */
 const KEEP_DONE_MS = 7 * 24 * 60 * 60_000;
 /** 書き込みの競合 (conflict) を、取り直してやり直す回数の上限。 */
@@ -58,16 +66,19 @@ export type EventOutboxDeps = {
 
 /**
  * アカウントの予定の書き戻し (event_*) を、受け付けた順にプロバイダへ反映する。
- * 行と状態の扱いはメールの processOutbox と同じ: 一時的な失敗では例外を投げて止まり
- * (順番を保つため後続も実行しない)、次の周回で続きからやり直す。
- * 認証の失敗 (CalendarAuthError) と停止は、操作のせいではないので回数に数えずに投げる。
+ * 一時的な失敗では止まり (順番を保つため後続も実行しない)、次の周回で続きからやり直す。
+ * - ふつうの例外は投げ直す (周回のバックオフで待つ)。attempts に数える。
+ * - CalendarTransientError は attempts に数えず、行の runAfter を retryAfter の後にして止まる
+ *   (投げない)。返す retryAt がその時刻。runAfter が来ていない行が先頭にあれば、そこで止まる。
+ * - 最初の一時的な失敗 (firstFailedAt) から TRANSIENT_GIVE_UP_MS たつと、確定した失敗にする。
+ * 認証の失敗 (CalendarAuthError) と停止は、操作のせいではないので数えずに投げる。
  */
 export async function processEventOutbox(
   deps: EventOutboxDeps,
-): Promise<{ done: number; failed: number }> {
+): Promise<{ done: number; failed: number; retryAt: Date | null }> {
   const { db, account } = deps;
   const rows = await db
-    .select()
+    .select({ id: outbox.id })
     .from(outbox)
     .where(
       and(
@@ -79,24 +90,31 @@ export async function processEventOutbox(
     .orderBy(asc(outbox.createdAt), asc(outbox.id));
   let done = 0;
   let failed = 0;
+  let retryAt: Date | null = null;
+  const active = inArray(outbox.status, ["pending", "processing"]);
 
   for (const listed of rows) {
+    // 停止を求められたら、次の行を始めない。
+    if (deps.ctx.signal.aborted) break;
     // 前の行の結果で payload が書き換わっていることがある (削除の target など)。
     // API に取り消された行は飛ばす。
-    const [row] = await db
-      .select()
+    const [fresh] = await db
+      .select({ runAfter: outbox.runAfter })
       .from(outbox)
-      .where(
-        and(
-          eq(outbox.id, listed.id),
-          inArray(outbox.status, ["pending", "processing"]),
-        ),
-      );
-    if (!row) continue;
-    await db
+      .where(and(eq(outbox.id, listed.id), active));
+    if (!fresh) continue;
+    if (fresh.runAfter.getTime() > nowOf(deps).getTime()) {
+      // 一時的な失敗で待っている行。順番を保つため、後続も実行しない。
+      retryAt = fresh.runAfter;
+      break;
+    }
+    // 取るときも状態を確かめる (ほかの同期が先に終えた行を、もう一度実行しない)。
+    const [row] = await db
       .update(outbox)
-      .set({ status: "processing", attempts: row.attempts + 1 })
-      .where(eq(outbox.id, row.id));
+      .set({ status: "processing", attempts: sql`${outbox.attempts} + 1` })
+      .where(and(eq(outbox.id, listed.id), active))
+      .returning();
+    if (!row) continue;
     let result: OperationResult;
     try {
       result = await applyEventOperation(deps, row);
@@ -109,15 +127,45 @@ export async function processEventOutbox(
       ) {
         await db
           .update(outbox)
-          .set({ status: "pending", attempts: row.attempts, lastError: reason })
-          .where(eq(outbox.id, row.id));
+          .set({
+            status: "pending",
+            attempts: row.attempts - 1,
+            lastError: reason,
+          })
+          .where(and(eq(outbox.id, row.id), active));
         throw error;
       }
-      if (row.attempts + 1 < MAX_ATTEMPTS) {
+      const now = nowOf(deps);
+      const failedSince = row.firstFailedAt ?? now;
+      if (now.getTime() - failedSince.getTime() < TRANSIENT_GIVE_UP_MS) {
+        if (error instanceof CalendarTransientError) {
+          const at = new Date(
+            now.getTime() + (error.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS),
+          );
+          await db
+            .update(outbox)
+            .set({
+              status: "pending",
+              attempts: row.attempts - 1,
+              lastError: reason,
+              firstFailedAt: failedSince,
+              runAfter: at,
+            })
+            .where(and(eq(outbox.id, row.id), active));
+          deps.log(
+            `予定の書き戻しを ${at.toISOString()} まで待ちます: ${reason}`,
+          );
+          retryAt = at;
+          break;
+        }
         await db
           .update(outbox)
-          .set({ status: "pending", lastError: reason })
-          .where(eq(outbox.id, row.id));
+          .set({
+            status: "pending",
+            lastError: reason,
+            firstFailedAt: failedSince,
+          })
+          .where(and(eq(outbox.id, row.id), active));
         throw error;
       }
       result = { ok: false, reason };
@@ -144,7 +192,36 @@ export async function processEventOutbox(
         lt(outbox.updatedAt, new Date(Date.now() - KEEP_DONE_MS)),
       ),
     );
-  return { done, failed };
+  return { done, failed, retryAt };
+}
+
+/** プロバイダから届いた予定に uid を補う。補えなかった例外はログに残して捨てる。 */
+async function resolveFetched(
+  deps: EventOutboxDeps,
+  calendar: CalendarRow,
+  list: readonly RemoteEvent[],
+): Promise<ResolvedRemoteEvent[]> {
+  const { resolved, unresolved } = await resolveRemoteUids(
+    deps.db,
+    calendar.id,
+    list,
+  );
+  for (const event of unresolved) {
+    deps.log(
+      `予定 ${event.remoteId} (${event.recurrenceId ?? ""}) は原本が見つからず uid を補えないので、書き込みませんでした`,
+    );
+  }
+  return resolved;
+}
+
+/** getEvent して uid を補う。無ければ null。 */
+async function fetchRemote(
+  deps: EventOutboxDeps,
+  calendar: CalendarRow,
+  ref: RemoteEventRef,
+): Promise<ResolvedRemoteEvent[] | null> {
+  const latest = await deps.provider.getEvent(deps.ctx, calendar, ref);
+  return latest === null ? null : resolveFetched(deps, calendar, latest);
 }
 
 function nowOf(deps: EventOutboxDeps) {
@@ -226,10 +303,10 @@ function refFromOutbox(target: EventOutboxRef): RemoteEventRef | null {
 }
 
 /** 取り直した予定から、ref の予定 1 行を探す。 */
-function findRemote(
-  list: readonly RemoteEvent[],
+function findRemote<T extends RemoteEvent>(
+  list: readonly T[],
   ref: Pick<RemoteEventRef, "uid" | "recurrenceId" | "remoteId">,
-): RemoteEvent | null {
+): T | null {
   return (
     list.find(
       (event) =>
@@ -245,24 +322,84 @@ function findRemote(
 }
 
 /**
+ * 作成の結果を書く前に、相手側が付け替えた UID の予定を取り込みが先に入れていたとき
+ * (作成の結果を保存する前に止まり、やり直す前に同期が走った)、その行をこちらの行 (events.id) へ寄せる。
+ * - 同じ回 (recurrenceId) の行がこちらにもあれば、先に入った行を消し、それを指す書き戻し待ちを
+ *   こちらの行へ付け替える。events.id は端末と outbox が参照しているので、こちらを残す。
+ * - こちらに無い回の例外は、こちらの原本の子に付け替えて残す。
+ * 返すのは消した行の ID。
+ */
+async function absorbDuplicateUid(
+  tx: Tx,
+  deps: EventOutboxDeps,
+  calendar: CalendarRow,
+  fromUid: string,
+  toUid: string,
+): Promise<string[]> {
+  const dupes = await tx
+    .select({ id: events.id, recurrenceId: events.recurrenceId })
+    .from(events)
+    .where(and(eq(events.calendarId, calendar.id), eq(events.uid, toUid)));
+  if (dupes.length === 0) return [];
+  const mine = await tx
+    .select({ id: events.id, recurrenceId: events.recurrenceId })
+    .from(events)
+    .where(and(eq(events.calendarId, calendar.id), eq(events.uid, fromUid)));
+  const mineByRecurrence = new Map(
+    mine.map((row) => [row.recurrenceId ?? "", row.id]),
+  );
+  const myMaster = mineByRecurrence.get("");
+  const removed: string[] = [];
+  for (const dupe of dupes) {
+    const target = mineByRecurrence.get(dupe.recurrenceId ?? "");
+    if (target) {
+      await tx
+        .update(outbox)
+        .set({
+          payload: sql`jsonb_set(${outbox.payload}, '{eventId}', to_jsonb(${target}::text))`,
+        })
+        .where(
+          and(
+            eq(outbox.accountId, deps.account.id),
+            inArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
+            inArray(outbox.status, ["pending", "processing"]),
+            sql`${outbox.payload}->>'eventId' = ${dupe.id}`,
+          ),
+        );
+      removed.push(dupe.id);
+    } else if (dupe.recurrenceId !== null && myMaster) {
+      await tx
+        .update(events)
+        .set({ parentId: myMaster })
+        .where(eq(events.id, dupe.id));
+    }
+  }
+  if (removed.length > 0) {
+    await tx.delete(events).where(inArray(events.id, removed));
+    await recordChanges(tx, deps.account.userId, "event", "delete", removed);
+  }
+  return removed;
+}
+
+/**
  * 書き戻しの結果 (相手側の姿) を DB に書く。outboxId の行は反映し終えたものとして数えず、
  * ほかの書き戻し待ちの項目だけローカルを残す。
  * target は書き込んだ予定 (events.id と回)。その予定の削除が後ろに積まれていれば
  * (書き込みの実行中に API で消された)、結果は行に書かず (消した行を戻さない)、
  * 削除の payload の target に相手側の remoteId と etag を書き込んで、削除がそれを使えるようにする。
  * rename は、相手側が UID を付け替えたときの元の uid (行の uid を先に書き換えて、
- * 同じ行に remoteId が付くようにする)。
+ * 同じ行に remoteId が付くようにする)。新しい uid の行が既にあれば、先にこちらへ寄せる。
  */
 async function applyWriteResult(
   deps: EventOutboxDeps,
   calendar: CalendarRow,
   outboxId: string,
-  remote: readonly RemoteEvent[],
+  remote: readonly ResolvedRemoteEvent[],
   target: { eventId: string; recurrenceId: string | null } | null,
   rename?: { fromUid: string },
 ) {
   await deps.db.transaction(async (tx) => {
-    const guard = await loadPendingEventGuard(tx, deps.account.id, [outboxId]);
+    let guard = await loadPendingEventGuard(tx, deps.account.id, [outboxId]);
     const primary =
       (target &&
         remote.find((event) => event.recurrenceId === target.recurrenceId)) ??
@@ -306,6 +443,17 @@ async function applyWriteResult(
       }
     }
     if (rename && primary && primary.uid !== rename.fromUid) {
+      const absorbed = await absorbDuplicateUid(
+        tx,
+        deps,
+        calendar,
+        rename.fromUid,
+        primary.uid,
+      );
+      if (absorbed.length > 0) {
+        // 書き戻し待ちを付け替えたので読み直す。
+        guard = await loadPendingEventGuard(tx, deps.account.id, [outboxId]);
+      }
       // 原本の uid を変えると、例外も同じ uid にそろえる (uid は原本と例外で同じ値)。
       await tx
         .update(events)
@@ -317,13 +465,16 @@ async function applyWriteResult(
           ),
         );
     }
+    const current = guard;
     await writeRemoteEvents(tx, {
       account: deps.account,
       calendar,
       provider: deps.provider,
-      guard,
+      guard: current,
       // 削除の書き戻し待ちの予定は書かない (消した行を戻さない)。
-      events: remote.filter((event) => !isDeletePending(guard, event)),
+      events: remote.filter(
+        (event) => !isDeletePending(current, calendar.id, event),
+      ),
       now: nowOf(deps),
     });
   });
@@ -375,14 +526,20 @@ async function applyCreate(
   if (!snapshot) return { ok: true };
   // 前回の実行で作成まで済んでいた (結果の書き込みの後に止まった)。
   if (snapshot.event.remoteId !== null) return { ok: true };
+  // 結果の書き込みの前に止まっていたら、相手側には既にある。プロバイダは events.id から
+  // 決まる ID で冪等に作り、既にあれば ok (または conflict と remoteId) を返す約束。
   const result = await deps.provider.createEvent(deps.ctx, calendar, {
     ...snapshot,
     fields: [...EVENT_FIELD_NAMES],
   });
-  return finishWrite(deps, calendar, row, snapshot, result, "作成");
+  return finishWrite(deps, calendar, row, snapshot, result, "作成", true);
 }
 
-/** 書き込みの結果を DB に反映する (ok 以外は失敗の理由にする)。 */
+/**
+ * 書き込みの結果を DB に反映する (ok 以外は失敗の理由にする)。
+ * create のとき、conflict に remoteId があれば (決まった ID の予定が既にある)、
+ * 取り直して ok として扱う。
+ */
 async function finishWrite(
   deps: EventOutboxDeps,
   calendar: CalendarRow,
@@ -390,37 +547,63 @@ async function finishWrite(
   snapshot: Snapshot,
   result: WriteResult,
   label: string,
+  create = false,
 ): Promise<OperationResult> {
-  switch (result.status) {
-    case "ok":
-      await applyWriteResult(
-        deps,
-        calendar,
-        row.id,
-        result.events,
-        {
-          eventId: snapshot.event.id,
-          recurrenceId: snapshot.event.recurrenceId,
-        },
-        { fromUid: snapshot.event.uid },
+  let written: readonly RemoteEvent[] | null = null;
+  if (result.status === "ok") {
+    written = result.events;
+  } else if (result.status === "conflict" && create && result.remoteId) {
+    const existing = await deps.provider.getEvent(deps.ctx, calendar, {
+      remoteId: result.remoteId,
+      etag: null,
+      uid: snapshot.event.uid,
+      recurrenceId: snapshot.event.recurrenceId,
+      parentRemoteId: null,
+    });
+    if (existing && existing.length > 0) {
+      deps.log(
+        `予定 ${snapshot.event.id} は相手側に作成済みだったので、その内容を使います`,
       );
-      return { ok: true };
+      written = existing;
+    }
+  }
+  if (written) {
+    await applyWriteResult(
+      deps,
+      calendar,
+      row.id,
+      await resolveFetched(deps, calendar, written),
+      {
+        eventId: snapshot.event.id,
+        recurrenceId: snapshot.event.recurrenceId,
+      },
+      { fromUid: snapshot.event.uid },
+    );
+    return { ok: true };
+  }
+  switch (result.status) {
     case "rejected":
       return { ok: false, reason: result.reason };
-    case "conflict":
-      return {
-        ok: false,
-        reason: `予定の${label}が相手側の変更と競合しました。`,
-      };
     case "gone":
       return {
         ok: false,
         reason: "予定またはカレンダーが相手側にありません。",
       };
+    default:
+      return {
+        ok: false,
+        reason: `予定の${label}が相手側の変更と競合しました。`,
+      };
   }
 }
 
-/** ローカルの変更が、最後に相手側を確かめた時刻より後か (gone のときの決まり)。 */
+/**
+ * ローカルの変更が、相手側の削除より後か (gone のときの決まり)。相手側の削除は、
+ * 最後に相手側にあると確かめた時刻より後に起きたとみなす。その時刻は、取り込みが削除を
+ * 見送ったときに行に残した remoteDeletedAfter、無ければ最後に成功した同期の時刻
+ * (calendars.lastSyncedAt。失敗では進まない)、それも無ければ行の remoteUpdatedAt。
+ * 削除の時刻がはっきりしない間の変更は、ローカルを勝たせる。
+ */
 function localIsNewer(
   snapshot: Snapshot,
   calendar: CalendarRow,
@@ -432,11 +615,12 @@ function localIsNewer(
     Number.NEGATIVE_INFINITY,
   );
   if (!Number.isFinite(local)) return false;
-  const synced =
+  const seenAlive =
+    snapshot.event.remoteDeletedAfter?.getTime() ??
     calendar.lastSyncedAt?.getTime() ??
     snapshot.event.remoteUpdatedAt?.getTime() ??
     0;
-  return local > synced;
+  return local > seenAlive;
 }
 
 async function applyUpdate(
@@ -478,16 +662,22 @@ async function applyUpdate(
       write,
     );
     if (result.status === "ok") {
-      await applyWriteResult(deps, calendar, row.id, result.events, {
-        eventId: snapshot.event.id,
-        recurrenceId: snapshot.event.recurrenceId,
-      });
+      await applyWriteResult(
+        deps,
+        calendar,
+        row.id,
+        await resolveFetched(deps, calendar, result.events),
+        {
+          eventId: snapshot.event.id,
+          recurrenceId: snapshot.event.recurrenceId,
+        },
+      );
       return { ok: true };
     }
     if (result.status === "rejected") {
       return { ok: false, reason: result.reason };
     }
-    let latest: RemoteEvent[] | null = null;
+    let latest: ResolvedRemoteEvent[] | null = null;
     if (result.status === "conflict") {
       if (attempt >= MAX_CONFLICT_RETRIES) {
         return {
@@ -495,7 +685,7 @@ async function applyUpdate(
           reason: `相手側の変更と ${MAX_CONFLICT_RETRIES} 回続けて競合しました。`,
         };
       }
-      latest = await deps.provider.getEvent(deps.ctx, calendar, ref);
+      latest = await fetchRemote(deps, calendar, ref);
     }
     if (latest === null) {
       // 相手側に無い (gone)。ローカルの変更の方が新しければ作り直し、そうでなければローカルを消す。
@@ -512,7 +702,10 @@ async function applyUpdate(
         calendar,
         provider: deps.provider,
         guard,
-        events: fetched,
+        // 解決している間に API で消された予定は書かない (消した行を戻さない)。
+        events: fetched.filter(
+          (event) => !isDeletePending(guard, calendar.id, event),
+        ),
         now: nowOf(deps),
       });
       for (const lost of written.lostLocal) {
@@ -528,7 +721,7 @@ async function applyUpdate(
     snapshot = await loadSnapshot(deps, calendar.id, payload.eventId);
     if (!snapshot) return { ok: true };
     fields = remaining;
-    const remote = findRemote(fetched, ref);
+    const remote: ResolvedRemoteEvent | null = findRemote(fetched, ref);
     ref = refOf(snapshot) ?? { ...ref, etag: remote?.etag ?? null };
   }
 }
@@ -552,7 +745,7 @@ async function resolveGone(
       exceptions: snapshot.exceptions,
       fields: [...EVENT_FIELD_NAMES],
     });
-    return finishWrite(deps, calendar, row, snapshot, result, "作り直し");
+    return finishWrite(deps, calendar, row, snapshot, result, "作り直し", true);
   }
   deps.log(
     `予定 ${snapshot.event.id} は相手側で消えていたので、こちらでも消します`,
@@ -583,7 +776,7 @@ async function applyDelete(
       };
     }
     // 相手側が先に変わっていた。削除と変更は後から行った方を採る。
-    const latest = await deps.provider.getEvent(deps.ctx, calendar, ref);
+    const latest = await fetchRemote(deps, calendar, ref);
     if (!latest) return { ok: true };
     const remote = findRemote(latest, ref);
     if (!remote) return { ok: true };
@@ -623,10 +816,16 @@ async function applyRespond(
       comment: payload.comment,
     });
     if (result.status === "ok") {
-      await applyWriteResult(deps, calendar, row.id, result.events, {
-        eventId: snapshot.event.id,
-        recurrenceId: snapshot.event.recurrenceId,
-      });
+      await applyWriteResult(
+        deps,
+        calendar,
+        row.id,
+        await resolveFetched(deps, calendar, result.events),
+        {
+          eventId: snapshot.event.id,
+          recurrenceId: snapshot.event.recurrenceId,
+        },
+      );
       return { ok: true };
     }
     if (result.status === "rejected")
@@ -641,7 +840,7 @@ async function applyRespond(
       };
     }
     // 返事は自分の出欠だけなので、マージせずに新しい etag でやり直す。
-    const latest = await deps.provider.getEvent(deps.ctx, calendar, ref);
+    const latest = await fetchRemote(deps, calendar, ref);
     if (!latest) return { ok: false, reason: "予定が相手側にありません。" };
     ref.etag = findRemote(latest, ref)?.etag ?? null;
   }
@@ -650,7 +849,8 @@ async function applyRespond(
 /**
  * 確定した失敗の後始末。outbox を failed にし、先に DB へ反映した内容を相手側の内容に戻す
  * (作成は行を残す)。相手側を取り直せなければ、カレンダーの同期の位置を消して、
- * 次の同期の全件の突き合わせで戻す。カレンダーの変更として端末へ知らせる。
+ * 次の同期の全件の突き合わせで戻す。まだ相手側に無い回の例外 (remoteId が null) は、
+ * 戻す先が無いので行を消す。カレンダーの変更として端末へ知らせる。
  */
 async function failEventOperation(
   deps: EventOutboxDeps,
@@ -664,7 +864,9 @@ async function failEventOperation(
     : null;
 
   // 戻す先の、相手側の内容。undefined は取り直せなかった。
-  let latest: RemoteEvent[] | null | undefined;
+  let latest: ResolvedRemoteEvent[] | null | undefined;
+  // まだ相手側に無い回の例外。戻す先が無いので行を消す。
+  let unsentException: string | null = null;
   if (calendar && row.kind !== "event_create") {
     let ref: RemoteEventRef | null = null;
     if (row.kind === "event_delete") {
@@ -672,10 +874,17 @@ async function failEventOperation(
     } else if (payload.eventId) {
       const snapshot = await loadSnapshot(deps, calendar.id, payload.eventId);
       ref = snapshot ? refOf(snapshot) : null;
+      if (
+        snapshot &&
+        snapshot.event.remoteId === null &&
+        snapshot.event.recurrenceId !== null
+      ) {
+        unsentException = snapshot.event.id;
+      }
     }
     if (ref) {
       try {
-        latest = await deps.provider.getEvent(deps.ctx, calendar, ref);
+        latest = await fetchRemote(deps, calendar, ref);
       } catch (error) {
         if (error instanceof CalendarAuthError) throw error;
         latest = undefined;
@@ -692,7 +901,24 @@ async function failEventOperation(
       .set({ status: "failed", lastError: reason })
       .where(eq(outbox.id, row.id));
     if (!calendar) return;
-    if (row.kind !== "event_create" && payload.eventId) {
+    if (unsentException) {
+      const removed = await tx
+        .delete(events)
+        .where(
+          and(
+            eq(events.id, unsentException),
+            eq(events.calendarId, calendar.id),
+          ),
+        )
+        .returning({ id: events.id });
+      await recordChanges(
+        tx,
+        deps.account.userId,
+        "event",
+        "delete",
+        removed.map((item) => item.id),
+      );
+    } else if (row.kind !== "event_create" && payload.eventId) {
       // 相手側が変わっていなくても書き直されるよう、行の etag を外す
       // (etag と raw が同じ行は、取り込みでも upsert でも触らないため)。
       await tx
@@ -705,8 +931,8 @@ async function failEventOperation(
           ),
         );
     }
-    if (row.kind === "event_create") {
-      // 作成の失敗は行を残す (利用者の入力を消さない)。
+    if (row.kind === "event_create" || unsentException) {
+      // 作成の失敗は行を残す (利用者の入力を消さない)。相手側に無い例外は消した。
     } else if (latest && latest.length > 0) {
       // この行はもう書き戻し待ちではないので、相手側と違う項目は相手側に戻る。
       const guard = await loadPendingEventGuard(tx, deps.account.id);
@@ -715,7 +941,10 @@ async function failEventOperation(
         calendar,
         provider: deps.provider,
         guard,
-        events: latest,
+        // 削除の書き戻し待ちの予定は書かない (消した行を戻さない)。
+        events: latest.filter(
+          (event) => !isDeletePending(guard, calendar.id, event),
+        ),
         now: nowOf(deps),
       });
     } else {
