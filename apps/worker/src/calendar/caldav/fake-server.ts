@@ -25,6 +25,10 @@ export type FakeCaldavOptions = {
   /** calendar-home-set を別のホストにする (iCloud のように)。 */
   homeOrigin?: string;
   calendars?: FakeCalendar[];
+  /** OPTIONS の DAV ヘッダーに calendar-auto-schedule を入れる (招待を自分で送るサーバー)。 */
+  autoSchedule?: boolean;
+  /** OPTIONS に返す状態コード (失敗を再現する)。既定は 200。 */
+  optionsStatus?: number;
 };
 
 type Resource = { etag: string; data: string };
@@ -124,6 +128,20 @@ export class FakeCaldavServer {
       });
     }
     if (method === "PUT") return this.put(path, headers, body);
+    if (method === "OPTIONS") {
+      if (this.options.optionsStatus && this.options.optionsStatus !== 200) {
+        return new Response(null, { status: this.options.optionsStatus });
+      }
+      return new Response(null, {
+        status: 200,
+        headers: {
+          dav: [
+            "1, 2, 3, access-control, calendar-access",
+            ...(this.options.autoSchedule ? ["calendar-auto-schedule"] : []),
+          ].join(", "),
+        },
+      });
+    }
     if (method === "DELETE") {
       const resource = this.resources.get(path);
       if (!resource) return new Response(null, { status: 404 });

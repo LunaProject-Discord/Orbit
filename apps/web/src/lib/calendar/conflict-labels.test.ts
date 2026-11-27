@@ -8,6 +8,7 @@ import {
   conflictSummary,
   conflictWhen,
   displayFields,
+  errorReasonLabel,
   fieldListLabel,
   fieldValueLabel,
   pendingState,
@@ -307,5 +308,29 @@ describe("日時と同期の表示", () => {
     expect(
       calendarSyncStatus({ online: true, pending: 0, loaded: true }).label,
     ).toBe("同期済み");
+  });
+});
+
+describe("出欠と招待の断りの理由", () => {
+  it.each([
+    ["not_attendee", "この予定に招待されていません"],
+    ["organizer", "自分が主催する予定には返事できません"],
+    ["cancelled", "この予定は取り消されています"],
+    ["no_scheduling", "このカレンダーからは招待を送れません"],
+  ])("%s", (code, label) => {
+    expect(errorReasonLabel(code)).toBe(label);
+  });
+});
+
+describe("出欠の返事の書き戻しの失敗", () => {
+  it("参加者の変更ではなく、返事を送れなかったと出す", () => {
+    expect(
+      conflictMessage(
+        item({ kind: "write_failed", fields: ["attendees"], lost: null }),
+        google,
+      ),
+    ).toBe(
+      "「定例会議」への出欠の返事を、Google カレンダーに送れませんでした。",
+    );
   });
 });

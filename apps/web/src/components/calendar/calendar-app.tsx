@@ -1,5 +1,6 @@
 "use client";
 
+import { inviteRole } from "@orbit/core/event-invite";
 import { cn } from "cn";
 import {
   ChevronLeftIcon,
@@ -28,6 +29,7 @@ import { EventDetail } from "@/components/calendar/event-detail";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { MobileMonth } from "@/components/calendar/mobile-month";
 import { MonthGrid } from "@/components/calendar/month-grid";
+import type { RsvpChoice } from "@/components/calendar/rsvp-buttons";
 import {
   type ChangeScope,
   ScopeDialog,
@@ -54,6 +56,7 @@ import { navigateApp } from "@/lib/app-navigation";
 import {
   type Calendar,
   type CalendarEvent,
+  calendarScheduling,
   createCaldavAccount,
   createCalendar,
   deleteCalendar,
@@ -80,6 +83,7 @@ import {
   viewTitle,
 } from "@/lib/calendar/dates";
 import {
+  attendeeEditableChanges,
   type EventForm,
   eventFormOf,
   formChanges,
@@ -97,6 +101,7 @@ import {
   useCalendarData,
 } from "@/lib/calendar/offline";
 import { buildCalendarRoute, parseCalendarRoute } from "@/lib/calendar/route";
+import { canRespondTo } from "@/lib/calendar/rsvp";
 import { listAccounts, useOnline } from "@/lib/offline";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
@@ -170,6 +175,11 @@ export function CalendarApp({ user }: { user: User }) {
   } | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** 確認してから消す予定 (decline: 不参加で返事をして削除。organizer: 参加者に取り消しが届く)。 */
+  const [confirmDelete, setConfirmDelete] = useState<{
+    item: DisplayItem;
+    mode: "decline" | "organizer";
+  } | null>(null);
   const [scope, setScope] = useState<
     | { action: "save"; form: EventForm; item: DisplayItem }
     | { action: "delete"; item: DisplayItem }
@@ -306,6 +316,9 @@ export function CalendarApp({ user }: { user: User }) {
         pending: event.attendees.some(
           (attendee) => attendee.self && attendee.status === "needs_action",
         ),
+        declined: event.attendees.some(
+          (attendee) => attendee.self && attendee.status === "declined",
+        ),
         repeating:
           occurrence.recurrenceId !== null &&
           Boolean(master?.rrule || master?.rdates.length),
@@ -416,8 +429,13 @@ export function CalendarApp({ user }: { user: User }) {
       } else {
         // 開いたときの値と比べて、変えた項目だけを送る (ほかの端末の変更を上書きしない)。
         const before = eventFormOf(opened.event, opened.local);
-        const changes = formChanges(form, timeZone, before);
-        if (!changes) throw new Error("invalid");
+        const formed = formChanges(form, timeZone, before);
+        if (!formed) throw new Error("invalid");
+        // 招待された予定は、通知と予定あり / 空きだけを送る (10 章の 2)。
+        const changes =
+          inviteRole(opened.event) === "attendee"
+            ? attendeeEditableChanges(formed)
+            : formed;
         if (Object.keys(changes).length > 0) {
           const recurrenceId = itemRecurrenceId(item);
           if (item.repeating && chosen === null) {
@@ -478,6 +496,74 @@ export function CalendarApp({ user }: { user: User }) {
         error instanceof OfflineUnavailableError
           ? "接続していないので削除できません。"
           : "削除できませんでした。もう一度お試しください。",
+      );
+    }
+  };
+
+  /**
+   * 削除のボタン。招待された予定は「不参加で返事をして削除」の 1 つの操作にし (10 章の 3)、
+   * 参加者のいる自分の予定は、取り消しの連絡が届くことを確かめてから消す。
+   */
+  const requestDelete = (target: DisplayItem) => {
+    const item = currentItem(target) ?? target;
+    const role = inviteRole(item.event);
+    const calendar = calendarIndex.get(item.event.calendarId)?.calendar;
+    // 返事を送れる招待だけ「不参加にして削除」。古いサーバー (scheduling が無い) と、
+    // self がアカウントの持ち主でない共有カレンダーでは、ふつうの削除にする。
+    if (role === "attendee" && canRespondTo(item.event, calendar, accounts)) {
+      setConfirmDelete({ item, mode: "decline" });
+      return;
+    }
+    if (
+      role === "organizer" &&
+      !item.repeating &&
+      calendarScheduling(calendar) === "server" &&
+      item.event.attendees.some((attendee) => !attendee.self)
+    ) {
+      setConfirmDelete({ item, mode: "organizer" });
+      return;
+    }
+    remove(item, null);
+  };
+
+  /** 不参加で返事をしてから消す。返事は消す前に積む (送信待ちは返事を捨てない)。 */
+  const declineAndRemove = (target: DisplayItem) => {
+    const item = currentItem(target) ?? target;
+    setSelected(null);
+    if (!client) {
+      showNotice("削除できませんでした。もう一度お試しください。");
+      return;
+    }
+    try {
+      client.respond(item.event.id, "declined");
+      const recurrenceId = itemRecurrenceId(item);
+      if (item.event.parentId && recurrenceId) {
+        // 例外の行 (この回だけ招待が変わったもの) は、その回だけを消す。
+        client.deleteOccurrence(item.event.parentId, recurrenceId);
+      } else {
+        client.deleteEvent(item.event.id);
+      }
+    } catch (error) {
+      showNotice(
+        error instanceof OfflineUnavailableError
+          ? "接続していないので削除できません。"
+          : "削除できませんでした。もう一度お試しください。",
+      );
+    }
+  };
+
+  const respond = (item: DisplayItem, status: RsvpChoice) => {
+    if (!client) {
+      showNotice("返事を送れませんでした。もう一度お試しください。");
+      return;
+    }
+    try {
+      client.respond((currentItem(item) ?? item).event.id, status);
+    } catch (error) {
+      showNotice(
+        error instanceof OfflineUnavailableError
+          ? "接続していないので返事を送れません。"
+          : "返事を送れませんでした。もう一度お試しください。",
       );
     }
   };
@@ -1026,15 +1112,24 @@ export function CalendarApp({ user }: { user: User }) {
         }
         onDelete={
           selectedItem && !selectedItem.readOnly
-            ? () => void remove(selectedItem, null)
+            ? () => requestDelete(selectedItem)
             : null
         }
+        onRespond={
+          selectedItem && !selectedItem.readOnly
+            ? (status) => respond(selectedItem, status)
+            : null
+        }
+        accounts={accounts}
         onClose={() => setSelected(null)}
       />
       <EventEditor
         open={editor !== null}
         title={editor?.title ?? ""}
         initial={editor?.form ?? null}
+        existing={Boolean(editor?.item)}
+        role={editor?.item ? inviteRole(editor.item.event) : "organizer"}
+        online={online}
         calendars={
           editor?.item
             ? // 予定を別のカレンダーへ移すのは、まだできない。
@@ -1052,6 +1147,11 @@ export function CalendarApp({ user }: { user: User }) {
       />
       <ScopeDialog
         action={scope?.action ?? null}
+        note={
+          scope
+            ? scopeNote(scope, calendarOf(scope.item.event.calendarId))
+            : null
+        }
         onChoose={(chosen) => {
           const current = scope;
           setScope(null);
@@ -1079,6 +1179,46 @@ export function CalendarApp({ user }: { user: User }) {
         onCreate={(input) => void addCalendar(input)}
         onClose={() => setAddOpen(false)}
       />
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirmDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmDelete?.mode === "decline"
+                ? "不参加にして削除しますか？"
+                : "予定を削除しますか？"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDelete?.mode === "decline"
+                ? confirmDelete.item.event.parentId
+                  ? "この回に不参加で返事をして、カレンダーから削除します。"
+                  : confirmDelete.item.repeating
+                    ? "すべての回に不参加で返事をして、カレンダーから削除します。"
+                    : "不参加で返事をして、カレンダーから削除します。"
+                : "参加者に取り消しの連絡が届きます。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = confirmDelete;
+                setConfirmDelete(null);
+                if (!target) return;
+                if (target.mode === "decline") declineAndRemove(target.item);
+                else remove(target.item, null);
+              }}
+            >
+              {confirmDelete?.mode === "decline" ? "不参加にして削除" : "削除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={removing !== null}
         onOpenChange={(next) => {
@@ -1151,6 +1291,23 @@ function pendingOf(client: CalendarClient, item: DisplayItem): QueuedOp[] {
         recurrenceId === null ||
         sameRecurrenceId(op.recurrenceId, recurrenceId),
     );
+}
+
+/** 繰り返しの予定を消すとき、参加者に取り消しの連絡が届くなら添える (変更の連絡は編集画面で出す)。 */
+function scopeNote(
+  scope: { action: "save" | "delete"; item: DisplayItem },
+  calendar: Calendar | undefined,
+): string | null {
+  const { event } = scope.item;
+  if (
+    scope.action !== "delete" ||
+    inviteRole(event) !== "organizer" ||
+    calendarScheduling(calendar) !== "server" ||
+    !event.attendees.some((attendee) => !attendee.self)
+  ) {
+    return null;
+  }
+  return "参加者に取り消しの連絡が届きます。";
 }
 
 /** 書き込めなかった理由。 */

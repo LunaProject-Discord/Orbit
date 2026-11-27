@@ -15,17 +15,20 @@ export function SimpleSelect({
   onChange,
   label,
   className,
+  disabled = false,
 }: {
   value: string;
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
   label: string;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <Select
       items={options}
       value={value}
+      disabled={disabled}
       onValueChange={(next) => {
         if (typeof next === "string") onChange(next);
       }}

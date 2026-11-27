@@ -229,7 +229,11 @@ export function TimeGrid({
                 {continuesBefore && (
                   <ChevronLeftIcon className="size-3.5 shrink-0" />
                 )}
-                <span className="truncate">{itemTitle(bar.item)}</span>
+                <span
+                  className={cn("truncate", bar.item.declined && "opacity-60")}
+                >
+                  {itemTitle(bar.item)}
+                </span>
                 {continuesAfter && (
                   <ChevronRightIcon className="ml-auto size-3.5 shrink-0" />
                 )}
@@ -323,7 +327,14 @@ export function TimeGrid({
                       }}
                     >
                       <span className="flex items-center gap-1 font-medium">
-                        <span className="truncate">{itemTitle(item)}</span>
+                        <span
+                          className={cn(
+                            "truncate",
+                            item.declined && "opacity-50",
+                          )}
+                        >
+                          {itemTitle(item)}
+                        </span>
                         {item.repeating && (
                           <RepeatIcon className="size-3 shrink-0 opacity-60" />
                         )}

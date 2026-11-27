@@ -1,5 +1,7 @@
 "use client";
 
+import type { InviteRole } from "@orbit/core/event-invite";
+import { cn } from "cn";
 import {
   BellIcon,
   CalendarDaysIcon,
@@ -8,11 +10,13 @@ import {
   PlusIcon,
   RepeatIcon,
   TextIcon,
+  UsersIcon,
   XIcon,
 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { reminderLabel } from "@/components/calendar/event-detail";
 import { SimpleSelect } from "@/components/calendar/simple-select";
+import { RecipientInput } from "@/components/mail/recipient-input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -25,8 +29,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import type { Calendar, Reminder } from "@/lib/calendar/api";
-import { type EventForm, formTime } from "@/lib/calendar/event-form";
+import {
+  type Calendar,
+  calendarScheduling,
+  type Reminder,
+} from "@/lib/calendar/api";
+import {
+  type EventForm,
+  formTime,
+  inviteFormView,
+} from "@/lib/calendar/event-form";
 import { describeRule } from "@/lib/calendar/recurrence-label";
 
 const REMINDER_MINUTES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
@@ -56,11 +68,18 @@ function Field({
   );
 }
 
+/** 参加者の欄を囲む枠 (Input と同じ見た目)。 */
+const ATTENDEE_BOX =
+  "flex min-h-9 w-full min-w-0 items-center rounded-md border border-input bg-transparent px-1.5 py-1 shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30";
+
 /** 予定の作成・編集。 */
 export function EventEditor({
   open,
   title,
   initial,
+  existing = false,
+  role = "organizer",
+  online = true,
   calendars,
   colorOf,
   timeZone,
@@ -72,6 +91,12 @@ export function EventEditor({
   open: boolean;
   title: string;
   initial: EventForm | null;
+  /** 既にある予定の編集か (initial が開いたときの値になる)。 */
+  existing?: boolean;
+  /** 予定に対する自分の役割 (新しい予定は organizer)。 */
+  role?: InviteRole;
+  /** サーバーに届くか (注記の言い方を変える)。 */
+  online?: boolean;
   /** 予定を入れられるカレンダー。 */
   calendars: Calendar[];
   colorOf: (calendar: Calendar) => string;
@@ -90,6 +115,18 @@ export function EventEditor({
   const set = <K extends keyof EventForm>(key: K, value: EventForm[K]) =>
     setForm((current) => (current ? { ...current, [key]: value } : current));
   const valid = formTime(form, timeZone) !== null;
+  const invite = inviteFormView({
+    form,
+    before: existing ? initial : null,
+    role,
+    scheduling: calendarScheduling(
+      calendars.find((calendar) => calendar.id === form.calendarId),
+    ),
+    timeZone,
+    online,
+  });
+  const locked = invite.locked;
+  const canSave = valid && invite.blocked === null;
 
   // 開始を動かしたら、終わりも同じだけ動かす (長さを保つ)。
   const moveStart = (date: string, time: string) => {
@@ -167,13 +204,14 @@ export function EventEditor({
           className="flex max-h-[min(70dvh,640px)] flex-col gap-4 overflow-y-auto px-0.5 pb-0.5"
           onSubmit={(event) => {
             event.preventDefault();
-            if (valid && !busy) onSave(form);
+            if (canSave && !busy) onSave(form);
           }}
         >
           <Input
             autoFocus
             aria-label="タイトル"
             placeholder="タイトル"
+            disabled={locked}
             value={form.summary}
             onChange={(event) => set("summary", event.target.value)}
             className="h-11 text-base"
@@ -183,6 +221,7 @@ export function EventEditor({
               <Input
                 type="date"
                 aria-label="開始日"
+                disabled={locked}
                 value={form.startDate}
                 onChange={(event) =>
                   moveStart(event.target.value, form.startTime)
@@ -193,6 +232,7 @@ export function EventEditor({
                 <Input
                   type="time"
                   aria-label="開始時刻"
+                  disabled={locked}
                   step={300}
                   value={form.startTime}
                   onChange={(event) =>
@@ -206,6 +246,7 @@ export function EventEditor({
                 <Input
                   type="time"
                   aria-label="終了時刻"
+                  disabled={locked}
                   step={300}
                   value={form.endTime}
                   onChange={(event) => set("endTime", event.target.value)}
@@ -215,6 +256,7 @@ export function EventEditor({
               <Input
                 type="date"
                 aria-label="終了日"
+                disabled={locked}
                 value={form.endDate}
                 onChange={(event) => set("endDate", event.target.value)}
                 className="w-auto"
@@ -224,6 +266,7 @@ export function EventEditor({
               {/* biome-ignore lint/a11y/noLabelWithoutControl: Checkbox が中の入力になる */}
               <label className="flex items-center gap-2">
                 <Checkbox
+                  disabled={locked}
                   checked={form.allDay}
                   onCheckedChange={(checked) => set("allDay", checked === true)}
                 />
@@ -245,6 +288,7 @@ export function EventEditor({
             <div className="flex flex-wrap items-center gap-2">
               <SimpleSelect
                 label="繰り返し"
+                disabled={locked}
                 value={form.preset}
                 options={repeatOptions}
                 onChange={(value) =>
@@ -258,6 +302,7 @@ export function EventEditor({
                   <Input
                     type="date"
                     aria-label="繰り返しの最後の日"
+                    disabled={locked}
                     value={form.until}
                     min={form.startDate}
                     onChange={(event) => set("until", event.target.value)}
@@ -267,9 +312,79 @@ export function EventEditor({
               )}
             </div>
           </Field>
+          <Field icon={UsersIcon}>
+            {invite.attendees === "edit" ? (
+              <div className={ATTENDEE_BOX}>
+                <RecipientInput
+                  id={`${id}-attendees`}
+                  value={form.attendees}
+                  onChange={(value) => set("attendees", value)}
+                  placeholder="参加者を追加"
+                />
+              </div>
+            ) : (
+              <div
+                className={cn(
+                  ATTENDEE_BOX,
+                  "flex-wrap gap-1.5",
+                  invite.attendees === "disabled" &&
+                    "cursor-not-allowed opacity-60",
+                )}
+              >
+                {form.attendees.list.length === 0 && (
+                  <span className="px-1 text-muted-foreground text-sm">
+                    参加者を追加
+                  </span>
+                )}
+                {form.attendees.list.map((entry) => {
+                  const name = entry.name?.trim() || entry.address;
+                  return (
+                    <span
+                      key={entry.address}
+                      title={entry.address}
+                      className={cn(
+                        "inline-flex h-7 max-w-full pointer-coarse:h-9 items-center gap-1 rounded-full border bg-muted/60 pl-2.5 text-sm",
+                        invite.attendees === "remove_only" ? "pr-1" : "pr-2.5",
+                      )}
+                    >
+                      <span className="truncate">{name}</span>
+                      {invite.attendees === "remove_only" && (
+                        <button
+                          type="button"
+                          aria-label={`${name} を参加者から外す`}
+                          onClick={() =>
+                            set("attendees", {
+                              list: form.attendees.list.filter(
+                                (other) => other !== entry,
+                              ),
+                              text: "",
+                            })
+                          }
+                          className="relative flex size-5 shrink-0 items-center justify-center rounded-full pointer-coarse:size-7 text-muted-foreground outline-none hover:bg-foreground/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                        >
+                          <XIcon className="size-3.5" />
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            {invite.note && (
+              <p
+                className={cn(
+                  "text-xs",
+                  invite.warning ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                {invite.note}
+              </p>
+            )}
+          </Field>
           <Field icon={MapPinIcon}>
             <Input
               aria-label="場所"
+              disabled={locked}
               placeholder="場所またはオンライン会議"
               value={form.location}
               onChange={(event) => set("location", event.target.value)}
@@ -347,16 +462,29 @@ export function EventEditor({
             )}
           </Field>
           <Field icon={CalendarDaysIcon}>
-            <SimpleSelect
-              label="カレンダー"
-              value={form.calendarId}
-              options={calendars.map((calendar) => ({
-                value: calendar.id,
-                label: calendar.name,
-              }))}
-              onChange={(value) => set("calendarId", value)}
-              className="w-full justify-between"
-            />
+            <div className="flex min-w-0 items-center gap-2">
+              <SimpleSelect
+                label="カレンダー"
+                value={form.calendarId}
+                disabled={locked}
+                options={calendars.map((calendar) => ({
+                  value: calendar.id,
+                  label: calendar.name,
+                }))}
+                onChange={(value) => set("calendarId", value)}
+                className="min-w-0 flex-1 justify-between"
+              />
+              <SimpleSelect
+                label="予定あり / 空き"
+                value={form.busy ? "busy" : "free"}
+                options={[
+                  { value: "busy", label: "予定あり" },
+                  { value: "free", label: "空き" },
+                ]}
+                onChange={(value) => set("busy", value === "busy")}
+                className="shrink-0"
+              />
+            </div>
             {(() => {
               const current = calendars.find((c) => c.id === form.calendarId);
               return current ? (
@@ -374,6 +502,7 @@ export function EventEditor({
             <Textarea
               aria-label="メモ"
               placeholder="メモ"
+              disabled={locked}
               value={form.description}
               onChange={(event) => set("description", event.target.value)}
               className="min-h-20"
@@ -385,9 +514,9 @@ export function EventEditor({
           <Button variant="outline" onClick={onClose} disabled={busy}>
             キャンセル
           </Button>
-          <Button type="submit" form={`${id}-form`} disabled={!valid || busy}>
+          <Button type="submit" form={`${id}-form`} disabled={!canSave || busy}>
             {busy && <Spinner />}
-            保存
+            {invite.saveLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

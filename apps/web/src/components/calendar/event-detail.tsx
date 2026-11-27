@@ -14,13 +14,24 @@ import {
   XIcon,
 } from "lucide-react";
 import { PendingBadge } from "@/components/calendar/pending-badge";
+import {
+  RsvpButtons,
+  type RsvpChoice,
+} from "@/components/calendar/rsvp-buttons";
 import { type DisplayItem, itemTitle } from "@/components/calendar/types";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent } from "@/components/ui/popover";
-import type { Attendee, Calendar, Reminder } from "@/lib/calendar/api";
+import {
+  type Attendee,
+  type Calendar,
+  type CalendarEvent,
+  calendarScheduling,
+  type Reminder,
+} from "@/lib/calendar/api";
 import type { PendingState } from "@/lib/calendar/conflict-labels";
 import { formatMonthDayWeekday, formatTimeRange } from "@/lib/calendar/dates";
 import { describeRule } from "@/lib/calendar/recurrence-label";
+import { canRespondTo, type RsvpAccount } from "@/lib/calendar/rsvp";
 
 const STATUS: Record<Attendee["status"], { label: string; tone: string }> = {
   accepted: { label: "参加", tone: "text-emerald-600" },
@@ -45,6 +56,38 @@ export function reminderLabel(reminder: Reminder): string {
   return reminder.method === "email" ? `${unit}にメール` : `${unit}に通知`;
 }
 
+/**
+ * 出欠のボタンの下の注記。繰り返しでは返事が届く範囲を、招待を送らない CalDAV では
+ * 主催者に届かないことを添える (10 章の 4: 推奨 A)。
+ */
+export function rsvpNote(
+  item: Pick<DisplayItem, "repeating"> & {
+    event: Pick<CalendarEvent, "parentId">;
+  },
+  calendar: Calendar | undefined,
+): string | null {
+  const notes: string[] = [];
+  if (item.event.parentId) notes.push("この回だけに返事します");
+  else if (item.repeating) notes.push("すべての回に返事します");
+  if (
+    calendar?.source === "caldav" &&
+    calendarScheduling(calendar) === "none"
+  ) {
+    notes.push("主催者には通知されません (このカレンダーにだけ記録します)");
+  }
+  return notes.length > 0 ? notes.join("\n") : null;
+}
+
+/** 自分の出欠 (未返信と代理は null)。 */
+function myStatus(event: CalendarEvent): Attendee["status"] | null {
+  const status = event.attendees.find((attendee) => attendee.self)?.status;
+  return status === "accepted" ||
+    status === "tentative" ||
+    status === "declined"
+    ? status
+    : null;
+}
+
 /** HTML のメモ (Graph などから届く) を、そのまま文字として見せられる形にする。 */
 function plainText(value: string): string {
   if (!/<[a-z][\s\S]*>/i.test(value)) return value;
@@ -63,6 +106,10 @@ type DetailProps = {
   onShowConflicts?: (() => void) | null;
   onEdit: (() => void) | null;
   onDelete: (() => void) | null;
+  /** 出欠を返す (返せない予定・画面では null)。 */
+  onRespond?: ((status: RsvpChoice) => void) | null;
+  /** アカウントの一覧 (self の参加者がアカウントの持ち主かの判定に使う)。 */
+  accounts?: readonly RsvpAccount[] | null;
   onClose: () => void;
 };
 
@@ -75,9 +122,18 @@ function DetailBody({
   onShowConflicts = null,
   onEdit,
   onDelete,
+  onRespond = null,
+  accounts = null,
   onClose,
 }: DetailProps & { item: DisplayItem }) {
   const { event, local } = item;
+  // 出欠のボタン: 招待された予定で、取り消されておらず、カレンダーに書き込めるとき (7.1)。
+  // 出欠に対応していない古いサーバーと、self がアカウントの持ち主でない共有カレンダーでは出さない。
+  const canRespond =
+    onRespond !== null &&
+    !item.readOnly &&
+    event.status !== "cancelled" &&
+    canRespondTo(event, calendar, accounts);
   const reminders = event.useDefaultReminders
     ? (calendar?.defaultReminders ?? [])
     : event.reminders;
@@ -248,6 +304,15 @@ function DetailBody({
           </p>
         )}
       </div>
+      {canRespond && onRespond && (
+        <div className="border-t pt-3">
+          <RsvpButtons
+            value={myStatus(event)}
+            onChange={onRespond}
+            note={rsvpNote(item, calendar)}
+          />
+        </div>
+      )}
     </div>
   );
 }

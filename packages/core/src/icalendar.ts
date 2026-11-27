@@ -60,15 +60,28 @@ export type ParsedCalendar = {
   color: string | null;
   /** X-WR-TIMEZONE。 */
   timeZone: string | null;
+  /** METHOD (iTIP、RFC 5546。"REQUEST" / "CANCEL" / "REPLY" など、大文字)。無ければ null。 */
+  method: string | null;
   events: ParsedEvent[];
 };
 
 export type ParseOptions = {
   /** 浮動時刻 (タイムゾーン無し) を UTC にするときのタイムゾーン。 */
   defaultTimeZone: string;
-  /** 読む予定の上限。既定 20000。 */
+  /** 読む VEVENT の上限 (同じ UID と回の重なりも数える)。既定 20000。 */
   maxEvents?: number;
+  /** 行数 (折り返しを戻す前の物理行) の上限。超えたら ICalendarError。既定は無制限。 */
+  maxLines?: number;
 };
+
+/**
+ * コンポーネントの入れ子の深さの上限 (VCALENDAR > VEVENT > VALARM、VCALENDAR > VTIMEZONE >
+ * STANDARD で 3。余裕を見て 4)。超えたら ICalendarError (閉じない BEGIN を並べた入力対策)。
+ */
+export const MAX_COMPONENT_DEPTH = 4;
+
+/** 行 (raw) を控えるコンポーネント。それ以外は lines を持たない。 */
+const RECORDED_COMPONENTS = new Set(["VEVENT", "VTIMEZONE"]);
 
 export class ICalendarError extends Error {}
 
@@ -125,9 +138,13 @@ const WINDOWS_ZONES: Record<string, string> = {
 };
 
 /** 折り返した行を戻す (CRLF / LF のどちらでもよい)。 */
-function unfold(text: string): string[] {
+function unfold(text: string, maxLines?: number): string[] {
   const lines: string[] = [];
-  for (const line of text.replace(/^﻿/, "").split(/\r?\n/)) {
+  const physical = text.replace(/^﻿/, "").split(/\r?\n/);
+  if (maxLines !== undefined && physical.length > maxLines) {
+    throw new ICalendarError("行が多すぎます。");
+  }
+  for (const line of physical) {
     if ((line.startsWith(" ") || line.startsWith("\t")) && lines.length > 0) {
       lines[lines.length - 1] += line.slice(1);
     } else if (line.length > 0) {
@@ -167,25 +184,37 @@ function parseLine(line: string): Property | null {
 function parseComponents(lines: string[]): Component {
   const root: Component = { name: "", properties: [], children: [], lines };
   const stack: Component[] = [root];
+  // 行を控える先は、開いているうちで直近の VEVENT / VTIMEZONE だけ (1 行あたり O(1))。
+  const recorders: (Component | null)[] = [null];
   for (const line of lines) {
     const property = parseLine(line);
     if (!property) continue;
     const current = stack[stack.length - 1] as Component;
+    const recorder = recorders[recorders.length - 1] ?? null;
     if (property.name === "BEGIN") {
+      if (stack.length > MAX_COMPONENT_DEPTH) {
+        throw new ICalendarError("コンポーネントの入れ子が深すぎます。");
+      }
+      const name = property.value.trim().toUpperCase();
       const child: Component = {
-        name: property.value.trim().toUpperCase(),
+        name,
         properties: [],
         children: [],
-        lines: [line],
+        lines: [],
       };
-      for (const open of stack.slice(1)) open.lines.push(line);
+      const next = RECORDED_COMPONENTS.has(name) ? child : recorder;
+      next?.lines.push(line);
       current.children.push(child);
       stack.push(child);
+      recorders.push(next);
       continue;
     }
-    for (const open of stack.slice(1)) open.lines.push(line);
+    recorder?.lines.push(line);
     if (property.name === "END") {
-      if (stack.length > 1) stack.pop();
+      if (stack.length > 1) {
+        stack.pop();
+        recorders.pop();
+      }
       continue;
     }
     current.properties.push(property);
@@ -601,7 +630,7 @@ export function parseICalendar(
   input: string,
   options: ParseOptions,
 ): ParsedCalendar {
-  const root = parseComponents(unfold(input));
+  const root = parseComponents(unfold(input, options.maxLines));
   const calendar = root.children.find((child) => child.name === "VCALENDAR");
   if (!calendar) throw new ICalendarError("VCALENDAR がありません。");
   const resolve = zoneResolver(calendar);
@@ -610,23 +639,26 @@ export function parseICalendar(
   const defaultTimeZone = calendarZone ?? options.defaultTimeZone;
   const limit = options.maxEvents ?? 20_000;
   const events: ParsedEvent[] = [];
-  const seen = new Set<string>();
+  // UID と回 → events の位置 (重なりの置き換えを O(1) にする)。
+  const seen = new Map<string, number>();
+  // 重なり (同じ UID と回) も数える。同じ UID を並べた入力で上限が効かなくならないように。
+  let read = 0;
   for (const child of calendar.children) {
     if (child.name !== "VEVENT") continue;
+    if (read >= limit) break;
+    read++;
     const event = parseEvent(child, resolve, defaultTimeZone);
     if (!event) continue;
     // 同じ UID と回が重なっていれば、SEQUENCE の大きい方 (同じなら後ろ) を使う。
     const key = `${event.uid}\u0000${event.recurrenceId ?? ""}`;
-    if (seen.has(key)) {
-      const index = events.findIndex(
-        (entry) => `${entry.uid}\u0000${entry.recurrenceId ?? ""}` === key,
-      );
+    const index = seen.get(key);
+    if (index !== undefined) {
       const existing = events[index];
       if (existing && event.sequence >= existing.sequence)
         events[index] = event;
       continue;
     }
-    seen.add(key);
+    seen.set(key, events.length);
     events.push(event);
     if (events.length >= limit) break;
   }
@@ -635,6 +667,7 @@ export function parseICalendar(
     description: text(calendar, "X-WR-CALDESC"),
     color: colorOf(calendar),
     timeZone: calendarZone,
+    method: first(calendar, "METHOD")?.value.trim().toUpperCase() || null,
     events,
   };
 }

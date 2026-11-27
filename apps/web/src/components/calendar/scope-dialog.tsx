@@ -18,7 +18,10 @@ export function ScopeDialog({
   action,
   onChoose,
   onCancel,
+  note = null,
 }: {
+  /** 説明に添える文 (参加者に連絡が届くことなど)。 */
+  note?: string | null;
   /** null なら閉じている。 */
   action: "save" | "delete" | null;
   onChoose: (scope: ChangeScope) => void;
@@ -37,6 +40,7 @@ export function ScopeDialog({
           <AlertDialogTitle>繰り返しの予定を{verb}します</AlertDialogTitle>
           <AlertDialogDescription>
             {verb}するのは、この予定だけですか? それとも、すべての予定ですか?
+            {note && ` ${note}`}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

@@ -23,10 +23,13 @@ import {
 import {
   accounts,
   attachments,
+  calendars,
   changes,
   createDb,
   type Database,
   drafts,
+  eventAttendees,
+  events,
   mailboxes,
   messageMailboxes,
   messages,
@@ -738,6 +741,90 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       }
     }
     expect(await snapshot(db, a.userId)).toEqual(before);
+  });
+
+  it("他の利用者の予定には、出欠の返事も参加者の変更もできない", async () => {
+    await db
+      .update(accounts)
+      .set({ calendarEnabled: true })
+      .where(sql`${accounts.id} = ${a.account}`);
+    const [calendar] = await db
+      .insert(calendars)
+      .values({
+        userId: a.userId,
+        accountId: a.account,
+        source: "google",
+        remoteId: "alice-private-calendar",
+        name: "alice-private-calendar",
+      })
+      .returning({ id: calendars.id });
+    const [event] = await db
+      .insert(events)
+      .values({
+        userId: a.userId,
+        calendarId: calendar?.id as string,
+        uid: "alice-private-invite@remote",
+        remoteId: "alice-private-invite",
+        summary: "alice-private-invite",
+        startAt: new Date("2027-03-01T01:00:00Z"),
+        endAt: new Date("2027-03-01T02:00:00Z"),
+        organizer: { email: "boss@example.com", self: false },
+      })
+      .returning({ id: events.id });
+    const eventId = event?.id as string;
+    await db.insert(eventAttendees).values([
+      { eventId, email: "boss@example.com", status: "accepted" },
+      // self の行はアカウントのアドレス (primary でないカレンダーでは、ここが違うと返事できない)。
+      { eventId, email: "alice-private@example.com", self: true },
+    ]);
+    const attendeesBefore = await db
+      .select()
+      .from(eventAttendees)
+      .where(sql`${eventAttendees.eventId} = ${eventId}`);
+    const now = new Date().toISOString();
+    const calls: [string, string, unknown][] = [
+      [
+        "POST",
+        `/calendars/events/${eventId}/respond`,
+        { status: "declined", respondedAt: now },
+      ],
+      [
+        "PATCH",
+        `/calendars/events/${eventId}`,
+        { changes: { attendees: [{ email: "mallory@example.com" }] } },
+      ],
+      [
+        "PATCH",
+        `/calendars/events/${eventId}/occurrences/2027-03-01T01:00:00Z`,
+        { changes: { busy: false } },
+      ],
+    ];
+    for (const [method, path, body] of calls) {
+      const response = await request(tokenB, method, path, body);
+      const text = await response.text();
+      expect(response.status, `${method} ${path}: ${text}`).toBe(404);
+      expect(text).not.toContain("alice-private");
+    }
+    expect(
+      await db
+        .select()
+        .from(eventAttendees)
+        .where(sql`${eventAttendees.eventId} = ${eventId}`),
+    ).toEqual(attendeesBefore);
+    expect(
+      await db
+        .select()
+        .from(outbox)
+        .where(sql`${outbox.payload}->>'eventId' = ${eventId}`),
+    ).toEqual([]);
+    // 本人は返事できる (確かめ方が空振りしていないこと)。
+    const own = await request(
+      tokenA,
+      "POST",
+      `/calendars/events/${eventId}/respond`,
+      { status: "declined", respondedAt: now },
+    );
+    expect(own.status).toBe(200);
   });
 
   it("返信元に他の利用者のメールを指定しても、その内容は使われない", async () => {

@@ -192,7 +192,14 @@ export function MonthGrid({
                           <span className="shrink-0 text-muted-foreground tabular-nums">
                             {formatTime(item.local.start)}
                           </span>
-                          <span className="truncate">{itemTitle(item)}</span>
+                          <span
+                            className={cn(
+                              "truncate",
+                              item.declined && "opacity-50",
+                            )}
+                          >
+                            {itemTitle(item)}
+                          </span>
                         </button>
                       ))}
                       {hidden > 0 && (
@@ -242,7 +249,14 @@ export function MonthGrid({
                     {continuesBefore && (
                       <ChevronLeftIcon className="size-3.5 shrink-0" />
                     )}
-                    <span className="truncate">{itemTitle(bar.item)}</span>
+                    <span
+                      className={cn(
+                        "truncate",
+                        bar.item.declined && "opacity-60",
+                      )}
+                    >
+                      {itemTitle(bar.item)}
+                    </span>
                     {continuesAfter && (
                       <ChevronRightIcon className="ml-auto size-3.5 shrink-0" />
                     )}

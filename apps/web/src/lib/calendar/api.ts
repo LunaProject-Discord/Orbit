@@ -1,3 +1,4 @@
+import type { CalendarScheduling } from "@orbit/core/event-invite";
 import { ApiError, apiFetch } from "@/lib/api";
 
 /**
@@ -33,8 +34,26 @@ export type Calendar = {
   defaultReminders: Reminder[];
   lastSyncedAt: string | null;
   lastError: string | null;
+  /**
+   * カレンダーが招待の連絡を送れるか (段取り 8)。古いサーバーと古い控えには無く、
+   * 無いときは "none" として扱う (calendarScheduling)。
+   */
+  scheduling?: CalendarScheduling;
+  /**
+   * 出欠を返してよいかの材料 (Google の primary と自分の権限)。古いサーバーと
+   * Google 以外では無い。判定は lib/calendar/rsvp.ts の respondsAsAccount。
+   */
+  primary?: boolean | null;
+  accessRole?: string | null;
   updatedAt: string;
 };
+
+/** カレンダーが招待を送れるか。項目が無い (古いサーバー・古い控え) なら送れない側に倒す。 */
+export function calendarScheduling(
+  calendar: Pick<Calendar, "scheduling"> | null | undefined,
+): CalendarScheduling {
+  return calendar?.scheduling === "server" ? "server" : "none";
+}
 
 export type AttendeeStatus =
   | "needs_action"
@@ -72,7 +91,13 @@ export type CalendarEvent = {
   rrule: string | null;
   rdates: string[];
   exdates: string[];
-  organizer: { email: string; name?: string } | null;
+  /** self は自分が主催者か (段取り 8。古いサーバー・古い控えには無い)。 */
+  organizer: { email: string; name?: string; self?: boolean } | null;
+  /**
+   * アカウントの持ち主として出欠を返事してよいか (サーバーの判定)。共有カレンダーで
+   * 他人の出欠を書き換えないため。古いサーバー・古い控えでは無い。
+   */
+  canRespond?: boolean;
   sequence: number;
   conferenceUrl: string | null;
   useDefaultReminders: boolean;
@@ -386,7 +411,9 @@ export async function deleteOccurrence(
 
 /**
  * 招待に返事をする (段取り 8 で足すルート)。ルートの無いサーバーでは 404 (コード無し)。
- * 予定が返ってくれば、その予定。
+ * 応答は { event, applied } (applied: false は、より新しい返事が既にあったので変えなかった)。
+ * 予定が返ってくれば、その予定。主催者・参加者でない・取り消し済みは 409
+ * (organizer / not_attendee / cancelled)。
  */
 export async function respondToEvent(
   id: string,

@@ -44,6 +44,7 @@ import {
   invitationRoutes,
 } from "./routes/invitations.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
+import { messageInviteRoutes } from "./routes/message-invite.js";
 import { messageRoutes } from "./routes/messages.js";
 import { notificationActionRoutes } from "./routes/notification-actions.js";
 import { pushRoutes } from "./routes/push.js";
@@ -261,6 +262,7 @@ export function createApp({
   authed.route("/messages", failureRoutes(deps));
   // 検索 (/messages/search) も /messages/:id より先に登録する。
   authed.route("/messages", searchRoutes(deps));
+  authed.route("/messages", messageInviteRoutes({ db, hub }));
   authed.route("/messages", messageRoutes({ db, hub }));
   authed.route("/", syncRoutes({ db, hub }));
   v1.route("/", authed);

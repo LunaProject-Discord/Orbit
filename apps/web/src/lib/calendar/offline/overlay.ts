@@ -191,7 +191,12 @@ export function eventFromInput(
     fieldUpdatedAt: {},
     updatedAt: at,
   };
-  return applyFields(blank, fields);
+  const event = applyFields(blank, fields);
+  // 参加者のいる新しい予定は自分が主催者 (サーバーも作成時に仮の主催者を入れる)。
+  // 印が無いと、届くまでの間に役割が「none」になり、参加者の欄が無効になる。
+  return event.attendees.length > 0 && event.organizer === null
+    ? { ...event, organizer: { email: "", self: true } }
+    : event;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inviteRole } from "./event-invite.js";
+import { calendarScheduling, inviteRole } from "./event-invite.js";
 
 const me = { email: "Me@example.com", self: true };
 const other = { email: "other@example.com", self: false };
@@ -42,5 +42,34 @@ describe("inviteRole", () => {
         attendees: [other],
       }),
     ).toBe("none");
+  });
+});
+
+describe("calendarScheduling", () => {
+  it("Google と Microsoft はサービスが送る", () => {
+    expect(calendarScheduling({ source: "google" })).toBe("server");
+    expect(calendarScheduling({ source: "microsoft" })).toBe("server");
+  });
+  it("CalDAV は autoSchedule が true のときだけ", () => {
+    expect(
+      calendarScheduling({
+        source: "caldav",
+        providerState: { autoSchedule: true },
+      }),
+    ).toBe("server");
+    expect(
+      calendarScheduling({
+        source: "caldav",
+        providerState: { autoSchedule: false },
+      }),
+    ).toBe("none");
+    expect(calendarScheduling({ source: "caldav", providerState: null })).toBe(
+      "none",
+    );
+  });
+  it("Orbit 内・購読・祝日は送れない", () => {
+    for (const source of ["local", "ics", "holidays", "birthdays"]) {
+      expect(calendarScheduling({ source })).toBe("none");
+    }
   });
 });

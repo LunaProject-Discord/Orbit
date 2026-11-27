@@ -60,7 +60,15 @@ type PageState = {
 };
 
 /** カレンダーの providerState に入れるもの。 */
-type CaldavCalendarState = { syncCollection?: boolean };
+type CaldavCalendarState = {
+  syncCollection?: boolean;
+  /**
+   * サーバーが calendar-auto-schedule (RFC 6638) を返した。API はこれで、参加者を足せるか
+   * (scheduling が server か none か) を決める。OPTIONS が一時的に失敗して調べられなかった
+   * ときは鍵を書かない (保存は浅く重ねるので前の値が残る。初めてのカレンダーは none 扱い)。
+   */
+  autoSchedule?: boolean;
+};
 
 function startUrlOf(account: AccountRow): string {
   if (account.caldavUrl) return account.caldavUrl;
@@ -202,6 +210,14 @@ export function createCaldavProvider(
       remoteId: resource.href,
       etag: resource.etag,
       parentRemoteId: event.recurrenceId === null ? null : resource.href,
+      // 主催者の印は、ORGANIZER のアドレスがこのアカウントのアドレスかで決める。
+      organizer:
+        event.organizer && account
+          ? {
+              ...event.organizer,
+              self: self.has(event.organizer.email.toLowerCase()),
+            }
+          : event.organizer,
       attendees: event.attendees.map((attendee) => ({
         ...attendee,
         self: self.has(attendee.email.toLowerCase()),
@@ -398,6 +414,18 @@ export function createCaldavProvider(
                 found.homeUrls.map((home) => client.listCalendars(home)),
               )
             ).flat();
+        // 招待と返事をサーバーが送るか (calendar-auto-schedule)。アカウント単位で 1 回だけ、
+        // 最初のカレンダーのコレクション、駄目ならホームに OPTIONS で尋ねる。
+        const firstCollection = collections.find(
+          (collection) => collection?.supportsEvents,
+        );
+        // null = 一時的に調べられなかった。前の値を上書きしない (レビュー 8)。
+        const autoSchedule = firstCollection
+          ? await client.supportsAutoSchedule([
+              firstCollection.url,
+              ...found.homeUrls,
+            ])
+          : false;
         const seen = new Set<string>();
         const result: RemoteCalendar[] = [];
         for (const collection of collections) {
@@ -417,6 +445,7 @@ export function createCaldavProvider(
             kind: "normal",
             providerState: {
               syncCollection: collection.supportsSyncCollection,
+              ...(autoSchedule === null ? {} : { autoSchedule }),
             } satisfies CaldavCalendarState,
           });
         }

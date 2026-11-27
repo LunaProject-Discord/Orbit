@@ -2177,6 +2177,62 @@ export async function fetchAttachment(
 }
 
 /**
+ * メールの招待 (text/calendar の添付) の中身。API の GET /v1/messages/:id/invite の応答。
+ * 予定の書き込みには使わない (表示と、カレンダーにある同じ予定への返事だけ)。
+ */
+export type MessageInvite = {
+  method: "request" | "cancel" | "reply" | "other";
+  uid: string;
+  sequence: number;
+  recurrenceId: string | null;
+  summary: string | null;
+  location: string | null;
+  time:
+    | { allDay: true; startDate: string; endDate: string }
+    | {
+        allDay: false;
+        startAt: string;
+        endAt: string;
+        startTimeZone: string | null;
+        endTimeZone: string | null;
+      };
+  rrule: string | null;
+  organizer: { email: string; name: string | null } | null;
+  attendeeCount: number;
+  /** REPLY のとき、返事をした参加者。 */
+  reply: {
+    email: string;
+    name: string | null;
+    status:
+      | "needs_action"
+      | "accepted"
+      | "declined"
+      | "tentative"
+      | "delegated";
+  } | null;
+  /** カレンダーにある同じ予定 (UID が同じ)。無ければ null。 */
+  eventId: string | null;
+  eventSequence: number | null;
+  /**
+   * その予定のカレンダー上の日時 (time と同じ形)。予定が無ければ null。
+   * 古いサーバーは返さない (そのときはメールの日時で予定を探す)。
+   */
+  eventTime?: MessageInvite["time"] | null;
+};
+
+/** メールの招待を読む。招待として読めなければ null。 */
+export async function fetchMessageInvite(
+  messageId: string,
+  signal?: AbortSignal,
+): Promise<MessageInvite | null> {
+  const { invite } = await apiJson<{ invite: MessageInvite | null }>(
+    `/v1/messages/${messageId}/invite`,
+    { signal },
+  );
+  return invite;
+}
+
+/**
  * 受信したメールの添付ファイルを、送信用の添付ファイルとして複製してもらう (転送用)。
  * 戻り値は、sendMail の attachmentIds に指定できる添付ファイル。
  */

@@ -1,3 +1,4 @@
+import { inviteRole } from "@orbit/core/event-invite";
 import { normalizeRecurrenceId } from "@orbit/core/recurrence";
 import { ApiError, NetworkError } from "@/lib/api";
 import type * as calendarApi from "@/lib/calendar/api";
@@ -128,6 +129,7 @@ const SERVER_ACTIONS: Record<CalendarConflict["kind"], ConflictAction[]> = {
 type ServerSnapshot = EventFields & {
   parentId?: string | null;
   recurrenceId?: string | null;
+  organizer?: CalendarEvent["organizer"];
 };
 
 export function snapshotEvent(
@@ -143,6 +145,7 @@ export function snapshotEvent(
   const {
     parentId = null,
     recurrenceId = null,
+    organizer = null,
     ...fields
   } = raw as ServerSnapshot;
   if (!fields.time) return null;
@@ -157,9 +160,24 @@ export function snapshotEvent(
   );
   return {
     ...event,
+    // eventFromInput は参加者がいると自分を主催者にするが、記録の主催者は分からない
+    // (招待された予定かもしれない)。記録に無ければ null にして、復元で招待を送らない。
+    organizer,
     parentId,
     recurrenceId: recurrenceId ? normalizeRecurrenceId(recurrenceId) : null,
   };
+}
+
+/** 出欠の返事の書き戻しの失敗 (fields: ["attendees"]、lost: null。invites-api-notes 6 章)。 */
+export function isRespondFailure(
+  conflict: Pick<CalendarConflict, "kind" | "fields" | "lost">,
+): boolean {
+  return (
+    conflict.kind === "write_failed" &&
+    conflict.lost === null &&
+    conflict.fields.length === 1 &&
+    conflict.fields[0] === "attendees"
+  );
 }
 
 function serverConflictItem(conflict: CalendarConflict): ConflictItem {
@@ -189,11 +207,16 @@ function serverConflictItem(conflict: CalendarConflict): ConflictItem {
     createdAt: conflict.createdAt,
     actions: (SERVER_ACTIONS[conflict.kind] ?? ["dismiss"]).filter(
       (action) =>
-        action !== "restore" ||
-        // 作り直す元 (予定全体) か、戻す値が無ければ「復元」は何もできない。
-        (conflict.kind === "remote_deleted"
-          ? snapshot !== null
-          : !!conflict.lost),
+        // 出欠の返事の失敗 (lost: null) は「閉じる」だけ。やり直しは詳細の出欠ボタンで行う
+        // (「もう一度試す」で参加者の一覧を PATCH しない)。
+        (action !== "retry" ||
+          conflict.kind !== "write_failed" ||
+          !isRespondFailure(conflict)) &&
+        (action !== "restore" ||
+          // 作り直す元 (予定全体) か、戻す値が無ければ「復元」は何もできない。
+          (conflict.kind === "remote_deleted"
+            ? snapshot !== null
+            : !!conflict.lost)),
     ),
     opId: null,
   };
@@ -255,6 +278,12 @@ export class OfflineCalendarClient implements CalendarClient {
   private flushing: Promise<void> | null = null;
   private pulling: Promise<void> | null = null;
   private pullAgain = false;
+  /**
+   * 次の pull を since=0 から取る (段取り 8: 招待の新しい項目を、変わっていない予定にも行き渡らせる)。
+   * 1 回のセッションで 1 回だけ。
+   */
+  private pullFromStart = false;
+  private refetchedForInvites = false;
   private writeChain: Promise<void> = Promise.resolve();
   /**
    * 保存先への書き込みを確かめていない送信待ち (null は削除)。書き込みに失敗したら残し、
@@ -714,6 +743,9 @@ export class OfflineCalendarClient implements CalendarClient {
     }
     const merged: EventFields = { ...fields, ...(lost ?? {}) };
     if (snapshot.parentId) delete merged.recurrence;
+    // 自分が主催者でない予定 (招待された予定・主催者の分からない記録) は、参加者を付けずに
+    // 作る。付けると自分が主催者として全員に招待が送られる (review-invites の 2)。
+    if (inviteRole(snapshot) !== "organizer") delete merged.attendees;
     if (!merged.time) return;
     this.createEvent({
       ...merged,
@@ -1011,6 +1043,37 @@ export class OfflineCalendarClient implements CalendarClient {
         break;
       }
       case "error": {
+        if (
+          op.kind === "respond" &&
+          (outcome.code === "not_found" || outcome.code === "unsupported")
+        ) {
+          // 予定が無い (取り消し済みの招待など) か、出欠に対応していない古いサーバー。
+          // 返事は捨てて、同じ予定への後続 (不参加にして削除の削除) を止めない。
+          // 「復元」は出さない (作り直すと自分が主催者として招待が送られる)。
+          removeOp();
+          if (!this.followedByDelete(op)) {
+            addNotice({
+              id: randomUuid(),
+              source: "local",
+              kind: "failed",
+              calendarId: op.calendarId,
+              eventId: op.eventId,
+              recurrenceId: null,
+              title:
+                (op.target ?? this.baseEvents.get(op.eventId ?? ""))?.summary ??
+                null,
+              fields: [],
+              lost: null,
+              kept: null,
+              snapshot: null,
+              reason: outcome.code,
+              createdAt: this.now().toISOString(),
+              actions: ["dismiss"],
+              opId: null,
+            });
+          }
+          break;
+        }
         markOp("error", outcome.code);
         const kind: ConflictKind =
           outcome.code === "deleted_elsewhere"
@@ -1054,6 +1117,28 @@ export class OfflineCalendarClient implements CalendarClient {
       queue: true,
       notices: noticesChanged,
     });
+  }
+
+  /** 返事の後ろに、同じ予定 (例外の行ならその回) の削除が積まれているか。 */
+  private followedByDelete(respond: QueuedOp): boolean {
+    const target = respond.target ?? this.baseEvents.get(respond.eventId ?? "");
+    const rid =
+      target?.parentId && target.recurrenceId
+        ? normalizeRecurrenceId(target.recurrenceId)
+        : null;
+    return this.ops.some(
+      (other) =>
+        other.seq > respond.seq &&
+        ((other.kind === "delete" && other.eventId === respond.eventId) ||
+          (other.kind === "delete" &&
+            !!target?.parentId &&
+            other.eventId === target.parentId) ||
+          (other.kind === "occurrence_delete" &&
+            rid !== null &&
+            other.eventId === target?.parentId &&
+            other.recurrenceId !== null &&
+            normalizeRecurrenceId(other.recurrenceId) === rid)),
+    );
   }
 
   /** 操作が通っていたらこうなっていた予定 (復元に使う)。 */
@@ -1104,7 +1189,9 @@ export class OfflineCalendarClient implements CalendarClient {
   }
 
   private async pullOnce(): Promise<void> {
-    const result = await pullChanges(this.meta.cursor, {
+    const since = this.pullFromStart ? "0" : this.meta.cursor;
+    this.pullFromStart = false;
+    const result = await pullChanges(since, {
       fetchPage: (since) => this.api.syncCalendars(since),
       apply: (page) => this.applyPage(page),
     });
@@ -1236,6 +1323,25 @@ export class OfflineCalendarClient implements CalendarClient {
     writes.push(...list.map(putCalendar));
     this.calendarsKnown = true;
     await this.commit(writes, { calendars: true, events: [] });
+    this.refetchForInvites(list);
+  }
+
+  /**
+   * 差分同期は変わった行しか返さないので、招待の項目 (organizer.self) が入る前の控えは
+   * そのまま残る。サーバーが新しい (カレンダーに scheduling がある) のに、主催者の印の無い
+   * 予定が控えにあれば、一度だけ since=0 から取り直す (cursor は戻さない。applyPage は
+   * 大きい方の cursor を残す)。古いサーバーでは何もしない。
+   */
+  private refetchForInvites(list: readonly Calendar[]): void {
+    if (this.refetchedForInvites || !this.meta.initialSyncDone) return;
+    if (!list.some((calendar) => calendar.scheduling !== undefined)) return;
+    const stale = [...this.baseEvents.values()].some(
+      (event) => event.organizer !== null && event.organizer.self === undefined,
+    );
+    if (!stale) return;
+    this.refetchedForInvites = true;
+    this.pullFromStart = true;
+    void this.pull();
   }
 
   private async loadRange(range: EventRangeQuery, key: string): Promise<void> {

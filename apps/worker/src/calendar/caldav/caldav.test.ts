@@ -4,6 +4,8 @@ import {
   type CalendarRow,
   CalendarTransientError,
   type ProviderContext,
+  type RemoteCalendar,
+  toAccountCalendarInput,
 } from "../provider.js";
 import {
   calendarRowFrom,
@@ -104,7 +106,7 @@ describe("CalDAV の探索", () => {
         url: "https://p01-caldav.icloud.com/cal/user/work/",
         defaultReminders: null,
         kind: "normal",
-        providerState: { syncCollection: false },
+        providerState: { syncCollection: false, autoSchedule: false },
       },
     ]);
     expect(server.requests[0]?.url).toBe(`${server.origin}/.well-known/caldav`);
@@ -315,7 +317,10 @@ describe("CalDAV の差分", () => {
       vcalendar(vevent({ UID: "b", DTSTART: "20261202", SUMMARY: "B" })),
     );
     const calendar = await workCalendar(provider, ctx);
-    expect(calendar.providerState).toEqual({ syncCollection: true });
+    expect(calendar.providerState).toEqual({
+      syncCollection: true,
+      autoSchedule: false,
+    });
     const first = await readAllPages(provider, ctx, calendar, null);
     const token = first.pages.at(-1)?.nextSyncToken ?? null;
     expect(token).toMatch(/^sync:/);
@@ -688,5 +693,131 @@ describe("CalDAV (レビューの指摘)", () => {
     expect(body).toMatch(
       /ATTENDEE[^\r\n]*RSVP=TRUE[^\r\n]*:mailto:bob@example\.com/,
     );
+  });
+});
+
+describe("CalDAV の招待と出欠 (段取り 8)", () => {
+  it("calendar-auto-schedule を返すサーバーなら providerState.autoSchedule が true", async () => {
+    const { server, provider, ctx } = setup({ autoSchedule: true });
+    const calendar = await workCalendar(provider, ctx);
+    expect(calendar.providerState).toMatchObject({ autoSchedule: true });
+    // アカウント単位で 1 回だけ尋ねる。
+    expect(
+      server.requests.filter((request) => request.method === "OPTIONS"),
+    ).toHaveLength(1);
+  });
+
+  it("返さないサーバーと、OPTIONS に対応しない (405) サーバーは false", async () => {
+    const plain = setup();
+    expect(
+      (await workCalendar(plain.provider, plain.ctx)).providerState,
+    ).toMatchObject({ autoSchedule: false });
+    const unsupported = setup({ optionsStatus: 405 });
+    expect(
+      (await workCalendar(unsupported.provider, unsupported.ctx)).providerState,
+    ).toMatchObject({ autoSchedule: false });
+    // コレクションで失敗したら、ホームでも尋ねる。
+    expect(
+      unsupported.server.requests.filter(
+        (request) => request.method === "OPTIONS",
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("レビュー 8: OPTIONS が一時的に失敗 (5xx) したら autoSchedule を書かず、前の値を残す", async () => {
+    const failing = setup({ optionsStatus: 503 });
+    const list = await failing.provider.listCalendars(failing.ctx);
+    const remote = list.find((entry) => entry.name === "仕事");
+    expect(remote?.providerState).toBeDefined();
+    expect(remote?.providerState).not.toHaveProperty("autoSchedule");
+    // 保存は providerState に浅く重ねる (upsertAccountCalendars) ので、前の true が残る。
+    const input = toAccountCalendarInput(remote as RemoteCalendar);
+    expect({
+      autoSchedule: true,
+      ...(input.providerState ?? {}),
+    }).toMatchObject({ autoSchedule: true });
+  });
+
+  it("ORGANIZER がアカウントのアドレスなら主催者の印を付ける", async () => {
+    const { server, provider, ctx } = setup();
+    server.putDirect(
+      "/cal/user/work/mine.ics",
+      vcalendar(
+        vevent([
+          "UID:mine",
+          "DTSTART:20261201T010000Z",
+          "SUMMARY:自分の会議",
+          "ORGANIZER:mailto:User@Example.com",
+          "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:bob@example.com",
+        ]),
+      ),
+    );
+    server.putDirect(
+      "/cal/user/work/theirs.ics",
+      vcalendar(
+        vevent([
+          "UID:theirs",
+          "DTSTART:20261201T010000Z",
+          "SUMMARY:招待",
+          "ORGANIZER:mailto:boss@example.com",
+          "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:user@example.com",
+        ]),
+      ),
+    );
+    const calendar = await workCalendar(provider, ctx);
+    const { events } = await readAllPages(provider, ctx, calendar, null);
+    const byUid = new Map(events.map((event) => [event.uid, event]));
+    expect(byUid.get("mine")?.organizer).toMatchObject({ self: true });
+    expect(byUid.get("theirs")?.organizer).toMatchObject({
+      email: "boss@example.com",
+      self: false,
+    });
+  });
+
+  it("返事は自分の PARTSTAT だけを変え、SEQUENCE とほかの参加者の行は変えない", async () => {
+    const { server, provider, ctx } = setup();
+    server.putDirect(
+      "/cal/user/work/invite.ics",
+      vcalendar(
+        vevent([
+          "UID:invite",
+          "SEQUENCE:4",
+          "DTSTART:20261201T010000Z",
+          "SUMMARY:招待",
+          "ORGANIZER:mailto:boss@example.com",
+          "ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:user@example.com",
+          "ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=2.0;X-CUSTOM=1:mailto:carol@example.com",
+        ]),
+      ),
+    );
+    const calendar = await workCalendar(provider, ctx);
+    const { events } = await readAllPages(provider, ctx, calendar, null);
+    const replied = await provider.respond(
+      ctx,
+      calendar,
+      {
+        remoteId: "/cal/user/work/invite.ics",
+        etag: events[0]?.etag ?? null,
+        uid: "invite",
+        recurrenceId: null,
+        parentRemoteId: null,
+      },
+      { status: "declined", comment: null },
+    );
+    expect(replied.status).toBe("ok");
+    const data = (
+      server.resources.get("/cal/user/work/invite.ics")?.data ?? ""
+    ).replace(/\r\n /g, "");
+    expect(data).toContain("SEQUENCE:4");
+    expect(data).toMatch(
+      /ATTENDEE[^\r\n]*PARTSTAT=DECLINED[^\r\n]*:mailto:user@example\.com/,
+    );
+    // ほかの参加者の出欠と、知らないパラメータは残る (並び順は変わってよい)。
+    const carol = data
+      .split("\r\n")
+      .find((line) => line.endsWith(":mailto:carol@example.com"));
+    expect(carol).toContain("PARTSTAT=ACCEPTED");
+    expect(carol).toContain("SCHEDULE-STATUS=2.0");
+    expect(carol).toContain("X-CUSTOM=1");
   });
 });

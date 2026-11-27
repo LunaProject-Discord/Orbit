@@ -154,7 +154,9 @@ export function AgendaList({
                     {time}
                   </span>
                   <span className="min-w-0 flex-1 truncate">
-                    {title}
+                    <span className={cn(item.declined && "opacity-50")}>
+                      {title}
+                    </span>
                     {item.repeating && (
                       <RepeatIcon className="ml-1 inline size-3 text-muted-foreground" />
                     )}
