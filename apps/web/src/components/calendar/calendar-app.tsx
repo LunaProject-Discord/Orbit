@@ -25,6 +25,7 @@ import {
   ConflictList,
   ConflictsButton,
 } from "@/components/calendar/conflict-list";
+import { useDeleteUndo } from "@/components/calendar/delete-undo";
 import { EventDetail } from "@/components/calendar/event-detail";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { ImipSenderDialog } from "@/components/calendar/imip-sender-dialog";
@@ -53,7 +54,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Account, ApiError, NetworkError, type User } from "@/lib/api";
-import { navigateApp } from "@/lib/app-navigation";
 import {
   type Calendar,
   type CalendarEvent,
@@ -97,6 +97,7 @@ import {
   type CalendarClient,
   type ConflictAction,
   type ConflictItem,
+  isHeld,
   OfflineCalendarClient,
   OfflineUnavailableError,
   type QueuedOp,
@@ -111,12 +112,14 @@ import {
 import {
   buildCalendarRoute,
   type CalendarEventTarget,
+  isCalendarPath,
   OPEN_CALENDAR_EVENT,
   parseCalendarEventRoute,
   parseCalendarRoute,
 } from "@/lib/calendar/route";
 import { canRespondTo } from "@/lib/calendar/rsvp";
 import { listAccounts, useOnline } from "@/lib/offline";
+import { openSettings } from "@/lib/settings-route";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
 
@@ -247,7 +250,9 @@ export function CalendarApp({ user }: { user: User }) {
   }, [timeZone]);
 
   // 表示と日付を URL に残す (再読み込みやブックマークで同じ表示に戻れるように)。
+  // 設定のダイアログを開いている間 (URL が /settings/…) は書き換えない。閉じると開く前の URL に戻る。
   useEffect(() => {
+    if (!isCalendarPath(window.location.pathname)) return;
     const path = buildCalendarRoute(shownView, date);
     if (window.location.pathname !== path) {
       window.history.replaceState(window.history.state, "", path);
@@ -255,6 +260,8 @@ export function CalendarApp({ user }: { user: User }) {
   }, [shownView, date]);
   useEffect(() => {
     const onPopState = () => {
+      // 設定のダイアログの履歴では、後ろのカレンダーの表示はそのままにする。
+      if (!isCalendarPath(window.location.pathname)) return;
       const target = parseCalendarEventRoute(
         window.location.pathname,
         window.location.search,
@@ -579,6 +586,9 @@ export function CalendarApp({ user }: { user: User }) {
     }
   };
 
+  // 削除の「元に戻す」(Mail の削除と同じトースト・時間)。
+  const deleteWithUndo = useDeleteUndo();
+
   const remove = (target: DisplayItem, chosen: ChangeScope | null) => {
     const item = currentItem(target) ?? target;
     if (item.repeating && chosen === null) {
@@ -591,15 +601,26 @@ export function CalendarApp({ user }: { user: User }) {
       return;
     }
     try {
-      if (item.repeating && chosen === "this") {
-        const recurrenceId = itemRecurrenceId(item);
-        const masterId = item.event.parentId ?? item.event.id;
-        if (recurrenceId) client.deleteOccurrence(masterId, recurrenceId);
-      } else if (item.repeating && chosen === "all") {
-        client.deleteEvent(item.event.parentId ?? item.event.id);
-      } else {
-        client.deleteEvent(item.event.id);
-      }
+      deleteWithUndo(
+        client,
+        item.repeating && chosen === "this"
+          ? "この回を削除しました"
+          : item.repeating && chosen === "all"
+            ? "すべての回を削除しました"
+            : "予定を削除しました",
+        undoFailure(item, calendarOf(item.event.calendarId)),
+        () => {
+          if (item.repeating && chosen === "this") {
+            const recurrenceId = itemRecurrenceId(item);
+            const masterId = item.event.parentId ?? item.event.id;
+            if (recurrenceId) client.deleteOccurrence(masterId, recurrenceId);
+          } else if (item.repeating && chosen === "all") {
+            client.deleteEvent(item.event.parentId ?? item.event.id);
+          } else {
+            client.deleteEvent(item.event.id);
+          }
+        },
+      );
     } catch (error) {
       showNotice(
         error instanceof OfflineUnavailableError
@@ -644,14 +665,22 @@ export function CalendarApp({ user }: { user: User }) {
       return;
     }
     try {
-      client.respond(item.event.id, "declined");
-      const recurrenceId = itemRecurrenceId(item);
-      if (item.event.parentId && recurrenceId) {
-        // 例外の行 (この回だけ招待が変わったもの) は、その回だけを消す。
-        client.deleteOccurrence(item.event.parentId, recurrenceId);
-      } else {
-        client.deleteEvent(item.event.id);
-      }
+      // 返事も削除と一緒に待たせる (元に戻すと、まだ送っていない返事も取り消す)。
+      deleteWithUndo(
+        client,
+        "不参加にして削除しました",
+        "すでに不参加の返事を送ったため、元に戻せませんでした。",
+        () => {
+          client.respond(item.event.id, "declined");
+          const recurrenceId = itemRecurrenceId(item);
+          if (item.event.parentId && recurrenceId) {
+            // 例外の行 (この回だけ招待が変わったもの) は、その回だけを消す。
+            client.deleteOccurrence(item.event.parentId, recurrenceId);
+          } else {
+            client.deleteEvent(item.event.id);
+          }
+        },
+      );
     } catch (error) {
       showNotice(
         error instanceof OfflineUnavailableError
@@ -710,6 +739,7 @@ export function CalendarApp({ user }: { user: User }) {
           merged
             ? "iCloud のメールのアカウントで、カレンダーの同期を始めました。"
             : "アカウントを追加しました。カレンダーを同期しています。",
+          "info",
         );
         pullNow();
         return;
@@ -768,7 +798,7 @@ export function CalendarApp({ user }: { user: User }) {
     try {
       const next = await refreshCalendar(calendar.id);
       if (next.lastError) showNotice(next.lastError);
-      else showNotice(`「${next.name}」を更新しました。`);
+      else showNotice(`「${next.name}」を更新しました。`, "info");
       pullNow();
     } catch {
       showNotice("更新できませんでした。");
@@ -824,7 +854,8 @@ export function CalendarApp({ user }: { user: User }) {
   );
   const syncStatus = calendarSyncStatus({
     online,
-    pending: queue.filter((op) => op.state === "pending").length,
+    // 「元に戻す」を受け付けている間の削除は、まだ送信待ちに数えない (Mail と同じ)。
+    pending: queue.filter((op) => op.state === "pending" && !isHeld(op)).length,
     loaded: calendars !== null,
   });
 
@@ -996,7 +1027,10 @@ export function CalendarApp({ user }: { user: User }) {
       onRefreshCalendar={(calendar) => void refreshSubscription(calendar)}
       onRemoveCalendar={(calendar) => setRemoving(calendar)}
       onChooseSender={openSenderSetting}
-      onOpenSettings={() => navigateApp("/settings")}
+      onOpenSettings={() => {
+        setSidebarOpen(false);
+        openSettings();
+      }}
       onToggleSidebar={wide ? toggleSidebar : null}
       onNavigate={() => setSidebarOpen(false)}
     />
@@ -1232,10 +1266,12 @@ export function CalendarApp({ user }: { user: User }) {
         {!medium && (
           <Button
             aria-label="予定を作成"
-            className="absolute right-4 bottom-6 size-14 rounded-2xl shadow-lg"
+            // Mail の「作成」ボタンと同じ形と大きさ (タッチの端末では高さ 44px)。
+            className="absolute right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg [&_svg]:size-5"
             onClick={() => openCreate(date, nextHour(now))}
           >
-            <PlusIcon className="size-6" />
+            <PlusIcon />
+            作成
           </Button>
         )}
       </main>
@@ -1329,7 +1365,10 @@ export function CalendarApp({ user }: { user: User }) {
         busy={senderBusy}
         error={senderError}
         onSave={(accountId) => void saveSender(accountId)}
-        onOpenSettings={() => navigateApp("/settings")}
+        onOpenSettings={() => {
+          setSenderCalendar(null);
+          openSettings({ group: "common", page: "accounts" });
+        }}
         onClose={() => setSenderCalendar(null)}
       />
       <AddCalendarDialog
@@ -1462,6 +1501,23 @@ function scopeNote(
     return null;
   }
   return cancelNote(calendar);
+}
+
+/** 削除を元に戻せなかった (もう送っていた) ときの知らせ。 */
+function undoFailure(
+  item: DisplayItem,
+  calendar: Calendar | undefined,
+): string {
+  const role = inviteRole(item.event);
+  const notified =
+    role === "organizer" &&
+    calendarScheduling(calendar) !== "none" &&
+    item.event.attendees.some((attendee) => !attendee.self);
+  if (!notified)
+    return "すでにサーバーへ反映済みのため、元に戻せませんでした。";
+  return calendarScheduling(calendar) === "mail"
+    ? "すでに参加者に取り消しのメールを送ったため、元に戻せませんでした。"
+    : "すでに参加者に取り消しの連絡が届いているため、元に戻せませんでした。";
 }
 
 /** 参加者のいる自分の予定を消すときの注記 (Orbit が送るならメール、サービスなら連絡)。 */

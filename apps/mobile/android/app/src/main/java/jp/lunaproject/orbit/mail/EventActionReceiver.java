@@ -109,6 +109,14 @@ public class EventActionReceiver extends BroadcastReceiver {
     }
 
     static boolean allowedUrl(String serverUrl, String url) {
+        return allowedApiUrl(serverUrl, url, ACTION_PATH);
+    }
+
+    /**
+     * 通知のボタンが合言葉を送ってよい URL か (出欠とメールのボタンで共通の決まり)。
+     * 接続先サーバーと同じ origin で、パスが「API のパス + path」、問い合わせ・ユーザー情報・# が無いもの。
+     */
+    static boolean allowedApiUrl(String serverUrl, String url, String path) {
         if (serverUrl == null || serverUrl.isEmpty() || url == null || url.isEmpty()) return false;
         try {
             URI target = new URI(url);
@@ -118,7 +126,7 @@ public class EventActionReceiver extends BroadcastReceiver {
             if (target.getRawUserInfo() != null || target.getRawQuery() != null || target.getRawFragment() != null) return false;
             if (!origin(target).equals(origin(api))) return false;
             String base = api.getRawPath() == null ? "" : api.getRawPath().replaceAll("/+$", "");
-            return (base + ACTION_PATH).equals(target.getRawPath());
+            return (base + path).equals(target.getRawPath());
         } catch (URISyntaxException e) {
             return false;
         }

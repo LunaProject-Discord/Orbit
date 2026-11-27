@@ -149,7 +149,7 @@ describe("SsoCallback", () => {
     await render();
     expect(mocks.completeSso).not.toHaveBeenCalled();
     expect(mocks.completeSsoLink).toHaveBeenCalledWith("c", "s");
-    expect(mocks.replace).toHaveBeenCalledWith("/settings/security");
+    expect(mocks.replace).toHaveBeenCalledWith("/settings/common/security");
   });
 
   it("結び付けの途中でログインが切れていたら、送らずに知らせる", async () => {

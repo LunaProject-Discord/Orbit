@@ -90,6 +90,11 @@ export type QueuedOp = {
    * 送る前に同期が削除を取り込んでも「復元」で作り直せるように持つ。古い控えには無い。
    */
   target?: CalendarEvent | null;
+  /**
+   * この時刻 (epoch ms) までは送らない (「元に戻す」を受け付けている間)。全ウィンドウで共有し、
+   * 受け付けを終えたら消す。開いていたウィンドウが閉じても、時刻を過ぎればどのウィンドウでも送る。
+   */
+  holdUntil?: number | null;
 };
 
 /**
@@ -158,6 +163,18 @@ export type ConflictItem = {
   invite?: InviteFailure | null;
 };
 
+/** holdForUndo で待たせた書き込みの、「元に戻す」と確定。 */
+export type PendingUndo = {
+  /**
+   * 待たせた書き込みを送信待ちから取り除き、それで捨てた操作 (消した予定の、送る前の変更など)
+   * を戻す。端末の控えは書き換えていないので、表示は元に戻る。1 つでも送り始めていたら何もせず
+   * false を返す (送った分を作り直したりはしない)。
+   */
+  undo(): Promise<boolean>;
+  /** 受け付けを終えて、待たせた書き込みをすぐ送る (取り消せなくなる)。 */
+  release(): void;
+};
+
 export type EventRangeQuery = { from: string; to: string; timeZone: string };
 
 export type CalendarClient = {
@@ -188,6 +205,11 @@ export type CalendarClient = {
   deleteOccurrence(masterId: string, recurrenceId: string): void;
   respond(id: string, status: AttendeeStatus): void;
   updateCalendar(id: string, changes: CalendarChanges): void;
+  /**
+   * fn の中で積んだ書き込みを、holdMs の間 (release を呼ぶまで) 送らずに待たせ、
+   * 「元に戻す」で取り消せるようにする (削除のトースト)。
+   */
+  holdForUndo(fn: () => void, holdMs: number): PendingUndo;
   /** error / blocked の操作を送り直す。 */
   retry(opId: string): void;
   /** 送信待ちから外す (送っている最中のものは外せない)。 */

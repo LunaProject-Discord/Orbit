@@ -321,3 +321,123 @@ describe("sw.js の予定の通知", () => {
     expect(opened).toEqual([`/calendar/events/${ID}?o=2026-11-28`]);
   });
 });
+
+describe("sw.js のメールの通知のボタン", () => {
+  const MAIL_ACTION_URL = "https://api.example/v1/notification-actions";
+  const mailPush = (url: string) => ({
+    title: "新着",
+    body: "件名",
+    tag: "m",
+    messageId: "x",
+    actions: {
+      url,
+      token: "t",
+      buttons: [{ id: "read", title: "既読にする" }],
+    },
+  });
+  const clickMail = (url: string) => ({
+    action: "read",
+    notification: {
+      tag: "m",
+      data: { messageId: "x", title: "件名", action: { url, token: "t" } },
+      close: () => {},
+    },
+  });
+
+  it("自分の API の受け口なら、ボタンを付けて合言葉で操作する (転送はたどらない)", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { dispatch, shown } = loadWorker();
+      await dispatch("push", {
+        data: { json: () => mailPush(MAIL_ACTION_URL) },
+      });
+      expect(shown[0]?.options.actions).toEqual([
+        { action: "read", title: "既読にする" },
+      ]);
+      expect((shown[0]?.options.data as { action: unknown }).action).toEqual({
+        url: MAIL_ACTION_URL,
+        token: "t",
+      });
+      await dispatch("notificationclick", clickMail(MAIL_ACTION_URL));
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ];
+      expect(url).toBe(MAIL_ACTION_URL);
+      expect(init.redirect).toBe("error");
+      expect(JSON.parse(String(init.body))).toEqual({
+        messageId: "x",
+        action: "read",
+        token: "t",
+      });
+      expect(shown).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("よそのサイトや違うパスの URL ならボタンを付けず、押されても合言葉を送らない", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      for (const url of [
+        "https://evil.example/v1/notification-actions",
+        "https://api.example/v1/notification-actions/event",
+        "https://api.example/v1/notification-actions/reply",
+        "https://api.example/v1/notification-actions?next=x",
+        "https://api.example/v1/notification-actions#x",
+        "https://user:pass@api.example/v1/notification-actions",
+        "http://api.example/v1/notification-actions",
+        "javascript:alert(1)",
+      ]) {
+        const worker = loadWorker();
+        await worker.dispatch("push", { data: { json: () => mailPush(url) } });
+        expect(worker.shown[0]?.options.actions).toBeUndefined();
+        expect(
+          (worker.shown[0]?.options.data as { action: unknown }).action,
+        ).toBeNull();
+        // 古い通知 (検査の前に出たもの) の data に、よその URL が入っていた。
+        await worker.dispatch("notificationclick", clickMail(url));
+        expect(worker.shown[1]?.title).toBe("操作を反映できませんでした");
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("API の URL が渡されていない古い登録では、このサイトの /v1 だけを許す", async () => {
+    const worker = loadWorker([], "https://orbit.example/sw.js");
+    await worker.dispatch("push", {
+      data: {
+        json: () => mailPush("https://orbit.example/v1/notification-actions"),
+      },
+    });
+    await worker.dispatch("push", {
+      data: { json: () => mailPush(MAIL_ACTION_URL) },
+    });
+    expect(worker.shown[0]?.options.actions).toHaveLength(1);
+    expect(worker.shown[1]?.options.actions).toBeUndefined();
+  });
+
+  it("API が /api の下にあれば、その下の受け口だけを許す", async () => {
+    const worker = loadWorker(
+      [],
+      `https://orbit.example/sw.js?api=${encodeURIComponent("https://orbit.example/api/")}`,
+    );
+    await worker.dispatch("push", {
+      data: {
+        json: () =>
+          mailPush("https://orbit.example/api/v1/notification-actions"),
+      },
+    });
+    await worker.dispatch("push", {
+      data: {
+        json: () => mailPush("https://orbit.example/v1/notification-actions"),
+      },
+    });
+    expect(worker.shown[0]?.options.actions).toHaveLength(1);
+    expect(worker.shown[1]?.options.actions).toBeUndefined();
+  });
+});

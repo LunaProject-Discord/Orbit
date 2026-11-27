@@ -1,13 +1,19 @@
 import type { SearchParams } from "@/lib/api";
+import { MAIL_PATH } from "@/lib/app-navigation";
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { filtersToText } from "@/lib/search-input";
+import {
+  buildSettingsRoute,
+  isSettingsPath,
+  parseSettingsRoute,
+} from "@/lib/settings-route";
 
 /**
  * 画面の状態のうち、URL に残すもの。再読み込みやブックマーク、ブラウザーの「戻る」で
  * 同じ表示に戻れるようにする。
  *
- * 表示はパスで表す (/accounts/<ID>/folders/<ID>/messages/<ID> など)。検索の内容だけは
- * ? 以降に置く。
+ * 表示はパスで表す (/mail/accounts/<ID>/folders/<ID>/messages/<ID> など)。検索の内容だけは
+ * ? 以降に置く。設定は、どのアプリの上にも出すダイアログなので lib/settings-route.ts で扱う。
  *
  * Web は静的ファイルとして出力し、Tauri / Capacitor にも同梱するので、Next.js のページは
  * "/" の 1 つだけで、パスはこのファイルが読み取る。知らないパスを開いたときに同じ画面を
@@ -22,12 +28,10 @@ export type MailRoute = {
   unifiedId: string | null;
   /** 下書きの一覧を表示している。 */
   drafts: boolean;
-  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。null ならフォルダの一覧。 */
+  /** フォルダ以外の表示 (スター付き、送信待ち)。null ならフォルダの一覧。 */
   special: SpecialView | null;
   /** 開いているメール。 */
   messageId: string | null;
-  /** 設定画面で開いているページ。null なら設定の最初の画面 (狭い画面ではカテゴリの一覧)。 */
-  settings: SettingsCategory | null;
   /** 会話の全体ではなく、会話の中のその 1 通だけを開いている (一覧で会話を広げて選んだとき)。 */
   single: boolean;
   /** 作成画面で開いている下書きの ID。まだ何も書いていない新規のメールは "new"。 */
@@ -37,34 +41,21 @@ export type MailRoute = {
 };
 
 /** フォルダに結び付かない表示。 */
-export type SpecialView = "starred" | "outgoing" | "settings";
-const SPECIAL_VIEWS: readonly string[] = ["starred", "outgoing", "settings"];
+export type SpecialView = "starred" | "outgoing";
+const SPECIAL_VIEWS: readonly string[] = ["starred", "outgoing"];
+/** サイドバーで選べる、フォルダ以外の項目 (設定はダイアログを開く)。 */
+export type SidebarView = SpecialView | "settings";
 
-/** 設定画面のページ (カテゴリ)。並びは画面に出す順。 */
-export const SETTINGS_CATEGORIES = [
+/** 以前のメールの URL (/mail が付く前) の、最初の部分。 */
+const LEGACY_MAIL_HEADS: readonly string[] = [
   "accounts",
-  "appearance",
-  "fonts",
-  "list",
-  "datetime",
-  "reading",
-  "actions",
-  "sidebar",
-  "notifications",
-  "signatures",
-  "security",
-  "system",
-  "about",
-] as const;
-export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
-
-function settingsCategoryOf(
-  value: string | undefined,
-): SettingsCategory | null {
-  return (SETTINGS_CATEGORIES as readonly string[]).includes(value ?? "")
-    ? (value as SettingsCategory)
-    : null;
-}
+  "unified",
+  "messages",
+  "drafts",
+  "starred",
+  "outgoing",
+  "compose",
+];
 
 export const emptyRoute: MailRoute = {
   accountId: null,
@@ -73,7 +64,6 @@ export const emptyRoute: MailRoute = {
   drafts: false,
   special: null,
   messageId: null,
-  settings: null,
   single: false,
   composeId: null,
   search: null,
@@ -121,7 +111,7 @@ const LEGACY_KEYS = ["account", "folder", "message", "view", "compose"];
 /**
  * 以前の形の URL (/?account=…&folder=…&message=… など) を読み取る。
  * ブックマークや、古い版が出した通知から開けるように残している。
- * 読み取ったあと、画面がいまの形の URL に書き換える。
+ * 開くと canonicalAppUrl がいまの形の URL に書き換える。
  */
 function parseLegacyRoute(params: URLSearchParams): MailRoute {
   const compose = params.get("compose");
@@ -146,36 +136,95 @@ function parseLegacyRoute(params: URLSearchParams): MailRoute {
     drafts: false,
     special: null,
     messageId: idOf(params, "message"),
-    settings: null,
     single: false,
     composeId,
     search: searchOf(params),
   };
 }
 
+/** パスがメールの画面か (/mail、/mail/…)。 */
+export function isMailPath(pathname: string): boolean {
+  return pathname === MAIL_PATH || pathname.startsWith(`${MAIL_PATH}/`);
+}
+
+function splitUrl(url: string): { path: string; params: URLSearchParams } {
+  const mark = url.indexOf("?");
+  const path = mark === -1 ? url : url.slice(0, mark);
+  const params = new URLSearchParams(mark === -1 ? "" : url.slice(mark + 1));
+  return { path, params };
+}
+
+/** 新しいウィンドウの種類 (lib/windows.ts の ?window=…&fresh=1)。古い URL を書き換えても残す。 */
+const WINDOW_KEYS = ["window", "fresh"];
+
 /**
- * URL (パスと ? 以降) から、画面の状態を読み取る。形の合わない部分は無いものとして扱う。
+ * 以前の形の URL を、いまの形にする。いまの形 (または知らない形) なら null。
  *
- *   /                                             すべての受信トレイ
- *   /accounts/<ID>                                アカウントの受信トレイ
- *   /accounts/<ID>/folders/<ID>                   フォルダ
- *   /unified/<ID>                                 統合フォルダ
+ *   /  /?q=…                        → /mail  /mail?q=…
+ *   /?account=…&message=… など      → /mail/accounts/…/messages/…
+ *   /?view=settings                 → /settings
+ *   /accounts/…  /drafts  /starred  /outgoing  /unified/…  /messages/…  /compose/…
+ *                                   → /mail/accounts/… など (? 以降もそのまま)
+ *   /settings/<カテゴリ>            → /settings/<分類>/<ページ> (/settings/fonts → /settings/common/fonts)
+ *
+ * ブックマーク、古い版が出した通知 (サービスワーカーが組み立てた /messages/<ID>)、
+ * サービスワーカーが保存した画面、古いアプリ・古いサーバーが覚えている URL から来る。
+ */
+export function canonicalAppUrl(url: string): string | null {
+  const { path, params } = splitUrl(url);
+  const segments = path.split("/").filter((segment) => segment !== "");
+  const query = params.toString();
+  if (segments.length === 0) {
+    if (!LEGACY_KEYS.some((key) => params.has(key))) {
+      return `${MAIL_PATH}${query === "" ? "" : `?${query}`}`;
+    }
+    if (params.get("view") === "settings") return buildSettingsRoute(null);
+    const built = buildRoute(parseLegacyRoute(params));
+    const extra = new URLSearchParams();
+    for (const key of WINDOW_KEYS) {
+      const value = params.get(key);
+      if (value !== null) extra.set(key, value);
+    }
+    const tail = extra.toString();
+    if (tail === "") return built;
+    return `${built}${built.includes("?") ? "&" : "?"}${tail}`;
+  }
+  const head = segments[0] as string;
+  const joined = `/${segments.join("/")}`;
+  if (LEGACY_MAIL_HEADS.includes(head)) {
+    return `${MAIL_PATH}${joined}${query === "" ? "" : `?${query}`}`;
+  }
+  if (isSettingsPath(joined)) {
+    const canonical = buildSettingsRoute(
+      parseSettingsRoute(joined)?.page ?? null,
+    );
+    return canonical === path ? null : canonical;
+  }
+  return null;
+}
+
+/**
+ * URL (パスと ? 以降) から、メールの画面の状態を読み取る。形の合わない部分は無いものとして扱う。
+ * 以前の形 (/mail が付く前の /accounts/… や /?account=…) も読む。
+ *
+ *   /mail                                         すべての受信トレイ
+ *   /mail/accounts/<ID>                           アカウントの受信トレイ
+ *   /mail/accounts/<ID>/folders/<ID>              フォルダ
+ *   /mail/unified/<ID>                            統合フォルダ
  *   …/messages/<ID>                               メール (会話) を開いた状態
  *   …/messages/<ID>/single                        会話の中の 1 通だけを開いた状態
- *   /drafts  /starred  /outgoing  /settings       フォルダ以外の表示
- *   /settings/<カテゴリ>                          設定画面のページ (fonts、notifications など)
+ *   /mail/drafts  /mail/starred  /mail/outgoing   フォルダ以外の表示
  *   …/compose/<下書きの ID>  …/compose/new        作成画面を開いた状態
  *   …?q=<語>&from=…                               検索 (一覧の URL に付ける)
  */
 export function parseRoute(url: string): MailRoute {
-  const mark = url.indexOf("?");
-  const path = mark === -1 ? url : url.slice(0, mark);
-  const params = new URLSearchParams(mark === -1 ? "" : url.slice(mark + 1));
-  const segments = path.split("/").filter((segment) => segment !== "");
+  const { path, params } = splitUrl(canonicalAppUrl(url) ?? url);
+  const all = path.split("/").filter((segment) => segment !== "");
+  // メールの画面でない URL (設定・カレンダーなど) は、すべての受信トレイとして扱う。
+  if (all[0] !== "mail") return { ...emptyRoute };
+  const segments = all.slice(1);
   if (segments.length === 0) {
-    return LEGACY_KEYS.some((key) => params.has(key))
-      ? parseLegacyRoute(params)
-      : { ...emptyRoute, search: searchOf(params) };
+    return { ...emptyRoute, search: searchOf(params) };
   }
 
   let index = 0;
@@ -197,10 +246,6 @@ export function parseRoute(url: string): MailRoute {
     index = 1;
     // スター付きの一覧では、メールを開ける。
     if (head === "starred") route.messageId = take("messages");
-    if (head === "settings") {
-      route.settings = settingsCategoryOf(segments[1]);
-      if (route.settings) index = 2;
-    }
   } else {
     route.unifiedId = take("unified");
     if (!route.unifiedId) {
@@ -227,7 +272,7 @@ export function parseRoute(url: string): MailRoute {
 }
 
 /**
- * 画面の状態を URL (パスと ? 以降) にする。何も選んでいなければ "/"。
+ * 画面の状態を URL (パスと ? 以降) にする。何も選んでいなければ "/mail"。
  * 同じ状態は必ず同じ文字列になるので、文字列どうしを比べて変化を判定できる。
  */
 export function buildRoute(route: MailRoute): string {
@@ -240,9 +285,6 @@ export function buildRoute(route: MailRoute): string {
     if (route.special === "starred" && route.messageId) {
       segments.push("messages", route.messageId);
       if (route.single) segments.push("single");
-    }
-    if (route.special === "settings" && route.settings) {
-      segments.push(route.settings);
     }
   } else {
     if (route.unifiedId) segments.push("unified", route.unifiedId);
@@ -271,7 +313,9 @@ export function buildRoute(route: MailRoute): string {
   }
   if (route.composeId) segments.push("compose", route.composeId);
   const query = params.toString();
-  return `/${segments.join("/")}${query === "" ? "" : `?${query}`}`;
+  const path =
+    segments.length === 0 ? MAIL_PATH : `${MAIL_PATH}/${segments.join("/")}`;
+  return `${path}${query === "" ? "" : `?${query}`}`;
 }
 
 /** 検索の内容が同じか。同じなら、一覧を読み込み直さずに済む。 */
@@ -308,16 +352,13 @@ export function historyMode(current: MailRoute, next: MailRoute): HistoryMode {
   ) {
     return "push";
   }
-  // 設定画面は、カテゴリの一覧からページへ入るときに積み、ページどうしの移動は書き換える。
   const opened =
     (!current.messageId && next.messageId) ||
-    (!current.composeId && next.composeId) ||
-    (!current.settings && next.settings);
+    (!current.composeId && next.composeId);
   if (opened) return "push";
   const closed =
     (current.messageId && !next.messageId) ||
-    (current.composeId && !next.composeId) ||
-    (current.settings && !next.settings);
+    (current.composeId && !next.composeId);
   return closed ? "close" : "replace";
 }
 

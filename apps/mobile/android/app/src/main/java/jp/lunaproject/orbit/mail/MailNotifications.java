@@ -68,7 +68,8 @@ final class MailNotifications {
         String token = data.get("actionToken");
         String actions = data.get("actions");
         boolean reply = "1".equals(data.get("actionReply"));
-        if (!messageId.isEmpty() && url != null && token != null) {
+        // 送り先が自分の API の受け口でなければ、ボタンも返信欄も付けない (合言葉をよそへ送らない)。
+        if (!messageId.isEmpty() && NotificationActionReceiver.allowedUrl(context, url) && token != null) {
             int buttons = MAX_ACTIONS;
             if (reply) {
                 addReply(context, builder, tag, messageId, url, token, title);

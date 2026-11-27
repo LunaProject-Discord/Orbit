@@ -13,7 +13,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { navigateApp } from "@/lib/app-navigation";
+import { MAIL_PATH, navigateApp } from "@/lib/app-navigation";
 import { CALENDAR_PATH } from "@/lib/calendar/route";
 
 const APPS: {
@@ -22,7 +22,7 @@ const APPS: {
   sub: string;
   path: string | null;
 }[] = [
-  { product: "mail", label: "Mail", sub: "メール", path: "/" },
+  { product: "mail", label: "Mail", sub: "メール", path: MAIL_PATH },
   {
     product: "calendar",
     label: "Calendar",

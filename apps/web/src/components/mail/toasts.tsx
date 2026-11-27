@@ -31,7 +31,7 @@ export function hideNotice() {
  * 出しておく時間は呼び出し側が決め (hideUndo で消す)、利用者が閉じたら onClose を呼ぶ。
  */
 export function showUndo(
-  id: number,
+  id: number | string,
   message: string,
   onUndo: () => void,
   onClose: () => void,
@@ -58,7 +58,7 @@ export function showUndo(
   });
 }
 
-export function hideUndo(id: number) {
+export function hideUndo(id: number | string) {
   toast.dismiss(`undo-${id}`);
 }
 

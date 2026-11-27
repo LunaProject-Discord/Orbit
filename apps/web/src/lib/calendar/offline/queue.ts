@@ -209,11 +209,19 @@ export function enqueueOp(
   return { queue: next, put, remove };
 }
 
+/** 「元に戻す」を受け付けている間で、まだ送らない操作か。 */
+export const isHeld = (op: QueuedOp, now: number = Date.now()) =>
+  op.holdUntil != null && op.holdUntil > now;
+
 /**
  * 次に送る操作。error / blocked の操作と同じ予定 (blocked はそのカレンダー) への後続は、
- * 順番を守るために送らずに待たせる。
+ * 順番を守るために送らずに待たせる。「元に戻す」を受け付けている操作 (holdUntil) も、
+ * 同じ予定への後続とともに待たせる。
  */
-export function nextSendable(queue: readonly QueuedOp[]): QueuedOp | null {
+export function nextSendable(
+  queue: readonly QueuedOp[],
+  now: number = Date.now(),
+): QueuedOp | null {
   const heldEvents = new Set<string>();
   const heldCalendars = new Set<string>();
   for (const op of [...queue].sort(bySeq)) {
@@ -222,7 +230,7 @@ export function nextSendable(queue: readonly QueuedOp[]): QueuedOp | null {
       if (op.eventId) heldEvents.add(op.eventId);
       continue;
     }
-    if (op.state === "error") {
+    if (op.state === "error" || isHeld(op, now)) {
       if (op.eventId) heldEvents.add(op.eventId);
       continue;
     }

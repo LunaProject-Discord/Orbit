@@ -25,6 +25,7 @@ import {
 import {
   bySeq,
   enqueueOp,
+  isHeld,
   nextSendable,
   nextSeq,
   type OpOutcome,
@@ -59,6 +60,7 @@ import type {
   ConflictKind,
   CreateEventInput,
   EventRangeQuery,
+  PendingUndo,
   QueuedOp,
 } from "@/lib/calendar/offline/types";
 import type { LocalStore, WriteOp } from "@/lib/offline/store";
@@ -298,6 +300,23 @@ const sortCalendars = (list: Calendar[]) =>
     )
     .map((entry) => entry.calendar);
 
+/**
+ * holdForUndo で待たせる時刻に足す余裕 (ms)。ふつうは画面がトーストを閉じるときに release で
+ * 送り始めるので、この分は待たない。ウィンドウが release の前に閉じたときだけ、余裕の分だけ
+ * 遅れてほかのウィンドウ (か次に開いたとき) が送る。「元に戻す」は holdMs の内に押されるので、
+ * 押した後に別のウィンドウが送り始めることは無い。
+ */
+const HOLD_GRACE_MS = 2_000;
+
+/** holdForUndo の中で積んだ書き込みの控え。 */
+type UndoCapture = {
+  holdUntil: number;
+  /** この中で積んだ新しい操作。 */
+  added: Set<string>;
+  /** この中で書き換えた・捨てた、前からある操作の、前の値。 */
+  previous: Map<string, QueuedOp>;
+};
+
 const rangeKey = (range: EventRangeQuery) =>
   `${range.from}|${range.to}|${range.timeZone}`;
 
@@ -346,6 +365,10 @@ export class OfflineCalendarClient implements CalendarClient {
   private storageError = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private checkTimer: ReturnType<typeof setInterval> | null = null;
+  /** 「元に戻す」の待ちが終わる時刻に送り始めるためのタイマー。 */
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  /** holdForUndo の fn を動かしている間の控え。 */
+  private capture: UndoCapture | null = null;
   private delay: number;
   private stopped = false;
   private startedSession = false;
@@ -394,8 +417,9 @@ export class OfflineCalendarClient implements CalendarClient {
     }
     // 送る役を持っていたウィンドウが閉じたら、ここで引き継ぐ。
     this.checkTimer = setInterval(() => {
-      if (nextSendable(this.ops)) void this.flush();
+      if (nextSendable(this.ops, this.now().getTime())) void this.flush();
     }, this.options.checkMs ?? 30_000);
+    this.armHoldTimer();
     if (this.ops.length > 0) void this.flush();
   }
 
@@ -876,12 +900,146 @@ export class OfflineCalendarClient implements CalendarClient {
       state: "pending",
       error: null,
     };
+    const capture = this.capture;
+    const before = capture ? new Map(this.ops.map((o) => [o.id, o])) : null;
     const result = enqueueOp(this.ops, op, this.inFlight, related);
+    if (capture && before) {
+      // 「元に戻す」のために、捨てた・書き換えた操作の前の値と、積んだ操作を控え、
+      // 積んだ・書き換えた操作は待たせる。
+      for (const id of result.remove) {
+        if (capture.added.delete(id)) continue;
+        const old = before.get(id);
+        if (old && !capture.previous.has(id)) capture.previous.set(id, old);
+      }
+      const held = new Map<string, QueuedOp>();
+      for (const put of result.put) {
+        const old = before.get(put.id);
+        if (old) {
+          if (!capture.previous.has(put.id)) capture.previous.set(put.id, old);
+        } else {
+          capture.added.add(put.id);
+        }
+        held.set(put.id, { ...put, holdUntil: capture.holdUntil });
+      }
+      result.put = [...held.values()];
+      result.queue = result.queue.map((other) => held.get(other.id) ?? other);
+    }
     this.ops = result.queue;
     void this.commit(
       [...result.put.map(putOp), ...result.remove.map(deleteOp)],
       { queue: true, events: op.eventId ? [op.eventId] : [] },
     ).then(() => this.flush());
+  }
+
+  holdForUndo(fn: () => void, holdMs: number): PendingUndo {
+    if (this.capture) throw new Error("nested holdForUndo");
+    const capture: UndoCapture = {
+      holdUntil: this.now().getTime() + holdMs + HOLD_GRACE_MS,
+      added: new Set(),
+      previous: new Map(),
+    };
+    this.capture = capture;
+    try {
+      fn();
+    } finally {
+      this.capture = null;
+    }
+    let settled = false;
+    const release = () => {
+      if (settled) return;
+      settled = true;
+      this.releaseHold(capture);
+    };
+    return {
+      release,
+      undo: async () => {
+        if (settled) return false;
+        settled = true;
+        const undone = await this.undoHold(capture);
+        if (!undone) this.releaseHold(capture);
+        return undone;
+      },
+    };
+  }
+
+  /** 待たせた操作の holdUntil を消して、送り始める。 */
+  private releaseHold(capture: UndoCapture): void {
+    const ids = new Set([...capture.added, ...capture.previous.keys()]);
+    const writes: WriteOp[] = [];
+    this.ops = this.ops.map((op) => {
+      if (!ids.has(op.id) || op.holdUntil !== capture.holdUntil) return op;
+      const next: QueuedOp = { ...op, holdUntil: null };
+      writes.push(putOp(next));
+      return next;
+    });
+    if (writes.length === 0) return;
+    void this.commit(writes, { queue: true, events: [] }).then(() =>
+      this.flush(),
+    );
+  }
+
+  /**
+   * 待たせた操作を取り除き、捨てた・書き換えた操作を前の値に戻す。どれか 1 つでも
+   * 送り始めていたら (attempted、送っている最中)、何もせずに false。
+   */
+  private async undoHold(capture: UndoCapture): Promise<boolean> {
+    if (this.stopped) return false;
+    // ほかのウィンドウの書き込みを反映してから確かめる。
+    await this.writeChain;
+    await this.reloadQueue();
+    const byId = new Map(this.ops.map((op) => [op.id, op]));
+    const started = (op: QueuedOp | undefined) =>
+      !!op &&
+      (op.attempted === true ||
+        op.state !== "pending" ||
+        op.id === this.inFlight);
+    for (const id of capture.added) {
+      const op = byId.get(id);
+      // 送り終えて消えた操作も、元に戻せない。
+      if (!op || started(op)) return false;
+    }
+    for (const id of capture.previous.keys()) {
+      if (started(byId.get(id))) return false;
+    }
+    const writes: WriteOp[] = [];
+    const events = new Set<string>();
+    for (const id of capture.added) {
+      const op = byId.get(id);
+      if (op?.eventId) events.add(op.eventId);
+      byId.delete(id);
+      writes.push(deleteOp(id));
+    }
+    for (const [id, old] of capture.previous) {
+      byId.set(id, old);
+      if (old.eventId) events.add(old.eventId);
+      writes.push(putOp(old));
+    }
+    this.ops = [...byId.values()].sort(bySeq);
+    await this.commit(writes, { queue: true, events: [...events] });
+    void this.flush();
+    return true;
+  }
+
+  /** 「元に戻す」の待ちが最初に終わる時刻に、送り始めるよう予約する。 */
+  private armHoldTimer(): void {
+    if (this.holdTimer) clearTimeout(this.holdTimer);
+    this.holdTimer = null;
+    if (this.stopped) return;
+    const now = this.now().getTime();
+    let next = Number.POSITIVE_INFINITY;
+    for (const op of this.ops) {
+      if (op.state === "pending" && isHeld(op, now) && op.holdUntil) {
+        next = Math.min(next, op.holdUntil);
+      }
+    }
+    if (!Number.isFinite(next)) return;
+    this.holdTimer = setTimeout(
+      () => {
+        this.holdTimer = null;
+        void this.flush();
+      },
+      next - now + 10,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -926,7 +1084,7 @@ export class OfflineCalendarClient implements CalendarClient {
     let sent = false;
     for (;;) {
       if (this.stopped) return;
-      const next = nextSendable(this.ops);
+      const next = nextSendable(this.ops, this.now().getTime());
       if (!next) break;
       const op = await this.markAttempted(next);
       if (!op) continue;
@@ -989,7 +1147,8 @@ export class OfflineCalendarClient implements CalendarClient {
       return null;
     }
     const base = stored ?? this.ops.find((other) => other.id === op.id) ?? op;
-    if (base.state !== "pending") {
+    // ほかのウィンドウが「元に戻す」のために待たせた。
+    if (base.state !== "pending" || isHeld(base, this.now().getTime())) {
       replaceInMemory(base);
       return null;
     }
@@ -1498,6 +1657,7 @@ export class OfflineCalendarClient implements CalendarClient {
     },
   ): Promise<void> {
     this.invalidate();
+    if (parts.queue) this.armHoldTimer();
     this.notifyLocal();
     for (const write of writes) {
       if (write.table !== "calQueue") continue;
@@ -1581,6 +1741,7 @@ export class OfflineCalendarClient implements CalendarClient {
     if (same) return;
     this.ops = next;
     this.invalidate();
+    this.armHoldTimer();
     this.notifyLocal();
   }
 
@@ -1638,7 +1799,7 @@ export class OfflineCalendarClient implements CalendarClient {
     }
     if (parts.queue) {
       await this.reloadQueue();
-      if (nextSendable(this.ops)) void this.flush();
+      if (nextSendable(this.ops, this.now().getTime())) void this.flush();
     }
     this.invalidate();
     this.notifyLocal();
@@ -1649,8 +1810,10 @@ export class OfflineCalendarClient implements CalendarClient {
     this.stopped = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.checkTimer) clearInterval(this.checkTimer);
+    if (this.holdTimer) clearTimeout(this.holdTimer);
     this.retryTimer = null;
     this.checkTimer = null;
+    this.holdTimer = null;
     this.stopTriggers?.();
     this.stopTriggers = null;
     this.stopShare?.();
