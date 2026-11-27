@@ -1,6 +1,6 @@
 {
   "name": "@orbit/mobile",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Orbit Mail のスマホアプリ (Capacitor)。apps/web の静的出力をアプリに同梱する。",
   "scripts": {
