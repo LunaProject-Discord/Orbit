@@ -15,6 +15,7 @@ import {
 import { createDb, drafts, outbox } from "@orbit/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { AccountManager } from "./account-manager.js";
+import { CalendarSyncManager } from "./calendar/manager.js";
 import {
   refreshDueSubscriptions,
   SUBSCRIPTION_BATCH,
@@ -41,16 +42,18 @@ const actionUrl = notificationActionUrl(process.env.API_PUBLIC_URL);
 const pushActions = actionUrl ? { key: encryptionKey, url: actionUrl } : null;
 
 const { db, pool } = createDb(databaseUrl);
+const microsoftOAuth = loadMicrosoftOAuthConfig(process.env);
+const googleOAuth = loadGoogleOAuthConfig(process.env);
 const manager = new AccountManager(
   db,
   databaseUrl,
   encryptionKey,
-  loadMicrosoftOAuthConfig(process.env),
+  microsoftOAuth,
   // API が公開された HTTPS の URL で動いていれば、Microsoft Graph の変更通知を使う。
   graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
   // 開発用のローカルサーバーを登録できる設定のときは、TLS の無い SMTP も許す。
   process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
-  loadGoogleOAuthConfig(process.env),
+  googleOAuth,
   // 新着メールの通知。ブラウザーへは Web Push (VAPID の鍵が無ければ送らない)、
   // スマホアプリへは FCM (FCM_SERVICE_ACCOUNT が無ければ送らない)。
   combineSenders([
@@ -61,8 +64,17 @@ const manager = new AccountManager(
   ]),
 );
 await manager.start();
+// カレンダーの同期は、メールの同期とは別に、カレンダーを使うアカウントごとに動かす。
+const calendarManager = new CalendarSyncManager(db, databaseUrl, {
+  encryptionKey,
+  google: googleOAuth,
+  microsoft: microsoftOAuth,
+  webhookBaseUrl: graphWebhookBaseUrl(process.env.API_PUBLIC_URL),
+  allowPrivateHosts: process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
+});
+await calendarManager.start();
 console.log(
-  `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件)`,
+  `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件、カレンダー: ${calendarManager.count} 件)`,
 );
 if (!fcm) {
   console.log(
@@ -152,6 +164,7 @@ async function shutdown() {
   stopping = true;
   clearInterval(sweepTimer);
   clearInterval(subscriptionTimer);
+  await calendarManager.stop();
   await manager.stop();
   await pool.end();
   process.exit(0);
