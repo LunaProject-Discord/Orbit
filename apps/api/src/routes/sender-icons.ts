@@ -20,14 +20,22 @@ const CACHE_CONTROL = "private, max-age=86400";
 /**
  * 差出人のアイコン。見つかれば画像を、無ければ 204 を返す。
  * どの取得元を使うかは端末が決める (BIMI は送信元の確認が取れたメールだけ、
- * Gravatar は設定で許したときだけ、ファビコンはなりすましの疑いが無いときだけ)。
+ * ファビコンはなりすましの疑いが無いときだけ)。Gravatar は、利用者の設定 (どの端末でも共通)
+ * で許したときだけ使う。端末が頼んできても、設定がオフならサーバーで外す。
  */
-export function senderIconRoutes({ icons }: { icons: SenderIconService }) {
+export function senderIconRoutes({
+  icons,
+  allowGravatar,
+}: {
+  icons: SenderIconService;
+  /** 利用者が Gravatar を使う設定にしているか。 */
+  allowGravatar: (userId: string) => Promise<boolean>;
+}) {
   const app = new Hono<AppEnv>();
 
   app.get("/", zValidator("query", iconQuery), async (c) => {
     const { address, sources } = c.req.valid("query");
-    const wanted = [
+    let wanted = [
       ...new Set(
         sources
           .split(",")
@@ -37,6 +45,9 @@ export function senderIconRoutes({ icons }: { icons: SenderIconService }) {
           ),
       ),
     ];
+    if (wanted.includes("gravatar") && !(await allowGravatar(c.var.user.id))) {
+      wanted = wanted.filter((source) => source !== "gravatar");
+    }
     let image: Awaited<ReturnType<SenderIconService["find"]>> = null;
     try {
       image = wanted.length > 0 ? await icons.find(address, wanted) : null;

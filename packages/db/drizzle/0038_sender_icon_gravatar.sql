@@ -1,0 +1,1 @@
+ALTER TABLE "user_settings" ADD COLUMN "sender_icon_gravatar" boolean DEFAULT false NOT NULL;
