@@ -1867,7 +1867,12 @@ function MessageContent({
       <dt className="text-muted-foreground">差出人</dt>
       <dd className="min-w-0 break-words">
         {message.from.length > 0 ? (
-          <ProfileNames addresses={message.from} full {...profile} />
+          <ProfileNames
+            addresses={message.from}
+            check={message.senderCheck}
+            full
+            {...profile}
+          />
         ) : (
           addressLabel(undefined)
         )}
@@ -2017,6 +2022,7 @@ function MessageContent({
                   {message.from[0] ? (
                     <ProfileName
                       address={message.from[0]}
+                      check={message.senderCheck}
                       className="truncate"
                       {...profile}
                     />

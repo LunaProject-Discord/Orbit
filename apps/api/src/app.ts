@@ -37,7 +37,10 @@ import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
 import { sendRoutes } from "./routes/send.js";
 import { senderIconRoutes } from "./routes/sender-icons.js";
 import { serverInfoRoutes } from "./routes/server-info.js";
-import { settingsRoutes } from "./routes/settings.js";
+import {
+  senderIconGravatarAllowed,
+  settingsRoutes,
+} from "./routes/settings.js";
 import { signatureRoutes } from "./routes/signatures.js";
 import { syncRoutes } from "./routes/sync.js";
 import { unifiedRoutes } from "./routes/unified.js";
@@ -201,6 +204,7 @@ export function createApp({
   authed.route(
     "/sender-icons",
     senderIconRoutes({
+      allowGravatar: (userId) => senderIconGravatarAllowed(db, userId),
       icons: createSenderIconService(
         db,
         defaultIconDeps(allowPrivateMailHosts),

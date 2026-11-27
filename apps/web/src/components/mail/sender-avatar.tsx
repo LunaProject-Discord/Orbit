@@ -2,9 +2,15 @@
 
 import { cn } from "cn";
 import { useState } from "react";
-import { profileInitial } from "@/components/mail/profile-card";
 import type { Address, SenderCheck } from "@/lib/api";
+import { addressLabel } from "@/lib/format";
 import { useSenderIcon } from "@/lib/sender-icon";
+
+/** アバターに出す 1 文字 (名前の先頭。名前が無ければアドレスの先頭)。 */
+export function profileInitial(address: Address): string {
+  const first = Array.from(addressLabel(address).trim())[0];
+  return first ? first.toUpperCase() : "?";
+}
 
 /**
  * 差出人のアイコン。BIMI のロゴ、Gravatar、ドメインのファビコンの順に探し

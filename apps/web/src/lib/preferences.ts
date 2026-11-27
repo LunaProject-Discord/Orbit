@@ -49,11 +49,8 @@ export type Preferences = {
   senderIconInList: boolean;
   /** 差出人のアイコンを、開いたメールの見出しと会話の各メールに出す。 */
   senderIconInMessage: boolean;
-  /**
-   * 差出人のアイコンを Gravatar からも探す。アドレスのハッシュが Gravatar に送られる
-   * (取得はサーバーが行うので、端末の情報は送られない)。
-   */
-  senderIconGravatar: boolean;
+  /** 相手のアイコンを、プロフィールカードと宛先の候補に出す。 */
+  senderIconInProfile: boolean;
   /** メールを開いたときに既読にするタイミング。 */
   markRead: "immediately" | "delay" | "never";
   /** markRead が delay のときに待つ秒数。 */
@@ -110,7 +107,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   showListIcons: true,
   senderIconInList: true,
   senderIconInMessage: true,
-  senderIconGravatar: false,
+  senderIconInProfile: true,
   markRead: "immediately",
   markReadDelay: 3,
   bodyFont: "sans",

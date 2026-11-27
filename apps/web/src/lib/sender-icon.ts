@@ -4,12 +4,13 @@ import {
   type SenderCheck,
   type SenderIconSource,
 } from "@/lib/api";
-import { usePreferences } from "@/lib/preferences";
+import { useSenderIconGravatar } from "@/lib/sender-icon-settings";
 
 /**
  * 差出人のアイコンを探す取得元を、探す順に決める。
  * - BIMI のロゴ: 送信元の確認 (DMARC) が取れたメールだけ。
- * - Gravatar: 設定で許したときだけ (アドレスのハッシュが Gravatar に送られるため)。
+ * - Gravatar: 設定 (どの端末でも共通) で許したときだけ (アドレスのハッシュが Gravatar に送られるため)。
+ *   サーバーも設定を確かめ、オフなら頼まれても使わない。
  * - ドメインのファビコン: 注意 (認証の失敗や、表示名とドメインの食い違い) が無いときだけ。
  *   なりすましのメールを、それらしく見せないため。BIMI も同じ理由で、注意があれば使わない。
  * 確認結果がまだ無いメール (取り込みの途中など) は、Gravatar だけを使う。
@@ -97,7 +98,7 @@ export function useSenderIcon(
   check: SenderCheck | null | undefined,
   enabled: boolean,
 ): SenderIcon | null {
-  const { senderIconGravatar } = usePreferences();
+  const senderIconGravatar = useSenderIconGravatar();
   const sources =
     enabled && address ? senderIconSources(check, senderIconGravatar) : [];
   const key =

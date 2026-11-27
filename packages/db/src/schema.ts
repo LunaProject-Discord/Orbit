@@ -943,6 +943,11 @@ export const userSettings = pgTable("user_settings", {
   notificationActions: jsonb().$type<string[]>(),
   /** 日付と時刻の形式。null は標準の値。 */
   dateFormat: jsonb().$type<DateFormatSettings>(),
+  /**
+   * 差出人のアイコンを Gravatar で探す。取得はサーバーが代わりに行うので、
+   * 端末ごとではなく利用者ごとに決める (アドレスのハッシュが Gravatar に送られるため、標準はオフ)。
+   */
+  senderIconGravatar: boolean().notNull().default(false),
   updatedAt: updatedAt(),
 });
 

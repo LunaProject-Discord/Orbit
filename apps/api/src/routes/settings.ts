@@ -13,6 +13,7 @@ import {
   notificationActionSettings,
   readDateFormat,
   readSwipe,
+  senderIconSettings,
   swipeSettings,
 } from "../lib/settings.js";
 
@@ -25,7 +26,8 @@ async function announce(db: Database, userId: string) {
 }
 
 /**
- * どの端末でも同じにする設定 (一覧のスワイプ操作、通知に付けるボタン、日付と時刻の形式)。
+ * どの端末でも同じにする設定 (一覧のスワイプ操作、通知に付けるボタン、日付と時刻の形式、
+ * 差出人のアイコンに Gravatar を使うか)。
  * フォントや行の間隔など、端末ごとに違ってよい設定は端末側に保存する。
  */
 export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
@@ -37,6 +39,7 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
         swipe: userSettings.swipe,
         notificationActions: userSettings.notificationActions,
         dateFormat: userSettings.dateFormat,
+        senderIconGravatar: userSettings.senderIconGravatar,
       })
       .from(userSettings)
       .where(eq(userSettings.userId, c.var.user.id));
@@ -45,6 +48,7 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
       notificationActions: readNotificationActions(row?.notificationActions),
       // 保存していなければ null (画面側が標準の値を使う)。
       dateFormat: readDateFormat(row?.dateFormat),
+      senderIconGravatar: row?.senderIconGravatar ?? false,
     });
   });
 
@@ -91,5 +95,39 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
     return c.json({ dateFormat });
   });
 
+  /**
+   * 差出人のアイコンの設定を保存する。取得はサーバーが代わりに行うので、
+   * Gravatar を使うかどうかは端末ごとではなく、どの端末でも共通にする。
+   */
+  app.put(
+    "/sender-icons",
+    zValidator("json", senderIconSettings),
+    async (c) => {
+      const { gravatar: senderIconGravatar } = c.req.valid("json");
+      const userId = c.var.user.id;
+      await db
+        .insert(userSettings)
+        .values({ userId, senderIconGravatar })
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: { senderIconGravatar },
+        });
+      await announce(db, userId);
+      return c.json({ senderIconGravatar });
+    },
+  );
+
   return app;
+}
+
+/** 利用者が差出人のアイコンを Gravatar で探す設定にしているか (標準はオフ)。 */
+export async function senderIconGravatarAllowed(
+  db: Database,
+  userId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ senderIconGravatar: userSettings.senderIconGravatar })
+    .from(userSettings)
+    .where(eq(userSettings.userId, userId));
+  return row?.senderIconGravatar ?? false;
 }

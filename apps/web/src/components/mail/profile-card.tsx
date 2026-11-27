@@ -10,6 +10,7 @@ import {
   SquarePenIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { SenderAvatar } from "@/components/mail/sender-avatar";
 import { Button } from "@/components/ui/button";
 import {
   sheetBackdrop,
@@ -22,8 +23,9 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import type { Address } from "@/lib/api";
+import type { Address, SenderCheck } from "@/lib/api";
 import { addressFull, addressLabel } from "@/lib/format";
+import { usePreferences } from "@/lib/preferences";
 
 /** プロフィールカードから始められる操作。渡さなかった操作のボタンは出さない。 */
 export type ProfileActions = {
@@ -37,11 +39,7 @@ export type ProfileActions = {
   hasSignature?: (address: Address) => boolean;
 };
 
-/** アバターに出す 1 文字 (名前の先頭。名前が無ければアドレスの先頭)。 */
-export function profileInitial(address: Address): string {
-  const first = Array.from(addressLabel(address).trim())[0];
-  return first ? first.toUpperCase() : "?";
-}
+export { profileInitial } from "@/components/mail/sender-avatar";
 
 /**
  * メールの相手 (差出人や宛先) の名前。カーソルを合わせるか、押す (タッチではタップ) と、
@@ -50,6 +48,7 @@ export function profileInitial(address: Address): string {
  */
 export function ProfileName({
   address,
+  check,
   full = false,
   className,
   onSearch,
@@ -58,11 +57,17 @@ export function ProfileName({
   hasSignature,
 }: {
   address: Address;
+  /**
+   * 差出人の確認結果 (差出人のときだけ)。アイコンに BIMI のロゴやサイトのアイコンを使ってよいかに使う。
+   * 宛先など確認結果の無い相手は、Gravatar (設定でオンのとき) だけを使う。
+   */
+  check?: SenderCheck | null;
   /** 「名前 <アドレス>」の形で出す。false なら名前だけ (無ければアドレス)。 */
   full?: boolean;
   className?: string;
 } & ProfileActions) {
   const [open, setOpen] = useState(false);
+  const { senderIconInProfile } = usePreferences();
   const [copied, setCopied] = useState(false);
   const narrow = useNarrowScreen();
   const swipe = useSheetSwipe(() => setOpen(false));
@@ -96,12 +101,13 @@ export function ProfileName({
   const body = (Title: typeof PopoverTitle | typeof DialogPrimitive.Title) => (
     <>
       <div className="flex items-center gap-3 max-sm:px-3.5 max-sm:pb-1">
-        <span
-          aria-hidden="true"
-          className="flex size-11 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-base"
-        >
-          {profileInitial(address)}
-        </span>
+        <SenderAvatar
+          address={address}
+          check={check}
+          // 開いたときだけ探す (名前を並べただけでは取りに行かない)。
+          enabled={senderIconInProfile && open}
+          className="size-11 text-base"
+        />
         <div className="min-w-0 flex-1">
           <Title className="truncate font-medium">
             {name ?? address.address}
@@ -210,11 +216,14 @@ export function ProfileName({
 /** 相手の並び。「、」で区切り、1 人ずつプロフィールカードを出せる。 */
 export function ProfileNames({
   addresses,
+  check,
   full = false,
   separator = ", ",
   ...actions
 }: {
   addresses: Address[];
+  /** 差出人の確認結果。先頭の相手 (差出人) にだけ使う。 */
+  check?: SenderCheck | null;
   full?: boolean;
   separator?: string;
 } & ProfileActions) {
@@ -224,7 +233,12 @@ export function ProfileNames({
         // 同じアドレスが 2 回書かれたメールもあるので、位置も鍵に含める。
         <span key={`${index}:${address.address}`}>
           {index > 0 && separator}
-          <ProfileName address={address} full={full} {...actions} />
+          <ProfileName
+            address={address}
+            check={index === 0 ? check : null}
+            full={full}
+            {...actions}
+          />
         </span>
       ))}
     </>

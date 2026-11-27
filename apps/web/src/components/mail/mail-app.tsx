@@ -240,6 +240,7 @@ import {
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { completeQuery } from "@/lib/search-input";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
+import { refreshSenderIconSettings } from "@/lib/sender-icon-settings";
 import { registerSheetBack } from "@/lib/sheet-back";
 import {
   isSelectAllKey,
@@ -1061,6 +1062,7 @@ const MailView = memo(function MailView({
     void loadUnified();
     void refreshSwipeSettings();
     void refreshDateStyle();
+    void refreshSenderIconSettings();
     void loadSignatureRules();
   }, [
     loadAccounts,
@@ -1834,6 +1836,9 @@ const MailView = memo(function MailView({
         void loadUnified();
         void refreshSwipeSettings();
         void refreshDateStyle();
+        void refreshSenderIconSettings();
+        void refreshSenderIconSettings();
+        void refreshSenderIconSettings();
         void loadSignatureRules();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
@@ -1871,6 +1876,8 @@ const MailView = memo(function MailView({
       void loadUnified();
       void refreshSwipeSettings();
       void refreshDateStyle();
+      void refreshSenderIconSettings();
+      void refreshSenderIconSettings();
       void loadSignatureRules();
       void loadFirstPage(selectionRef.current, false);
       void saverRef.current?.flush();

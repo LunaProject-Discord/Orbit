@@ -1524,6 +1524,8 @@ export type SharedSettings = {
   notificationActions: NotificationAction[];
   /** 日付と時刻の形式。保存していなければ null (標準の値)。 */
   dateFormat: DateStyle | null;
+  /** 差出人のアイコンを Gravatar で探す (取得はサーバーが行う)。古いサーバーには無い。 */
+  senderIconGravatar?: boolean;
 };
 
 /** どの端末でも同じにする設定を取得する。 */
@@ -1546,6 +1548,16 @@ export async function saveDateFormat(dateFormat: DateStyle): Promise<void> {
   await apiFetch("/v1/settings/date-format", {
     method: "PUT",
     body: dateFormat,
+  });
+}
+
+/** 差出人のアイコンの設定 (どの端末でも共通の部分) を保存する。 */
+export async function saveSenderIconSettings(settings: {
+  gravatar: boolean;
+}): Promise<void> {
+  await apiFetch("/v1/settings/sender-icons", {
+    method: "PUT",
+    body: settings,
   });
 }
 

@@ -10,10 +10,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { profileInitial } from "@/components/mail/profile-card";
+import { SenderAvatar } from "@/components/mail/sender-avatar";
 import { Input } from "@/components/ui/input";
 import type { Contact } from "@/lib/api";
 import { useContactSuggestions } from "@/lib/contacts";
+import { usePreferences } from "@/lib/preferences";
 
 type Options = {
   /** 入力中の文字列。 */
@@ -136,6 +137,7 @@ export function ContactSuggestionList({
   onPick,
   className,
 }: ListProps) {
+  const { senderIconInProfile } = usePreferences();
   const ref = useRef<HTMLDivElement | null>(null);
   const [above, setAbove] = useState(false);
 
@@ -191,15 +193,16 @@ export function ContactSuggestionList({
           onClick={() => onPick(contact)}
           className="flex min-h-11 cursor-default items-center gap-2.5 rounded-md px-2 py-1.5 outline-none aria-selected:bg-accent aria-selected:text-accent-foreground pointer-coarse:min-h-12"
         >
-          <span
-            aria-hidden="true"
-            className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted font-medium text-sm"
-          >
-            {profileInitial({
+          <SenderAvatar
+            address={{
               name: contact.name ?? undefined,
               address: contact.address,
-            })}
-          </span>
+            }}
+            // 確認結果の無い相手なので、Gravatar (設定でオンのとき) だけを使う。
+            check={null}
+            enabled={senderIconInProfile}
+            className="size-8 text-sm"
+          />
           <span className="flex min-w-0 flex-1 flex-col">
             {contact.name ? (
               <>

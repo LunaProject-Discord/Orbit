@@ -110,6 +110,10 @@ import {
 } from "@/lib/preferences";
 import { SETTINGS_CATEGORIES, type SettingsCategory } from "@/lib/route";
 import {
+  changeSenderIconGravatar,
+  useSenderIconGravatar,
+} from "@/lib/sender-icon-settings";
+import {
   changeSwipeSettings,
   SWIPE_ACTIONS,
   useSwipeSettings,
@@ -216,9 +220,10 @@ const CATEGORIES: Record<
   },
   reading: {
     label: "メールの表示",
-    summary: "既読のタイミング、外部の画像、見出し、簡易返信欄",
+    summary:
+      "既読のタイミング、外部の画像、差出人のアイコン、見出し、簡易返信欄",
     description:
-      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
+      "Gravatar を使うかどうかは、すべての端末で共通です。それ以外の設定は、この端末 (ブラウザー) にだけ保存されます。",
     icon: MailOpenIcon,
   },
   actions: {
@@ -837,6 +842,8 @@ function DateTimePage() {
 
 function ReadingPage() {
   const preferences = usePreferences();
+  const senderIconGravatar = useSenderIconGravatar();
+  const [gravatarError, setGravatarError] = useState(false);
   const set = updatePreferences;
   return (
     <>
@@ -901,12 +908,31 @@ function ReadingPage() {
             onChange={(senderIconInMessage) => set({ senderIconInMessage })}
           />
           <SwitchRow
-            label="Gravatar を使う"
-            description="差出人のアドレスから作った値 (ハッシュ) を Gravatar に送って、登録された画像を探します。"
-            checked={preferences.senderIconGravatar}
-            onChange={(senderIconGravatar) => set({ senderIconGravatar })}
+            label="プロフィールカードと宛先の候補に表示"
+            description="名前を押したときのカードと、宛先を入力するときの候補に表示します。宛先の相手は送信元を確認できないので、Gravatar だけを使います。"
+            checked={preferences.senderIconInProfile}
+            onChange={(senderIconInProfile) => set({ senderIconInProfile })}
           />
         </SettingGroup>
+        <SettingGroup>
+          <SwitchRow
+            label="Gravatar を使う"
+            description="すべての端末で共通の設定です。差出人のアドレスから作った値 (ハッシュ) をサーバーが Gravatar に送って、登録された画像を探します。"
+            checked={senderIconGravatar}
+            onChange={(gravatar) => {
+              setGravatarError(false);
+              void changeSenderIconGravatar(gravatar).then((saved) =>
+                setGravatarError(!saved),
+              );
+            }}
+          />
+        </SettingGroup>
+        {gravatarError && (
+          <p role="alert" className="text-destructive text-xs">
+            Gravatar
+            の設定を保存できませんでした。通信の状態を確認して、もう一度お試しください。
+          </p>
+        )}
       </Section>
       <Section title="見出しと返信">
         <SettingGroup>

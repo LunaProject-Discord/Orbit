@@ -78,3 +78,9 @@ export function readDateFormat(saved: unknown): DateFormatSettings | null {
   const result = dateFormatSettings.safeParse(saved);
   return result.success ? result.data : null;
 }
+
+/** 差出人のアイコンの設定 (どの端末でも共通の部分)。 */
+export const senderIconSettings = z.object({
+  /** Gravatar で探す。 */
+  gravatar: z.boolean(),
+});
