@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 
 /**
  * 予定の API (/v1/calendars) の型と呼び出し。
@@ -236,17 +236,53 @@ export async function searchEvents(
   return ((await response.json()) as { events: CalendarEvent[] }).events;
 }
 
+/** 書き込みに添える時刻 (端末の時計のまま)。古いサーバーは知らない項目を無視するか、断る。 */
+export type WriteTimes = {
+  /** 操作した時刻。 */
+  changedAt?: Date | string;
+  /** 送る瞬間の端末の時刻 (サーバーが端末の時計のずれを直すのに使う)。 */
+  clientNow?: Date;
+};
+
+const iso = (value: Date | string) =>
+  typeof value === "string" ? value : value.toISOString();
+
+/**
+ * 古いサーバーは、予定の作成の本文に知らない項目 (changedAt、clientNow) があると
+ * 400 で断る (コードの無い入力の誤り)。そう断られたら、その項目を外して送り直す。
+ */
+let createTimesUnsupported = false;
+
 export async function createEvent(
   input: EventFields & {
     id?: string;
     calendarId: string;
     time: EventTimeInput;
   },
+  times: WriteTimes = {},
 ): Promise<CalendarEvent> {
-  const response = await apiFetch("/v1/calendars/events", {
-    method: "POST",
-    body: input,
-  });
+  const extra: Record<string, string> = {};
+  if (!createTimesUnsupported) {
+    if (times.changedAt) extra.changedAt = iso(times.changedAt);
+    if (times.clientNow) extra.clientNow = iso(times.clientNow);
+  }
+  const post = (body: unknown) =>
+    apiFetch("/v1/calendars/events", { method: "POST", body });
+  let response: Response;
+  try {
+    response = await post({ ...input, ...extra });
+  } catch (error) {
+    if (
+      Object.keys(extra).length === 0 ||
+      !(error instanceof ApiError) ||
+      error.status !== 400 ||
+      error.code !== null
+    ) {
+      throw error;
+    }
+    createTimesUnsupported = true;
+    response = await post(input);
+  }
   return ((await response.json()) as { event: CalendarEvent }).event;
 }
 
@@ -256,20 +292,32 @@ export type EventUpdateResult = {
   rejected: (keyof EventFields)[];
 };
 
-function changedAtFor(changes: EventFields, at: Date) {
-  const iso = at.toISOString();
-  return Object.fromEntries(Object.keys(changes).map((key) => [key, iso]));
+function changedAtFor(
+  changes: EventFields,
+  at: Date | Record<string, string>,
+): Record<string, string> {
+  if (!(at instanceof Date)) return at;
+  const value = at.toISOString();
+  return Object.fromEntries(Object.keys(changes).map((key) => [key, value]));
 }
 
-/** 予定を変える。changedAt は端末で変えた時刻 (既定は今)。 */
+/**
+ * 予定を変える。changedAt は端末で変えた時刻 (既定は今)。
+ * 項目ごとの時刻 (送信待ちから送るときは、操作した時刻) も渡せる。
+ */
 export async function updateEvent(
   id: string,
   changes: EventFields,
-  changedAt: Date = new Date(),
+  changedAt: Date | Record<string, string> = new Date(),
+  clientNow: Date = new Date(),
 ): Promise<EventUpdateResult> {
   const response = await apiFetch(`/v1/calendars/events/${id}`, {
     method: "PATCH",
-    body: { changes, changedAt: changedAtFor(changes, changedAt) },
+    body: {
+      changes,
+      changedAt: changedAtFor(changes, changedAt),
+      clientNow: clientNow.toISOString(),
+    },
   });
   return (await response.json()) as EventUpdateResult;
 }
@@ -279,28 +327,145 @@ export async function updateOccurrence(
   masterId: string,
   recurrenceId: string,
   changes: EventFields,
-  changedAt: Date = new Date(),
+  changedAt: Date | Record<string, string> = new Date(),
+  clientNow: Date = new Date(),
 ): Promise<EventUpdateResult> {
   const response = await apiFetch(
     `/v1/calendars/events/${masterId}/occurrences/${encodeURIComponent(recurrenceId)}`,
     {
       method: "PATCH",
-      body: { changes, changedAt: changedAtFor(changes, changedAt) },
+      body: {
+        changes,
+        changedAt: changedAtFor(changes, changedAt),
+        clientNow: clientNow.toISOString(),
+      },
     },
   );
   return (await response.json()) as EventUpdateResult;
 }
 
-export async function deleteEvent(id: string): Promise<void> {
-  await apiFetch(`/v1/calendars/events/${id}`, { method: "DELETE" });
+/**
+ * 予定を消す。deletedAt (削除した時刻) を渡すと、それより後にほかの端末で変更されていれば
+ * サーバーは消さずに 409 changed_since ({ event }) を返す (新しいサーバーだけ)。
+ */
+export async function deleteEvent(
+  id: string,
+  times: { deletedAt?: Date | string; clientNow?: Date } = {},
+): Promise<void> {
+  const body: Record<string, string> = {};
+  if (times.deletedAt) body.deletedAt = iso(times.deletedAt);
+  if (times.clientNow) body.clientNow = iso(times.clientNow);
+  await apiFetch(`/v1/calendars/events/${id}`, {
+    method: "DELETE",
+    ...(Object.keys(body).length > 0 ? { body } : {}),
+  });
 }
 
 export async function deleteOccurrence(
   masterId: string,
   recurrenceId: string,
+  times: WriteTimes = {},
 ): Promise<void> {
+  const body: Record<string, string> = {};
+  if (times.changedAt) body.changedAt = iso(times.changedAt);
+  if (times.clientNow) body.clientNow = iso(times.clientNow);
   await apiFetch(
     `/v1/calendars/events/${masterId}/occurrences/${encodeURIComponent(recurrenceId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", ...(Object.keys(body).length > 0 ? { body } : {}) },
   );
+}
+
+/**
+ * 招待に返事をする (段取り 8 で足すルート)。ルートの無いサーバーでは 404 (コード無し)。
+ * 予定が返ってくれば、その予定。
+ */
+export async function respondToEvent(
+  id: string,
+  input: {
+    status: AttendeeStatus;
+    comment?: string | null;
+    respondedAt: Date | string;
+    clientNow?: Date;
+  },
+): Promise<CalendarEvent | null> {
+  const response = await apiFetch(`/v1/calendars/events/${id}/respond`, {
+    method: "POST",
+    body: {
+      status: input.status,
+      ...(input.comment !== undefined ? { comment: input.comment } : {}),
+      respondedAt: iso(input.respondedAt),
+      clientNow: iso(input.clientNow ?? new Date()),
+    },
+  });
+  const body = (await response.json().catch(() => null)) as {
+    event?: CalendarEvent;
+  } | null;
+  return body?.event ?? null;
+}
+
+/** 差分同期 (GET /v1/calendars/sync) の 1 ページ。 */
+export type CalendarSyncPage = {
+  calendars: Calendar[];
+  events: CalendarEvent[];
+  deleted: { calendars: string[]; events: string[] };
+  latestSeq: string;
+  hasMore: boolean;
+  /** 未解決の競合の件数 (新しいサーバーだけ)。 */
+  openConflicts?: number;
+  /** 最新の競合の記録の時刻 (新しいサーバーだけ。無ければ null)。 */
+  conflictsAt?: string | null;
+};
+
+/** 変更番号 since より後に変わったカレンダーと予定。 */
+export async function syncCalendars(
+  since: string,
+  options: { limit?: number; signal?: AbortSignal } = {},
+): Promise<CalendarSyncPage> {
+  const query = new URLSearchParams({ since });
+  if (options.limit) query.set("limit", String(options.limit));
+  const response = await apiFetch(`/v1/calendars/sync?${query}`, {
+    signal: options.signal,
+  });
+  return (await response.json()) as CalendarSyncPage;
+}
+
+/** サーバーが記録した、反映されなかった変更 (競合)。 */
+export type CalendarConflict = {
+  id: string;
+  calendarId: string | null;
+  eventId: string | null;
+  kind:
+    | "field_lost"
+    | "write_failed"
+    | "create_failed"
+    | "remote_deleted"
+    | "delete_cancelled";
+  fields: (keyof EventFields)[];
+  lost: EventFields | null;
+  snapshot: CalendarEvent | null;
+  title: string | null;
+  reason: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  /** 回の変更なら、その回 (サーバーが返すときだけ)。 */
+  recurrenceId?: string | null;
+};
+
+/** 未解決の競合 (新しい順)。 */
+export async function listConflicts(
+  signal?: AbortSignal,
+): Promise<CalendarConflict[]> {
+  const response = await apiFetch("/v1/calendars/conflicts", { signal });
+  return ((await response.json()) as { conflicts: CalendarConflict[] })
+    .conflicts;
+}
+
+/** 競合を閉じる。 */
+export async function dismissConflict(id: string): Promise<void> {
+  await apiFetch(`/v1/calendars/conflicts/${id}`, { method: "DELETE" });
+}
+
+/** 作成が確定して失敗した予定を、もう一度書き戻す (create_failed だけ)。 */
+export async function retryConflict(id: string): Promise<void> {
+  await apiFetch(`/v1/calendars/conflicts/${id}/retry`, { method: "POST" });
 }

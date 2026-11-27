@@ -10,6 +10,16 @@
       "mail-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./recurrence": {
+      "mail-source": "./src/recurrence.ts",
+      "types": "./dist/recurrence.d.ts",
+      "default": "./dist/recurrence.js"
+    },
+    "./event-merge": {
+      "mail-source": "./src/event-merge.ts",
+      "types": "./dist/event-merge.d.ts",
+      "default": "./dist/event-merge.js"
     }
   },
   "scripts": {
