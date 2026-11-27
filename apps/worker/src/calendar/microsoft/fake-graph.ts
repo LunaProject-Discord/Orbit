@@ -48,6 +48,8 @@ export class FakeGraph {
   invalidateTokens = false;
   /** true なら、cancelledOccurrences の $select を 400 で拒む。 */
   rejectSelect = false;
+  /** true なら、断った (decline) 予定を消す (Outlook の動き)。 */
+  removeOnDecline = false;
 
   readonly fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : String(input));
@@ -358,6 +360,7 @@ export class FakeGraph {
               ? "declined"
               : "tentativelyAccepted";
         this.update(id, { responseStatus: { response } });
+        if (action === "decline" && this.removeOnDecline) this.remove(id);
         return new Response(null, { status: 202 });
       }
       if (method === "GET") {

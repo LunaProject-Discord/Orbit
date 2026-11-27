@@ -218,8 +218,19 @@ export function createMicrosoftProvider(
     if (event.recurrenceId === null) {
       return { status: "rejected", reason: "回の指定がありません。" };
     }
-    const instance = await findInstance(graph, masterId, event.recurrenceId);
-    if (!instance?.id) return { status: "gone" };
+    let instance: GraphEvent | null;
+    try {
+      instance = await findInstance(graph, masterId, event.recurrenceId);
+    } catch (error) {
+      if (!(error instanceof GraphError && isGone(error))) throw error;
+      instance = null;
+    }
+    if (!instance?.id) {
+      // 回が無くても、原本が残っていれば原本まで消させない (gone は原本ごと消す)。
+      const master = await fetchMaster(graph, masterId);
+      if (!master) return { status: "gone" };
+      return { status: "rejected", reason: "その回が相手側にありません。" };
+    }
     const body = bodyFor(write, event, fields, calendar, true);
     try {
       if (Object.keys(body).length > 0) {
@@ -618,7 +629,12 @@ export function createMicrosoftProvider(
       } catch (error) {
         return writeFailure(error);
       }
-      return afterWrite(ctx, graph, ref.remoteId);
+      const after = await afterWrite(ctx, graph, ref.remoteId);
+      // 断ると Outlook が予定を消すことがある。返事は届いたので、成功として何も返さない。
+      if (after.status === "gone" && action === "decline") {
+        return { status: "ok", events: [] };
+      }
+      return after;
     },
 
     maintainPush(ctx, rows) {
