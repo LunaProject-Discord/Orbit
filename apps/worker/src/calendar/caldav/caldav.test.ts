@@ -821,3 +821,85 @@ describe("CalDAV の招待と出欠 (段取り 8)", () => {
     expect(carol).toContain("X-CUSTOM=1");
   });
 });
+
+describe("CalDAV と招待メールの送信元 (imip-design 4.4)", () => {
+  const attendee = (email: string, self = false) => ({
+    id: crypto.randomUUID(),
+    eventId: crypto.randomUUID(),
+    email,
+    name: null,
+    role: "required" as const,
+    status: "needs_action" as const,
+    self,
+    comment: null,
+    repliedAt: null,
+    replySequence: null,
+  });
+
+  it("送信元のアドレスで主催・参加した予定に self を付け、ORGANIZER はそのアドレスで書く", async () => {
+    const { server, provider, ctx } = setup();
+    const calendar = await workCalendar(provider, ctx);
+    const withSender: ProviderContext = {
+      ...ctx,
+      imipAddresses: new Map([[calendar.id, "Me@Mail.example"]]),
+    };
+    const snapshot = makeEventSnapshot({
+      organizer: null,
+      attendees: [attendee("guest@other.example")],
+    });
+    const created = await provider.createEvent(withSender, calendar, {
+      event: snapshot,
+      master: null,
+      exceptions: [],
+      fields: [],
+    });
+    if (created.status !== "ok") throw new Error(created.status);
+    const [resource] = [...server.resources.values()];
+    // 主催者の無い予定には、アカウント (user@example.com) ではなく送信元のアドレスを書く。
+    expect(resource?.data).toContain("ORGANIZER:mailto:Me@Mail.example");
+    expect(created.events[0]?.organizer).toMatchObject({
+      email: "Me@Mail.example",
+      self: true,
+    });
+
+    // 取り込み直しても自分の予定のまま。送信元が分からなければ他人の予定に見える。
+    const ref = {
+      remoteId: created.events[0]?.remoteId ?? "",
+      etag: null,
+      uid: snapshot.uid,
+      recurrenceId: null,
+      parentRemoteId: null,
+    };
+    const again = await provider.getEvent(withSender, calendar, ref);
+    expect(again?.[0]?.organizer?.self).toBe(true);
+    const without = await provider.getEvent(ctx, calendar, ref);
+    expect(without?.[0]?.organizer?.self).toBe(false);
+  });
+
+  it("取り込んだ招待の主催者を、自分のアドレスに書き換えない", async () => {
+    const { server, provider, ctx } = setup();
+    const calendar = await workCalendar(provider, ctx);
+    const withSender: ProviderContext = {
+      ...ctx,
+      imipAddresses: new Map([[calendar.id, "me@mail.example"]]),
+    };
+    const created = await provider.createEvent(withSender, calendar, {
+      event: makeEventSnapshot({
+        uid: "invite@other.example",
+        organizer: { email: "boss@other.example", name: "上司" },
+        attendees: [attendee("me@mail.example", true)],
+      }),
+      master: null,
+      exceptions: [],
+      fields: [],
+    });
+    if (created.status !== "ok") throw new Error(created.status);
+    const [resource] = [...server.resources.values()];
+    expect(resource?.data).toContain(
+      "ORGANIZER;CN=上司:mailto:boss@other.example",
+    );
+    expect(resource?.data).not.toContain("mailto:user@example.com");
+    expect(created.events[0]?.organizer?.self).toBe(false);
+    expect(created.events[0]?.attendees[0]?.self).toBe(true);
+  });
+});
