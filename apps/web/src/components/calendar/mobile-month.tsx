@@ -107,7 +107,8 @@ export function MobileMonth({
           today={today}
           holidays={holidays}
           selectedKey={selectedKey}
-          emptyLabel="予定はありません"
+          emptyLabel="予定はありません。"
+          emptyAtTop
           onSelect={onSelect}
         />
       </div>

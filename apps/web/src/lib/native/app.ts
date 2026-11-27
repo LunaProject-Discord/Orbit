@@ -141,14 +141,24 @@ export function listenAppUrl(listener: (url: string) => void): () => void {
  * 画面左上の「←」と同じ閉じ方をする。Android の WebView では、URL の履歴を戻す
  * (history.back) が何も起こさないことがあるため、履歴には頼らない。
  */
-let appBack: (() => boolean) | null = null;
+const appBackHandlers: (() => boolean)[] = [];
 
-/** 画面の中で戻る処理を登録する。戻り値の関数で解除する。 */
+/**
+ * 画面の中で戻る処理を登録する。戻り値の関数で解除する。
+ * 後に登録したものが使われ、解除すると前の登録に戻る (カレンダーの上で設定を開いて閉じたとき、
+ * 設定を受け持つメールの画面の登録が外れて、カレンダーの登録に戻るように)。
+ */
 export function setAppBackHandler(handler: () => boolean): () => void {
-  appBack = handler;
+  appBackHandlers.push(handler);
   return () => {
-    if (appBack === handler) appBack = null;
+    const index = appBackHandlers.lastIndexOf(handler);
+    if (index >= 0) appBackHandlers.splice(index, 1);
   };
+}
+
+/** 最後に登録した「画面の中で戻る処理」を呼ぶ。閉じたら true。 */
+export function runAppBackHandler(): boolean {
+  return appBackHandlers.at(-1)?.() ?? false;
 }
 
 /** history.back() のあと、戻れたか (popstate) を待つ長さ (ミリ秒)。戻れなければアプリを裏へ回す。 */
@@ -172,7 +182,7 @@ export function listenBackButton(): () => void {
         // 下から出るシートが開いていれば、画面は戻さずにシートだけを閉じる。
         if (closeTopSheet()) return;
         // 開いているメールや設定のページなどは、画面の中で閉じる。
-        if (appBack?.()) {
+        if (runAppBackHandler()) {
           backLog("画面の中で戻る");
           return;
         }
