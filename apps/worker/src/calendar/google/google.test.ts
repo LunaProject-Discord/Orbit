@@ -19,6 +19,7 @@ import {
 } from "../testing/provider-contract.js";
 import {
   BIRTHDAYS_REMOTE_ID,
+  eventFromGoogle,
   googleEventIdFor,
   parseGoogleRaw,
 } from "./convert.js";
@@ -717,6 +718,37 @@ describe("Google への書き込み", () => {
         result.events[0]?.attendees.find((attendee) => attendee.self)?.status,
       ).toBe("declined");
     }
+  });
+
+  it("主催者の印は organizer.self (副カレンダーの ID のアドレスでも self で決まる)", () => {
+    const base = {
+      id: "e1",
+      start: { date: "2026-12-01" },
+      end: { date: "2026-12-02" },
+    };
+    expect(
+      eventFromGoogle(
+        {
+          ...base,
+          organizer: {
+            email: "abc123@group.calendar.google.com",
+            displayName: "チーム",
+            self: true,
+          },
+        },
+        { timeZone: "Asia/Tokyo" },
+      ).organizer,
+    ).toEqual({
+      email: "abc123@group.calendar.google.com",
+      name: "チーム",
+      self: true,
+    });
+    expect(
+      eventFromGoogle(
+        { ...base, organizer: { email: "boss@example.com" } },
+        { timeZone: "Asia/Tokyo" },
+      ).organizer,
+    ).toEqual({ email: "boss@example.com", self: false });
   });
 });
 

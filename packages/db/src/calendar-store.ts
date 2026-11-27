@@ -33,7 +33,8 @@ export type CalendarEventInput = {
   rrule: string | null;
   rdates: string[] | null;
   exdates: string[] | null;
-  organizer: { email: string; name?: string } | null;
+  /** self は自分が主催者か (分からなければ省く)。 */
+  organizer: { email: string; name?: string; self?: boolean } | null;
   attendees: {
     email: string;
     name: string | null;

@@ -2,9 +2,11 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
+  CaldavAuthError,
   CaldavClient,
   CaldavXmlError,
   createPinnedLookup,
+  hasAutoSchedule,
   parseXml,
   retryAfterMs,
   sameDavPath,
@@ -109,6 +111,82 @@ describe("CaldavClient", () => {
     });
     expect(await client.delete("https://dav.example.com/a.ics", null)).toEqual({
       status: "not_found",
+    });
+  });
+
+  describe("calendar-auto-schedule (OPTIONS の DAV ヘッダー)", () => {
+    const clientWith = (
+      reply: (url: string) => Response | Promise<Response>,
+      seen: string[] = [],
+    ) =>
+      new CaldavClient({
+        username: "u",
+        password: "p",
+        isPrivateHost: async () => false,
+        fetchFn: async (input, init) => {
+          seen.push(`${init?.method} ${String(input)}`);
+          return reply(String(input));
+        },
+      });
+
+    it("hasAutoSchedule は区切りの空白と大文字小文字を気にしない", () => {
+      expect(
+        hasAutoSchedule(
+          "1, 2, access-control, calendar-access, Calendar-Auto-Schedule",
+        ),
+      ).toBe(true);
+      expect(hasAutoSchedule("1, 2, calendar-access")).toBe(false);
+      expect(hasAutoSchedule("calendar-auto-schedule-x")).toBe(false);
+      expect(hasAutoSchedule(null)).toBe(false);
+    });
+
+    it("ヘッダーにあれば true、無ければ false", async () => {
+      const seen: string[] = [];
+      const yes = clientWith(
+        () =>
+          new Response(null, {
+            headers: { dav: "1, 2, calendar-access, calendar-auto-schedule" },
+          }),
+        seen,
+      );
+      expect(
+        await yes.supportsAutoSchedule(["https://dav.example.com/cal/"]),
+      ).toBe(true);
+      expect(seen).toEqual(["OPTIONS https://dav.example.com/cal/"]);
+      const no = clientWith(
+        () => new Response(null, { headers: { dav: "1, calendar-access" } }),
+      );
+      expect(
+        await no.supportsAutoSchedule(["https://dav.example.com/cal/"]),
+      ).toBe(false);
+    });
+
+    it("コレクションで失敗したらホームを試し、どれも失敗なら false", async () => {
+      const seen: string[] = [];
+      const fallback = clientWith((url) => {
+        if (url.endsWith("/cal/")) throw new Error("ECONNRESET");
+        return new Response(null, {
+          headers: { dav: "calendar-auto-schedule" },
+        });
+      }, seen);
+      expect(
+        await fallback.supportsAutoSchedule([
+          "https://dav.example.com/home/cal/",
+          "https://dav.example.com/home/",
+        ]),
+      ).toBe(true);
+      expect(seen).toHaveLength(2);
+      const failing = clientWith(() => new Response(null, { status: 405 }));
+      expect(
+        await failing.supportsAutoSchedule(["https://dav.example.com/cal/"]),
+      ).toBe(false);
+    });
+
+    it("401 は認証の失敗として投げる", async () => {
+      const client = clientWith(() => new Response(null, { status: 401 }));
+      await expect(
+        client.supportsAutoSchedule(["https://dav.example.com/cal/"]),
+      ).rejects.toBeInstanceOf(CaldavAuthError);
     });
   });
 });

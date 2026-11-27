@@ -861,7 +861,13 @@ async function applyRespond(
   const calendar = await loadCalendar(deps, payload.calendarId);
   if (!calendar) return { ok: true };
   const snapshot = await loadSnapshot(deps, calendar.id, payload.eventId);
-  if (!snapshot) return { ok: true };
+  if (!snapshot) {
+    // 「不参加で返事をして削除」: 返事を書き戻す前に予定の行が消えた。主催者へ返事を届けるため、
+    // 受け付けた時点の所在 (target) で返事だけをする (段取り 8 より前の行には target が無い)。
+    const target = payload.target ? refFromOutbox(payload.target) : null;
+    if (!target) return { ok: true };
+    return respondWithoutRow(deps, calendar, payload, target);
+  }
   const ref = refOf(snapshot);
   if (!ref) {
     return {
@@ -901,6 +907,60 @@ async function applyRespond(
     // 返事は自分の出欠だけなので、マージせずに新しい etag でやり直す。
     const latest = await fetchRemote(deps, calendar, ref);
     if (!latest) return { ok: false, reason: "予定が相手側にありません。" };
+    ref.etag = findRemote(latest, ref)?.etag ?? null;
+  }
+}
+
+/**
+ * 行の無い予定 (返事の後に消した) へ返事をする。結果は DB に書かない (消した行を戻さない)。
+ * 返事で相手側の ETag が変わるので、続く削除の書き戻し待ち (event_delete) の ETag を新しい値に
+ * 付け替える (古い ETag のままだと、削除が「消した後に相手側で変わった」と見なされて取りやめになる)。
+ * 相手側で既に消えていれば、返事する相手が無いので成功として扱う。
+ */
+async function respondWithoutRow(
+  deps: EventOutboxDeps,
+  calendar: CalendarRow,
+  payload: EventRespondPayload,
+  ref: RemoteEventRef,
+): Promise<OperationResult> {
+  for (let attempt = 1; ; attempt++) {
+    const result = await deps.provider.respond(deps.ctx, calendar, ref, {
+      status: payload.status,
+      comment: payload.comment,
+    });
+    if (result.status === "ok") {
+      const etag = findRemote(result.events, ref)?.etag ?? null;
+      if (etag !== null) {
+        await deps.db.transaction(async (tx) => {
+          await lockCalendarAccount(tx, deps.account.id);
+          await tx
+            .update(outbox)
+            .set({
+              payload: sql`jsonb_set(${outbox.payload}, '{target,etag}', to_jsonb(${etag}::text))`,
+            })
+            .where(
+              and(
+                eq(outbox.accountId, deps.account.id),
+                eq(outbox.kind, "event_delete"),
+                eq(outbox.status, "pending"),
+                sql`${outbox.payload}->'target'->>'eventId' = ${payload.eventId}`,
+              ),
+            );
+        });
+      }
+      return { ok: true };
+    }
+    if (result.status === "gone") return { ok: true };
+    if (result.status === "rejected")
+      return { ok: false, reason: result.reason };
+    if (attempt >= MAX_CONFLICT_RETRIES) {
+      return {
+        ok: false,
+        reason: `相手側の変更と ${MAX_CONFLICT_RETRIES} 回続けて競合しました。`,
+      };
+    }
+    const latest = await fetchRemote(deps, calendar, ref);
+    if (!latest) return { ok: true };
     ref.etag = findRemote(latest, ref)?.etag ?? null;
   }
 }
@@ -969,6 +1029,14 @@ async function failEventOperation(
       .set({ status: "failed", lastError: reason })
       .where(eq(outbox.id, row.id));
     if (!calendar) return;
+    if (row.kind === "event_respond" && !before) {
+      // 返事の後に消した予定。戻す行が無いので、記録だけ残す (同期の位置は消さない)。
+      if (conflict) await recordEventConflict(tx, conflict);
+      await recordChanges(tx, deps.account.userId, "calendar", "upsert", [
+        calendar.id,
+      ]);
+      return;
+    }
     if (unsentException) {
       const removed = await tx
         .delete(events)
@@ -1052,7 +1120,8 @@ async function failEventOperation(
  * - event_create: create_failed (行は残る。「もう一度試す」は POST /v1/calendars/conflicts/:id/retry)。
  * - event_update: write_failed。fields は書き戻し待ちだった項目、lost はその値。
  *   まだ相手側に無い回の例外は行ごと消すので、snapshot にも控える (parentId と recurrenceId 付き)。
- * - event_respond: write_failed。fields は attendees。
+ * - event_respond: write_failed。fields は attendees、lost は null、reason は「出欠の返事を
+ *   送れませんでした: …」。返事の後に消した予定 (行が無い) でも記録する。
  * - event_delete: write_failed。fields は空 (削除の失敗。予定は相手側の内容で戻る)。
  */
 function failureConflict(
@@ -1078,14 +1147,27 @@ function failureConflict(
         title: before.event.summary,
       };
     }
-    case "event_update":
     case "event_respond": {
+      // 返事のやり直しは詳細の出欠ボタンで行う (巻き戻しで出欠は相手側の値に戻る)。
+      // lost に参加者の一覧を入れると、画面の「もう一度試す」が参加者の一覧を PATCH して
+      // しまうので入れない (画面は「閉じる」だけを出す)。
+      const payload = row.payload as EventRespondPayload;
+      return {
+        ...base,
+        eventId: before?.event.id ?? payload.eventId,
+        kind: "write_failed",
+        fields: ["attendees"],
+        lost: null,
+        reason: `出欠の返事を送れませんでした: ${reason}`,
+        title: before?.event.summary ?? null,
+      };
+    }
+    case "event_update": {
       if (!before) return null;
       const event = before.event;
-      const fields: EventFieldName[] =
-        row.kind === "event_respond"
-          ? ["attendees"]
-          : [...((row.payload as EventUpdatePayload).fields ?? [])];
+      const fields: EventFieldName[] = [
+        ...((row.payload as EventUpdatePayload).fields ?? []),
+      ];
       const unsent = event.remoteId === null && event.recurrenceId !== null;
       return {
         ...base,

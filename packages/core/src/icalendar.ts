@@ -60,6 +60,8 @@ export type ParsedCalendar = {
   color: string | null;
   /** X-WR-TIMEZONE。 */
   timeZone: string | null;
+  /** METHOD (iTIP、RFC 5546。"REQUEST" / "CANCEL" / "REPLY" など、大文字)。無ければ null。 */
+  method: string | null;
   events: ParsedEvent[];
 };
 
@@ -635,6 +637,7 @@ export function parseICalendar(
     description: text(calendar, "X-WR-CALDESC"),
     color: colorOf(calendar),
     timeZone: calendarZone,
+    method: first(calendar, "METHOD")?.value.trim().toUpperCase() || null,
     events,
   };
 }

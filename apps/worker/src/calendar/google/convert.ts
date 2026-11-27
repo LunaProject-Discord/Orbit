@@ -334,6 +334,9 @@ export function eventFromGoogle(
           ...(item.organizer.displayName
             ? { name: item.organizer.displayName }
             : {}),
+          // Google は自分が主催者のときだけ self: true を付ける (副カレンダーでは主催者の
+          // アドレスがカレンダーの ID になるので、アドレスの比較では決められない)。
+          self: item.organizer.self === true,
         }
       : null,
     attendees: (item.attendees ?? [])
