@@ -5,6 +5,7 @@ import {
   bigserial,
   boolean,
   customType,
+  date,
   index,
   integer,
   jsonb,
@@ -651,6 +652,8 @@ export const changeEntity = pgEnum("change_entity", [
   "account",
   "mailbox",
   "message",
+  "calendar",
+  "event",
 ]);
 
 export const changeOp = pgEnum("change_op", ["upsert", "delete"]);
@@ -1029,3 +1032,283 @@ export const senderIcons = pgTable("sender_icons", {
   /** この時刻を過ぎたら取り直す。 */
   expiresAt: timestamp({ withTimezone: true }).notNull(),
 });
+
+// ---------------------------------------------------------------------------
+// カレンダー
+// ---------------------------------------------------------------------------
+
+/**
+ * カレンダーの出どころ。google / microsoft / caldav はアカウントのカレンダー、
+ * ics は URL の購読、local は Orbit 内だけのカレンダー、holidays は日本の祝日 (アプリが持つ)、
+ * birthdays は各サービスの誕生日をまとめたもの。
+ */
+export const calendarSource = pgEnum("calendar_source", [
+  "google",
+  "microsoft",
+  "caldav",
+  "ics",
+  "local",
+  "holidays",
+  "birthdays",
+]);
+
+/** プロバイダの既定のリマインダー (Google の defaultReminders など)。 */
+export type CalendarReminder = { method: "display" | "email"; minutes: number };
+
+/**
+ * 利用者のカレンダー。アカウントのカレンダー (accountId あり) と、
+ * アカウントを持たないカレンダー (ICS の購読、Orbit 内、祝日、誕生日) がある。
+ */
+export const calendars = pgTable(
+  "calendars",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: uuid().references(() => accounts.id, { onDelete: "cascade" }),
+    source: calendarSource().notNull(),
+    /** プロバイダでの ID (Google の calendarId、Graph の id、CalDAV のコレクションの URL)。 */
+    remoteId: text(),
+    name: text().notNull(),
+    description: text(),
+    /** 表示色 "#rrggbb"。利用者が選んだ色があればそれ、無ければプロバイダの色。 */
+    color: text(),
+    /** カレンダーの既定のタイムゾーン (IANA 名)。 */
+    timeZone: text(),
+    /** 書き込めない (購読、祝日、誕生日、閲覧だけの共有) なら true。 */
+    readOnly: boolean().notNull().default(false),
+    /** 画面に表示する。サイドバーのチェックで切り替える。 */
+    visible: boolean().notNull().default(true),
+    /** サイドバーでの表示順 (小さいほど上)。null は追加した順。 */
+    sortOrder: integer(),
+    /** ICS の購読や CalDAV の URL。 */
+    url: text(),
+    /** CalDAV / ICS の確認間隔 (秒)。null は既定 (CalDAV 5 分、ICS 1 時間)。 */
+    pollIntervalSeconds: integer(),
+    /** 差分同期の続きの位置 (Google の syncToken、Graph の deltaLink、CalDAV の sync-token)。 */
+    syncToken: text(),
+    /** CalDAV の getctag や ICS の ETag / Last-Modified。変わっていなければ取得を省く。 */
+    etag: text(),
+    lastSyncedAt: timestamp({ withTimezone: true }),
+    lastError: text(),
+    /** 変更通知 (Google の watch、Graph の subscription) の ID と期限。 */
+    pushChannelId: text(),
+    pushExpiresAt: timestamp({ withTimezone: true }),
+    defaultReminders: jsonb().$type<CalendarReminder[]>(),
+    /** 繰り返しの回を event_occurrences に展開済みの範囲の終わり (この日の前日まで)。 */
+    expandedUntil: date({ mode: "string" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("calendars_user_idx").on(t.userId),
+    uniqueIndex("calendars_account_remote_idx").on(t.accountId, t.remoteId),
+  ],
+);
+
+export const eventStatus = pgEnum("event_status", [
+  "confirmed",
+  "tentative",
+  "cancelled",
+]);
+
+/** 予定の主催者。 */
+export type EventPerson = { email: string; name?: string };
+
+/**
+ * 予定。繰り返しは原本 (rrule を持つ親) と、その回だけ変えた例外 (recurrenceId を持つ子) で持つ。
+ * 時刻のある予定は startAt / endAt (UTC) とタイムゾーン、終日の予定は startDate / endDate
+ * (endDate はその日を含まない) で持つ。
+ * raw はプロバイダの元データ (iCalendar の文字列や JSON)。書き戻すときに、Orbit が知らない
+ * 項目を消さないために使い、競合を項目ごとにまとめるときの基準にもする。
+ */
+export const events = pgTable(
+  "events",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    calendarId: uuid()
+      .notNull()
+      .references(() => calendars.id, { onDelete: "cascade" }),
+    /** iCalendar の UID。繰り返しの原本と例外で同じ値になる。 */
+    uid: text().notNull(),
+    /**
+     * 例外のとき、元の回の開始 (時刻付きは UTC の ISO 8601、終日は YYYY-MM-DD)。
+     * 原本と繰り返さない予定は null。
+     */
+    recurrenceId: text(),
+    /** 例外の原本。原本と繰り返さない予定は null。 */
+    parentId: uuid().references((): AnyPgColumn => events.id, {
+      onDelete: "cascade",
+    }),
+    /** プロバイダでの ID (Google / Graph の id、CalDAV のリソースの URL)。Orbit 内は null。 */
+    remoteId: text(),
+    /** プロバイダの ETag。書き戻すときに、相手が変わっていないことの確認に使う。 */
+    etag: text(),
+    summary: text(),
+    location: text(),
+    description: text(),
+    status: eventStatus().notNull().default("confirmed"),
+    /** 予定あり (OPAQUE) なら true、空き時間として扱う (TRANSPARENT) なら false。 */
+    busy: boolean().notNull().default(true),
+    allDay: boolean().notNull().default(false),
+    startAt: timestamp({ withTimezone: true }),
+    endAt: timestamp({ withTimezone: true }),
+    startDate: date({ mode: "string" }),
+    endDate: date({ mode: "string" }),
+    /** 開始と終了のタイムゾーン (IANA 名)。終日や浮動時刻 (タイムゾーン無し) は null。 */
+    startTimeZone: text(),
+    endTimeZone: text(),
+    /** 繰り返しの規則 (RRULE の値、"FREQ=WEEKLY;BYDAY=MO" など)。繰り返さなければ null。 */
+    rrule: text(),
+    /** 追加の回 (RDATE) と除く回 (EXDATE)。recurrenceId と同じ書き方。 */
+    rdates: jsonb().$type<string[]>(),
+    exdates: jsonb().$type<string[]>(),
+    organizer: jsonb().$type<EventPerson>(),
+    /** iCalendar の SEQUENCE。招待の更新で増える。 */
+    sequence: integer().notNull().default(0),
+    /** Google の Meet、Teams などの会議の URL。 */
+    conferenceUrl: text(),
+    /** カレンダーの既定のリマインダーを使う (Google の useDefault)。 */
+    useDefaultReminders: boolean().notNull().default(true),
+    /** プロバイダでの最終更新時刻 (Google の updated、Graph の lastModifiedDateTime、LAST-MODIFIED)。 */
+    remoteUpdatedAt: timestamp({ withTimezone: true }),
+    /**
+     * 項目ごとの最後の変更時刻 (項目名 → ISO 8601)。同じ項目の変更がぶつかったとき、
+     * 後から変更した方を残すために使う。
+     */
+    fieldUpdatedAt: jsonb().$type<Record<string, string>>(),
+    raw: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("events_calendar_uid_recurrence_idx").on(
+      t.calendarId,
+      t.uid,
+      sql`coalesce(${t.recurrenceId}, '')`,
+    ),
+    index("events_user_idx").on(t.userId),
+    index("events_parent_idx").on(t.parentId),
+    index("events_calendar_remote_idx").on(t.calendarId, t.remoteId),
+  ],
+);
+
+export const attendeeStatus = pgEnum("attendee_status", [
+  "needs_action",
+  "accepted",
+  "declined",
+  "tentative",
+  "delegated",
+]);
+
+export const attendeeRole = pgEnum("attendee_role", [
+  "chair",
+  "required",
+  "optional",
+  "non_participant",
+]);
+
+/** 予定の参加者と出欠。 */
+export const eventAttendees = pgTable(
+  "event_attendees",
+  {
+    id: id(),
+    eventId: uuid()
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    email: text().notNull(),
+    name: text(),
+    role: attendeeRole().notNull().default("required"),
+    status: attendeeStatus().notNull().default("needs_action"),
+    /** 利用者自身 (このアカウントのアドレス) なら true。出欠ボタンの対象。 */
+    self: boolean().notNull().default(false),
+    comment: text(),
+  },
+  (t) => [
+    uniqueIndex("event_attendees_event_email_idx").on(
+      t.eventId,
+      sql`lower(${t.email})`,
+    ),
+  ],
+);
+
+/** 予定ごとのリマインダー (useDefaultReminders が false のとき使う)。 */
+export const eventReminders = pgTable(
+  "event_reminders",
+  {
+    id: id(),
+    eventId: uuid()
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    method: text().$type<CalendarReminder["method"]>().notNull(),
+    /** 開始の何分前か。 */
+    minutes: integer().notNull(),
+  },
+  (t) => [index("event_reminders_event_idx").on(t.eventId)],
+);
+
+/**
+ * 表示と通知のために展開した回。原本と例外から作り直せるので正本ではない。
+ * 繰り返さない予定も 1 回として入れ、期間で引くときはこの表だけを見る。
+ * eventId は回の中身を持つ予定 (例外があれば例外、無ければ原本)。
+ */
+export const eventOccurrences = pgTable(
+  "event_occurrences",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    calendarId: uuid()
+      .notNull()
+      .references(() => calendars.id, { onDelete: "cascade" }),
+    /** 繰り返しの原本 (繰り返さない予定はその予定)。 */
+    masterId: uuid()
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    eventId: uuid()
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    /** この回の元の開始 (events.recurrenceId と同じ書き方)。繰り返さない予定は null。 */
+    recurrenceId: text(),
+    allDay: boolean().notNull().default(false),
+    startAt: timestamp({ withTimezone: true }),
+    endAt: timestamp({ withTimezone: true }),
+    startDate: date({ mode: "string" }),
+    endDate: date({ mode: "string" }),
+  },
+  (t) => [
+    index("event_occurrences_user_start_at_idx").on(t.userId, t.startAt),
+    index("event_occurrences_user_start_date_idx").on(t.userId, t.startDate),
+    index("event_occurrences_master_idx").on(t.masterId),
+    index("event_occurrences_event_idx").on(t.eventId),
+  ],
+);
+
+/**
+ * 予定の検索用の文書 (タイトル・場所・メモを正規化してつないだもの)。
+ * メールの message_search と同じ 1〜2 文字の組の GIN で引く。
+ */
+export const eventSearch = pgTable(
+  "event_search",
+  {
+    eventId: uuid()
+      .primaryKey()
+      .references(() => events.id, { onDelete: "cascade" }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    doc: text().notNull(),
+  },
+  (t) => [
+    index("event_search_grams_idx").using(
+      "gin",
+      sql`mail_search_grams(${t.doc})`,
+    ),
+    index("event_search_user_idx").on(t.userId),
+  ],
+);

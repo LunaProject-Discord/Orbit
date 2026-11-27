@@ -23,6 +23,8 @@
     "vitest": "^5.1.1"
   },
   "dependencies": {
+    "rrule-temporal": "2.3.0",
+    "temporal-polyfill": "1.0.8",
     "tldts": "^7.6.1"
   }
 }
