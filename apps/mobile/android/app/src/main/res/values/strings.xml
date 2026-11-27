@@ -14,4 +14,17 @@
     <string name="notification_reply">返信</string>
     <string name="notification_reply_hint">返信を入力</string>
     <string name="notification_reply_failed">返信を送れませんでした</string>
+    <!--
+        予定の通知の分類 (段取り 9)。ID は CalendarNotifications.CHANNEL_* (= @orbit/core の CALENDAR_CHANNEL_*)。
+        名前と説明は CALENDAR_CHANNEL_LABELS と合わせる。
+    -->
+    <string name="channel_calendar_reminders_name">予定のリマインダー</string>
+    <string name="channel_calendar_reminders_description">予定の前に知らせます</string>
+    <string name="channel_calendar_invites_name">招待と予定の変更</string>
+    <string name="channel_calendar_invites_description">招待が届いたとき、招待された予定が変わったときに知らせます</string>
+    <!-- 招待の通知の出欠ボタン (RSVP_BUTTONS と合わせる) と、反映できなかったときの知らせ。 -->
+    <string name="calendar_rsvp_accepted">参加</string>
+    <string name="calendar_rsvp_tentative">未定</string>
+    <string name="calendar_rsvp_declined">不参加</string>
+    <string name="calendar_rsvp_failed">出欠を反映できませんでした</string>
 </resources>
