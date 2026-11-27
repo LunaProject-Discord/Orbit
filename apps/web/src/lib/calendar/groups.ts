@@ -8,6 +8,8 @@ export type CalendarGroup = {
   name: string;
   /** アドレスとサービスの名前など。 */
   sub: string | null;
+  /** アカウントのカレンダーの同期に失敗した理由 (calendarError)。無ければ null。 */
+  error: string | null;
   calendars: Calendar[];
 };
 
@@ -54,16 +56,21 @@ export function groupCalendars(
   }
   for (const account of sortAccounts([...accounts])) {
     const list = byAccount.get(account.id);
-    if (!list) continue;
+    const error = account.calendarEnabled
+      ? (account.calendarError ?? null)
+      : null;
+    // カレンダーがまだ 1 つも無くても、同期に失敗していれば、その理由を見せるために出す。
+    if (!list && !error) continue;
     byAccount.delete(account.id);
-    const source = list[0]?.source;
+    const source = list?.[0]?.source;
     groups.push({
       key: account.id,
       name: account.displayName || account.email,
       sub: [account.email, source ? PROVIDER_LABEL[source] : ""]
         .filter(Boolean)
         .join(" · "),
-      calendars: sortCalendars(list),
+      error,
+      calendars: sortCalendars(list ?? []),
     });
   }
   // アカウントの一覧に無い (読み込み前など) カレンダー。
@@ -72,6 +79,7 @@ export function groupCalendars(
       key,
       name: "アカウント",
       sub: null,
+      error: null,
       calendars: sortCalendars(list),
     });
   }
@@ -80,6 +88,7 @@ export function groupCalendars(
       key: "local",
       name: "Orbit",
       sub: "このサーバーだけ",
+      error: null,
       calendars: sortCalendars(local),
     });
   }
@@ -88,6 +97,7 @@ export function groupCalendars(
       key: "ics",
       name: "購読",
       sub: "ICS",
+      error: null,
       calendars: sortCalendars(subscribed),
     });
   }
@@ -96,6 +106,7 @@ export function groupCalendars(
       key: "other",
       name: "その他",
       sub: null,
+      error: null,
       calendars: sortCalendars(other),
     });
   }

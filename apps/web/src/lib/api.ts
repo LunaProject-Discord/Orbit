@@ -219,8 +219,23 @@ export type Account = {
    * 利用者の既定 (SharedSettings.composeFormat) に従う。
    */
   composeFormat?: ComposeFormat | null;
+  /** メールを同期する。古いサーバーでは項目なし (メールを使う)。 */
+  mailEnabled?: boolean;
+  /** カレンダーを同期する。古いサーバーでは項目なし (使わない)。 */
+  calendarEnabled?: boolean;
+  /** カレンダーの同期に失敗した理由。失敗していなければ null。 */
+  calendarError?: string | null;
+  /**
+   * カレンダーを使うための同意の状態。古いサーバーでは項目なし。
+   * - granted: カレンダーの権限を許可済み。
+   * - required: Google / Microsoft で、カレンダーの権限が無い (ログインし直して許可してもらう)。
+   * - not_applicable: 同意の仕組みが無いアカウント (一般の IMAP や POP3 など)。
+   */
+  calendarConsent?: CalendarConsent;
   createdAt: string;
 };
+
+export type CalendarConsent = "granted" | "required" | "not_applicable";
 
 /** メールを書く形式。html は書式付き、text はテキストだけ。 */
 export type ComposeFormat = "html" | "text";
@@ -978,12 +993,24 @@ export async function createAccount(
   return account;
 }
 
-/**
- * Google または Microsoft のログイン画面の URL を取得する。
- * accountId を渡すと、そのアカウントの再ログインになる。
- */
 /** OAuth のログインから戻ってきたときに付ける名前 (追加画面で入力したもの)。 */
 const PENDING_OAUTH_NAME_KEY = "orbit.oauth-display-name.v1";
+/** OAuth のログインで、カレンダーの権限を求めたか。戻ってきたときに、許可されたかを知らせるため。 */
+const PENDING_OAUTH_CALENDAR_KEY = "orbit.oauth-calendar.v1";
+
+export type OAuthLoginOptions = {
+  /** ログイン画面に入れておくアドレス (新しく追加するときだけ)。 */
+  email?: string;
+  /** 追加したアカウントに付ける名前 (新しく追加するときだけ)。 */
+  displayName?: string;
+  /**
+   * カレンダーの権限も求める。再ログインで省くと、サーバーはそのアカウントで
+   * カレンダーを使っているかどうかで決める。
+   */
+  calendar?: boolean;
+  /** ログインが済んだあとに開くパス。省くと受信トレイ。 */
+  returnTo?: string;
+};
 
 /**
  * Google または Microsoft のログイン画面の URL を取得する。
@@ -993,7 +1020,7 @@ const PENDING_OAUTH_NAME_KEY = "orbit.oauth-display-name.v1";
 export async function startOAuthLogin(
   provider: OAuthProvider,
   accountId?: string,
-  options: { email?: string; displayName?: string } = {},
+  options: OAuthLoginOptions = {},
 ): Promise<string> {
   const { url } = await apiJson<{ url: string }>(
     `/v1/accounts/${provider}/authorize`,
@@ -1002,6 +1029,9 @@ export async function startOAuthLogin(
       body: {
         ...(accountId ? { accountId } : {}),
         ...(!accountId && options.email ? { email: options.email } : {}),
+        ...(options.calendar !== undefined
+          ? { calendar: options.calendar }
+          : {}),
         // スマホアプリとデスクトップ版では、ログイン後に Web 版のページからアプリへ戻してもらう。
         ...(usesAppOAuth() ? { app: true } : {}),
       },
@@ -1013,23 +1043,60 @@ export async function startOAuthLogin(
     } else {
       sessionStorage.removeItem(PENDING_OAUTH_NAME_KEY);
     }
+    if (options.calendar || options.returnTo) {
+      sessionStorage.setItem(
+        PENDING_OAUTH_CALENDAR_KEY,
+        JSON.stringify({
+          calendar: options.calendar === true,
+          reauth: accountId !== undefined,
+          returnTo: options.returnTo ?? null,
+        }),
+      );
+    } else {
+      sessionStorage.removeItem(PENDING_OAUTH_CALENDAR_KEY);
+    }
   } catch {
-    // 保存できなくても、名前を付けずに追加できる。
+    // 保存できなくても、名前を付けずに追加できる (カレンダーの許可の知らせと戻り先は省く)。
   }
   return url;
 }
+
+export type OAuthLoginResult = {
+  account: Account;
+  /** ログインのときにカレンダーの権限を求めたか (この端末で始めたログインで分かる範囲)。 */
+  calendarRequested: boolean;
+  /** 追加済みのアカウントのログインし直しとして始めたか。 */
+  reauth: boolean;
+  /**
+   * カレンダーの権限が許可されたか。false なら、メールだけで追加 (再ログイン) した。
+   * 古いサーバーでは null。
+   */
+  calendarGranted: boolean | null;
+  /** ログインが済んだあとに開くパス。 */
+  returnTo: string;
+};
 
 /** ログイン画面から戻ってきた code と state を渡して、アカウントを追加する。 */
 export async function completeOAuthLogin(
   provider: OAuthProvider,
   code: string,
   state: string,
-): Promise<Account> {
-  const { account } = await apiJson<{ account: Account }>(
-    `/v1/accounts/${provider}/complete`,
-    { method: "POST", body: { code, state, ...pendingOAuthName() } },
-  );
-  return account;
+): Promise<OAuthLoginResult> {
+  const pending = pendingOAuthCalendar();
+  const { account, calendarGranted } = await apiJson<{
+    account: Account;
+    calendarGranted?: boolean;
+  }>(`/v1/accounts/${provider}/complete`, {
+    method: "POST",
+    body: { code, state, ...pendingOAuthName() },
+  });
+  return {
+    account,
+    calendarRequested: pending.calendar,
+    reauth: pending.reauth,
+    calendarGranted: calendarGranted ?? null,
+    returnTo: pending.returnTo,
+  };
 }
 
 function pendingOAuthName(): { displayName?: string } {
@@ -1039,6 +1106,37 @@ function pendingOAuthName(): { displayName?: string } {
     return name ? { displayName: name } : {};
   } catch {
     return {};
+  }
+}
+
+function pendingOAuthCalendar(): {
+  calendar: boolean;
+  reauth: boolean;
+  returnTo: string;
+} {
+  const fallback = { calendar: false, reauth: false, returnTo: "/" };
+  try {
+    const raw = sessionStorage.getItem(PENDING_OAUTH_CALENDAR_KEY);
+    sessionStorage.removeItem(PENDING_OAUTH_CALENDAR_KEY);
+    if (!raw) return fallback;
+    const value = JSON.parse(raw) as {
+      calendar?: unknown;
+      reauth?: unknown;
+      returnTo?: unknown;
+    };
+    return {
+      calendar: value.calendar === true,
+      reauth: value.reauth === true,
+      // 別のサイトへは移らない (アプリの中のパスだけ)。
+      returnTo:
+        typeof value.returnTo === "string" &&
+        value.returnTo.startsWith("/") &&
+        !value.returnTo.startsWith("//")
+          ? value.returnTo
+          : "/",
+    };
+  } catch {
+    return fallback;
   }
 }
 
@@ -1054,6 +1152,33 @@ export function oauthProviderOf(
     return "google";
   }
   return null;
+}
+
+/**
+ * カレンダーの権限を足すためのログインに使うサービス。Gmail はアプリ パスワードで追加した
+ * アカウントも、Google でのログインに切り替えて権限を足せる。それ以外は null。
+ */
+export function calendarOAuthProviderOf(
+  account: Pick<Account, "protocol" | "provider">,
+): OAuthProvider | null {
+  if (account.protocol === "graph") return "microsoft";
+  if (account.provider === "gmail") return "google";
+  return null;
+}
+
+/**
+ * アカウントのメールとカレンダーの使う / 使わないを変える。
+ * カレンダーの権限が無いのにカレンダーをオンにすると、ApiError (409 consent_required) になる。
+ */
+export async function updateAccountFeatures(
+  id: string,
+  patch: { calendarEnabled?: boolean; mailEnabled?: boolean },
+): Promise<Account> {
+  const { account } = await apiJson<{ account: Account }>(
+    `/v1/accounts/${id}`,
+    { method: "PATCH", body: patch },
+  );
+  return account;
 }
 
 /** アカウントの署名を変える。null なら署名なしにする。 */

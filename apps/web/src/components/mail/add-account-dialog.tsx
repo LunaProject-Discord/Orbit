@@ -189,11 +189,14 @@ export function AddAccountDialog({ open, onOpenChange, onCreated }: Props) {
     setRedirecting(provider);
     try {
       // ログイン画面へ移動する。ログイン後は /oauth/google などに戻ってくる。
+      // 新しく追加するアカウントは、カレンダーの権限も最初から求める (同意画面で外されたらメールだけで追加)。
       window.location.assign(
         await startOAuthLogin(
           provider,
           undefined,
-          withEmail ? { email, displayName } : {},
+          withEmail
+            ? { email, displayName, calendar: true }
+            : { calendar: true },
         ),
       );
       // スマホアプリとデスクトップ版では、ログイン画面はアプリの外のブラウザーで開き、この画面は残る。

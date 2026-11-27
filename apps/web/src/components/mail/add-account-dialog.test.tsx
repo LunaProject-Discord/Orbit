@@ -441,7 +441,11 @@ describe("AddAccountDialog の Google / Microsoft への振り分け", () => {
     expect(mocks.oauth).toEqual([
       {
         provider: "google",
-        options: { email: "me@corp.example", displayName: "会社" },
+        options: {
+          email: "me@corp.example",
+          displayName: "会社",
+          calendar: true,
+        },
       },
     ]);
   });

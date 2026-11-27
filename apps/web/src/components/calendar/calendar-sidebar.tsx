@@ -130,12 +130,27 @@ export function CalendarSidebar({
                   <span className="shrink-0 font-medium text-sm">
                     {group.name}
                   </span>
+                  {group.error && (
+                    <CircleAlertIcon
+                      role="img"
+                      aria-label="カレンダーを同期できません"
+                      className="size-3.5 shrink-0 text-destructive"
+                    />
+                  )}
                   {group.sub && (
                     <span className="truncate text-muted-foreground text-xs">
                       {group.sub}
                     </span>
                   )}
                 </button>
+                {!isFolded && group.error && (
+                  <p
+                    title={group.error}
+                    className="line-clamp-2 pr-2 pb-1 pl-7 text-muted-foreground text-xs"
+                  >
+                    同期できません: {group.error}
+                  </p>
+                )}
                 {!isFolded &&
                   group.calendars.map((calendar) => {
                     const color = colorOf(calendar);
