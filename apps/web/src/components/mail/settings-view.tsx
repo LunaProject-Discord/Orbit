@@ -81,6 +81,7 @@ import {
 import { htmlHasContent } from "@/lib/compose";
 import { changeDateStyle, useDateStyle } from "@/lib/date-format-settings";
 import { isDesktopApp } from "@/lib/desktop/app";
+import type { FontKind } from "@/lib/font-kind";
 import {
   DATE_FORMAT_MAX_LENGTH,
   type DateFormats,
@@ -619,37 +620,37 @@ function FontsPage() {
         </SettingGroup>
       </Section>
 
-      {fontList !== "none" && (
-        <Section
-          title="種類ごとのフォント"
-          description="画面とメール本文の両方で、「ゴシック体」「明朝体」「等幅」を選んだときに使うフォントです。"
-        >
-          <SettingGroup>
-            <FontPickerRow
-              label="ゴシック体のフォント"
-              description="基本のフォントや本文の標準フォントで「ゴシック体」を選んだときに使います。"
-              emptyLabel="自動"
-              value={preferences.sansFont}
-              onChange={(sansFont) => set({ sansFont })}
-            />
-            <FontPickerRow
-              label="明朝体のフォント"
-              description="「明朝体」を選んだときに使います。"
-              emptyLabel="自動"
-              value={preferences.serifFont}
-              onChange={(serifFont) => set({ serifFont })}
-            />
-            <FontPickerRow
-              label="等幅のフォント"
-              description="「等幅」を選んだときと、メール本文のコードなどの等幅の部分に使います。"
-              emptyLabel="自動"
-              monospaceFirst
-              value={preferences.monoFont}
-              onChange={(monoFont) => set({ monoFont })}
-            />
-          </SettingGroup>
-        </Section>
-      )}
+      <Section
+        title="種類ごとのフォント"
+        description="画面とメール本文の両方で、「ゴシック体」「明朝体」「等幅」を選んだときに使うフォントです。"
+      >
+        <SettingGroup>
+          <FontPickerRow
+            label="ゴシック体のフォント"
+            description="基本のフォントや本文の標準フォントで「ゴシック体」を選んだときに使います。"
+            emptyLabel="自動"
+            fontKind="sans"
+            value={preferences.sansFont}
+            onChange={(sansFont) => set({ sansFont })}
+          />
+          <FontPickerRow
+            label="明朝体のフォント"
+            description="「明朝体」を選んだときに使います。"
+            emptyLabel="自動"
+            fontKind="serif"
+            value={preferences.serifFont}
+            onChange={(serifFont) => set({ serifFont })}
+          />
+          <FontPickerRow
+            label="等幅のフォント"
+            description="「等幅」を選んだときと、メール本文のコードなどの等幅の部分に使います。"
+            emptyLabel="自動"
+            fontKind="mono"
+            value={preferences.monoFont}
+            onChange={(monoFont) => set({ monoFont })}
+          />
+        </SettingGroup>
+      </Section>
 
       <Section
         title="メール本文"
@@ -1994,7 +1995,7 @@ function FontPickerRow(props: {
   label: string;
   description: string;
   emptyLabel: string;
-  monospaceFirst?: boolean;
+  fontKind?: FontKind;
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -2010,7 +2011,7 @@ function FontPickerRow(props: {
         value={props.value}
         onChange={props.onChange}
         emptyLabel={props.emptyLabel}
-        monospaceFirst={props.monospaceFirst ?? false}
+        fontKind={props.fontKind}
       />
     </SettingRow>
   );

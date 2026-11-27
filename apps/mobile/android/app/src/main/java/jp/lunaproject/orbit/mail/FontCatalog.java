@@ -46,6 +46,8 @@ final class FontCatalog {
         String japaneseName;
         boolean monospace;
         boolean italic;
+        /** 書体の分類 (sans / serif / script / decorative / symbol)。書かれていなければ null。 */
+        String kind;
         int weightMin = 400;
         int weightMax = 400;
     }
@@ -75,9 +77,11 @@ final class FontCatalog {
             List<Face> faces = entry.getValue();
             String label = null;
             boolean monospace = false;
+            String kind = null;
             JSArray files = new JSArray();
             for (Face face : faces) {
                 if (label == null) label = face.japaneseName;
+                if (kind == null) kind = face.kind;
                 monospace |= face.monospace;
                 JSObject file = new JSObject();
                 file.put("path", face.path);
@@ -91,6 +95,7 @@ final class FontCatalog {
             item.put("family", family);
             item.put("label", label != null ? label : family);
             item.put("monospace", monospace);
+            if (kind != null) item.put("kind", kind);
             item.put("faces", files);
             result.put(item);
         }
@@ -176,6 +181,12 @@ final class FontCatalog {
                     face.weightMin = weight;
                     face.weightMax = weight;
                 }
+                file.seek(os2 + 30);
+                int familyClass = file.readUnsignedByte();
+                file.skipBytes(1);
+                int panoseFamily = file.readUnsignedByte();
+                int panoseSerif = file.readUnsignedByte();
+                face.kind = classify(panoseFamily, panoseSerif, familyClass);
                 file.seek(os2 + 62);
                 face.italic = (file.readUnsignedShort() & 1) != 0;
             }
@@ -234,6 +245,42 @@ final class FontCatalog {
                 face.japaneseName = value;
                 japaneseRank = rank;
             }
+        }
+    }
+
+    /**
+     * OS/2 テーブルの PANOSE (書体の種類とセリフの形) と sFamilyClass の上位の 1 バイトから、書体の分類を決める。
+     * 和文のフォントには書かれていないことが多いので、画面側では名前からの見分けを優先する。
+     */
+    static String classify(int panoseFamily, int panoseSerif, int familyClass) {
+        if (panoseFamily == 2) {
+            if (panoseSerif >= 2 && panoseSerif <= 10) return "serif";
+            if ((panoseSerif >= 11 && panoseSerif <= 13) || panoseSerif == 15) return "sans";
+        } else if (panoseFamily == 3) {
+            return "script";
+        } else if (panoseFamily == 4) {
+            return "decorative";
+        } else if (panoseFamily == 5) {
+            return "symbol";
+        }
+        switch (familyClass) {
+            case 1:
+            case 2:
+            case 3:
+            case 4:
+            case 5:
+            case 7:
+                return "serif";
+            case 8:
+                return "sans";
+            case 9:
+                return "decorative";
+            case 10:
+                return "script";
+            case 12:
+                return "symbol";
+            default:
+                return null;
         }
     }
 

@@ -147,6 +147,12 @@ import { shortcutLabels } from "@/lib/shortcuts";
 import { findContactRule, findThreadRule } from "@/lib/signatures";
 import { resolveSwipe, useSwipeSettings } from "@/lib/swipe";
 import { unsubscribeLinks } from "@/lib/unsubscribe";
+import {
+  isWebFontStylesheet,
+  useWebFontStylesheets,
+  WEB_FONT_FILE_ORIGINS,
+  WEB_FONT_STYLE_ORIGINS,
+} from "@/lib/web-fonts";
 
 /**
  * 本文が外部サーバーの画像を参照しているか。
@@ -198,14 +204,25 @@ export function buildSrcDoc(
   extraCss = "",
   /** フォントのファイルを読み込んでよいオリジン (Android アプリで端末のフォントを使うとき)。 */
   fontSrc = "",
+  /**
+   * 読み込む Web フォントのスタイルシート (設定で選んだフォントが端末に無いとき)。
+   * 決まった Web フォント (WEB_FONTS) のものだけを通す。
+   */
+  webFonts: readonly string[] = [],
 ): string {
   const imgSrc = allowRemoteImages ? "data: https:" : "data:";
-  const fontPolicy = /^https:\/\/[a-z0-9.-]+(:\d+)?$/.test(fontSrc)
-    ? `; font-src ${fontSrc}`
-    : "";
+  const stylesheets = webFonts.filter(isWebFontStylesheet);
+  const fontOrigins = [
+    ...(/^https:\/\/[a-z0-9.-]+(:\d+)?$/.test(fontSrc) ? [fontSrc] : []),
+    ...(stylesheets.length > 0 ? WEB_FONT_FILE_ORIGINS : []),
+  ];
+  const fontPolicy =
+    fontOrigins.length > 0 ? `; font-src ${fontOrigins.join(" ")}` : "";
+  const stylePolicy =
+    stylesheets.length > 0 ? ` ${WEB_FONT_STYLE_ORIGINS.join(" ")}` : "";
   return [
     "<!doctype html><html><head>",
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${imgSrc}${fontPolicy}">`,
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'${stylePolicy}; img-src ${imgSrc}${fontPolicy}">`,
     // 画像を読み込むときに、このアプリの URL を相手のサーバーへ伝えない。
     '<meta name="referrer" content="no-referrer">',
     '<base target="_blank">',
@@ -213,6 +230,9 @@ export function buildSrcDoc(
     // 縦のスクロールは外側 (メール表示) で行うので、枠の中には縦のバーを出さない。
     // 高さは BodyFrame が中身に合わせる。
     // html と body の高さの指定 (100% など) は外す。残すと、枠を伸ばすたびに中身も伸びて高さが定まらない。
+    ...stylesheets.map(
+      (url) => `<link rel="stylesheet" href="${url.replaceAll("&", "&amp;")}">`,
+    ),
     `<style>html{background:#fff;color:#111;overflow-y:hidden}html,body{height:auto!important}body{margin:16px;${style};overflow-wrap:anywhere}img{max-width:100%;height:auto}${extraCss}</style>`,
     // パソコンだけ。スマホやタブレットは OS のバーのまま (アプリ側の globals.css と同じ)。
     typeof document !== "undefined" &&
@@ -1815,6 +1835,15 @@ function MessageContent({
   );
   const frameCss = faceCss + bodyExtraCss(preferences);
   const fontSrc = faceCss ? window.location.origin : "";
+  // 本文に使うフォントが端末に無ければ、Web フォントを本文の枠の中でも読み込む。
+  const webFonts = useWebFontStylesheets(
+    [
+      preferences.bodyCustomFont,
+      preferences.sansFont,
+      preferences.serifFont,
+      preferences.monoFont,
+    ].filter(Boolean),
+  );
   const { embedded, listed } = useMemo(
     () => splitAttachments(message.bodyHtml, message.attachments),
     [message.bodyHtml, message.attachments],
@@ -1833,9 +1862,10 @@ function MessageContent({
             frameStyle,
             frameCss,
             fontSrc,
+            webFonts,
           )
         : null,
-    [message.bodyHtml, showImages, frameStyle, frameCss, fontSrc],
+    [message.bodyHtml, showImages, frameStyle, frameCss, fontSrc, webFonts],
   );
   const imagesBlocked =
     !showImages &&

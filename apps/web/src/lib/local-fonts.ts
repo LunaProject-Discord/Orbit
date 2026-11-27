@@ -32,7 +32,27 @@ export type LocalFont = {
   monospace: boolean | null;
   /** 読み込むファイル。名前だけでは使えない環境 (Android アプリ) でだけ入る。 */
   faces?: readonly FontFace[];
+  /**
+   * フォントのファイルに書かれている書体の分類 (OS/2 テーブルの PANOSE と sFamilyClass)。
+   * デスクトップ版と Android アプリでだけ入る。書かれていないフォントも多い。
+   */
+  kind?: FontClass;
+  /**
+   * 端末の一覧に無いが選べる候補。bundled はアプリに同梱しているフォント、
+   * web は Web フォントとして読み込んで使うフォント。端末のフォントでは入らない。
+   */
+  source?: "bundled" | "web";
 };
+
+/** フォントのファイルに書かれている書体の分類。 */
+export type FontClass = "sans" | "serif" | "script" | "decorative" | "symbol";
+const FONT_CLASSES: readonly string[] = [
+  "sans",
+  "serif",
+  "script",
+  "decorative",
+  "symbol",
+];
 
 /** 一覧をどこから取れるか。none は取れない環境。 */
 export type FontListSupport = "desktop" | "native" | "browser" | "none";
@@ -67,6 +87,7 @@ export function normalizeFonts(
     label?: unknown;
     monospace?: unknown;
     faces?: unknown;
+    kind?: unknown;
   }[],
 ): LocalFont[] {
   const byFamily = new Map<string, LocalFont>();
@@ -84,6 +105,10 @@ export function normalizeFonts(
     const monospace =
       typeof item.monospace === "boolean" ? item.monospace : null;
     const faces = normalizeFaces(item.faces);
+    const kind =
+      typeof item.kind === "string" && FONT_CLASSES.includes(item.kind)
+        ? (item.kind as FontClass)
+        : undefined;
     const existing = byFamily.get(family);
     if (!existing) {
       byFamily.set(family, {
@@ -91,9 +116,13 @@ export function normalizeFonts(
         label,
         monospace,
         ...(faces.length > 0 ? { faces } : {}),
+        ...(kind ? { kind } : {}),
       });
-    } else if (monospace !== null && existing.monospace !== true) {
-      existing.monospace = monospace;
+    } else {
+      if (monospace !== null && existing.monospace !== true) {
+        existing.monospace = monospace;
+      }
+      if (kind && !existing.kind) existing.kind = kind;
     }
   }
   return [...byFamily.values()].sort((a, b) =>
@@ -322,6 +351,11 @@ function subscribe(listener: () => void) {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** いまのフォントの一覧の状態 (部品の外から読む用)。 */
+export function getLocalFontsState(): LocalFontsState {
+  return state;
 }
 
 /** フォントの一覧の状態。変わると、使っている部品を描き直す。 */
