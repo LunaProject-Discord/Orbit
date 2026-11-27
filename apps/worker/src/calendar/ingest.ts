@@ -9,6 +9,7 @@ import {
   type EventUpdatePayload,
   eventFieldValues,
   mergeEventFields,
+  negativeReminders,
 } from "@orbit/core";
 import {
   calendars,
@@ -318,6 +319,43 @@ export function withLocalFields<T extends RemoteEvent>(
   return next;
 }
 
+/**
+ * 負の分のリマインダーを書けないプロバイダ (Google の overrides、Microsoft の
+ * reminderMinutesBeforeStart。どちらも推測)。終日の予定の負の分 (当日 9:00 など) は
+ * 書き戻さず、Orbit の中だけの通知として DB に持つ (設計 13 章の 1 の B)。
+ */
+const NO_NEGATIVE_REMINDERS: ReadonlySet<string> = new Set([
+  "google",
+  "microsoft",
+]);
+
+/**
+ * 届いた終日の予定に、DB の行が持つ Orbit の中だけの通知 (負の分) を足す。相手側は負の分を
+ * 持てないので、取り込みで消さないために使う。相手側が既定 (reminders が null) にした、
+ * 終日でなくなった、行が既定を使っている、のどれかなら足さない (負の分は消える)。
+ */
+export function withOrbitOnlyReminders<T extends RemoteEvent>(
+  remote: T,
+  row: EventWithExtras,
+): T {
+  if (!remote.allDay || remote.reminders === null) return remote;
+  if (!row.allDay || row.useDefaultReminders) return remote;
+  const seen = new Set(
+    remote.reminders.map((item) => `${item.method}:${item.minutes}`),
+  );
+  const kept = negativeReminders(row.reminders).filter(
+    (item) => !seen.has(`${item.method}:${item.minutes}`),
+  );
+  if (kept.length === 0) return remote;
+  return {
+    ...remote,
+    reminders: [
+      ...remote.reminders,
+      ...kept.map((item) => ({ method: item.method, minutes: item.minutes })),
+    ],
+  };
+}
+
 export type LostLocal = {
   eventId: string;
   fields: EventFieldName[];
@@ -370,6 +408,7 @@ export async function mergeRemoteEvents(
   const byKey = new Map(
     existing.map((row) => [keyOf(row.uid, row.recurrenceId), row]),
   );
+  const keepNegative = NO_NEGATIVE_REMINDERS.has(provider.source);
   const parsedRaw = new Map<string, RemoteEvent[] | null>();
   const baseOf = (row: EventWithExtras): EventFieldValues | null => {
     if (row.raw === null) return null;
@@ -391,15 +430,22 @@ export async function mergeRemoteEvents(
       ) ??
       parsed.find((event) => event.recurrenceId === row.recurrenceId) ??
       null;
-    return match ? eventFieldValues(match) : null;
+    if (!match) return null;
+    // 基準も届いた内容と同じく、Orbit の中だけの通知を足して比べる (負の分の差を変更と見ない)。
+    return eventFieldValues(
+      keepNegative ? withOrbitOnlyReminders(match, row) : match,
+    );
   };
 
-  for (const input of remote) {
-    const row = byKey.get(keyOf(input.uid, input.recurrenceId));
+  for (const received of remote) {
+    const row = byKey.get(keyOf(received.uid, received.recurrenceId));
     if (!row) {
-      outcome.inputs.push(input);
+      outcome.inputs.push(received);
       continue;
     }
+    const input = keepNegative
+      ? withOrbitOnlyReminders(received, row)
+      : received;
     // 前回から変わっていない (upsert でも触らない)。書き戻し待ちの項目でローカルが違うものは、
     // ローカルに残っているものとして知らせる (競合の解決で、書き戻しを続けるため)。
     if (

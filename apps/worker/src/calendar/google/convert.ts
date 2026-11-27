@@ -1,5 +1,6 @@
 import {
   instantRecurrenceId,
+  nonNegativeReminders,
   normalizeRecurrenceId,
   parseICalendar,
 } from "@orbit/core";
@@ -459,15 +460,22 @@ export function attendeesToGoogle(
   });
 }
 
-/** リマインダーを Google の形にする。 */
+/**
+ * リマインダーを Google の形にする。Google の overrides の minutes は 0〜40320 で負を受け付けない
+ * (推測。公式資料は未確認) ので、終日の予定の負の分 (当日 9:00 など) は書かない。その通知は
+ * Orbit の中だけのもの (Orbit の端末と push で鳴らす) になり、取り込みでは
+ * mergeRemoteEvents (ingest.ts) が DB の値を残す (設計 13 章の 1 の B)。
+ */
 export function remindersToGoogle(event: EventSnapshot) {
   if (event.useDefaultReminders) return { useDefault: true };
   return {
     useDefault: false,
-    overrides: event.reminders.slice(0, 5).map((reminder) => ({
-      method: reminder.method === "email" ? "email" : "popup",
-      minutes: reminder.minutes,
-    })),
+    overrides: nonNegativeReminders(event.reminders)
+      .slice(0, 5)
+      .map((reminder) => ({
+        method: reminder.method === "email" ? "email" : "popup",
+        minutes: reminder.minutes,
+      })),
   };
 }
 

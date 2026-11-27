@@ -28,6 +28,7 @@ import {
   REMINDER_MAX_MINUTES,
   type RecurrenceException,
   RSVP_COMMENT_MAX,
+  reminderMinMinutes,
   subscriptionUrlCandidates,
 } from "@orbit/core";
 import {
@@ -272,14 +273,31 @@ const recurrence = z.object({
   exdates: z.array(recurrenceIdValue).max(5000).nullable().default(null),
 });
 
+/**
+ * リマインダー。minutes は開始の何分前か。終日の予定は「開始日の 0:00 から何分前か」で、
+ * 負 (当日 0:00 より後。当日 9:00 = -540) を -1439 まで許す。終日以外の予定の負の分は
+ * remindersFitTiming で断る (設計 13 章の 1 の B)。
+ */
 const reminder = z.object({
   method: z.enum(["display", "email"]),
   minutes: z
     .number()
     .int()
-    .min(0)
+    .min(reminderMinMinutes(true))
     .max(40 * 24 * 60),
 });
+
+/** リマインダーの分が、予定の種類 (終日か) の範囲に収まるか。終日以外は負を断る。 */
+function remindersFitTiming(
+  reminders: readonly { minutes: number }[] | undefined,
+  allDay: boolean,
+): boolean {
+  const min = reminderMinMinutes(allDay);
+  return (reminders ?? []).every((item) => item.minutes >= min);
+}
+
+const NEGATIVE_REMINDER_MESSAGE =
+  "開始より後のリマインダーは終日の予定だけで使えます。";
 
 const attendee = z.object({
   email: z
@@ -340,10 +358,22 @@ const eventCreate = eventFields
     changedAt: isoTime.optional(),
     clientNow,
   })
-  .strict();
+  .strict()
+  .refine((value) => remindersFitTiming(value.reminders, value.time.allDay), {
+    message: NEGATIVE_REMINDER_MESSAGE,
+    path: ["reminders"],
+  });
 
 const eventPatch = z.object({
-  changes: eventFields.strict(),
+  /** 時刻を一緒に変えるなら、その終日かどうかで負の分を確かめる (無ければ行の値で、処理の中で)。 */
+  changes: eventFields
+    .strict()
+    .refine(
+      (value) =>
+        value.time === undefined ||
+        remindersFitTiming(value.reminders, value.time.allDay),
+      { message: NEGATIVE_REMINDER_MESSAGE, path: ["reminders"] },
+    ),
   /**
    * 項目ごとの、端末で変えた時刻 (ISO 8601)。無い項目は届いた時刻。
    * サーバーにある同じ項目の変更の方が新しければ、その項目は変えない (rejected で返す)。
@@ -1832,6 +1862,13 @@ export function calendarRoutes({
           if (row.parentId && body.changes.recurrence !== undefined) {
             return "invalid" as const;
           }
+          // 時刻を変えない変更の負の分は、いまの予定が終日かで確かめる。
+          if (
+            body.changes.time === undefined &&
+            !remindersFitTiming(body.changes.reminders, row.allDay)
+          ) {
+            return "invalid" as const;
+          }
           const info = await loadSchedulingInfo(tx, calendar, false);
           const checked = await checkInviteRules(
             tx,
@@ -1910,6 +1947,15 @@ export function calendarRoutes({
             info.scheduling,
           );
           if ("error" in checked) return checked;
+          if (
+            body.changes.time === undefined &&
+            !remindersFitTiming(
+              body.changes.reminders,
+              (existing ?? master).allDay,
+            )
+          ) {
+            return "invalid" as const;
+          }
           const exception = await findOrCreateException(
             tx,
             userId,
