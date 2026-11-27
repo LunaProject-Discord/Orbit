@@ -1869,7 +1869,7 @@ function MessageContent({
         {message.from.length > 0 ? (
           <ProfileNames
             addresses={message.from}
-            check={message.senderCheck}
+            check={message.senderCheck ?? null}
             full
             {...profile}
           />
@@ -2022,7 +2022,7 @@ function MessageContent({
                   {message.from[0] ? (
                     <ProfileName
                       address={message.from[0]}
-                      check={message.senderCheck}
+                      check={message.senderCheck ?? null}
                       className="truncate"
                       {...profile}
                     />

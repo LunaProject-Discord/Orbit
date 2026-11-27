@@ -87,7 +87,7 @@ describe("sanitizeSvg", () => {
 });
 
 describe("parseBimiRecord", () => {
-  it("l= の https の URL を取り出す", () => {
+  it("l= と a= の https の URL を取り出す", () => {
     expect(
       parseBimiRecord([
         [
@@ -95,45 +95,71 @@ describe("parseBimiRecord", () => {
           "a=https://example.com/vmc.pem",
         ],
       ]),
-    ).toBe("https://example.com/logo.svg");
+    ).toEqual({
+      logo: "https://example.com/logo.svg",
+      authority: "https://example.com/vmc.pem",
+    });
   });
 
-  it("l= が空、http、BIMI でないものは null", () => {
-    expect(parseBimiRecord([["v=BIMI1; l=; a=;"]])).toBeNull();
+  it("空や http の URL は null、BIMI でないレコードは null", () => {
+    expect(parseBimiRecord([["v=BIMI1; l=; a=;"]])).toEqual({
+      logo: null,
+      authority: null,
+    });
     expect(
-      parseBimiRecord([["v=BIMI1; l=http://example.com/l.svg"]]),
+      parseBimiRecord([["v=BIMI1; l=http://example.com/l.svg"]])?.logo,
     ).toBeNull();
     expect(parseBimiRecord([["v=spf1 -all"]])).toBeNull();
   });
 });
 
 describe("fetchBimi", () => {
-  it("ドメインに無ければ組織のドメインのレコードを使い、SVG を無害化して返す", async () => {
+  it("組織のドメインのレコードの証明書を確かめ、中のロゴを無害化して返す", async () => {
     const d = deps(
-      { "https://example.co.jp/logo.svg": LOGO },
+      { "https://example.co.jp/vmc.pem": "PEM" },
       {
         "default._bimi.example.co.jp": [
-          ["v=BIMI1; l=https://example.co.jp/logo.svg"],
+          [
+            "v=BIMI1; l=https://example.co.jp/logo.svg; a=https://example.co.jp/vmc.pem",
+          ],
         ],
       },
     );
+    const checked: string[] = [];
+    d.verifyMark = (pem, domain) => {
+      checked.push(`${pem}@${domain}`);
+      return LOGO.toString();
+    };
     const image = await fetchBimi(d, "mail.example.co.jp");
-    expect(image).not.toBe("error");
+    expect(checked).toEqual(["PEM@example.co.jp"]);
     expect(image && image !== "error" ? image.contentType : null).toBe(
       "image/svg+xml",
     );
+    // l= のロゴは取りに行かない (証明書の中のロゴを使う)。
+    expect(d.requested).toEqual(["https://example.co.jp/vmc.pem"]);
   });
 
-  it("SVG でないロゴは使わない", async () => {
+  it("証明書が無い、または確かめられなければ使わない", async () => {
     const d = deps(
-      { "https://example.com/logo.svg": PNG },
+      {
+        "https://example.com/logo.svg": LOGO,
+        "https://example.com/vmc.pem": "PEM",
+      },
       {
         "default._bimi.example.com": [
           ["v=BIMI1; l=https://example.com/logo.svg"],
         ],
+        "default._bimi.mark.example.com": [
+          [
+            "v=BIMI1; l=https://example.com/logo.svg; a=https://example.com/vmc.pem",
+          ],
+        ],
       },
     );
+    d.verifyMark = () => null;
     expect(await fetchBimi(d, "example.com")).toBeNull();
+    expect(await fetchBimi(d, "mark.example.com")).toBeNull();
+    expect(d.requested).toEqual(["https://example.com/vmc.pem"]);
   });
 
   it("DNS の問い合わせに失敗したら error (短い間だけ覚える)", async () => {

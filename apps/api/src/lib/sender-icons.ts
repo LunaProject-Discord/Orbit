@@ -5,6 +5,7 @@ import { type Database, senderIcons } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { XMLBuilder, XMLParser } from "fast-xml-parser";
 import { resolvesToPrivateAddress } from "./host-check.js";
+import { verifyMarkCertificate } from "./mark-certificate.js";
 
 /**
  * 差出人のアイコンを、サーバーが外部から取得してキャッシュする。
@@ -32,7 +33,8 @@ const MISSING_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 /** 通信の失敗などで分からなかったときに、取り直すまでの期間。 */
 const ERROR_TTL_MS = 6 * 60 * 60 * 1000;
 
-const MAX_SVG_BYTES = 64 * 1024;
+/** BIMI の証明書 (PEM、中にロゴを含む) の大きさの上限。 */
+const MAX_MARK_CERTIFICATE_BYTES = 256 * 1024;
 const MAX_IMAGE_BYTES = 256 * 1024;
 const MAX_HTML_BYTES = 512 * 1024;
 const MAX_REDIRECTS = 3;
@@ -120,6 +122,8 @@ export type FetchBytes = (
 export type IconDeps = {
   fetchBytes: FetchBytes;
   resolveTxt: (name: string) => Promise<string[][]>;
+  /** BIMI の証明書を確かめ、中のロゴを返す (テストで差し替える)。省略時は verifyMarkCertificate。 */
+  verifyMark?: (pem: string, domain: string) => string | null;
 };
 
 export function createFetchBytes({
@@ -372,8 +376,29 @@ export function acceptImage(data: Buffer): IconImage | null {
 // 取得元ごとの処理
 // ---------------------------------------------------------------------------
 
-/** BIMI の DNS レコード (「v=BIMI1; l=https://...; a=...」) からロゴの URL を取り出す。 */
-export function parseBimiRecord(records: string[][]): string | null {
+/** BIMI のレコードの中身。 */
+export type BimiRecord = {
+  /** l= のロゴの URL (https)。 */
+  logo: string | null;
+  /** a= の証明書 (VMC・CMC) の URL (https)。 */
+  authority: string | null;
+};
+
+function httpsUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * BIMI の DNS レコード (「v=BIMI1; l=https://...; a=https://...」) を読む。
+ * BIMI のレコードでなければ null。
+ */
+export function parseBimiRecord(records: string[][]): BimiRecord | null {
   for (const chunks of records) {
     const record = chunks.join("");
     if (!/^v\s*=\s*BIMI1\s*(;|$)/i.test(record.trim())) continue;
@@ -386,15 +411,10 @@ export function parseBimiRecord(records: string[][]): string | null {
         part.slice(eq + 1).trim(),
       );
     }
-    const location = tags.get("l") ?? "";
-    // l= が空なら、ドメインがロゴを出さないと宣言している。
-    if (!location) return null;
-    try {
-      const url = new URL(location);
-      return url.protocol === "https:" ? url.toString() : null;
-    } catch {
-      return null;
-    }
+    return {
+      logo: httpsUrl(tags.get("l")),
+      authority: httpsUrl(tags.get("a")),
+    };
   }
   return null;
 }
@@ -405,7 +425,7 @@ type Lookup = IconImage | null | "error";
 async function lookupBimiRecord(
   deps: IconDeps,
   domain: string,
-): Promise<string | null | "missing"> {
+): Promise<BimiRecord | null | "missing"> {
   try {
     const records = await deps.resolveTxt(`default._bimi.${domain}`);
     const hasRecord = records.some((chunks) =>
@@ -419,24 +439,34 @@ async function lookupBimiRecord(
   }
 }
 
-/** BIMI のロゴ。ドメインに無ければ、組織のドメインのものを使う。 */
+/**
+ * BIMI のロゴ。ドメインに無ければ、組織のドメインのものを使う。
+ * 証明書 (VMC・CMC、レコードの a=) を確かめられたときだけ、証明書に入っているロゴを使う
+ * (l= のロゴは使わない)。証明書が無いと、似せたドメインに他社のロゴを置かれても
+ * 見分けられないため。
+ */
 export async function fetchBimi(
   deps: IconDeps,
   domain: string,
 ): Promise<Lookup> {
   try {
-    let url = await lookupBimiRecord(deps, domain);
+    let recordDomain = domain;
+    let record = await lookupBimiRecord(deps, domain);
     const org = organizationalDomain(domain);
-    if (url === "missing" && org !== domain) {
-      url = await lookupBimiRecord(deps, org);
+    if (record === "missing" && org !== domain) {
+      recordDomain = org;
+      record = await lookupBimiRecord(deps, org);
     }
-    if (url === "missing" || url === null) return null;
-    const result = await deps.fetchBytes(url, {
-      maxBytes: MAX_SVG_BYTES,
-      accept: "image/svg+xml",
+    if (record === "missing" || !record?.authority) return null;
+    const result = await deps.fetchBytes(record.authority, {
+      maxBytes: MAX_MARK_CERTIFICATE_BYTES,
+      accept: "application/pem-certificate-chain, application/x-pem-file, */*",
     });
     if (!result) return null;
-    const image = acceptImage(result.body);
+    const verify = deps.verifyMark ?? verifyMarkCertificate;
+    const svg = verify(result.body.toString("latin1"), recordDomain);
+    if (!svg) return null;
+    const image = acceptImage(Buffer.from(svg, "utf8"));
     // BIMI のロゴは SVG だけ。
     return image?.contentType === "image/svg+xml" ? image : null;
   } catch {
@@ -629,7 +659,8 @@ export function createSenderIconService(
       for (const source of sources) {
         let image: IconImage | null = null;
         if (source === "bimi") {
-          image = await cachedLookup(`bimi:${domain}`, () =>
+          // 証明書を確かめるようにする前のキャッシュ (bimi:) は使わない。
+          image = await cachedLookup(`bimi-mark:${domain}`, () =>
             fetchBimi(deps, domain),
           );
         } else if (source === "gravatar") {

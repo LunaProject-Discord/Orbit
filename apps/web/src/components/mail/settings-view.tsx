@@ -892,7 +892,7 @@ function ReadingPage() {
       </Section>
       <Section
         title="差出人のアイコン"
-        description="送信元のロゴ (BIMI。送信元を確認できたメールだけ)、Gravatar、送信元のサイトのアイコンの順に探し、無ければ名前の頭文字を表示します。なりすましの疑いがあるメールでは、ロゴとサイトのアイコンを使いません。画像はサーバーが取得するので、メールを開いたことは相手に伝わりません。"
+        description="送信元のロゴ (BIMI。認証局の証明書でロゴの持ち主を確かめられたものだけ)、Gravatar、送信元のサイトのアイコンの順に探し、無ければ名前の頭文字を表示します。なりすましの疑いがあるメールでは、ロゴとサイトのアイコンを使いません。画像はサーバーが取得するので、メールを開いたことは相手に伝わりません。"
       >
         <SettingGroup>
           <SwitchRow
@@ -909,7 +909,7 @@ function ReadingPage() {
           />
           <SwitchRow
             label="プロフィールカードと宛先の候補に表示"
-            description="名前を押したときのカードと、宛先を入力するときの候補に表示します。宛先の相手は送信元を確認できないので、Gravatar だけを使います。"
+            description="名前を押したときのカードと、宛先を入力するときの候補に表示します。宛先の相手は送信元を確認できないので、証明書で確かめられたロゴと Gravatar だけを使います。"
             checked={preferences.senderIconInProfile}
             onChange={(senderIconInProfile) => set({ senderIconInProfile })}
           />

@@ -36,4 +36,9 @@ describe("senderIconSources", () => {
     expect(senderIconSources(undefined, true)).toEqual(["gravatar"]);
     expect(senderIconSources(null, false)).toEqual([]);
   });
+
+  it("差出人でない相手は、証明書で確かめる BIMI と Gravatar だけ", () => {
+    expect(senderIconSources(null, false, true)).toEqual(["bimi"]);
+    expect(senderIconSources(null, true, true)).toEqual(["bimi", "gravatar"]);
+  });
 });

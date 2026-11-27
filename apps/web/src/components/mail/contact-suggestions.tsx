@@ -198,8 +198,9 @@ export function ContactSuggestionList({
               name: contact.name ?? undefined,
               address: contact.address,
             }}
-            // 確認結果の無い相手なので、Gravatar (設定でオンのとき) だけを使う。
+            // 差出人でない相手なので、証明書で確かめた BIMI のロゴと Gravatar だけを使う。
             check={null}
+            contact
             enabled={senderIconInProfile}
             className="size-8 text-sm"
           />
