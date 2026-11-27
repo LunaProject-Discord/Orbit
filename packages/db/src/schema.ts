@@ -704,6 +704,11 @@ export const outbox = pgTable(
     attempts: integer().notNull().default(0),
     lastError: text(),
     runAfter: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /**
+     * 予約送信で利用者が指定した日時 (send のみ)。予約でなければ null。
+     * 予約の間は runAfter も同じ日時になる。「今すぐ送信」にすると null に戻す。
+     */
+    scheduledAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

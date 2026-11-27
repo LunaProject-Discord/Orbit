@@ -116,6 +116,7 @@ import {
   type OutgoingMail,
   oauthProviderOf,
   prefetchBodies,
+  rescheduleOutgoing,
   resetMailboxOrder,
   retryFailure,
   type SearchParams,
@@ -159,7 +160,7 @@ import {
   composeFormatFor,
   refreshComposeFormat,
 } from "@/lib/compose-format-settings";
-import { refreshDateStyle } from "@/lib/date-format-settings";
+import { currentDateStyle, refreshDateStyle } from "@/lib/date-format-settings";
 import {
   desktopPlatform,
   desktopWindow,
@@ -174,6 +175,7 @@ import {
 import { setTitleBarMenu } from "@/lib/desktop/title-bar-menu";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
+import { formatFullDate } from "@/lib/format";
 import { keepRows } from "@/lib/kept-rows";
 import { DEFAULT_SORT, isDefaultSort, sortComparator } from "@/lib/list-sort";
 import {
@@ -2448,6 +2450,33 @@ const MailView = memo(function MailView({
     handleRemoveOutgoing(mail);
   }
 
+  /** 予約送信の日時を変える。at が null なら今すぐ送る。 */
+  function handleRescheduleOutgoing(mail: OutgoingMail, at: Date | null) {
+    const scheduledAt = at?.toISOString() ?? null;
+    setOutgoing((current) =>
+      current.map((item) =>
+        item.id === mail.id ? { ...item, scheduledAt } : item,
+      ),
+    );
+    rescheduleOutgoing(mail.id, scheduledAt)
+      .then(() => {
+        setNotice({
+          message: scheduledAt
+            ? `${formatFullDate(scheduledAt, currentDateStyle())} に送信するよう変更しました。`
+            : "送信を始めました。",
+          tone: "info",
+        });
+      })
+      .catch(() => {
+        setNotice({
+          message:
+            "予約を変更できませんでした。すでに送信が始まっているか、通信できませんでした。",
+          tone: "error",
+        });
+      })
+      .finally(() => void loadOutgoing());
+  }
+
   function handleRemoveOutgoing(mail: OutgoingMail) {
     setOutgoing((current) => current.filter((item) => item.id !== mail.id));
     // 送信が始まっていて取り消せなかった場合などは、取得し直して実際の状態を出す。
@@ -4004,6 +4033,7 @@ const MailView = memo(function MailView({
                     online={online}
                     onEdit={handleEditOutgoing}
                     onRemove={handleRemoveOutgoing}
+                    onReschedule={handleRescheduleOutgoing}
                     onEditQueued={handleEditQueued}
                     onRemoveQueued={handleRemoveQueued}
                   />
@@ -4249,7 +4279,13 @@ const MailView = memo(function MailView({
           // 送信の前に止めた保存をやり直す。
           if (draftRef.current) saverRef.current?.schedule(draftRef.current);
         }}
-        onSent={() => {
+        onSent={(scheduledAt) => {
+          if (scheduledAt) {
+            setNotice({
+              message: `${formatFullDate(scheduledAt, currentDateStyle())} に送信するよう予約しました。送信待ちから変更・取り消しができます。`,
+              tone: "info",
+            });
+          }
           // 送信したメールの下書きは、サーバーが消している。
           if (draft) {
             void saverRef.current?.forget(draft.idempotencyKey);

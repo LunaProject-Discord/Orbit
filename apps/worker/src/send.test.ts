@@ -9,7 +9,7 @@ import {
   writeAttachment,
 } from "@orbit/core";
 import type { ImapFlow } from "imapflow";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GraphClient } from "./graph-client.js";
 import {
   buildMime,
@@ -18,7 +18,7 @@ import {
   missingAttachments,
 } from "./mime.js";
 import { applyImapOperation } from "./outbox-imap.js";
-import { savesSentCopy } from "./send.js";
+import { SendTimer, savesSentCopy } from "./send.js";
 import { sendViaGraph } from "./send-graph.js";
 import { classifySmtpError } from "./send-smtp.js";
 
@@ -324,5 +324,33 @@ describe("savesSentCopy", () => {
     expect(savesSentCopy({ protocol: "graph", provider: "microsoft" })).toBe(
       false,
     );
+  });
+});
+
+describe("SendTimer", () => {
+  it("指定した時刻に呼び、掛け直すと前のものは止める", async () => {
+    vi.useFakeTimers();
+    try {
+      let fired = 0;
+      const timer = new SendTimer(() => {
+        fired++;
+      });
+      const now = Date.now();
+      timer.schedule(new Date(now + 60_000), now);
+      timer.schedule(new Date(now + 120_000), now);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fired).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fired).toBe(1);
+      timer.schedule(new Date(now - 10_000));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fired).toBe(2);
+      timer.schedule(new Date(Date.now() + 5_000));
+      timer.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fired).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

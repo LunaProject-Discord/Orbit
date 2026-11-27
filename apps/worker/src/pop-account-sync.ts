@@ -32,7 +32,7 @@ import {
   loadPopRecords,
   selectPopDeletions,
 } from "./pop-store.js";
-import { processSends, type SendOutcome } from "./send.js";
+import { processSends, type SendOutcome, SendTimer } from "./send.js";
 import { sendViaSmtp } from "./send-smtp.js";
 
 const MIN_BACKOFF_MS = 5_000;
@@ -184,6 +184,8 @@ export class PopAccountSync {
   private backoff = MIN_BACKOFF_MS;
   private presentUntil = 0;
   private sending: Promise<void> = Promise.resolve();
+  /** 予約送信ややり直し待ちの送信を、その時刻に送り始める。 */
+  private readonly sendTimer = new SendTimer(() => this.flushSends());
   private readonly attachmentRequests: AttachmentRequests;
 
   constructor(
@@ -243,6 +245,7 @@ export class PopAccountSync {
 
   stop() {
     this.stopped = true;
+    this.sendTimer.stop();
     this.wake?.();
   }
 
@@ -319,6 +322,7 @@ export class PopAccountSync {
           (message) => this.sendMessage(message),
           (message) => this.log(message),
         );
+        if (!this.stopped) this.sendTimer.schedule(result.nextRunAt);
         if (result.sent > 0) this.log(`メールを ${result.sent} 通送信しました`);
         // 送信済みフォルダへの控えの保存を、次の周回で反映させる。
         if (result.queued) this.requestWake();

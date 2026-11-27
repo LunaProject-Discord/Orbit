@@ -486,6 +486,8 @@ export type SendMailInput = {
   mode: "new" | "reply" | "forward";
   /** 返信・転送の元になったメッセージ。 */
   sourceMessageId?: string;
+  /** 予約送信の日時 (ISO 8601)。無ければすぐ送る。 */
+  scheduledAt?: string;
 };
 
 /** サーバーに受け取ってもらった、送信用の添付ファイル。 */
@@ -505,6 +507,8 @@ export type OutgoingMail = {
   /** 失敗の理由。送信待ちで入っていれば、やり直しを待っている。 */
   lastError: string | null;
   createdAt: string;
+  /** 予約送信の日時。予約でなければ null (古いサーバーでは項目なし)。 */
+  scheduledAt?: string | null;
   mode: "new" | "reply" | "forward";
   sourceMessageId: string | null;
   to: Address[];
@@ -1842,6 +1846,17 @@ export async function listOutgoing(
 /** 送信待ちのメールを取り消す、または失敗したメールを一覧から消す。 */
 export async function deleteOutgoing(id: string): Promise<void> {
   await apiFetch(`/v1/messages/outgoing/${id}`, { method: "DELETE" });
+}
+
+/** 予約送信の日時を変える。null なら今すぐ送る。 */
+export async function rescheduleOutgoing(
+  id: string,
+  scheduledAt: string | null,
+): Promise<void> {
+  await apiFetch(`/v1/messages/outgoing/${id}`, {
+    method: "PATCH",
+    body: { scheduledAt },
+  });
 }
 
 export async function listFailures(

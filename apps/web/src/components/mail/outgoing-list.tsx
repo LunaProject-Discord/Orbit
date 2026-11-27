@@ -1,9 +1,17 @@
 "use client";
 
-import { CircleAlertIcon, SendIcon, WifiOffIcon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  CircleAlertIcon,
+  SendIcon,
+  WifiOffIcon,
+} from "lucide-react";
+import { useState } from "react";
+import { ScheduleDialog } from "@/components/mail/schedule-send";
 import { Button } from "@/components/ui/button";
 import type { OutgoingMail } from "@/lib/api";
-import { addressLabel } from "@/lib/format";
+import { useDateStyle } from "@/lib/date-format-settings";
+import { addressLabel, formatFullDate } from "@/lib/format";
 import type { QueuedSend } from "@/lib/offline";
 
 type Props = {
@@ -20,6 +28,8 @@ type Props = {
   onEdit: (mail: OutgoingMail) => void;
   /** 送信待ちなら取り消し、失敗していれば一覧から消す。 */
   onRemove: (mail: OutgoingMail) => void;
+  /** 予約送信の日時を変える。null なら今すぐ送る。無ければ変更のボタンを出さない。 */
+  onReschedule?: (mail: OutgoingMail, at: Date | null) => void;
   /** 一覧の枠いっぱいに表示する (送信待ちの表示)。1 通も無ければ、その旨を出す。 */
   full?: boolean;
 };
@@ -61,14 +71,18 @@ export function OutgoingList({
   onRemove,
   onEditQueued,
   onRemoveQueued,
+  onReschedule,
   full = false,
 }: Props) {
+  const dateStyle = useDateStyle();
+  /** 予約の日時を変えようとしているメール。 */
+  const [rescheduling, setRescheduling] = useState<OutgoingMail | null>(null);
   if (outgoing.length === 0 && queued.length === 0) {
     if (!full) return null;
     return (
       <div className="flex flex-1 items-center justify-center p-8 text-center">
         <p className="text-muted-foreground text-sm">
-          送信待ちのメールはありません。送信したメールは、送り終えるまでここに表示されます。
+          送信待ちのメールはありません。送信したメールと予約したメールは、送り終えるまでここに表示されます。
         </p>
       </div>
     );
@@ -115,7 +129,9 @@ export function OutgoingList({
                     ? "送信できませんでした"
                     : online
                       ? "送信中…"
-                      : "接続後に自動で送信します"}
+                      : item.input.scheduledAt
+                        ? `接続後に予約します (${formatFullDate(item.input.scheduledAt, dateStyle)})`
+                        : "接続後に自動で送信します"}
                 </p>
                 <p className="truncate text-muted-foreground">
                   {item.input.subject || "(件名なし)"} —{" "}
@@ -149,8 +165,14 @@ export function OutgoingList({
       })}
       {outgoing.map((mail) => {
         const failed = mail.status === "failed";
+        // 予約の日時になるまで待っているもの。送信が始まったら (processing) 普通の送信中と同じ。
+        const scheduled =
+          mail.status === "pending" &&
+          !!mail.scheduledAt &&
+          new Date(mail.scheduledAt).getTime() > Date.now();
         // やり直しを待っている間は、理由を添えて取り消せるようにする。
-        const waiting = mail.status === "pending" && mail.lastError !== null;
+        const waiting =
+          !scheduled && mail.status === "pending" && mail.lastError !== null;
         return (
           <li
             key={mail.id}
@@ -166,6 +188,11 @@ export function OutgoingList({
                   className="mt-0.5 size-4 shrink-0 text-destructive"
                   aria-hidden="true"
                 />
+              ) : scheduled ? (
+                <CalendarClockIcon
+                  className="mt-0.5 size-4 shrink-0 text-primary"
+                  aria-hidden="true"
+                />
               ) : (
                 <SendIcon
                   className="mt-0.5 size-4 shrink-0 text-muted-foreground"
@@ -179,29 +206,49 @@ export function OutgoingList({
                 >
                   {failed
                     ? "送信できませんでした"
-                    : waiting
-                      ? "再送信しています"
-                      : "送信中…"}
+                    : scheduled && mail.scheduledAt
+                      ? `${formatFullDate(mail.scheduledAt, dateStyle)} に送信予定`
+                      : waiting
+                        ? "再送信しています"
+                        : "送信中…"}
                 </p>
                 <p className="truncate text-muted-foreground">
                   {mail.subject || "(件名なし)"} — {recipients(mail)}
                 </p>
-                {mail.lastError && (
+                {mail.lastError && !scheduled && (
                   <p className="mt-0.5 line-clamp-3 break-words text-muted-foreground">
                     {mail.lastError}
                   </p>
                 )}
               </div>
             </div>
-            {(failed || waiting) && (
-              <div className="flex gap-2 pl-6">
-                {failed && (
+            {(failed || waiting || scheduled) && (
+              <div className="flex flex-wrap gap-2 pl-6">
+                {scheduled && onReschedule && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => onReschedule(mail, null)}
+                    >
+                      今すぐ送信
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setRescheduling(mail)}
+                    >
+                      日時を変更
+                    </Button>
+                  </>
+                )}
+                {(failed || scheduled) && (
                   <Button
                     variant="outline"
                     size="xs"
                     onClick={() => onEdit(mail)}
                   >
-                    編集して再送信
+                    {failed ? "編集して再送信" : "編集する"}
                   </Button>
                 )}
                 <Button
@@ -209,13 +256,32 @@ export function OutgoingList({
                   size="xs"
                   onClick={() => onRemove(mail)}
                 >
-                  {failed ? "破棄" : "送信を取り消す"}
+                  {failed
+                    ? "破棄"
+                    : scheduled
+                      ? "予約を取り消す"
+                      : "送信を取り消す"}
                 </Button>
               </div>
             )}
           </li>
         );
       })}
+      <ScheduleDialog
+        open={rescheduling !== null}
+        title="送信日時を変更"
+        confirmLabel="変更する"
+        initial={
+          rescheduling?.scheduledAt ? new Date(rescheduling.scheduledAt) : null
+        }
+        onOpenChange={(open) => {
+          if (!open) setRescheduling(null);
+        }}
+        onConfirm={(at) => {
+          if (rescheduling) onReschedule?.(rescheduling, at);
+          setRescheduling(null);
+        }}
+      />
     </ul>
   );
 }

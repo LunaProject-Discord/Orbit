@@ -13,7 +13,7 @@ import {
   messages,
   outbox,
 } from "@orbit/db";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, min } from "drizzle-orm";
 import { recordChanges } from "./changes.js";
 import { missingAttachments } from "./mime.js";
 import { lockAccount } from "./outbox.js";
@@ -69,7 +69,13 @@ export async function processSends(
   account: AccountRow,
   send: Sender,
   log: (message: string) => void,
-): Promise<{ sent: number; failed: number; queued: boolean }> {
+): Promise<{
+  sent: number;
+  failed: number;
+  queued: boolean;
+  /** まだ時刻になっていない送信 (予約、やり直し待ち) のうち、いちばん早い時刻。無ければ null。 */
+  nextRunAt: Date | null;
+}> {
   const rows = await db
     .select()
     .from(outbox)
@@ -101,7 +107,14 @@ export async function processSends(
       .returning({ id: outbox.id });
     if (!claimed) continue;
 
-    const payload = row.payload as unknown as SendPayload;
+    const stored = row.payload as unknown as SendPayload;
+    // 予約送信は、実際に送る時刻を送信日時 (Date) にする。
+    const payload: SendPayload = row.scheduledAt
+      ? {
+          ...stored,
+          message: { ...stored.message, date: new Date().toISOString() },
+        }
+      : stored;
     let outcome: SendOutcome;
     try {
       const missing = await missingAttachments(payload.message);
@@ -203,7 +216,48 @@ export async function processSends(
     });
     if (followUps > 0) queued = true;
   }
-  return { sent, failed, queued };
+  const [next] = await db
+    .select({ at: min(outbox.runAfter) })
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.accountId, account.id),
+        eq(outbox.kind, "send"),
+        eq(outbox.status, "pending"),
+      ),
+    );
+  return { sent, failed, queued, nextRunAt: next?.at ?? null };
+}
+
+/** setTimeout で待てる最長の時間 (これより先は、定期的な確認に任せる)。 */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * 予約やり直し待ちの送信を、その時刻に送り始めるためのタイマー。
+ * アカウントの同期 1 つにつき 1 つ持ち、送信を処理するたびに次の時刻で掛け直す。
+ */
+export class SendTimer {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(private readonly fire: () => void) {}
+
+  /** at に fire を呼ぶ。null なら止める。過ぎていれば、少し置いてすぐ呼ぶ。 */
+  schedule(at: Date | null, now = Date.now()) {
+    this.stop();
+    if (!at) return;
+    const wait = Math.max(1_000, at.getTime() - now);
+    if (wait > MAX_TIMER_MS) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.fire();
+    }, wait);
+    this.timer.unref?.();
+  }
+
+  stop() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
 }
 
 /** 送信の結果を記録し、送信待ちの一覧が変わったことを端末へ知らせる。 */

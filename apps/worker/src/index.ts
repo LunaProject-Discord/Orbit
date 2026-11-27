@@ -9,9 +9,11 @@ import {
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
   notificationActionUrl,
+  type SendPayload,
   sweepAttachments,
 } from "@orbit/core";
-import { createDb, drafts } from "@orbit/db";
+import { createDb, drafts, outbox } from "@orbit/db";
+import { and, eq, inArray } from "drizzle-orm";
 import { AccountManager } from "./account-manager.js";
 import {
   combineSenders,
@@ -91,6 +93,22 @@ const sweep = async () => {
         row.attachments.map((file) => attachmentKey(row.userId, file.id)),
       ),
     );
+    // 送信待ち (予約送信を含む) と失敗したメールの添付も、送り直せるように残す。
+    const sends = await db
+      .select({ payload: outbox.payload })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.kind, "send"),
+          inArray(outbox.status, ["pending", "processing", "failed"]),
+        ),
+      );
+    for (const { payload } of sends) {
+      const { message } = payload as unknown as SendPayload;
+      for (const file of message?.attachments ?? []) {
+        if (file.storageKey) keep.add(file.storageKey);
+      }
+    }
     await sweepAttachments(
       attachmentsDir(),
       ATTACHMENT_KEEP_MS,

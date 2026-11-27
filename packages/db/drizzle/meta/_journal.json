@@ -281,6 +281,13 @@
       "when": 1795742339521,
       "tag": "0039_compose_format",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1795742815115,
+      "tag": "0040_scheduled_send",
+      "breakpoints": true
     }
   ]
 }
