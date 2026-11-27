@@ -190,8 +190,7 @@ export function createCaldavProvider(
   /**
    * 自分のアドレス: アカウントの email と @ を含む username に、カレンダーの招待メールの
    * 送信元のアドレス (imip-design 4.4。メールアカウントのアドレスで主催・参加した予定を、
-   * 取り込みのたびに他人の予定にしないため) を足す。自動スケジュールでないカレンダーでは、
-   * 利用者の全アカウントのアドレスも足す (送信元を変えた後も自分の予定のまま。M7)。
+   * 取り込みのたびに他人の予定にしないため) を足す。userAddresses は主催者の判定にだけ渡す (M7)。
    */
   function selfAddresses(
     account: AccountRow,
@@ -216,6 +215,12 @@ export function createCaldavProvider(
     });
     const account = ctx?.account ?? null;
     const self = account
+      ? selfAddresses(account, ctx?.imipAddresses?.get(calendar.id))
+      : new Set<string>();
+    // 主催者の印には、自動スケジュールでないカレンダーなら利用者の全アカウントのアドレスも使う
+    // (送信元を変えた後も、前の送信元で主催した予定を自分の予定として扱う。imip レビュー M7)。
+    // 参加者の self は取り込み側の決まり (そのカレンダーの自分のアドレスだけ) のまま。
+    const organizerSelf = account
       ? selfAddresses(
           account,
           ctx?.imipAddresses?.get(calendar.id),
@@ -223,7 +228,7 @@ export function createCaldavProvider(
             ? undefined
             : ctx?.userAddresses,
         )
-      : new Set<string>();
+      : self;
     return parsed.events.map((event) => ({
       ...event,
       raw: resource.data,
@@ -235,7 +240,7 @@ export function createCaldavProvider(
         event.organizer && account
           ? {
               ...event.organizer,
-              self: self.has(event.organizer.email.toLowerCase()),
+              self: organizerSelf.has(event.organizer.email.toLowerCase()),
             }
           : event.organizer,
       attendees: event.attendees.map((attendee) => ({

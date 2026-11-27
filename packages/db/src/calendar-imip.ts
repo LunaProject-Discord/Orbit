@@ -221,7 +221,7 @@ export async function resolveCalendarImipSender(
 
 /**
  * 利用者の「自分のアドレス」(全アカウントの email と、@ を含む username。小文字)。
- * CalDAV の取り込みと API の役割の判定で、主催者・参加者が自分かを決めるのに使う。
+ * CalDAV の取り込みで、主催者が自分かを決めるのに使う。
  * いまの送信元だけにすると、送信元を変えた後に、前の送信元で主催した予定が「他人の予定」になる
  * (imip レビュー M7)。
  */

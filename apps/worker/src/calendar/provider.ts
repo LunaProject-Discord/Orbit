@@ -54,7 +54,7 @@ export type ProviderContext = {
   imipAddresses?: ReadonlyMap<string, string>;
   /**
    * CalDAV: 利用者の全アカウントのアドレス (小文字)。自動スケジュールでないカレンダーの
-   * self / organizer.self の判定に足す。送信元を変えた後も、前の送信元で主催した予定を
+   * organizer.self の判定に足す (参加者の self には使わない)。送信元を変えた後も、前の送信元で主催した予定を
    * 自分の予定として扱うため (imip レビュー M7)。
    */
   userAddresses?: ReadonlySet<string>;
