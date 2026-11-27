@@ -133,7 +133,10 @@ export function downloadPercent(
   phase: Extract<DesktopBodyPhase, { kind: "downloading" }>,
 ): number | null {
   if (!phase.total || phase.total <= 0) return null;
-  return Math.min(100, Math.floor((phase.downloaded / phase.total) * 100));
+  return Math.max(
+    0,
+    Math.min(100, Math.floor((phase.downloaded / phase.total) * 100)),
+  );
 }
 
 async function invoke<T>(

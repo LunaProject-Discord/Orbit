@@ -29,7 +29,8 @@ export type UpdateStatus =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "up-to-date"; checkedAt: number }
-  | { kind: "downloading"; version: string }
+  /** progress は 0〜100。アプリ側が進み具合を送らない (古いアプリ) ときは null */
+  | { kind: "downloading"; version: string; progress: number | null }
   /** 取得済み。次に起動したときに切り替わる */
   | { kind: "ready"; version: string }
   /** 新しい画面はアプリ本体の更新が要る */
@@ -117,6 +118,12 @@ export function filesBaseUrl(server: string): string {
   return new URL("/app-update/files/", server).toString();
 }
 
+/** 取得の進み具合 (0〜100)。全体の大きさが 0 のときは null。 */
+export function progressPercent(done: number, total: number): number | null {
+  if (!(total > 0)) return null;
+  return Math.max(0, Math.min(100, Math.floor((done / total) * 100)));
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
@@ -191,12 +198,34 @@ async function runCheck(): Promise<void> {
       });
       return;
     }
-    setState({ status: { kind: "downloading", version: manifest.version } });
-    await updater.download({
-      version: manifest.version,
-      baseUrl: filesBaseUrl(server),
-      files: manifest.files,
+    setState({
+      status: {
+        kind: "downloading",
+        version: manifest.version,
+        progress: null,
+      },
     });
+    const stopProgress = updater.onProgress(({ version, done, total }) => {
+      if (version !== manifest.version || state.status.kind !== "downloading") {
+        return;
+      }
+      setState({
+        status: {
+          kind: "downloading",
+          version,
+          progress: progressPercent(done, total),
+        },
+      });
+    });
+    try {
+      await updater.download({
+        version: manifest.version,
+        baseUrl: filesBaseUrl(server),
+        files: manifest.files,
+      });
+    } finally {
+      stopProgress();
+    }
     await refreshInfo();
     setState({ status: { kind: "ready", version: manifest.version } });
   } catch (error) {

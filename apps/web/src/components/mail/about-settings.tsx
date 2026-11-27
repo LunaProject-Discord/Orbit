@@ -97,7 +97,7 @@ function statusText(status: UpdateStatus): {
       return { text: "最新の画面です。", tone: "ok" };
     case "downloading":
       return {
-        text: `新しい画面 (${formatBuildVersion(status.version)}) を取得しています…`,
+        text: `新しい画面 (${formatBuildVersion(status.version)}) を取得しています…${status.progress === null ? "" : ` ${status.progress}%`}`,
         tone: "muted",
       };
     case "ready":
@@ -151,6 +151,25 @@ function StatusLine(props: {
       </span>
       <span className="min-w-0">{props.children}</span>
     </output>
+  );
+}
+
+/** 取得の進み具合のバー (状態の文の下に出す)。value は 0〜100。 */
+function ProgressBar({ value }: { value: number }) {
+  return (
+    <span
+      role="progressbar"
+      aria-label="取得の進み具合"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value}
+      className="mt-1.5 block h-1 w-48 max-w-full overflow-hidden rounded-full bg-muted"
+    >
+      <span
+        className="block h-full rounded-full bg-primary transition-[width]"
+        style={{ width: `${value}%` }}
+      />
+    </span>
   );
 }
 
@@ -259,6 +278,9 @@ export function AboutSettings() {
                 spin={working}
               >
                 {text}
+                {status.kind === "downloading" && status.progress !== null && (
+                  <ProgressBar value={status.progress} />
+                )}
               </StatusLine>
             )}
             <div className="flex flex-wrap gap-2">
@@ -460,21 +482,7 @@ function BodyUpdateSection({ update }: { update: AppUpdateState }) {
           spin={view.working}
         >
           {view.text}
-          {view.progress !== null && (
-            <span
-              role="progressbar"
-              aria-label="取得の進み具合"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={view.progress}
-              className="mt-1.5 block h-1 w-48 max-w-full overflow-hidden rounded-full bg-muted"
-            >
-              <span
-                className="block h-full rounded-full bg-primary transition-[width]"
-                style={{ width: `${view.progress}%` }}
-              />
-            </span>
-          )}
+          {view.progress !== null && <ProgressBar value={view.progress} />}
         </StatusLine>
         {(view.canCheck || view.install) && (
           <div className="flex flex-wrap gap-2">

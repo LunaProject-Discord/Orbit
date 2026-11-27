@@ -1,6 +1,7 @@
 package jp.lunaproject.orbit.mail;
 
 import android.content.Context;
+import android.os.SystemClock;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -33,6 +34,8 @@ public class AppUpdatePlugin extends Plugin {
     // 取得は時間がかかるので、ほかのプラグインの呼び出しを止めないよう別のスレッドで行う。
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean downloading = new AtomicBoolean(false);
+    /** 取得の進み具合を送る間隔。 */
+    private static final long PROGRESS_INTERVAL_MS = 100;
 
     @PluginMethod
     public void info(PluginCall call) {
@@ -142,6 +145,14 @@ public class AppUpdatePlugin extends Plugin {
                 URL base = allowedUrl(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
                 WebBundles.deleteRecursively(temp);
                 boolean hasIndex = false;
+                // 進み具合 (一覧の大きさの合計に対する、済んだファイルの大きさ) を画面へ送る。
+                long total = 0;
+                for (int i = 0; i < files.length(); i++) {
+                    total += Math.max(0, files.getJSONObject(i).optLong("size", 0));
+                }
+                long done = 0;
+                long lastSent = 0;
+                sendProgress(version, 0, total);
                 for (int i = 0; i < files.length(); i++) {
                     JSONObject file = files.getJSONObject(i);
                     String path = file.getString("path");
@@ -166,6 +177,12 @@ public class AppUpdatePlugin extends Plugin {
                     try (FileOutputStream out = new FileOutputStream(target)) {
                         out.write(bytes);
                     }
+                    done += Math.max(0, size);
+                    long now = SystemClock.elapsedRealtime();
+                    if (done >= total || now - lastSent >= PROGRESS_INTERVAL_MS) {
+                        lastSent = now;
+                        sendProgress(version, done, total);
+                    }
                 }
                 if (!hasIndex) throw new IOException("一覧に index.html がありません。");
 
@@ -189,6 +206,15 @@ public class AppUpdatePlugin extends Plugin {
                 downloading.set(false);
             }
         });
+    }
+
+    /** 取得の進み具合を画面へ送る (apps/web/src/lib/app-update/native.ts の onProgress)。 */
+    private void sendProgress(String version, long done, long total) {
+        JSObject progress = new JSObject();
+        progress.put("version", version);
+        progress.put("done", done);
+        progress.put("total", total);
+        notifyListeners("progress", progress);
     }
 
     /** 画面が問題なく起動した。試している版なら、これからはその版を使う。 */

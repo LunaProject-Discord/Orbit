@@ -1,6 +1,10 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { NativeUpdateInfo, NativeUpdater } from "./native";
+import type {
+  DownloadProgress,
+  NativeUpdateInfo,
+  NativeUpdater,
+} from "./native";
 
 const SHA = "b".repeat(64);
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -25,12 +29,24 @@ function manifestText(version: string, minNativeApi = 1) {
 
 let info: NativeUpdateInfo;
 let manifest: string;
+let progressListener: ((progress: DownloadProgress) => void) | null = null;
+/** download の途中で見えた状態 (進み具合の確認用)。 */
+let duringDownload: unknown = null;
 const updater = {
   platform: "desktop",
   info: vi.fn(async () => info),
   fetchManifest: vi.fn(async () => manifest),
   download: vi.fn(async ({ version }: { version: string }) => {
+    progressListener?.({ version, done: 1, total: 4 });
+    const { appUpdateState } = await import("./index");
+    duringDownload = appUpdateState().status;
     info = { ...info, pending: version };
+  }),
+  onProgress: vi.fn((listener: (progress: DownloadProgress) => void) => {
+    progressListener = listener;
+    return () => {
+      progressListener = null;
+    };
   }),
   ready: vi.fn(async () => {}),
   apply: vi.fn(async () => {}),
@@ -81,6 +97,20 @@ describe("checkForAppUpdate", () => {
       kind: "ready",
       version: "20261125000000",
     });
+  });
+
+  it("取得中はアプリ側から届く進み具合を出し、終わったら受け取りをやめる", async () => {
+    const module = await load("20261124000000");
+    manifest = manifestText("20261125000000");
+    await module.checkForAppUpdate();
+    expect(duringDownload).toEqual({
+      kind: "downloading",
+      version: "20261125000000",
+      progress: 25,
+    });
+    expect(progressListener).toBeNull();
+    expect(module.progressPercent(5, 0)).toBeNull();
+    expect(module.progressPercent(9, 8)).toBe(100);
   });
 
   it("いまの画面と同じか古い版なら取得しない", async () => {

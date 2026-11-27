@@ -15,12 +15,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
-use tauri::{App, AppHandle, Assets, Manager, Runtime, State};
+use tauri::{App, AppHandle, Assets, Emitter, Manager, Runtime, State};
 
 /// アプリ側の機能の版。画面から使うコマンドを足したら 1 増やし、
 /// apps/web/app-update.json の minNativeApi も合わせる。
@@ -348,8 +348,21 @@ impl Drop for DownloadGuard<'_> {
     }
 }
 
+/// 画面の取得の進み具合を送るイベント (apps/web/src/lib/app-update/native.ts と合わせる)。
+const PROGRESS_EVENT: &str = "app-update://progress";
+/// 進み具合を送る間隔。
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Serialize)]
+struct DownloadProgress {
+    version: String,
+    done: u64,
+    total: u64,
+}
+
 /// 一覧のファイルを用意する。中身が同じファイルは、いま配信している画面 (同梱、または取得済み) から
 /// 写し、変わったものだけをサーバーから取得する。すべて SHA-256 を確かめる。
+/// 進み具合は PROGRESS_EVENT で画面へ送る。
 #[tauri::command]
 pub async fn app_update_download<R: Runtime>(
     app: AppHandle<R>,
@@ -383,6 +396,24 @@ pub async fn app_update_download<R: Runtime>(
         let client = client()?;
         let resolver = app.asset_resolver();
         let mut has_index = false;
+        // 進み具合 (一覧の大きさの合計に対する、済んだファイルの大きさ) を画面へ送る。
+        let total: u64 = files.iter().map(|file| file.size).sum();
+        let mut done: u64 = 0;
+        let mut last_sent: Option<Instant> = None;
+        let mut send_progress = |done: u64, force: bool| {
+            if force || !last_sent.is_some_and(|at| at.elapsed() < PROGRESS_INTERVAL) {
+                last_sent = Some(Instant::now());
+                let _ = app.emit(
+                    PROGRESS_EVENT,
+                    DownloadProgress {
+                        version: version.clone(),
+                        done,
+                        total,
+                    },
+                );
+            }
+        };
+        send_progress(0, true);
         for file in &files {
             let relative = relative_path(&file.path)
                 .ok_or_else(|| format!("{}: パスが正しくありません", file.path))?;
@@ -410,6 +441,8 @@ pub async fn app_update_download<R: Runtime>(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+            done += file.size;
+            send_progress(done, done == total);
         }
         if !has_index {
             return Err("一覧に index.html がありません。".to_owned());
