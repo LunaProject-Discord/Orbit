@@ -3,25 +3,19 @@
 import { cn } from "cn";
 import {
   AppWindowIcon,
-  BoldIcon,
   FileIcon,
   FileTextIcon,
   ImageIcon,
-  ItalicIcon,
-  LinkIcon,
-  ListIcon,
   Maximize2Icon,
   Minimize2Icon,
   MinusIcon,
   PaperclipIcon,
   SendIcon,
   Trash2Icon,
-  UnderlineIcon,
   WifiOffIcon,
   XIcon,
 } from "lucide-react";
 import {
-  type ClipboardEvent,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -29,15 +23,14 @@ import {
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { EmojiPickerButton } from "@/components/emoji-picker";
 import { Hint } from "@/components/hint";
+import { Editor } from "@/components/mail/editor";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -518,7 +511,9 @@ export function ComposeWindow({
       );
       return;
     }
-    const html = sanitizeHtml(editorRef.current?.innerHTML ?? draft.html);
+    const html = sanitizeHtml(editorRef.current?.innerHTML ?? draft.html, {
+      rich: true,
+    });
     setError(null);
     setSending(true);
     try {
@@ -1137,259 +1132,4 @@ function FileTypeIcon({ contentType }: { contentType: string }) {
     return <FileTextIcon className={cn(className, "text-red-600")} />;
   }
   return <FileIcon className={cn(className, "text-muted-foreground")} />;
-}
-
-type FormatCommand = "bold" | "italic" | "underline" | "insertUnorderedList";
-
-const formats: { command: FormatCommand; label: string; icon: ReactNode }[] = [
-  { command: "bold", label: "太字", icon: <BoldIcon /> },
-  { command: "italic", label: "斜体", icon: <ItalicIcon /> },
-  { command: "underline", label: "下線", icon: <UnderlineIcon /> },
-  { command: "insertUnorderedList", label: "箇条書き", icon: <ListIcon /> },
-];
-
-/**
- * 本文の入力欄 (書式付き) と、書式のボタン。
- * 内容はブラウザーの編集機能 (contentEditable) に任せ、変わるたびに HTML を親へ伝える。
- * children は入力欄とツールバーの間に置くもの (添付ファイルの一覧など)。
- */
-export function Editor({
-  editorRef,
-  initialHtml,
-  disabled,
-  label = "本文",
-  onChange,
-  onFiles,
-  toolbar,
-  children,
-}: {
-  editorRef: React.RefObject<HTMLDivElement | null>;
-  initialHtml: string;
-  disabled: boolean;
-  /** 入力欄の名前 (読み上げ用)。 */
-  label?: string;
-  onChange: (html: string) => void;
-  /** 貼り付けられたファイルの受け取り先。無ければファイルの貼り付けは無視する。 */
-  onFiles?: (files: File[]) => void;
-  toolbar: (format: ReactNode) => ReactNode;
-  children?: ReactNode;
-}) {
-  const [active, setActive] = useState<Record<string, boolean>>({});
-  const [linkOpen, setLinkOpen] = useState(false);
-  const [linkUrl, setLinkUrl] = useState("");
-  /** リンクや絵文字を入れる範囲。ほかの入力欄へ移る前の選択を覚えておく。 */
-  const savedRange = useRef<Range | null>(null);
-  const linkRef = useRef<HTMLInputElement>(null);
-
-  // 最初の内容を入れる。保存してあった下書きも通るので、許可したタグだけに整えてから入れる。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 入れるのは最初の 1 回だけ (以後は入力欄が内容を持つ)
-  useLayoutEffect(() => {
-    if (editorRef.current) {
-      editorRef.current.innerHTML = sanitizeHtml(initialHtml);
-    }
-  }, []);
-
-  const refreshActive = useCallback(() => {
-    const editor = editorRef.current;
-    const selection = window.getSelection();
-    if (!editor || !selection?.anchorNode) return;
-    if (!editor.contains(selection.anchorNode)) return;
-    const next: Record<string, boolean> = {};
-    for (const { command } of formats) {
-      try {
-        next[command] = document.queryCommandState(command);
-      } catch {
-        next[command] = false;
-      }
-    }
-    setActive(next);
-  }, [editorRef]);
-
-  useEffect(() => {
-    document.addEventListener("selectionchange", refreshActive);
-    return () => document.removeEventListener("selectionchange", refreshActive);
-  }, [refreshActive]);
-
-  const emit = () => onChange(editorRef.current?.innerHTML ?? "");
-
-  function run(command: FormatCommand) {
-    editorRef.current?.focus();
-    document.execCommand(command);
-    emit();
-    refreshActive();
-  }
-
-  function openLink() {
-    saveRange();
-    setLinkUrl("");
-    setLinkOpen(true);
-    requestAnimationFrame(() => linkRef.current?.focus());
-  }
-
-  function applyLink() {
-    const raw = linkUrl.trim();
-    setLinkOpen(false);
-    const editor = editorRef.current;
-    if (!raw || !editor) return;
-    const url = /^(https?:|mailto:)/i.test(raw) ? raw : `https://${raw}`;
-    editor.focus();
-    const selection = window.getSelection();
-    if (savedRange.current && selection) {
-      selection.removeAllRanges();
-      selection.addRange(savedRange.current);
-    }
-    if (selection?.isCollapsed ?? true) {
-      // 何も選んでいなければ、URL そのものをリンクとして入れる。
-      const link = document.createElement("a");
-      link.href = url;
-      link.textContent = raw;
-      document.execCommand("insertHTML", false, link.outerHTML);
-    } else {
-      document.execCommand("createLink", false, url);
-    }
-    emit();
-  }
-
-  /** 本文の中の選択範囲を覚える (ほかの入力欄へフォーカスが移る前に呼ぶ)。 */
-  function saveRange() {
-    const selection = window.getSelection();
-    const editor = editorRef.current;
-    savedRange.current =
-      selection &&
-      selection.rangeCount > 0 &&
-      editor?.contains(selection.anchorNode)
-        ? selection.getRangeAt(0).cloneRange()
-        : null;
-  }
-
-  /** 覚えておいた位置 (無ければ本文の末尾) に、文字を入れる。 */
-  function insertText(text: string) {
-    const editor = editorRef.current;
-    if (!editor) return;
-    editor.focus();
-    const selection = window.getSelection();
-    if (selection) {
-      let range = savedRange.current;
-      if (!range) {
-        range = document.createRange();
-        range.selectNodeContents(editor);
-        range.collapse(false);
-      }
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    document.execCommand("insertText", false, text);
-    emit();
-  }
-
-  function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
-    const files = [...event.clipboardData.files];
-    if (files.length > 0) {
-      event.preventDefault();
-      onFiles?.(files);
-      return;
-    }
-    // ほかの画面の書式を持ち込まないよう、文字だけを貼り付ける。
-    event.preventDefault();
-    document.execCommand(
-      "insertText",
-      false,
-      event.clipboardData.getData("text/plain"),
-    );
-  }
-
-  return (
-    <>
-      {/* biome-ignore lint/a11y/useSemanticElements: 書式付きの入力欄は textarea では作れない */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: クリックで起きるページ移動を止めるだけで、操作は割り当てていない */}
-      <div
-        ref={editorRef}
-        role="textbox"
-        aria-multiline="true"
-        aria-label={label}
-        tabIndex={0}
-        contentEditable={!disabled}
-        suppressContentEditableWarning
-        onInput={emit}
-        onPaste={handlePaste}
-        // 本文の中のリンクを押しても、ページを移動しない。
-        onClick={(event) => {
-          if ((event.target as HTMLElement).closest("a"))
-            event.preventDefault();
-        }}
-        className="min-h-40 flex-1 overflow-y-auto break-words px-4 py-3 text-base leading-relaxed outline-none md:text-sm [&_a]:text-primary [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h1]:font-semibold [&_h1]:text-lg [&_h2]:font-semibold [&_h2]:text-base [&_h3]:font-semibold [&_hr]:my-2 [&_ol]:list-decimal [&_pre]:whitespace-pre-wrap [&_td]:pr-3 [&_td]:align-top [&_th]:pr-3 [&_th]:text-left [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6"
-      />
-      {children}
-      {linkOpen && (
-        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-2">
-          <Input
-            ref={linkRef}
-            type="url"
-            aria-label="リンク先の URL"
-            placeholder="https://example.com"
-            value={linkUrl}
-            onChange={(event) => setLinkUrl(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return;
-              if (event.key === "Enter") {
-                event.preventDefault();
-                event.stopPropagation();
-                applyLink();
-              } else if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                setLinkOpen(false);
-                editorRef.current?.focus();
-              }
-            }}
-            className="h-8"
-          />
-          <Button type="button" size="sm" onClick={applyLink}>
-            リンクを付ける
-          </Button>
-        </div>
-      )}
-      {toolbar(
-        <>
-          {formats.map(({ command, label, icon }) => (
-            <Hint key={command} label={label} side="top">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={label}
-                aria-pressed={active[command] ?? false}
-                disabled={disabled}
-                // 押しても本文の選択が外れないようにする。
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => run(command)}
-                className="aria-pressed:bg-muted"
-              >
-                {icon}
-              </Button>
-            </Hint>
-          ))}
-          <Hint label="リンク" side="top">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="リンク"
-              aria-expanded={linkOpen}
-              disabled={disabled}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => (linkOpen ? setLinkOpen(false) : openLink())}
-            >
-              <LinkIcon />
-            </Button>
-          </Hint>
-          <EmojiPickerButton
-            disabled={disabled}
-            onOpen={saveRange}
-            onSelect={insertText}
-          />
-        </>,
-      )}
-    </>
-  );
 }

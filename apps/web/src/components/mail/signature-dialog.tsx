@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useId, useRef, useState } from "react";
-import { Editor } from "@/components/mail/compose-window";
+import { Editor } from "@/components/mail/editor";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -104,7 +104,9 @@ export function SignatureDialog({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!target || saving) return;
-    const html = sanitizeHtml(editorRef.current?.innerHTML ?? "");
+    const html = sanitizeHtml(editorRef.current?.innerHTML ?? "", {
+      rich: true,
+    });
     const value = !none && htmlHasContent(html) ? html : null;
     if (target.kind !== "account" && !none && value === null) {
       setError(

@@ -230,7 +230,7 @@ export function senderAccount<
  * 署名が無ければ空文字列。
  */
 function signatureBlock(signatureHtml: string | null | undefined): string {
-  const html = signatureHtml ? sanitizeHtml(signatureHtml) : "";
+  const html = signatureHtml ? sanitizeHtml(signatureHtml, { rich: true }) : "";
   if (!htmlHasContent(html)) return "";
   return `<div data-signature="">${html}</div>`;
 }
@@ -509,9 +509,25 @@ function linesOf(parent: Node): string[] {
     if (inner.length === 0) inner = tag === "ul" || tag === "ol" ? [] : [""];
     if (tag === "blockquote") inner = inner.map(quoteLine);
     if (tag === "li") {
+      // 番号付きリストは「1. 」、箇条書きは「- 」を付ける。2 行目以降は記号の幅だけ下げる。
+      const list = element.parentElement;
+      const marker =
+        list?.tagName === "OL"
+          ? `${[...list.children].filter((child) => child.tagName === "LI").indexOf(element) + 1}. `
+          : "- ";
+      const pad = " ".repeat(marker.length);
       inner = inner.map((line, index) =>
-        index === 0 ? `- ${line}` : `  ${line}`,
+        index === 0 ? `${marker}${line}` : `${pad}${line}`,
       );
+    }
+    // インデント (作成画面で 1 段 40px) は、1 段につき空白 4 つにする。
+    const margin = /margin-left:\s*(\d+)px/i.exec(
+      element.getAttribute("style") ?? "",
+    );
+    if (margin) {
+      const levels = Math.min(8, Math.round(Number(margin[1]) / 40));
+      const pad = " ".repeat(levels * 4);
+      if (pad) inner = inner.map((line) => `${pad}${line}`);
     }
     out.push(...inner);
   }
@@ -545,15 +561,46 @@ const QUOTE_STYLE =
 const CELL_STYLE = "padding:0 1em 0 0;vertical-align:top";
 
 /**
- * 残す style の項目。色は残さない (暗い画面の作成画面で読めなくなるため)。
- * 値は決まった語だけを通すので、url() などは入らない。
+ * 残す style の項目。値は決まった語だけを通すので、url() などは入らない。
+ * 色・大きさ・インデントは、作成画面で自分が付けたもの (rich) だけに残す。受け取ったメールを
+ * 引用するときは落とす (暗い画面の作成画面で読めなくなったり、文字が極端に大きくなったりするため)。
  */
 const STYLE_VALUES: Record<string, RegExp> = {
   "font-weight": /^(normal|bold|bolder|lighter|[1-9]00)$/,
   "font-style": /^(normal|italic|oblique)$/,
-  "text-decoration": /^(none|underline|line-through)$/,
-  "text-decoration-line": /^(none|underline|line-through)$/,
+  "text-decoration":
+    /^(none|underline|line-through|underline line-through|line-through underline)$/,
+  "text-decoration-line":
+    /^(none|underline|line-through|underline line-through|line-through underline)$/,
   "text-align": /^(left|right|center|justify|start|end)$/,
+};
+
+const COLOR_VALUE =
+  /^(#[0-9a-f]{3}|#[0-9a-f]{6}|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(,\s*(0|1|0?\.\d+)\s*)?\))$/;
+
+const RICH_STYLE_VALUES: Record<string, RegExp> = {
+  ...STYLE_VALUES,
+  color: COLOR_VALUE,
+  "background-color": COLOR_VALUE,
+  "font-size": /^(x-small|small|medium|large|x-large|xx-large|xxx-large)$/,
+  "margin-left": /^([1-9][0-9]?|[1-3][0-9]{2})px$/,
+};
+
+/** font 要素の size (1〜7) に当たる大きさ。 */
+const FONT_SIZES = [
+  "x-small",
+  "x-small",
+  "small",
+  "medium",
+  "large",
+  "x-large",
+  "xx-large",
+  "xxx-large",
+];
+
+type SanitizeOptions = {
+  /** 作成画面で書いた本文や署名。色・大きさ・インデントも残す。 */
+  rich?: boolean;
 };
 
 function declarationsOf(element: Element): [string, string][] {
@@ -586,9 +633,12 @@ function isHidden(declarations: [string, string][]): boolean {
   );
 }
 
-function styleAttribute(declarations: [string, string][]): string {
+function styleAttribute(
+  declarations: [string, string][],
+  allowed: Record<string, RegExp>,
+): string {
   const kept = declarations.filter(([name, value]) =>
-    STYLE_VALUES[name]?.test(value),
+    allowed[name]?.test(value),
   );
   if (kept.length === 0) return "";
   return ` style="${kept.map(([name, value]) => `${name}:${value}`).join(";")}"`;
@@ -599,7 +649,8 @@ function spanAttribute(element: Element, name: string): string {
   return /^[1-9][0-9]{0,2}$/.test(value) ? ` ${name}="${value}"` : "";
 }
 
-function sanitizeNode(parent: Node): string {
+function sanitizeNode(parent: Node, options: SanitizeOptions): string {
+  const allowed = options.rich ? RICH_STYLE_VALUES : STYLE_VALUES;
   let html = "";
   for (const node of parent.childNodes) {
     if (node.nodeType === 3) {
@@ -618,8 +669,26 @@ function sanitizeNode(parent: Node): string {
       if (alt) html += escapeHtml(`[画像: ${alt}]`);
       continue;
     }
-    const inner = sanitizeNode(element);
-    if (!ALLOWED.has(tag)) {
+    const inner = sanitizeNode(element, options);
+    if (tag === "strike" || tag === "del") {
+      // 取り消し線は、ブラウザーによって strike で付く。
+      html += `<s${styleAttribute(declarations, allowed)}>${inner}</s>`;
+    } else if (tag === "font") {
+      // CSS を使わないブラウザーでは、色と大きさが font で付く。span の style に直す。
+      const size = Number(element.getAttribute("size"));
+      const color = element.getAttribute("color")?.trim().toLowerCase() ?? "";
+      const style = styleAttribute(
+        [
+          ...declarations,
+          ...(Number.isInteger(size) && size >= 1 && size <= 7
+            ? [["font-size", FONT_SIZES[size] ?? "medium"] as [string, string]]
+            : []),
+          ...(color ? [["color", color] as [string, string]] : []),
+        ],
+        allowed,
+      );
+      html += style ? `<span${style}>${inner}</span>` : inner;
+    } else if (!ALLOWED.has(tag)) {
       html += inner;
     } else if (VOID.has(tag)) {
       html += `<${tag}>`;
@@ -634,13 +703,13 @@ function sanitizeNode(parent: Node): string {
       const attributes = `${spanAttribute(element, "colspan")}${spanAttribute(element, "rowspan")}`;
       // 相手のメールソフトでも列がくっつかないよう、余白を付ける。
       const kept = declarations
-        .filter(([name, value]) => STYLE_VALUES[name]?.test(value))
+        .filter(([name, value]) => allowed[name]?.test(value))
         .map(([name, value]) => `;${name}:${value}`)
         .join("");
       html += `<${tag}${attributes} style="${CELL_STYLE}${kept}">${inner}</${tag}>`;
     } else if (tag === "span") {
       // 何も付かない span は、中身だけにする。
-      const style = styleAttribute(declarations);
+      const style = styleAttribute(declarations, allowed);
       html += style ? `<span${style}>${inner}</span>` : inner;
     } else if (tag === "div") {
       // 署名と引用の目印は、差出人を変えたときに署名を入れ替えるために残す。
@@ -649,9 +718,9 @@ function sanitizeNode(parent: Node): string {
         : element.hasAttribute("data-quote")
           ? ' data-quote=""'
           : "";
-      html += `<div${mark}${styleAttribute(declarations)}>${inner}</div>`;
+      html += `<div${mark}${styleAttribute(declarations, allowed)}>${inner}</div>`;
     } else {
-      html += `<${tag}${styleAttribute(declarations)}>${inner}</${tag}>`;
+      html += `<${tag}${styleAttribute(declarations, allowed)}>${inner}</${tag}>`;
     }
   }
   return html;
@@ -659,12 +728,16 @@ function sanitizeNode(parent: Node): string {
 
 /**
  * 作成画面の本文を、送信してよい HTML に整える。
- * 太字・斜体・下線・箇条書き・リンク・引用・見出し・表だけを残し、
- * スクリプト、画像、色や大きさの指定は落とす。元のメールを引用するときにも使う。
+ * 太字・斜体・下線・取り消し線・箇条書き・リンク・引用・配置・見出し・表だけを残し、
+ * スクリプトと画像は落とす。色・大きさ・インデントは rich のときだけ残す
+ * (元のメールを引用するときは rich にせず、相手の書式を持ち込まない)。
  */
-export function sanitizeHtml(html: string): string {
+export function sanitizeHtml(
+  html: string,
+  options: SanitizeOptions = {},
+): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  return sanitizeNode(doc.body);
+  return sanitizeNode(doc.body, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -695,7 +768,7 @@ export function draftSaveInput(
   draft: ComposeDraft,
   baseRevision: number | null,
 ): SaveDraftInput {
-  const html = sanitizeHtml(draft.html);
+  const html = sanitizeHtml(draft.html, { rich: true });
   return {
     accountId: draft.accountId,
     to: draft.to,

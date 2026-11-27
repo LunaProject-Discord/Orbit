@@ -389,3 +389,37 @@ describe("htmlToText", () => {
     );
   });
 });
+
+describe("書式の整形 (色・大きさ・インデント)", () => {
+  const body =
+    '<div style="margin-left: 40px; text-align: center;"><span style="color: rgb(220, 38, 38); background-color: rgb(254, 240, 138); font-size: x-large;">赤</span><strike>消</strike><font size="6" color="#2563eb">青</font></div>';
+
+  it("作成画面で付けた書式 (rich) は残す", () => {
+    expect(sanitizeHtml(body, { rich: true })).toBe(
+      '<div style="margin-left:40px;text-align:center"><span style="color:rgb(220, 38, 38);background-color:rgb(254, 240, 138);font-size:x-large">赤</span><s>消</s><span style="font-size:xx-large;color:#2563eb">青</span></div>',
+    );
+  });
+
+  it("引用する元のメールの色・大きさ・インデントは落とす", () => {
+    expect(sanitizeHtml(body)).toBe(
+      '<div style="text-align:center">赤<s>消</s>青</div>',
+    );
+  });
+
+  it("決まった形以外の値は落とす", () => {
+    expect(
+      sanitizeHtml(
+        '<span style="color: url(x); font-size: 99px; margin-left: 9999px">a</span>',
+        { rich: true },
+      ),
+    ).toBe("a");
+  });
+
+  it("テキストでは、番号とインデントを付ける", () => {
+    expect(
+      htmlToText(
+        '<ol><li>一</li><li>二</li></ol><ul><li>点</li></ul><div style="margin-left:80px">下げ</div>',
+      ),
+    ).toBe("1. 一\n2. 二\n- 点\n        下げ");
+  });
+});
