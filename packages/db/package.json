@@ -21,6 +21,7 @@
     "migrate:kit": "drizzle-kit migrate"
   },
   "dependencies": {
+    "@orbit/core": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "pg": "^8.23.1"
   },
