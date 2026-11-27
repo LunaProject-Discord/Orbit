@@ -12,6 +12,13 @@ export type ParsedAttendee = {
   name: string | null;
   role: "chair" | "required" | "optional" | "non_participant";
   status: "needs_action" | "accepted" | "declined" | "tentative" | "delegated";
+  /**
+   * SENT-BY (代理で返事・招待した人のアドレス)。無ければ null。parseICalendar は必ず入れる
+   * (Google / Microsoft の読み取りには無いので省ける)。
+   */
+  sentBy?: string | null;
+  /** RSVP=TRUE (返事を求められている)。parseICalendar は必ず入れる。 */
+  rsvp?: boolean;
 };
 
 export type ParsedReminder = { method: "display" | "email"; minutes: number };
@@ -39,12 +46,20 @@ export type ParsedEvent = {
   rrule: string | null;
   rdates: string[] | null;
   exdates: string[] | null;
-  organizer: { email: string; name?: string } | null;
+  /** sentBy は SENT-BY (代理) のアドレス。無ければ鍵ごと無い。 */
+  organizer: { email: string; name?: string; sentBy?: string } | null;
   attendees: ParsedAttendee[];
   sequence: number;
   conferenceUrl: string | null;
   /** LAST-MODIFIED (UTC の ISO 8601)。 */
   remoteUpdatedAt: string | null;
+  /**
+   * DTSTAMP (UTC の ISO 8601)。iTIP では、同じ SEQUENCE のメッセージの新旧の比較に使う。
+   * parseICalendar は必ず入れる (無ければ null)。Google / Microsoft の読み取りには無い。
+   */
+  dtstamp?: string | null;
+  /** COMMENT (iTIP の REPLY の返事のコメントなど)。複数あれば改行でつなぐ。parseICalendar は必ず入れる。 */
+  comment?: string | null;
   /** VALARM から読んだリマインダー。VALARM が無ければ null (カレンダーの既定を使う)。 */
   reminders: ParsedReminder[] | null;
   /** VEVENT の元の文字列 (折り返しは戻してある)。 */
@@ -398,6 +413,12 @@ function mailAddress(value: string): string | null {
   return address.includes("@") ? address : null;
 }
 
+/** SENT-BY のアドレス ("mailto:…" を外す)。無いか、アドレスでなければ null。 */
+function sentByOf(property: Property): string | null {
+  const value = property.params.get("SENT-BY");
+  return value ? mailAddress(value) : null;
+}
+
 const ROLES: Record<string, ParsedAttendee["role"]> = {
   CHAIR: "chair",
   "REQ-PARTICIPANT": "required",
@@ -429,6 +450,8 @@ function attendees(component: Component): ParsedAttendee[] {
       status:
         PARTSTATS[property.params.get("PARTSTAT")?.toUpperCase() ?? ""] ??
         "needs_action",
+      sentBy: sentByOf(property),
+      rsvp: property.params.get("RSVP")?.trim().toUpperCase() === "TRUE",
     });
   }
   return result;
@@ -582,6 +605,9 @@ function parseEvent(
     ? mailAddress(organizerProperty.value)
     : null;
   const organizerName = organizerProperty?.params.get("CN")?.trim();
+  const organizerSentBy = organizerProperty
+    ? sentByOf(organizerProperty)
+    : null;
   const statusValue = first(component, "STATUS")?.value.trim().toUpperCase();
   const lastModified = first(component, "LAST-MODIFIED");
   const modified = lastModified
@@ -591,6 +617,19 @@ function parseEvent(
     first(component, "SEQUENCE")?.value ?? "0",
     10,
   );
+  const dtstampProperty = first(component, "DTSTAMP");
+  const dtstamp = dtstampProperty
+    ? parseDateValue(
+        dtstampProperty.value,
+        dtstampProperty.params,
+        resolve,
+        "UTC",
+      )
+    : null;
+  const comments = component.properties
+    .filter((property) => property.name === "COMMENT")
+    .map((property) => unescapeText(property.value).trim())
+    .filter((value) => value.length > 0);
 
   return {
     uid,
@@ -614,12 +653,15 @@ function parseEvent(
       ? {
           email: organizerEmail,
           ...(organizerName ? { name: organizerName } : {}),
+          ...(organizerSentBy ? { sentBy: organizerSentBy } : {}),
         }
       : null,
     attendees: attendees(component),
     sequence: Number.isFinite(sequence) && sequence >= 0 ? sequence : 0,
     conferenceUrl: conferenceUrl(component),
     remoteUpdatedAt: modified?.kind === "time" ? modified.instant : null,
+    dtstamp: dtstamp?.kind === "time" ? dtstamp.instant : null,
+    comment: comments.length > 0 ? comments.join("\n") : null,
     reminders: reminders(component),
     raw,
   };

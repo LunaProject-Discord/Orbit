@@ -169,11 +169,18 @@ export const MY_RESPONSE_FIELD = "myResponse";
 /** 返事のコメントの長さの上限。 */
 export const RSVP_COMMENT_MAX = 1000;
 
+/** Orbit が招待メールを送りうるカレンダーの source (Orbit 内と CalDAV)。 */
+const MAIL_SOURCES = new Set(["local", "caldav"]);
+
 /**
- * カレンダーが招待の連絡を送れるか (設計の 3.3、imip-design 3.1)。
- * - google、microsoft: サービスが送る。
- * - caldav: サーバーが calendar-auto-schedule (RFC 6638) を返したときだけ。調べていなければ none。
- * - local、ics、holidays、birthdays など: none。
+ * カレンダーが招待の連絡を送れるか (設計の 3.3、imip-design 3.1)。判定はここ 1 か所に置き、
+ * API・worker・画面が同じ関数を使う。二重送信を防ぐため、mail は「サーバーが送らないと
+ * 分かっている」カレンダーだけ。
+ * - google、microsoft: サービスが送る (server)。
+ * - caldav: autoSchedule が true なら server。false と分かっていて、書き込めて送信元があれば mail。
+ *   鍵が無い (まだ調べていない) なら none。
+ * - local: 書き込めて送信元があれば mail。
+ * - ics、holidays、birthdays、読み取り専用、送信元が無い: none。
  */
 export function calendarScheduling(calendar: {
   source: string;
@@ -185,22 +192,36 @@ export function calendarScheduling(calendar: {
   if (calendar.source === "google" || calendar.source === "microsoft") {
     return "server";
   }
+  if (!MAIL_SOURCES.has(calendar.source)) return "none";
   if (calendar.source === "caldav") {
-    return calendar.providerState?.autoSchedule === true ? "server" : "none";
+    const autoSchedule = calendar.providerState?.autoSchedule;
+    if (autoSchedule === true) return "server";
+    if (autoSchedule !== false) return "none";
   }
-  return "none";
+  if (calendar.readOnly === true || calendar.imipSender !== true) return "none";
+  return "mail";
 }
 
 /**
  * scheduling が none になった理由 (imip-design 3.1、4.3)。Orbit 内と CalDAV のカレンダーで
  * none のときだけ理由を返し、ほかは null。senderBlocked は送信元の解決 (resolveImipSender) の結果。
  */
-export function schedulingBlocked(_calendar: {
+export function schedulingBlocked(calendar: {
   source: string;
   readOnly?: boolean;
   providerState?: Record<string, unknown> | null;
   imipSender?: boolean;
   senderBlocked?: "no_sender" | "receive_only" | null;
 }): SchedulingBlocked | null {
-  throw new Error("not implemented");
+  if (!MAIL_SOURCES.has(calendar.source) || calendar.readOnly === true) {
+    return null;
+  }
+  if (calendarScheduling(calendar) !== "none") return null;
+  if (
+    calendar.source === "caldav" &&
+    calendar.providerState?.autoSchedule !== false
+  ) {
+    return "unknown_server";
+  }
+  return calendar.senderBlocked ?? "no_sender";
 }
