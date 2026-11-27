@@ -10,11 +10,7 @@ use tauri::WebviewWindow;
 
 /// システムメニューを出す。x / y はウィンドウの中の位置 (物理ピクセル)。無ければカーソルの位置に出す。
 #[tauri::command]
-pub fn show_system_menu(
-    window: WebviewWindow,
-    x: Option<f64>,
-    y: Option<f64>,
-) -> Result<(), String> {
+pub fn show_system_menu(window: WebviewWindow, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
     show(&window, x.zip(y)).map_err(|error| error.to_string())
 }
 
@@ -32,9 +28,9 @@ fn show(window: &WebviewWindow, at: Option<(f64, f64)>) -> tauri::Result<()> {
         use windows::Win32::Graphics::Gdi::ClientToScreen;
         use windows::Win32::UI::WindowsAndMessaging::{
             EnableMenuItem, GetCursorPos, GetSystemMenu, IsIconic, IsZoomed, PostMessageW,
-            SetForegroundWindow, SetMenuDefaultItem, TrackPopupMenu, MENU_ITEM_FLAGS, MF_BYCOMMAND,
-            MF_ENABLED, MF_GRAYED, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE,
-            SC_SIZE, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_SYSCOMMAND,
+            SetForegroundWindow, SetMenuDefaultItem, TrackPopupMenu, MENU_ITEM_FLAGS,
+            MF_BYCOMMAND, MF_ENABLED, MF_GRAYED, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE,
+            SC_RESTORE, SC_SIZE, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_SYSCOMMAND,
         };
 
         let hwnd = HWND(raw as *mut core::ffi::c_void);
