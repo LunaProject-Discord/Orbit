@@ -117,6 +117,8 @@ const MOBILE_VIEWS: { view: CalendarView; label: string }[] = [
 const SAVE_ERROR = "保存できませんでした。もう一度お試しください。";
 const OFFLINE_SAVE_ERROR =
   "接続していないので保存できません。接続してからもう一度お試しください。";
+const STORAGE_ERROR =
+  "変更を端末に保存できませんでした。送り終わるまで、このタブを閉じないでください。";
 const CONFLICT_TOAST = "calendar-conflict";
 const SIDEBAR_KEY = "orbit.calendar.sidebar";
 
@@ -236,8 +238,13 @@ export function CalendarApp({ user }: { user: User }) {
     }),
     [range, timeZone],
   );
-  const { client, calendars, data, queue, conflicts } =
+  const { client, calendars, data, queue, conflicts, storageFailed } =
     useCalendarData(rangeQuery);
+
+  // 端末に書けなかった (容量不足など)。送信待ちはこのタブのメモリーにしか無い。
+  useEffect(() => {
+    if (storageFailed) showNotice(STORAGE_ERROR);
+  }, [storageFailed]);
 
   // アカウントの一覧 (サイドバーの見出し)。メールの端末の控えから読む。
   // カレンダーが変わったら (アカウントの追加など) 読み直す。
