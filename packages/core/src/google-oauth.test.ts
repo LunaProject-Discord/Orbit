@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   createGoogleAuthorizeUrl,
   exchangeGoogleCode,
+  GOOGLE_CALENDAR_SCOPES,
+  GOOGLE_SCOPES,
   GoogleAccessTokenSource,
   GoogleOAuthError,
   hasGmailScope,
+  hasGoogleCalendarScope,
   loadGoogleOAuthConfig,
   openGoogleState,
   refreshGoogleToken,
@@ -16,7 +19,7 @@ const key = randomBytes(32);
 const config = { clientId: "client", clientSecret: "secret" };
 const redirectUri = "http://localhost:3000/oauth/google";
 
-function authorize(userId = "user-1", now?: number) {
+function authorize(userId = "user-1", now?: number, calendar?: boolean) {
   return new URL(
     createGoogleAuthorizeUrl({
       config,
@@ -24,8 +27,17 @@ function authorize(userId = "user-1", now?: number) {
       userId,
       encryptionKey: key,
       ...(now === undefined ? {} : { now }),
+      ...(calendar === undefined ? {} : { calendar }),
     }),
   );
+}
+
+/** 毎回変わる値 (state と PKCE) を除いた、ログイン URL の中身。 */
+function stableParams(url: URL) {
+  const params = new URLSearchParams(url.searchParams);
+  params.delete("state");
+  params.delete("code_challenge");
+  return `${url.origin}${url.pathname}?${params.toString()}`;
 }
 
 function jsonResponse(body: unknown, status = 200) {
@@ -85,6 +97,77 @@ describe("createGoogleAuthorizeUrl / openGoogleState", () => {
     expect(open("user-1", 1_000 + 11 * 60_000)).toBeNull();
     expect(open("user-1", 2_000, `${state.slice(0, -2)}AA`)).toBeNull();
     expect(open("user-1", 2_000, "x")).toBeNull();
+  });
+});
+
+describe("カレンダーの権限", () => {
+  it("calendar を指定しなければ、ログイン URL は今までと同じ", () => {
+    const url = authorize();
+    expect(url.searchParams.get("scope")).toBe(
+      "openid email https://mail.google.com/",
+    );
+    expect(url.searchParams.get("scope")).toBe(GOOGLE_SCOPES.join(" "));
+    expect([...url.searchParams.keys()]).toEqual([
+      "client_id",
+      "response_type",
+      "redirect_uri",
+      "scope",
+      "state",
+      "code_challenge",
+      "code_challenge_method",
+      "access_type",
+      "prompt",
+    ]);
+    expect(stableParams(authorize("user-1", undefined, false))).toBe(
+      stableParams(url),
+    );
+    const opened = openGoogleState({
+      state: url.searchParams.get("state") ?? "",
+      userId: "user-1",
+      encryptionKey: key,
+    });
+    expect(opened?.calendar).toBe(false);
+  });
+
+  it("calendar: true なら、メールの権限にカレンダーの権限を足し、state に残す", () => {
+    const url = authorize("user-1", undefined, true);
+    expect(url.searchParams.get("scope")?.split(" ")).toEqual([
+      ...GOOGLE_SCOPES,
+      ...GOOGLE_CALENDAR_SCOPES,
+    ]);
+    const opened = openGoogleState({
+      state: url.searchParams.get("state") ?? "",
+      userId: "user-1",
+      encryptionKey: key,
+    });
+    expect(opened?.calendar).toBe(true);
+    expect(
+      createHash("sha256")
+        .update(opened?.verifier ?? "")
+        .digest("base64url"),
+    ).toBe(url.searchParams.get("code_challenge"));
+  });
+
+  it("カレンダーの権限が揃っているかを見分ける", () => {
+    expect(hasGoogleCalendarScope(GOOGLE_CALENDAR_SCOPES.join(" "))).toBe(true);
+    expect(
+      hasGoogleCalendarScope(
+        `openid https://mail.google.com/ ${GOOGLE_CALENDAR_SCOPES.join(" ")}`,
+      ),
+    ).toBe(true);
+    expect(
+      hasGoogleCalendarScope("https://www.googleapis.com/auth/calendar email"),
+    ).toBe(true);
+    // 同意画面で一部だけ外された。
+    expect(
+      hasGoogleCalendarScope(
+        "openid https://www.googleapis.com/auth/calendar.events",
+      ),
+    ).toBe(false);
+    expect(
+      hasGoogleCalendarScope("openid email https://mail.google.com/"),
+    ).toBe(false);
+    expect(hasGoogleCalendarScope("")).toBe(false);
   });
 });
 

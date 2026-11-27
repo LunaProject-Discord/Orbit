@@ -25,6 +25,15 @@ export const MICROSOFT_SCOPES = [
   "https://graph.microsoft.com/Mail.Send",
 ];
 
+/**
+ * カレンダーの同期に要る権限。メールの権限 (MICROSOFT_SCOPES) とは別に、
+ * カレンダーを使うときだけ足して求める。MICROSOFT_SCOPES には入れない
+ * (メールのトークンの更新で求めると、未同意のアカウントで更新が失敗するため)。
+ */
+export const MICROSOFT_CALENDAR_SCOPES = [
+  "https://graph.microsoft.com/Calendars.ReadWrite",
+];
+
 const STATE_CONTEXT = "microsoft-oauth-state";
 const STATE_TTL_MS = 10 * 60_000;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -47,7 +56,13 @@ function endpoint(config: MicrosoftOAuthConfig, path: "authorize" | "token") {
   return `https://login.microsoftonline.com/${encodeURIComponent(config.tenant)}/oauth2/v2.0/${path}`;
 }
 
-type StatePayload = { userId: string; verifier: string; expiresAt: number };
+type StatePayload = {
+  userId: string;
+  verifier: string;
+  expiresAt: number;
+  /** カレンダーの権限も求めた。 */
+  calendar?: boolean;
+};
 
 /**
  * ログイン画面の URL を作る。state には利用者 ID と PKCE の検証値を暗号化して入れ、
@@ -60,6 +75,8 @@ export function createMicrosoftAuthorizeUrl(options: {
   encryptionKey: Buffer;
   /** 再ログイン時など、ログイン画面に最初から入れておくメールアドレス。 */
   loginHint?: string | undefined;
+  /** true なら、メールの権限に加えてカレンダーの権限 (MICROSOFT_CALENDAR_SCOPES) も求める。 */
+  calendar?: boolean;
   now?: number;
 }): string {
   const verifier = randomBytes(32).toString("base64url");
@@ -67,14 +84,19 @@ export function createMicrosoftAuthorizeUrl(options: {
     userId: options.userId,
     verifier,
     expiresAt: (options.now ?? Date.now()) + STATE_TTL_MS,
+    // 指定しないときは、state の中身を今までと同じにしておく。
+    ...(options.calendar ? { calendar: true } : {}),
   };
+  const scopes = options.calendar
+    ? [...MICROSOFT_SCOPES, ...MICROSOFT_CALENDAR_SCOPES]
+    : MICROSOFT_SCOPES;
   const url = new URL(endpoint(options.config, "authorize"));
   url.search = new URLSearchParams({
     client_id: options.config.clientId,
     response_type: "code",
     response_mode: "query",
     redirect_uri: options.redirectUri,
-    scope: MICROSOFT_SCOPES.join(" "),
+    scope: scopes.join(" "),
     state: encryptText(
       JSON.stringify(payload),
       options.encryptionKey,
@@ -90,7 +112,7 @@ export function createMicrosoftAuthorizeUrl(options: {
 }
 
 /**
- * 戻ってきた state を検証し、PKCE の検証値を取り出す。
+ * 戻ってきた state を検証し、PKCE の検証値と、カレンダーの権限も求めたかを取り出す。
  * 改ざん、期限切れ、別の利用者が始めたものは null。
  */
 export function openMicrosoftState(options: {
@@ -98,14 +120,14 @@ export function openMicrosoftState(options: {
   userId: string;
   encryptionKey: Buffer;
   now?: number;
-}): { verifier: string } | null {
+}): { verifier: string; calendar: boolean } | null {
   try {
     const payload = JSON.parse(
       decryptText(options.state, options.encryptionKey, STATE_CONTEXT),
     ) as StatePayload;
     if (payload.userId !== options.userId) return null;
     if (payload.expiresAt < (options.now ?? Date.now())) return null;
-    return { verifier: payload.verifier };
+    return { verifier: payload.verifier, calendar: payload.calendar === true };
   } catch {
     return null;
   }
@@ -139,6 +161,22 @@ export class MicrosoftOAuthError extends Error {
       this.code === "consent_required"
     );
   }
+}
+
+/**
+ * 利用者がカレンダーへのアクセスを許可したか。トークンの応答の scope は、
+ * 求めた書き方 (URL 付き) で返る場合と、権限の名前だけで返る場合があるので、どちらも受け付ける。
+ */
+export function hasMicrosoftCalendarScope(scope: string): boolean {
+  const granted = new Set(scope.split(/\s+/).map(scopeName));
+  return MICROSOFT_CALENDAR_SCOPES.every((value) =>
+    granted.has(scopeName(value)),
+  );
+}
+
+/** 権限の名前だけを取り出す (先頭の Graph の URL を外し、大文字小文字をそろえる)。 */
+function scopeName(value: string): string {
+  return value.replace(/^https:\/\/graph\.microsoft\.com\//i, "").toLowerCase();
 }
 
 type Fetch = typeof fetch;
@@ -205,18 +243,23 @@ export function exchangeMicrosoftCode(
   );
 }
 
-/** リフレッシュトークンで新しいアクセストークンを取得する。 */
+/**
+ * リフレッシュトークンで新しいアクセストークンを取得する。
+ * scopes は求める権限。既定はメールの権限 (MICROSOFT_SCOPES) で、メールの同期は今までどおりこれを使う。
+ * カレンダーの同期は、カレンダーの権限を含む一覧を渡す。
+ */
 export function refreshMicrosoftToken(
   config: MicrosoftOAuthConfig,
   refreshToken: string,
   fetchFn: Fetch = fetch,
+  scopes: readonly string[] = MICROSOFT_SCOPES,
 ): Promise<MicrosoftTokens> {
   return requestToken(
     config,
     {
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      scope: MICROSOFT_SCOPES.join(" "),
+      scope: scopes.join(" "),
     },
     fetchFn,
   );

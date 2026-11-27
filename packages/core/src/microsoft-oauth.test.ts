@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   createMicrosoftAuthorizeUrl,
   exchangeMicrosoftCode,
+  hasMicrosoftCalendarScope,
   loadMicrosoftOAuthConfig,
+  MICROSOFT_CALENDAR_SCOPES,
+  MICROSOFT_SCOPES,
   MicrosoftOAuthError,
   openMicrosoftState,
   refreshMicrosoftToken,
@@ -13,7 +16,7 @@ const key = randomBytes(32);
 const config = { clientId: "client", clientSecret: "secret", tenant: "common" };
 const redirectUri = "http://localhost:3000/oauth/microsoft";
 
-function authorize(userId = "user-1", now?: number) {
+function authorize(userId = "user-1", now?: number, calendar?: boolean) {
   return new URL(
     createMicrosoftAuthorizeUrl({
       config,
@@ -21,8 +24,32 @@ function authorize(userId = "user-1", now?: number) {
       userId,
       encryptionKey: key,
       ...(now === undefined ? {} : { now }),
+      ...(calendar === undefined ? {} : { calendar }),
     }),
   );
+}
+
+/** 毎回変わる値 (state と PKCE) を除いた、ログイン URL の中身。 */
+function stableParams(url: URL) {
+  const params = new URLSearchParams(url.searchParams);
+  params.delete("state");
+  params.delete("code_challenge");
+  return `${url.origin}${url.pathname}?${params.toString()}`;
+}
+
+/** 送った本文を記録し、トークンを返す fetch。 */
+function recordingFetch() {
+  const sent: URLSearchParams[] = [];
+  const fetchFn = (async (_url: unknown, init?: RequestInit) => {
+    sent.push(new URLSearchParams(String(init?.body)));
+    return Response.json({
+      access_token: "at",
+      refresh_token: "rt2",
+      expires_in: 3600,
+      scope: "Mail.ReadWrite",
+    });
+  }) as typeof fetch;
+  return { sent, fetchFn };
 }
 
 describe("loadMicrosoftOAuthConfig", () => {
@@ -104,6 +131,88 @@ describe("createMicrosoftAuthorizeUrl / openMicrosoftState", () => {
     expect(
       openMicrosoftState({ state: "", userId: "user-1", encryptionKey: key }),
     ).toBeNull();
+  });
+});
+
+describe("カレンダーの権限", () => {
+  it("calendar を指定しなければ、ログイン URL は今までと同じ", () => {
+    const url = authorize();
+    expect(url.searchParams.get("scope")).toBe(
+      "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send",
+    );
+    expect(url.searchParams.get("scope")).toBe(MICROSOFT_SCOPES.join(" "));
+    expect([...url.searchParams.keys()]).toEqual([
+      "client_id",
+      "response_type",
+      "response_mode",
+      "redirect_uri",
+      "scope",
+      "state",
+      "code_challenge",
+      "code_challenge_method",
+      "prompt",
+    ]);
+    expect(stableParams(authorize("user-1", undefined, false))).toBe(
+      stableParams(url),
+    );
+    const opened = openMicrosoftState({
+      state: url.searchParams.get("state") ?? "",
+      userId: "user-1",
+      encryptionKey: key,
+    });
+    expect(opened?.calendar).toBe(false);
+  });
+
+  it("calendar: true なら、メールの権限にカレンダーの権限を足し、state に残す", () => {
+    const url = authorize("user-1", undefined, true);
+    expect(url.searchParams.get("scope")?.split(" ")).toEqual([
+      ...MICROSOFT_SCOPES,
+      ...MICROSOFT_CALENDAR_SCOPES,
+    ]);
+    const opened = openMicrosoftState({
+      state: url.searchParams.get("state") ?? "",
+      userId: "user-1",
+      encryptionKey: key,
+    });
+    expect(opened?.calendar).toBe(true);
+  });
+
+  it("カレンダーの権限があるかを、URL 付きでも名前だけでも見分ける", () => {
+    expect(
+      hasMicrosoftCalendarScope(
+        "offline_access https://graph.microsoft.com/Calendars.ReadWrite",
+      ),
+    ).toBe(true);
+    expect(
+      hasMicrosoftCalendarScope("Mail.ReadWrite calendars.readwrite User.Read"),
+    ).toBe(true);
+    expect(hasMicrosoftCalendarScope("Calendars.Read Mail.ReadWrite")).toBe(
+      false,
+    );
+    expect(hasMicrosoftCalendarScope(MICROSOFT_SCOPES.join(" "))).toBe(false);
+    expect(hasMicrosoftCalendarScope("")).toBe(false);
+  });
+
+  it("トークンの更新は、既定ではメールの権限だけを求める (今までと同じ)", async () => {
+    const { sent, fetchFn } = recordingFetch();
+    const tokens = await refreshMicrosoftToken(config, "rt", fetchFn);
+    expect(tokens.refreshToken).toBe("rt2");
+    expect(sent[0]?.get("grant_type")).toBe("refresh_token");
+    expect(sent[0]?.get("refresh_token")).toBe("rt");
+    expect(sent[0]?.get("scope")).toBe(
+      "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send",
+    );
+  });
+
+  it("トークンの更新で求める権限を指定できる", async () => {
+    const { sent, fetchFn } = recordingFetch();
+    const scopes = [
+      "offline_access",
+      "https://graph.microsoft.com/User.Read",
+      ...MICROSOFT_CALENDAR_SCOPES,
+    ];
+    await refreshMicrosoftToken(config, "rt", fetchFn, scopes);
+    expect(sent[0]?.get("scope")).toBe(scopes.join(" "));
   });
 });
 
