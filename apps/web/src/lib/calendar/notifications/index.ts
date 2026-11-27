@@ -20,7 +20,6 @@ import {
 import {
   type CalendarActionPayload,
   DESKTOP_CALENDAR_EVENTS,
-  type OpenEventPayload,
   type ReminderBridge,
 } from "@/lib/calendar/notifications/bridge";
 import {
@@ -356,18 +355,30 @@ class CalendarNotificationRuntime {
   private listenOpen(): void {
     if (isDesktopApp()) {
       this.cleanups.push(
-        listenDesktop<OpenEventPayload>(
-          DESKTOP_CALENDAR_EVENTS.openEvent,
-          (payload) =>
-            openCalendarEvent(
-              toCalendarEventTarget(payload?.eventId, payload?.recurrenceId),
-            ),
-        ),
         listenDesktop<CalendarActionPayload>(
           DESKTOP_CALENDAR_EVENTS.calendarAction,
           (payload) => this.respondFromNotification(payload),
         ),
       );
+      // 通知から起動した直後の分も拾うため、desktop://open-event は合図として受け、
+      // 中身は take_pending_open_event で受け取る (lib/desktop/reminders.ts)。
+      let cancelledDesktop = false;
+      let removeDesktop: (() => void) | null = null;
+      void import("@/lib/desktop/reminders").then(
+        ({ listenDesktopOpenEvent }) => {
+          const stop = listenDesktopOpenEvent((target) =>
+            openCalendarEvent(
+              toCalendarEventTarget(target.eventId, target.recurrenceId),
+            ),
+          );
+          if (cancelledDesktop) stop();
+          else removeDesktop = stop;
+        },
+      );
+      this.cleanups.push(() => {
+        cancelledDesktop = true;
+        removeDesktop?.();
+      });
       return;
     }
     if (isNativeApp()) {
