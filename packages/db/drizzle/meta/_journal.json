@@ -351,6 +351,13 @@
       "when": 1795798317673,
       "tag": "0049_admin_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795799920863,
+      "tag": "0050_sso_providers",
+      "breakpoints": true
     }
   ]
 }

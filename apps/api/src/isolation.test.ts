@@ -1310,6 +1310,10 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
           ["GET", "/admin/invitations", undefined],
           ["POST", "/admin/invitations", {}],
           ["DELETE", `/admin/invitations/${id}`, undefined],
+          ["GET", "/admin/sso", undefined],
+          ["POST", "/admin/sso", {}],
+          ["PUT", `/admin/sso/${id}`, {}],
+          ["DELETE", `/admin/sso/${id}`, undefined],
         ] as const) {
           const response = await request(token, method, path, body);
           expect(response.status, `${method} ${path}`).toBe(401);

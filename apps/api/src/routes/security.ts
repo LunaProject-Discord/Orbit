@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Auth } from "../auth.js";
 import type { AppEnv } from "../context.js";
+import { listEnabledSsoProviders } from "../lib/sso-providers.js";
 import type { SystemMailer } from "../lib/system-mail.js";
 
 /** メールのリンクを開いたあとに戻る Web の画面。 */
@@ -36,12 +37,17 @@ type Deps = {
 };
 
 /** ログイン前の画面が使う、サーバーの対応状況。 */
-export function authFeatureRoutes({ mailEnabled }: Pick<Deps, "mailEnabled">) {
+export function authFeatureRoutes({
+  db,
+  mailEnabled,
+}: Pick<Deps, "db" | "mailEnabled">) {
   const app = new Hono();
-  app.get("/auth-features", (c) =>
+  app.get("/auth-features", async (c) =>
     c.json({
       /** パスワードの再設定とメールアドレスの変更 (メールを送れるサーバーだけ)。 */
       mail: mailEnabled,
+      /** ログイン画面に出す IdP (SSO)。 */
+      sso: await listEnabledSsoProviders(db),
     }),
   );
   return app;

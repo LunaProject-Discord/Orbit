@@ -25,6 +25,8 @@ import {
 import { withoutCookies } from "../context.js";
 import type { SetupCode } from "../lib/admin-setup.js";
 import { withAuthStateCookie, withAuthStateHeader } from "../lib/auth-state.js";
+import type { SsoClientResolver } from "../lib/sso-providers.js";
+import { adminSsoRoutes } from "./admin-sso.js";
 import { invitationRoutes } from "./invitations.js";
 
 export type AdminEnv = {
@@ -144,6 +146,10 @@ type Deps = {
   adminSignUpAuth: AdminAuth;
   setupCode: SetupCode;
   webOrigin: string;
+  encryptionKey: Buffer;
+  /** IdP の URL に http を許す (開発用、ALLOW_PRIVATE_MAIL_HOSTS)。 */
+  allowHttp: boolean;
+  ssoClients: SsoClientResolver;
 };
 
 /** 管理画面の API。/v1/admin の下に置く。 */
@@ -153,6 +159,9 @@ export function adminRoutes({
   adminSignUpAuth,
   setupCode,
   webOrigin,
+  encryptionKey,
+  allowHttp,
+  ssoClients,
 }: Deps) {
   const app = new Hono<AdminEnv>();
 
@@ -269,6 +278,16 @@ export function adminRoutes({
   });
 
   authed.route("/invitations", invitationRoutes({ db, webOrigin }));
+  authed.route(
+    "/sso",
+    adminSsoRoutes({
+      db,
+      encryptionKey,
+      webOrigin,
+      allowHttp,
+      clients: ssoClients,
+    }),
+  );
 
   app.route("/", authed);
   return app;
