@@ -200,6 +200,7 @@ export function useCalendarClient(): CalendarClient | null {
 
 const noop = () => () => {};
 const nothing = () => null;
+const no = () => false;
 const noQueue: QueuedOp[] = [];
 const noConflicts: ConflictItem[] = [];
 
@@ -210,6 +211,8 @@ export type CalendarData = {
   data: EventRange | null;
   queue: QueuedOp[];
   conflicts: ConflictItem[];
+  /** 端末の保存先に書けなかった変更がある (「保存できませんでした」を出す)。 */
+  storageFailed: boolean;
 };
 
 /**
@@ -255,5 +258,10 @@ export function useCalendarData(
     active ? () => active.conflicts() : () => noConflicts,
     () => noConflicts,
   );
-  return { client: active, calendars, data, queue, conflicts };
+  const storageFailed = useSyncExternalStore(
+    subscribe,
+    active ? () => active.storageFailed() : no,
+    no,
+  );
+  return { client: active, calendars, data, queue, conflicts, storageFailed };
 }

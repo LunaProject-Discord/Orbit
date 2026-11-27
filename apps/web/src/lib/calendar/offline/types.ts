@@ -79,6 +79,16 @@ export type QueuedOp = {
   state: "pending" | "blocked" | "error";
   /** API のエラーコード (deleted_elsewhere、invalid、read_only など)。 */
   error: string | null;
+  /**
+   * 一度でも送ろうとしたか (送る前に保存先へ書く)。応答が失われてもサーバーには届いていることが
+   * あるので、印のある操作には、どのウィンドウも後の操作をまとめない。古い控えには無い。
+   */
+  attempted?: boolean;
+  /**
+   * 積んだときの予定全体 (update / occurrence_update / respond。回の操作では原本)。
+   * 送る前に同期が削除を取り込んでも「復元」で作り直せるように持つ。古い控えには無い。
+   */
+  target?: CalendarEvent | null;
 };
 
 /**
@@ -174,4 +184,9 @@ export type CalendarClient = {
   resolveConflict(id: string, action: ConflictAction): Promise<void>;
   /** 予定を探す。サーバーに届かなければ、端末の控えから探す。 */
   search(q: string): Promise<CalendarEvent[]>;
+  /**
+   * 端末の保存先に書けなかった変更があるか (容量不足など)。true の間は、送信待ちが
+   * このウィンドウのメモリーにしか無い (閉じると失われる)。書けたら false に戻る。
+   */
+  storageFailed(): boolean;
 };

@@ -18,6 +18,7 @@ import {
   eventFromInput,
   overlay,
   provisionalException,
+  provisionalExceptionId,
 } from "@/lib/calendar/offline/overlay";
 import {
   bySeq,
@@ -26,6 +27,7 @@ import {
   nextSeq,
   type OpOutcome,
   type QueueApi,
+  remainderOf,
   sendOp,
 } from "@/lib/calendar/offline/queue";
 import { searchLocal } from "@/lib/calendar/offline/search";
@@ -185,7 +187,14 @@ function serverConflictItem(conflict: CalendarConflict): ConflictItem {
     snapshot,
     reason: conflict.reason,
     createdAt: conflict.createdAt,
-    actions: SERVER_ACTIONS[conflict.kind] ?? ["dismiss"],
+    actions: (SERVER_ACTIONS[conflict.kind] ?? ["dismiss"]).filter(
+      (action) =>
+        action !== "restore" ||
+        // 作り直す元 (予定全体) か、戻す値が無ければ「復元」は何もできない。
+        (conflict.kind === "remote_deleted"
+          ? snapshot !== null
+          : !!conflict.lost),
+    ),
     opId: null,
   };
 }
@@ -247,6 +256,12 @@ export class OfflineCalendarClient implements CalendarClient {
   private pulling: Promise<void> | null = null;
   private pullAgain = false;
   private writeChain: Promise<void> = Promise.resolve();
+  /**
+   * 保存先への書き込みを確かめていない送信待ち (null は削除)。書き込みに失敗したら残し、
+   * 次の書き込みで一緒に書き直す。保存先から読み直すときも、こちらを優先する。
+   */
+  private readonly unsavedOps = new Map<string, QueuedOp | null>();
+  private storageError = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private checkTimer: ReturnType<typeof setInterval> | null = null;
   private delay: number;
@@ -417,6 +432,10 @@ export class OfflineCalendarClient implements CalendarClient {
     }
   }
 
+  storageFailed(): boolean {
+    return this.storageError;
+  }
+
   // -------------------------------------------------------------------------
   // 書く (すぐ返る。送信待ちに積み、届くようになったら送る)
   // -------------------------------------------------------------------------
@@ -441,9 +460,11 @@ export class OfflineCalendarClient implements CalendarClient {
   updateEvent(id: string, changes: EventFields): void {
     const event = this.view().events.get(id);
     // 仮の例外 (まだサーバーに行が無い回) への変更は、回の変更として積む。
-    if (event?.parentId && event.recurrenceId && !this.baseEvents.has(id)) {
+    // 例外の行ができて ID が入れ替わった後に、古い仮の ID で呼ばれたときも同じ。
+    const occurrence = this.occurrenceOf(id, event);
+    if (occurrence) {
       const { recurrence: _ignored, ...rest } = changes;
-      this.updateOccurrence(event.parentId, event.recurrenceId, rest);
+      this.updateOccurrence(occurrence.masterId, occurrence.recurrenceId, rest);
       return;
     }
     const keys = Object.keys(changes) as (keyof EventFields)[];
@@ -458,6 +479,7 @@ export class OfflineCalendarClient implements CalendarClient {
       changedAt: Object.fromEntries(keys.map((key) => [key, at])),
       at,
       before: event ? eventFieldsOf(event, keys) : null,
+      target: event ?? null,
     });
   }
 
@@ -490,14 +512,16 @@ export class OfflineCalendarClient implements CalendarClient {
       changedAt: Object.fromEntries(keys.map((key) => [key, at])),
       at,
       before: current ? eventFieldsOf(current, keys) : null,
+      target: master ?? null,
     });
   }
 
   deleteEvent(id: string): void {
     const events = this.view().events;
     const event = events.get(id);
-    if (event?.parentId && event.recurrenceId && !this.baseEvents.has(id)) {
-      this.deleteOccurrence(event.parentId, event.recurrenceId);
+    const occurrence = this.occurrenceOf(id, event);
+    if (occurrence) {
+      this.deleteOccurrence(occurrence.masterId, occurrence.recurrenceId);
       return;
     }
     const related = new Set(
@@ -548,6 +572,7 @@ export class OfflineCalendarClient implements CalendarClient {
       changedAt: {},
       at,
       before: null,
+      target: event ?? null,
     });
   }
 
@@ -594,6 +619,8 @@ export class OfflineCalendarClient implements CalendarClient {
   async resolveConflict(id: string, action: ConflictAction): Promise<void> {
     const item = this.conflicts().find((other) => other.id === id);
     if (!item) return;
+    // 出していない操作 (作り直す元が無い「復元」など) では、記録を閉じない。
+    if (action !== "dismiss" && !item.actions.includes(action)) return;
     if (item.source === "server") {
       // 先にサーバーの記録を閉じる (届かなければ、何も積まずに失敗を返す)。
       if (item.kind === "create_failed" && action === "retry") {
@@ -632,7 +659,17 @@ export class OfflineCalendarClient implements CalendarClient {
         if (item.source === "local" && item.opId) {
           this.retry(item.opId);
         } else if (item.kind === "write_failed") {
-          this.resend(item);
+          if (!item.lost || item.fields.length === 0) {
+            // 削除の書き戻しの失敗 (項目も値も無い): 削除をもう一度積む。
+            if (!item.eventId) return;
+            if (item.recurrenceId) {
+              this.deleteOccurrence(item.eventId, item.recurrenceId);
+            } else {
+              this.deleteEvent(item.eventId);
+            }
+          } else {
+            this.resend(item);
+          }
         }
         return;
       case "restore":
@@ -685,12 +722,39 @@ export class OfflineCalendarClient implements CalendarClient {
     });
   }
 
+  /**
+   * 回の操作に読み替える ID か。仮の例外 (まだサーバーに行が無い回) と、例外の行ができて
+   * 入れ替わった後の古い仮の ID (<原本の ID>:<recurrenceId>) が当たる。
+   */
+  private occurrenceOf(
+    id: string,
+    event: CalendarEvent | undefined,
+  ): { masterId: string; recurrenceId: string } | null {
+    if (event) {
+      return event.parentId && event.recurrenceId && !this.baseEvents.has(id)
+        ? { masterId: event.parentId, recurrenceId: event.recurrenceId }
+        : null;
+    }
+    const split = id.indexOf(":");
+    if (split <= 0) return null;
+    const masterId = id.slice(0, split);
+    const recurrenceId = id.slice(split + 1);
+    const master = this.view().events.get(masterId);
+    if (!master || master.parentId) return null;
+    try {
+      if (provisionalExceptionId(masterId, recurrenceId) !== id) return null;
+    } catch {
+      return null;
+    }
+    return { masterId, recurrenceId };
+  }
+
   private calendarOfOp(eventId: string): string {
     return this.ops.find((op) => op.eventId === eventId)?.calendarId ?? "";
   }
 
   private push(
-    partial: Omit<QueuedOp, "id" | "seq" | "state" | "error">,
+    partial: Omit<QueuedOp, "id" | "seq" | "state" | "error" | "attempted">,
     related?: ReadonlySet<string>,
   ): void {
     if (this.stopped) throw new Error("closed");
@@ -754,8 +818,10 @@ export class OfflineCalendarClient implements CalendarClient {
     let sent = false;
     for (;;) {
       if (this.stopped) return;
-      const op = nextSendable(this.ops);
-      if (!op) break;
+      const next = nextSendable(this.ops);
+      if (!next) break;
+      const op = await this.markAttempted(next);
+      if (!op) continue;
       this.inFlight = op.id;
       let outcome: OpOutcome;
       try {
@@ -782,11 +848,64 @@ export class OfflineCalendarClient implements CalendarClient {
     if (sent && this.active) void this.pull();
   }
 
+  /**
+   * 保存先にある今の操作を読む。書き込みを確かめていないものはメモリーの値。
+   * 消えていれば null、読めなければ undefined。
+   */
+  private async storedOp(id: string): Promise<QueuedOp | null | undefined> {
+    await this.writeChain;
+    if (this.unsavedOps.has(id)) return this.unsavedOps.get(id) ?? null;
+    try {
+      return (await this.store.get<QueuedOp>("calQueue", id)) ?? null;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 送る前に「送ろうとした」印を保存先に書く。ほかのウィンドウは印を見たら、その操作に
+   * まとめない。保存先の今の値 (ほかのウィンドウがまとめた後のもの) に印を付けて、それを送る。
+   * 消えていた、または送らない状態に変わっていたら null。
+   */
+  private async markAttempted(op: QueuedOp): Promise<QueuedOp | null> {
+    const stored = await this.storedOp(op.id);
+    const replaceInMemory = (value: QueuedOp | null) => {
+      this.ops = value
+        ? this.ops.map((other) => (other.id === op.id ? value : other))
+        : this.ops.filter((other) => other.id !== op.id);
+      this.invalidate();
+      this.notifyLocal();
+    };
+    if (stored === null) {
+      replaceInMemory(null);
+      return null;
+    }
+    const base = stored ?? this.ops.find((other) => other.id === op.id) ?? op;
+    if (base.state !== "pending") {
+      replaceInMemory(base);
+      return null;
+    }
+    if (base.attempted) {
+      if (base !== op) replaceInMemory(base);
+      return base;
+    }
+    const marked: QueuedOp = { ...base, attempted: true };
+    this.ops = this.ops.map((other) => (other.id === op.id ? marked : other));
+    // 書けなくても送る (このウィンドウはメモリーの印でまとめない)。
+    await this.commit([putOp(marked)], { queue: true, events: [] });
+    return marked;
+  }
+
   /** 送った結果を、base・送信待ち・通知に反映する (1 回の write)。 */
   private async settle(
-    op: QueuedOp,
+    sent: QueuedOp,
     outcome: Exclude<OpOutcome, { type: "retry" | "stop" }>,
   ): Promise<void> {
+    // 送っている間に、印を見る前のほかのウィンドウがまとめていたら、その分は送っていない。
+    // 保存先を読み直し、送った内容との差を、新しい操作として残す。
+    const stored = await this.storedOp(sent.id);
+    const op: QueuedOp = stored ? { ...stored, attempted: true } : sent;
+    const remainder = stored ? remainderOf(sent, stored) : null;
     const writes: WriteOp[] = [];
     const changedEvents: string[] = [];
     let calendarsChanged = false;
@@ -804,6 +923,11 @@ export class OfflineCalendarClient implements CalendarClient {
     const removeOp = () => {
       this.ops = this.ops.filter((other) => other.id !== op.id);
       writes.push(deleteOp(op.id));
+      if (remainder) {
+        const rest: QueuedOp = { ...remainder, id: randomUuid() };
+        this.ops = [...this.ops, rest].sort(bySeq);
+        writes.push(putOp(rest));
+      }
     };
     const markOp = (state: QueuedOp["state"], error: string) => {
       const next: QueuedOp = { ...op, state, error };
@@ -849,7 +973,7 @@ export class OfflineCalendarClient implements CalendarClient {
             recurrenceId: op.recurrenceId,
             title: outcome.event?.summary ?? null,
             fields: rejected,
-            lost: pick(op.body as EventFields, rejected),
+            lost: pick(sent.body as EventFields, rejected),
             kept: outcome.event ? eventFieldsOf(outcome.event, rejected) : null,
             snapshot: null,
             reason: "changed_elsewhere",
@@ -914,7 +1038,11 @@ export class OfflineCalendarClient implements CalendarClient {
           reason: outcome.code,
           createdAt: this.now().toISOString(),
           actions:
-            kind === "failed" ? ["retry", "dismiss"] : ["restore", "dismiss"],
+            kind === "failed"
+              ? ["retry", "dismiss"]
+              : snapshot
+                ? ["restore", "dismiss"]
+                : ["dismiss"],
           opId: op.id,
         });
         break;
@@ -932,6 +1060,10 @@ export class OfflineCalendarClient implements CalendarClient {
   private intendedEvent(op: QueuedOp): CalendarEvent | null {
     if (!op.eventId) return null;
     const events = new Map(this.baseEvents);
+    // 同期が先に削除を取り込んでいたら、積んだときの予定から作る。
+    if (op.target && !events.has(op.target.id)) {
+      events.set(op.target.id, op.target);
+    }
     applyOpToEvents(events, op);
     if (op.kind === "occurrence_update" && op.recurrenceId) {
       const rid = normalizeRecurrenceId(op.recurrenceId);
@@ -1171,7 +1303,8 @@ export class OfflineCalendarClient implements CalendarClient {
 
   /**
    * メモリーの変更を画面に知らせ、保存先に書き、ほかのウィンドウに合図する。
-   * 書き込みは順番を守る (前の書き込みが終わってから)。保存に失敗しても (ログアウト後など) 握りつぶす。
+   * 書き込みは順番を守る (前の書き込みが終わってから)。返す Promise は失敗しない。
+   * 書けなかったら storageFailed() を true にし、送信待ちの分はメモリーに残して次の書き込みで書き直す。
    */
   private commit(
     writes: WriteOp[],
@@ -1184,37 +1317,84 @@ export class OfflineCalendarClient implements CalendarClient {
   ): Promise<void> {
     this.invalidate();
     this.notifyLocal();
+    for (const write of writes) {
+      if (write.table !== "calQueue") continue;
+      this.unsavedOps.set(
+        write.key,
+        write.type === "put" ? (write.value as QueuedOp) : null,
+      );
+    }
     this.writeChain = this.writeChain
-      .then(() => this.store.write(writes))
-      .then(() => {
-        this.share?.post({
-          events: parts.events ?? [],
-          calendars: parts.calendars ?? false,
-          queue: parts.queue ?? false,
-          notices: parts.notices ?? false,
-        });
-      })
+      .then(() => this.writeNow(writes, parts))
       .catch(() => {});
     return this.writeChain;
+  }
+
+  private async writeNow(
+    writes: WriteOp[],
+    parts: {
+      events?: string[];
+      calendars?: boolean;
+      queue?: boolean;
+      notices?: boolean;
+    },
+  ): Promise<void> {
+    // 前に書けなかった送信待ちも一緒に書く。
+    const written = new Map<string, QueuedOp | null>();
+    for (const write of writes) {
+      if (write.table !== "calQueue") continue;
+      written.set(
+        write.key,
+        write.type === "put" ? (write.value as QueuedOp) : null,
+      );
+    }
+    const retried: WriteOp[] = [];
+    for (const [id, value] of this.unsavedOps) {
+      if (written.has(id)) continue;
+      written.set(id, value);
+      retried.push(value ? putOp(value) : deleteOp(id));
+    }
+    try {
+      await this.store.write([...writes, ...retried]);
+    } catch {
+      if (!this.storageError && !this.stopped) {
+        this.storageError = true;
+        this.notifyLocal();
+      }
+      return;
+    }
+    for (const [id, value] of written) {
+      if (this.unsavedOps.get(id) === value) this.unsavedOps.delete(id);
+    }
+    if (this.storageError && this.unsavedOps.size === 0) {
+      this.storageError = false;
+      this.notifyLocal();
+    }
+    this.share?.post({
+      events: parts.events ?? [],
+      calendars: parts.calendars ?? false,
+      queue: (parts.queue ?? false) || retried.length > 0,
+      notices: parts.notices ?? false,
+    });
   }
 
   private async reloadQueue(): Promise<void> {
     const saved = await this.store.list<QueuedOp>("calQueue").catch(() => null);
     if (!saved) return;
+    const byId = new Map(saved.map((op) => [op.id, op]));
+    // 保存を確かめていない操作は、メモリーの値を使う (書けなかった分を消さない)。
+    for (const [id, value] of this.unsavedOps) {
+      if (value) byId.set(id, value);
+      else byId.delete(id);
+    }
     // 送っている最中の操作は、保存先から消えていても手元に残す。
     const inFlight = this.ops.find((op) => op.id === this.inFlight);
-    const next = saved.sort(bySeq);
-    if (inFlight && !next.some((op) => op.id === inFlight.id)) {
-      next.push(inFlight);
-      next.sort(bySeq);
-    }
+    if (inFlight && !byId.has(inFlight.id)) byId.set(inFlight.id, inFlight);
+    const next = [...byId.values()].sort(bySeq);
     const same =
       next.length === this.ops.length &&
       next.every(
-        (op, index) =>
-          op.id === this.ops[index]?.id &&
-          op.state === this.ops[index]?.state &&
-          JSON.stringify(op.body) === JSON.stringify(this.ops[index]?.body),
+        (op, index) => JSON.stringify(op) === JSON.stringify(this.ops[index]),
       );
     if (same) return;
     this.ops = next;

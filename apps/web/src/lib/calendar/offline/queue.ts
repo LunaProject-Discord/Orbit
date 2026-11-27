@@ -38,9 +38,13 @@ export function nextSeq(now: number = Date.now()): number {
 
 export const bySeq = (a: QueuedOp, b: QueuedOp) => a.seq - b.seq;
 
-/** まだ送っていない (まとめてよい) 操作か。 */
+/**
+ * まだ送っていない (まとめてよい) 操作か。一度でも送ろうとした操作 (attempted) は、
+ * 応答が失われてもサーバーに届いていることがある (作成の再送は既存の行を返すだけ) ので、
+ * どのウィンドウもまとめない。
+ */
 const unsent = (op: QueuedOp, inFlight: string | null) =>
-  op.state === "pending" && op.id !== inFlight;
+  op.state === "pending" && op.id !== inFlight && !op.attempted;
 
 export type EnqueueResult = {
   /** 積んだ後の送信待ち (seq の順)。 */
@@ -361,5 +365,75 @@ export async function sendOp(
     }
   } catch (error) {
     return classify(op, error);
+  }
+}
+
+const same = (a: unknown, b: unknown) =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+function pickKeys<T extends object>(value: T | null, keys: string[]): T {
+  const picked = {} as Record<string, unknown>;
+  for (const key of keys) {
+    if (value && key in value)
+      picked[key] = (value as Record<string, unknown>)[key];
+  }
+  return picked as T;
+}
+
+/**
+ * 送った後に保存先の操作を読み直したら、送った内容と違っていた (ほかのウィンドウが
+ * 送っている最中の印を見る前にまとめた) ときの、まだ送っていない残り。違いが無ければ null。
+ * 返す操作は stored の ID と順番のまま (呼び出し側で新しい ID を付ける)。
+ */
+export function remainderOf(sent: QueuedOp, stored: QueuedOp): QueuedOp | null {
+  if (same(sent.body, stored.body) && same(sent.changedAt, stored.changedAt)) {
+    return null;
+  }
+  const changedKeys = (skip: readonly string[] = []) => {
+    const before = (sent.body ?? {}) as Record<string, unknown>;
+    const after = (stored.body ?? {}) as Record<string, unknown>;
+    return Object.keys(after).filter(
+      (key) =>
+        !skip.includes(key) &&
+        (!(key in before) ||
+          !same(before[key], after[key]) ||
+          sent.changedAt[key] !== stored.changedAt[key]),
+    );
+  };
+  const rest = {
+    ...stored,
+    attempted: false,
+    state: "pending" as const,
+    error: null,
+  };
+  switch (stored.kind) {
+    case "update":
+    case "occurrence_update":
+    case "calendar_update": {
+      const keys = changedKeys();
+      if (keys.length === 0) return null;
+      return {
+        ...rest,
+        body: pickKeys(stored.body as object, keys),
+        changedAt: pickKeys(stored.changedAt, keys),
+        before: stored.before ? pickKeys(stored.before, keys) : null,
+      };
+    }
+    case "create": {
+      // 作成に後からまとめられた変更は、その予定への変更として送る。
+      const keys = changedKeys(["id", "calendarId"]);
+      if (keys.length === 0) return null;
+      return {
+        ...rest,
+        kind: "update",
+        body: pickKeys(stored.body as EventFields, keys),
+        changedAt: pickKeys(stored.changedAt, keys),
+        before: null,
+      };
+    }
+    case "respond":
+      return same(sent.body, stored.body) ? null : rest;
+    default:
+      return null;
   }
 }

@@ -249,7 +249,8 @@ const iso = (value: Date | string) =>
 
 /**
  * 古いサーバーは、予定の作成の本文に知らない項目 (changedAt、clientNow) があると
- * 400 で断る (コードの無い入力の誤り)。そう断られたら、その項目を外して送り直す。
+ * 400 で断る (コードの無い入力の誤り)。そう断られたら、その項目を外して送り直し、
+ * 外して通ったときだけ以後は付けない (新しいサーバーの入力の誤りも、コードの無い 400 になるため)。
  */
 let createTimesUnsupported = false;
 
@@ -280,8 +281,16 @@ export async function createEvent(
     ) {
       throw error;
     }
+    // 外して通ったときだけ古いサーバーと決める (外しても断られるなら、ただの入力の誤り)。
+    try {
+      response = await post(input);
+    } catch (retryError) {
+      // 届かなかったなどは、その失敗を返す (やり直せる)。また 400 なら最初の断りを返す。
+      throw retryError instanceof ApiError && retryError.status === 400
+        ? error
+        : retryError;
+    }
     createTimesUnsupported = true;
-    response = await post(input);
   }
   return ((await response.json()) as { event: CalendarEvent }).event;
 }

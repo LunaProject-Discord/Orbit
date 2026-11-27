@@ -72,6 +72,23 @@ describe("calendar api (オフライン用の時刻)", () => {
     ]);
   });
 
+  // 下のテストより先に置く (古いサーバーと決めた印はモジュールに残るため)。
+  it("時刻を外しても断られる 400 (入力の誤り) では、古いサーバーと決めない", async () => {
+    responder.next = () => new ApiError(400, null, { success: false });
+    await expect(
+      api.createEvent(input, { changedAt: "2026-01-01T00:00:00.000Z" }),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(calls).toHaveLength(2);
+    calls.length = 0;
+    responder.next = null;
+    await api.createEvent(input, { changedAt: "2026-01-01T00:00:00.000Z" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.body).toHaveProperty(
+      "changedAt",
+      "2026-01-01T00:00:00.000Z",
+    );
+  });
+
   it("作成の時刻を断る古いサーバー (コード無しの 400) には、時刻を外して送り直す", async () => {
     responder.next = (body) =>
       (body as Record<string, unknown>).changedAt
