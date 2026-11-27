@@ -203,19 +203,24 @@ export function ConflictList({
         if (!next) onClose();
       }}
     >
-      <DialogContent sheet className="flex flex-col gap-4 sm:max-w-[520px]">
-        <DialogHeader>
+      {/* 選ぶだけの一覧なので、スマホ幅ではシートにする。余白は Mail のシート (move-dialog.tsx) と同じく、
+          シートの既定を 0 にして中身を max-sm:px-4 で空ける。 */}
+      <DialogContent
+        sheet
+        className="flex max-h-[min(44rem,calc(100dvh-2rem))] flex-col gap-0 p-0 max-sm:[--sheet-pad:0rem] sm:max-w-[520px]"
+      >
+        <DialogHeader className="shrink-0 px-6 pt-6 pb-4 max-sm:gap-0 max-sm:px-4 max-sm:pt-0">
           <DialogTitle>反映されなかった変更</DialogTitle>
           <DialogDescription>
             ほかの端末やカレンダーのサービスで後から変更された内容を優先しました。必要なら、自分の変更に戻せます。
           </DialogDescription>
         </DialogHeader>
         {items.length === 0 ? (
-          <p className="py-6 text-center text-muted-foreground">
+          <p className="px-6 pt-2 pb-8 text-center text-muted-foreground max-sm:px-4 max-sm:pb-4">
             反映されなかった変更はありません。
           </p>
         ) : (
-          <ul className="-mx-6 flex max-h-[min(60vh,560px)] flex-col divide-y overflow-y-auto px-6">
+          <ul className="flex min-h-0 flex-1 flex-col divide-y overflow-y-auto px-6 pb-6 max-sm:px-4 max-sm:pb-2 sm:max-h-[min(60vh,560px)]">
             {items.map((item) => {
               const calendar = calendarOf(item.calendarId);
               return (

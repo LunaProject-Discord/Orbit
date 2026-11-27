@@ -66,7 +66,8 @@ export function DefaultRemindersDialog({
         if (!next && !busy) onClose();
       }}
     >
-      <DialogContent sheet className="gap-4 sm:max-w-[440px]">
+      {/* 入力するフォームなので、スマホ幅でも中央のダイアログにする (Mail のフォームと同じ)。 */}
+      <DialogContent className="max-h-[calc(100dvh-2rem)] gap-4 overflow-y-auto sm:max-w-[440px]">
         <DialogHeader>
           <DialogTitle>既定の通知</DialogTitle>
           <DialogDescription>
