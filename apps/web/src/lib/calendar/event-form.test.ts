@@ -261,3 +261,38 @@ describe("編集画面の参加者の欄 (inviteFormView)", () => {
     expect(view.blocked).toBe("参加者は 100 人までです。");
   });
 });
+
+describe("終日の予定の通知の送り方", () => {
+  it("終日 ⇄ 時刻ありを切り替えたら reminders も送り、時刻ありでは負の分を 0 にする", () => {
+    const allDay: EventForm = {
+      ...formOf(meeting),
+      allDay: true,
+      useDefaultReminders: false,
+      reminders: [
+        { method: "display", minutes: -540 },
+        { method: "display", minutes: 900 },
+      ],
+    };
+    const changes = formChanges({ ...allDay, allDay: false }, TZ, allDay);
+    expect(changes?.reminders).toEqual([
+      { method: "display", minutes: 0 },
+      { method: "display", minutes: 900 },
+    ]);
+    const timed = { ...allDay, allDay: false, reminders: [] };
+    expect(formChanges(timed, TZ, timed)?.reminders).toBeUndefined();
+  });
+
+  it("終日の予定の当日の時刻 (負の分) はそのまま送る", () => {
+    const before = { ...formOf(meeting), allDay: true };
+    const changes = formChanges(
+      {
+        ...before,
+        useDefaultReminders: false,
+        reminders: [{ method: "display", minutes: -540 }],
+      },
+      TZ,
+      before,
+    );
+    expect(changes?.reminders).toEqual([{ method: "display", minutes: -540 }]);
+  });
+});

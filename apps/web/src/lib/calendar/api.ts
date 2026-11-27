@@ -1,3 +1,7 @@
+import {
+  type CalendarNotificationSettingsBody,
+  readCalendarNotificationSettings,
+} from "@orbit/core/calendar-notifications";
 import type {
   CalendarImipFields,
   CalendarScheduling,
@@ -57,8 +61,34 @@ export type Calendar = {
    */
   primary?: boolean | null;
   accessRole?: string | null;
+  /**
+   * 通知が効くか (段取り 9、設計 2.5)。サーバーが種類ごとの既定まで解決した値。
+   * 古いサーバーと古い控えには無く、無いときは通知の設定を出さない (calendarNotifySupported)。
+   */
+  notify?: boolean;
+  /** 種類ごとの既定 (ics・holidays・birthdays はオフ、ほかはオン)。古いサーバーには無い。 */
+  notifyDefault?: boolean;
+  /** 既定の通知 (defaultReminders) を Orbit で変えられるか。古いサーバーには無い。 */
+  defaultRemindersEditable?: boolean;
   updatedAt: string;
 };
+
+/** サーバーがカレンダーごとの通知に対応しているか (応答に notify があるか)。 */
+export function calendarNotifySupported(
+  calendar: Pick<Calendar, "notify"> | null | undefined,
+): boolean {
+  return typeof calendar?.notify === "boolean";
+}
+
+/**
+ * カレンダーの既定の通知 (defaultReminders) を Orbit で変えられるか。サーバーが応答の
+ * defaultRemindersEditable で決める (今は Orbit 内と購読だけ)。古いサーバーには無く、変えられない。
+ */
+export function calendarDefaultRemindersEditable(
+  calendar: Pick<Calendar, "defaultRemindersEditable">,
+): boolean {
+  return calendar.defaultRemindersEditable === true;
+}
 
 /**
  * カレンダーが招待を送れるか。項目が無い (古いサーバー・古い控え) か知らない値なら
@@ -207,8 +237,15 @@ export async function updateCalendar(
       | "sortOrder"
       | "pollIntervalSeconds"
       | "imipAccountId"
+      | "defaultReminders"
     >
-  >,
+  > & {
+    /**
+     * 通知のオン・オフ (段取り 9)。サーバーは null (種類ごとの既定に戻す) も受け付けるが、
+     * 画面はオン・オフだけを送る。
+     */
+    notify?: boolean;
+  },
 ): Promise<Calendar> {
   const response = await apiFetch(`/v1/calendars/${id}`, {
     method: "PATCH",
@@ -555,4 +592,42 @@ export async function resendInvite(id: string): Promise<void> {
 /** 作成が確定して失敗した予定を、もう一度書き戻す (create_failed だけ)。 */
 export async function retryConflict(id: string): Promise<void> {
   await apiFetch(`/v1/calendars/conflicts/${id}/retry`, { method: "POST" });
+}
+
+// ---------------------------------------------------------------------------
+// 予定の通知の設定 (段取り 9、設計 4.2・6.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * 予定の通知の設定 (すべての端末で共通) を取得する。GET /v1/settings の
+ * calendarNotifications と timeZone を読む。古いサーバーには項目が無く、null を返す。
+ */
+export async function getCalendarNotificationSettings(
+  signal?: AbortSignal,
+): Promise<CalendarNotificationSettingsBody | null> {
+  const response = await apiFetch("/v1/settings", { signal });
+  const body = (await response.json()) as {
+    calendarNotifications?: unknown;
+    timeZone?: unknown;
+  };
+  if (!("calendarNotifications" in body)) return null;
+  return {
+    calendarNotifications: readCalendarNotificationSettings(
+      body.calendarNotifications,
+    ),
+    timeZone: typeof body.timeZone === "string" ? body.timeZone : null,
+  };
+}
+
+/**
+ * 予定の通知の設定を保存する (PUT /v1/settings/calendar-notifications)。サーバーは部分更新も
+ * 受け付けるが、画面は全体を送る。古いサーバーでは 404 (ApiError) になる。
+ */
+export async function saveCalendarNotificationSettings(
+  body: CalendarNotificationSettingsBody,
+): Promise<void> {
+  await apiFetch("/v1/settings/calendar-notifications", {
+    method: "PUT",
+    body,
+  });
 }

@@ -3,6 +3,7 @@ import type {
   InviteRole,
   SchedulingBlocked,
 } from "@orbit/core/event-invite";
+import { clampReminderMinutes } from "@orbit/core/reminders";
 import { Temporal } from "temporal-polyfill";
 import type { Address } from "@/lib/api";
 import type {
@@ -225,7 +226,14 @@ export function formChanges(
   }
   if (changed("useDefaultReminders"))
     fields.useDefaultReminders = form.useDefaultReminders;
-  if (changed("reminders")) fields.reminders = form.reminders;
+  // 終日 ⇄ 時刻ありを切り替えたときも送る (終日の負の分 = 当日の時刻を残さないため。
+  // 時刻のある予定では 0 = 予定の時刻に丸める)。
+  if (changed("reminders") || changed("allDay")) {
+    fields.reminders = form.reminders.map((reminder) => ({
+      ...reminder,
+      minutes: clampReminderMinutes(reminder.minutes, form.allDay) ?? 0,
+    }));
+  }
   if (before === null ? !form.busy : changed("busy")) fields.busy = form.busy;
   if (
     before === null

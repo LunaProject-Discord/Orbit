@@ -1,5 +1,6 @@
 "use client";
 
+import { ALL_DAY_DEFAULT_CHOICES } from "@orbit/core/reminders";
 import { cn } from "cn";
 import {
   ArrowLeftIcon,
@@ -80,6 +81,22 @@ import {
   type User,
   updateAccount,
 } from "@/lib/api";
+import {
+  type Calendar,
+  calendarNotifySupported,
+  listCalendars,
+} from "@/lib/calendar/api";
+import {
+  allDayReminderText,
+  CalendarNotifyUnsupportedError,
+  changeCalendarNotificationSettings,
+  deviceCalendarEnabledFrom,
+  refreshCalendarNotificationSettings,
+  saveCalendarNotify,
+  setDeviceCalendarNotifications,
+  useCalendarNotificationSettings,
+  useStoredDeviceCalendarNotifications,
+} from "@/lib/calendar/notification-settings";
 import { htmlHasContent } from "@/lib/compose";
 import {
   changeDefaultComposeFormat,
@@ -249,9 +266,9 @@ const CATEGORIES: Record<
   },
   notifications: {
     label: "通知",
-    summary: "新着メールの通知、通知に付けるボタン",
+    summary: "新着メールと予定の通知、通知に付けるボタン",
     description:
-      "通知のオンとオフは端末 (ブラウザー) ごとに切り替えます。通知に付けるボタンはすべての端末で共通です。",
+      "通知のオンとオフは端末 (ブラウザー) ごとに切り替えます。予定の通知の内容、カレンダーごとの通知、通知に付けるボタンはすべての端末で共通です。",
     icon: BellIcon,
   },
   signatures: {
@@ -1086,9 +1103,14 @@ function NotificationsPage({
     notificationStatus === "page" || notificationStatus === "push";
   const canToggleNotification =
     notificationStatus !== "unsupported" && notificationStatus !== "blocked";
+  const calendarSettings = useCalendarNotificationSettings();
+  useEffect(() => {
+    void refreshCalendarNotificationSettings({ force: true });
+  }, []);
+  const calendarReady = calendarSettings.status === "ready";
   return (
     <>
-      <Section title="新着メールの通知">
+      <Section title={calendarReady ? "この端末の通知" : "新着メールの通知"}>
         <div className="flex items-center gap-3 rounded-lg border p-3">
           {/* アイコンは説明の行ではなく、1 行目 (オン / オフ) の高さにそろえる。 */}
           <span className="flex h-5 shrink-0 items-center self-start">
@@ -1103,7 +1125,8 @@ function NotificationsPage({
           </span>
           <div className="min-w-0 flex-1">
             <p className="font-medium text-sm">
-              この端末の通知: {notifying ? "オン" : "オフ"}
+              {calendarReady ? "新着メール" : "この端末の通知"}:{" "}
+              {notifying ? "オン" : "オフ"}
             </p>
             <p className="text-muted-foreground text-xs leading-relaxed">
               {
@@ -1126,7 +1149,19 @@ function NotificationsPage({
             </Button>
           )}
         </div>
+        {calendarReady && (
+          <DeviceCalendarNotificationCard
+            notificationStatus={notificationStatus}
+          />
+        )}
       </Section>
+      {calendarReady && <CalendarNotificationSection />}
+      {calendarReady && <CalendarNotifyList />}
+      {calendarSettings.status === "error" && (
+        <p role="alert" className="text-destructive text-xs">
+          予定の通知の設定を読み込めませんでした。通信の状態を確認して、ページを開き直してください。
+        </p>
+      )}
       {accounts && accounts.length > 0 && (
         <Section title="アカウントごとの通知">
           <SettingGroup>
@@ -1200,6 +1235,246 @@ function NotificationsPage({
         )}
       </Section>
     </>
+  );
+}
+
+/** この端末で、予定の通知がどこまで届くか (設計 10 章の 1)。 */
+function deviceCalendarDescription(status: NotificationStatus): string {
+  if (isNativeApp()) {
+    return "予定の通知を出します。アプリを閉じていても届きます。";
+  }
+  if (isDesktopApp()) {
+    const windows =
+      typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+    return windows
+      ? "予定の通知を出します。アプリを終了していても、予約済みのリマインダーは届きます。"
+      : "予定の通知を出します。ウィンドウを閉じていても、アプリを終了するまで届きます。";
+  }
+  return status === "push"
+    ? "予定の通知を出します。この画面を閉じていても届きます。"
+    : "予定の通知を出します。この画面を開いている間だけ届きます。";
+}
+
+/**
+ * この端末の予定の通知 (localStorage の calendar.notifications)。未設定は新着メールと同じ。
+ * 通知そのもの (ブラウザー・端末の許可と送り先の登録) は新着メールの欄で入れる。
+ */
+function DeviceCalendarNotificationCard({
+  notificationStatus,
+}: {
+  notificationStatus: NotificationStatus;
+}) {
+  const stored = useStoredDeviceCalendarNotifications();
+  const available =
+    notificationStatus === "page" || notificationStatus === "push";
+  const enabled = available && deviceCalendarEnabledFrom(stored, available);
+  return (
+    <div
+      className="flex items-center gap-3 rounded-lg border p-3"
+      data-device-calendar-notifications
+    >
+      <span className="flex h-5 shrink-0 items-center self-start">
+        {enabled ? (
+          <BellIcon className="size-4 shrink-0" aria-hidden="true" />
+        ) : (
+          <BellOffIcon
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-sm">予定: {enabled ? "オン" : "オフ"}</p>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          {!available
+            ? "この端末の通知をオンにすると、予定のリマインダーと招待の通知も選べます。"
+            : enabled
+              ? deviceCalendarDescription(notificationStatus)
+              : "予定のリマインダーや招待が届いても、この端末には通知しません。"}
+        </p>
+      </div>
+      {available && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setDeviceCalendarNotifications(!enabled)}
+        >
+          {enabled ? "オフにする" : "オンにする"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** 終日の予定の通知の選択肢の値 (null = 通知しない)。 */
+const ALL_DAY_OFF = "off";
+
+/** 予定の通知 (すべての端末で共通。設計 10 章の 2)。 */
+function CalendarNotificationSection() {
+  const settings = useCalendarNotificationSettings();
+  const [error, setError] = useState(false);
+  if (settings.status !== "ready") return null;
+  const { calendarNotifications: value, timeZone } = settings.value;
+  const change = (
+    patch: Parameters<typeof changeCalendarNotificationSettings>[0],
+  ) => {
+    setError(false);
+    void changeCalendarNotificationSettings(patch).then((saved) =>
+      setError(!saved),
+    );
+  };
+  const allDayValue = value.allDay ? String(value.allDay.minutes) : ALL_DAY_OFF;
+  const allDayOptions: [string, string][] = ALL_DAY_DEFAULT_CHOICES.map(
+    (minutes) =>
+      minutes === null
+        ? [ALL_DAY_OFF, "通知しない"]
+        : [String(minutes), allDayReminderText(minutes)],
+  );
+  // ほかの値 (ほかの端末で選んだ値など) も、いまの値として出す。
+  if (!allDayOptions.some(([option]) => option === allDayValue)) {
+    allDayOptions.push([allDayValue, allDayReminderText(Number(allDayValue))]);
+  }
+  const deviceTimeZone = currentTimeZone();
+  return (
+    <Section title="予定の通知">
+      <SettingGroup>
+        <div className="px-3 py-2.5">
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            カレンダーの予定の通知です。この設定はすべての端末で共通です。
+          </p>
+        </div>
+        <SwitchRow
+          label="新しい招待"
+          description="ほかの人から予定に招待されたときに知らせます。"
+          checked={value.invites}
+          onChange={(invites) => change({ invites })}
+        />
+        <SwitchRow
+          label="招待された予定の変更と取り消し"
+          description="招待された予定の日時や場所が変わったとき、取り消されたときに知らせます。"
+          checked={value.changes}
+          onChange={(changes) => change({ changes })}
+        />
+        <SelectRow
+          label="終日の予定の通知"
+          description="既定の通知を使う終日の予定に使います。予定ごとに変えることもできます。"
+          value={allDayValue}
+          options={allDayOptions}
+          onChange={(next) =>
+            change({
+              allDay: next === ALL_DAY_OFF ? null : { minutes: Number(next) },
+            })
+          }
+        />
+        <SwitchRow
+          label="通知に予定の内容を出す"
+          description="オフにすると、サーバーから届く通知には予定の題名や場所を出さず、「予定のリマインダー」「新しい招待」とだけ出します。"
+          checked={value.detail === "full"}
+          onChange={(on) => change({ detail: on ? "full" : "private" })}
+        />
+        <SettingRow
+          label="タイムゾーン"
+          description="終日の予定の通知の時刻を決めるのに使います。"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm" data-calendar-time-zone>
+              {timeZone ?? "未設定"}
+              {timeZone !== null && timeZone === deviceTimeZone && (
+                <span className="text-muted-foreground"> (この端末と同じ)</span>
+              )}
+            </span>
+            {deviceTimeZone && timeZone !== deviceTimeZone && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => change({ timeZone: deviceTimeZone })}
+              >
+                この端末に合わせる
+              </Button>
+            )}
+          </div>
+        </SettingRow>
+      </SettingGroup>
+      {error && (
+        <p role="alert" className="text-destructive text-xs">
+          予定の通知の設定を保存できませんでした。通信の状態を確認して、もう一度お試しください。
+        </p>
+      )}
+    </Section>
+  );
+}
+
+function currentTimeZone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** カレンダーごとの通知 (設計 2.5、10 章の 3)。メールの「アカウントごとの通知」と同じ形。 */
+function CalendarNotifyList() {
+  const [calendars, setCalendars] = useState<Calendar[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    listCalendars(controller.signal)
+      .then(setCalendars)
+      .catch(() => {
+        // 取得できなければ (オフラインなど) 節を出さない。
+      });
+    return () => controller.abort();
+  }, []);
+  // 古いサーバー (notify が無い) とカレンダーが無いときは出さない。
+  const shown = calendars?.filter(calendarNotifySupported) ?? [];
+  if (shown.length === 0) return null;
+  const replace = (calendar: Calendar) =>
+    setCalendars(
+      (current) =>
+        current?.map((item) => (item.id === calendar.id ? calendar : item)) ??
+        null,
+    );
+  const toggle = (calendar: Calendar, on: boolean) => {
+    // 押してすぐ画面に反映し、保存できなければ元に戻す。
+    replace({ ...calendar, notify: on });
+    setError(null);
+    saveCalendarNotify(calendar, { notify: on })
+      .then(replace)
+      .catch((reason) => {
+        replace(calendar);
+        setError(
+          reason instanceof CalendarNotifyUnsupportedError
+            ? "このサーバーでは、カレンダーごとの通知を変えられません。"
+            : "変更を保存できませんでした。通信の状態を確認して、もう一度お試しください。",
+        );
+      });
+  };
+  return (
+    <Section title="カレンダーごとの通知">
+      <SettingGroup>
+        <div className="px-3 py-2.5">
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            予定のリマインダーと招待を通知するカレンダーを選べます。購読・祝日・誕生日のカレンダーは、最初はオフです。非表示にしているカレンダーは通知しません。この設定はすべての端末で共通です。
+          </p>
+        </div>
+        {shown.map((calendar) => (
+          <SwitchRow
+            key={calendar.id}
+            label={calendar.name}
+            description={
+              calendar.visible ? undefined : "非表示のため、通知しません"
+            }
+            checked={calendar.notify === true}
+            onChange={(on) => toggle(calendar, on)}
+          />
+        ))}
+      </SettingGroup>
+      {error && (
+        <p role="alert" className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
+    </Section>
   );
 }
 
