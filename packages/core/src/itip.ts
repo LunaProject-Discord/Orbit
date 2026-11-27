@@ -45,6 +45,11 @@ export type BuildItipInput = {
   dtstamp: Date;
   /** 浮動時刻と、日付だけの回を読むときのタイムゾーン。 */
   defaultTimeZone: string;
+  /**
+   * 原本の DTSTART の形 (RECURRENCE-ID をこれに合わせる)。events に原本が無い 1 回だけの
+   * メッセージで、原本が分かっているときに渡す (imip レビュー L8)。省けば原本か、その行の形。
+   */
+  masterTiming?: { allDay: boolean; startTimeZone: string | null } | null;
 };
 
 type Attendee = ICalEventData["attendees"][number];
@@ -52,7 +57,10 @@ type Attendee = ICalEventData["attendees"][number];
 const lower = (email: string) => email.trim().toLowerCase();
 
 /** 予定の DTSTART の形 (RECURRENCE-ID / RDATE / EXDATE をこれに合わせる)。 */
-function formOf(event: ICalEventData): TimeForm {
+function formOf(event: {
+  allDay: boolean;
+  startTimeZone: string | null;
+}): TimeForm {
   if (event.allDay) return { kind: "date" };
   return isIanaZone(event.startTimeZone)
     ? { kind: "zone", zone: event.startTimeZone }
@@ -173,10 +181,12 @@ function vevent(
   }
   props.push(line("DTSTAMP", utcStamp(toInstant(input.dtstamp))));
   // 全体の取り消しは SEQUENCE を上げる (RFC 5546 の 2.1.4)。REPLY は受け取った値のまま。
+  // 状態を取り消し (cancelled) にした行は、API が行の sequence を上げてあるので行の値で書く。
   const wholeCancel =
     method === "CANCEL" &&
     event.recurrenceId === null &&
-    input.attendees === undefined;
+    input.attendees === undefined &&
+    event.status !== "cancelled";
   props.push(line("SEQUENCE", String(event.sequence + (wholeCancel ? 1 : 0))));
   const organizerEmail = event.organizer ? lower(event.organizer.email) : null;
   if (event.organizer) {
@@ -222,7 +232,9 @@ function vevent(
       // 読み取り (parseICalendar) と CalDAV の書き戻しと同じ名前で書く。
       props.push(line("X-GOOGLE-CONFERENCE", event.conferenceUrl));
     }
-    props.push(line("STATUS", "CONFIRMED"));
+    props.push(
+      line("STATUS", event.status === "tentative" ? "TENTATIVE" : "CONFIRMED"),
+    );
     props.push(line("TRANSP", event.busy ? "OPAQUE" : "TRANSPARENT"));
   } else if (method === "CANCEL") {
     props.push(line("STATUS", "CANCELLED"));
@@ -258,7 +270,7 @@ export function buildItip(input: BuildItipInput): string {
   const vevents = targets.map((event) =>
     vevent(event, input, {
       zones,
-      recurrenceForm: formOf(master ?? event),
+      recurrenceForm: formOf(master ?? input.masterTiming ?? event),
       extraExdates: event === master ? extraExdates : [],
     }),
   );

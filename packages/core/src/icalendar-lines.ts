@@ -128,9 +128,21 @@ export function escapeICalText(value: string): string {
     .replace(/\r\n?|\n/g, "\\n");
 }
 
+/**
+ * 行に書けない制御文字 (CR・LF を含む U+0000〜U+001F と U+007F。HTAB だけは残す)。
+ * 値に CR / LF が残ると、続きが別の行 (別のプロパティや VEVENT) として読まれるので、
+ * 書き出す値はすべてここを通して取り除く (TEXT の改行は先に escapeICalText で \n にしておく)。
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を取り除くための正規表現
+const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f]/g;
+
+export function stripControl(value: string): string {
+  return value.replace(CONTROL, "");
+}
+
 /** パラメータの値。区切り文字を含むなら引用符で囲む (引用符そのものは使えないので外す)。 */
 export function paramValue(value: string): string {
-  const cleaned = value.replace(/["\r\n]/g, "");
+  const cleaned = stripControl(value).replace(/"/g, "");
   return /[;:,]/.test(cleaned) ? `"${cleaned}"` : cleaned;
 }
 
@@ -139,11 +151,20 @@ export function line(
   value: string,
   params: [string, string][] = [],
 ): Line {
+  const safeName = stripControl(name);
+  const safeValue = stripControl(value);
   const paramText = params
-    .map(([key, param]) => `;${key}=${paramValue(param)}`)
+    .map(([key, param]) => `;${stripControl(key)}=${paramValue(param)}`)
     .join("");
-  const raw = `${name}${paramText}:${value}`;
-  return parseLine(raw) ?? { name, params: new Map(params), value, raw };
+  const raw = `${safeName}${paramText}:${safeValue}`;
+  return (
+    parseLine(raw) ?? {
+      name: safeName,
+      params: new Map(params),
+      value: safeValue,
+      raw,
+    }
+  );
 }
 
 /** 1 文字 (コードポイント) の UTF-8 のバイト数。 */
@@ -156,7 +177,9 @@ function utf8Size(char: string): number {
 }
 
 /** 75 オクテットで折り返す (UTF-8 の文字の途中では切らない)。 */
-export function fold(raw: string): string {
+export function fold(unsafe: string): string {
+  // 読み込んだ行をそのまま書き戻す場合も含め、出口でもう一度制御文字を除く。
+  const raw = stripControl(unsafe);
   const out: string[] = [];
   let current = "";
   let bytes = 0;

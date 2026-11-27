@@ -2295,6 +2295,7 @@ describe.skipIf(!adminUrl)("予定の API", () => {
               enqueued: plan.messages.length,
               skipped: null,
               incomplete: 0,
+              incompleteMessages: [],
             };
           },
         }),
@@ -2725,6 +2726,137 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       expect(imipCalls).toEqual([]);
     });
 
+    it("M3: CalDAV で参加者を外した直後に消すと、外した人にも取り消しを送る", async () => {
+      const event = await createInvite(caldavMailId, [
+        "alice@example.com",
+        "carol@example.com",
+      ]);
+      await db
+        .update(events)
+        .set({ remoteId: `https://dav.example.com/mail/${event.id}.ics` })
+        .where(eq(events.id, event.id));
+      await db.delete(outbox).where(eq(outbox.accountId, davId));
+      await send("PATCH", `/events/${event.id}`, {
+        changes: { attendees: people("alice@example.com") },
+      });
+      expect((await send("DELETE", `/events/${event.id}`)).status).toBe(204);
+      const [row] = await db
+        .select()
+        .from(outbox)
+        .where(eq(outbox.accountId, davId));
+      expect(row?.kind).toBe("event_delete");
+      const plan = (row?.payload as { imip: ImipPlan }).imip;
+      expect(messagesOf(plan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+        ["CANCEL", "remove", ["carol@example.com"]],
+      ]);
+      // 本文は消す前に作ってある (行が消えるため)。
+      expect(plan.messages[1]?.content).toContain("METHOD:CANCEL");
+    });
+
+    it("M5: 改行や制御文字を含む rrule・会議 URL・回の ID は断る", async () => {
+      const base = {
+        calendarId: localId,
+        summary: "定例",
+        time: time("05"),
+      };
+      for (const recurrence of [
+        { rrule: "FREQ=DAILY\r\nATTENDEE:mailto:victim@example.net" },
+        { rrule: "FREQ=DAILY;X=\u0007" },
+        { rrule: "FREQ=WEEKLY", exdates: ["2027-04-12Tgarbage"] },
+        { rrule: "FREQ=WEEKLY", exdates: ["2027-02-30"] },
+      ]) {
+        expect(
+          (await send("POST", "/events", { ...base, recurrence })).status,
+        ).toBe(400);
+      }
+      expect(
+        (
+          await send("POST", "/events", {
+            ...base,
+            conferenceUrl: "https://meet.example.com/a\r\nATTACH:https://x",
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await send("POST", "/events", {
+            ...base,
+            recurrence: {
+              rrule: "RRULE:FREQ=WEEKLY;BYDAY=MO,-1FR;UNTIL=20271231T000000Z",
+              exdates: ["2027-04-12T01:00:00Z", "2027-04-19T10:00:00+09:00"],
+            },
+            conferenceUrl: "https://meet.example.com/abc?x=1",
+          })
+        ).status,
+      ).toBe(201);
+    });
+
+    it("L2: 取り消しにすると SEQUENCE を上げ、戻すとまた上げて全員に REQUEST", async () => {
+      const event = await createInvite(localId, ["alice@example.com"]);
+      imipCalls.length = 0;
+      const cancelled = await send("PATCH", `/events/${event.id}`, {
+        changes: { status: "cancelled" },
+      });
+      expect(cancelled.status).toBe(200);
+      const [afterCancel] = await db
+        .select({ sequence: events.sequence })
+        .from(events)
+        .where(eq(events.id, event.id));
+      expect(afterCancel?.sequence).toBe(1);
+      expect(messagesOf(imipCalls[0]?.plan as ImipPlan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+      ]);
+      await send("PATCH", `/events/${event.id}`, {
+        changes: { status: "confirmed" },
+      });
+      const [restored] = await db
+        .select({ sequence: events.sequence })
+        .from(events)
+        .where(eq(events.id, event.id));
+      expect(restored?.sequence).toBe(2);
+      expect(messagesOf(imipCalls[1]?.plan as ImipPlan)).toEqual([
+        ["REQUEST", "update", ["alice@example.com"]],
+      ]);
+    });
+
+    it("L5: 1 回で 200 件を超える宛先は invite_too_many (待っても通らない)", async () => {
+      const many = Array.from(
+        { length: 201 },
+        (_, index) => `guest${index}@example.com`,
+      );
+      const created = await send("POST", "/events", {
+        calendarId: localId,
+        summary: "全体会",
+        time: time("05"),
+        attendees: people(...many),
+      });
+      expect(created.status).toBe(409);
+      expect(created.body).toEqual({ error: "invite_too_many" });
+    });
+
+    it("M9: Orbit 内のカレンダーを消すと、主催している予定の取り消しを積んでから消す", async () => {
+      const [calendar] = await db
+        .insert(calendars)
+        .values({
+          userId: mailerId,
+          name: "消すカレンダー",
+          source: "local",
+          timeZone: "Asia/Tokyo",
+        })
+        .returning({ id: calendars.id });
+      const event = await createInvite(calendar?.id as string, [
+        "alice@example.com",
+      ]);
+      imipCalls.length = 0;
+      expect((await send("DELETE", `/${calendar?.id}`)).status).toBe(204);
+      expect(imipCalls).toHaveLength(1);
+      expect(messagesOf(imipCalls[0]?.plan as ImipPlan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+      ]);
+      expect(imipCalls[0]?.context.eventId).toBe(event.id);
+    });
+
     it("回の変更: その回だけの REQUEST (例外の行を本文に使う)。通知だけなら送らない", async () => {
       const weekly = await createInvite(localId, ["alice@example.com"], {
         recurrence: { rrule: "FREQ=WEEKLY;COUNT=4" },
@@ -2759,7 +2891,11 @@ describe.skipIf(!adminUrl)("予定の API", () => {
           recurrenceId: "2027-04-19T01:00:00Z",
         },
       ]);
-      expect(imipCalls[0]?.rows.map((row) => row.id)).toEqual([exceptionId]);
+      // 例外の行と、RECURRENCE-ID の形をそろえるための原本 (L8)。
+      expect(imipCalls[0]?.rows.map((row) => row.id)).toEqual([
+        exceptionId,
+        weekly.id,
+      ]);
       expect(imipCalls[0]?.context.eventId).toBe(exceptionId);
     });
 

@@ -52,6 +52,12 @@ export type ProviderContext = {
    * 土台が同期の周回ごとに解決して入れる。無ければアカウントのアドレスだけで判定する。
    */
   imipAddresses?: ReadonlyMap<string, string>;
+  /**
+   * CalDAV: 利用者の全アカウントのアドレス (小文字)。自動スケジュールでないカレンダーの
+   * self / organizer.self の判定に足す。送信元を変えた後も、前の送信元で主催した予定を
+   * 自分の予定として扱うため (imip レビュー M7)。
+   */
+  userAddresses?: ReadonlySet<string>;
   log(message: string): void;
   /**
    * カレンダーの変更通知の状態 (pushChannelId、pushExpiresAt、providerState) を保存する。

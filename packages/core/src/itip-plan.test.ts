@@ -372,6 +372,44 @@ describe("planImip (主催者)", () => {
     });
     expect(plan?.messages[0]?.content).toBeUndefined();
   });
+
+  it("取り消しを戻した → 全員に REQUEST (L2)", () => {
+    const plan = planImip(
+      event({ status: "cancelled", sequence: 3 }),
+      event({ sequence: 4 }),
+      accepted("update"),
+      "organizer",
+      SENDER,
+    );
+    expect(plan?.messages).toMatchObject([
+      { method: "REQUEST", reason: "update" },
+    ]);
+    expect(to(plan)).toEqual(["bob@example.com", "carol@example.com"]);
+  });
+
+  it("参加者の役割の変更は REQUEST、名前だけの変更は送らない (L9)", () => {
+    const roleChanged = event({
+      attendees: [
+        person("me@example.com", { self: true, status: "accepted" }),
+        person("bob@example.com", { name: "Bob", role: "optional" }),
+        person("carol@example.com"),
+      ],
+    });
+    expect(
+      planImip(event(), roleChanged, accepted("update"), "organizer", SENDER)
+        ?.messages[0],
+    ).toMatchObject({ method: "REQUEST", reason: "update" });
+    const renamed = event({
+      attendees: [
+        person("me@example.com", { self: true, status: "accepted" }),
+        person("bob@example.com", { name: "Robert" }),
+        person("carol@example.com"),
+      ],
+    });
+    expect(
+      planImip(event(), renamed, accepted("update"), "organizer", SENDER),
+    ).toBeNull();
+  });
 });
 
 describe("planImip (送らない場合)", () => {
@@ -471,6 +509,76 @@ describe("planImip (送らない場合)", () => {
     ).not.toBeNull();
   });
 
+  it("繰り返しは今日の回が終わった後でも、続いていれば送る (毎日・毎週・終日・COUNT 付き)", () => {
+    // 2026-11-27 15:00 (Asia/Tokyo)。今日 9:00-10:00 の回はもう終わっている。
+    const afternoon = new Date("2026-11-27T06:00:00Z");
+    const daily = event({
+      startAt: "2026-11-01T00:00:00Z",
+      endAt: "2026-11-01T01:00:00Z",
+      rrule: "FREQ=DAILY",
+    });
+    const weeklyFriday = { ...daily, rrule: "FREQ=WEEKLY;BYDAY=FR" };
+    const dailyCount = { ...daily, rrule: "FREQ=DAILY;COUNT=60" };
+    const allDayDaily = event({
+      allDay: true,
+      startAt: null,
+      endAt: null,
+      startDate: "2026-11-01",
+      endDate: "2026-11-02",
+      startTimeZone: null,
+      endTimeZone: null,
+      rrule: "FREQ=DAILY",
+    });
+    const allDayCount = { ...allDayDaily, rrule: "FREQ=DAILY;COUNT=40" };
+    for (const series of [
+      daily,
+      weeklyFriday,
+      dailyCount,
+      allDayDaily,
+      allDayCount,
+    ]) {
+      expect(
+        planImip(
+          series,
+          null,
+          accepted("delete", afternoon),
+          "organizer",
+          SENDER,
+        ),
+      ).not.toBeNull();
+      expect(
+        planImip(
+          series,
+          { ...series, summary: "新しい題名" },
+          accepted("update", afternoon),
+          "organizer",
+          SENDER,
+        ),
+      ).not.toBeNull();
+    }
+    // COUNT の最後の回が今日で、もう終わっている → 終了済み。
+    const lastToday = { ...daily, rrule: "FREQ=DAILY;COUNT=27" };
+    expect(
+      planImip(
+        lastToday,
+        null,
+        accepted("delete", afternoon),
+        "organizer",
+        SENDER,
+      ),
+    ).toBeNull();
+    // 最後の回が今日で、まだ終わっていない → 送る。
+    expect(
+      planImip(
+        lastToday,
+        null,
+        accepted("delete", new Date("2026-11-26T23:30:00Z")),
+        "organizer",
+        SENDER,
+      ),
+    ).not.toBeNull();
+  });
+
   it("過去の予定を未来へ動かしたら送る", () => {
     const past = event({
       startAt: "2026-11-01T01:00:00Z",
@@ -518,10 +626,18 @@ describe("planImip (参加者の出欠)", () => {
           attendees: ["me@example.com"],
           reason: "respond",
           recurrenceId: null,
+          content: expect.stringContaining("METHOD:REPLY"),
         },
       ],
     });
     expect(imipRecipientCount(plan)).toBe(0);
+    // 本文は受け付けた時点で作る (M4: 書き戻しの前に行が消えても送れる)。
+    const reply = parseICalendar(plan?.messages[0]?.content ?? "", {
+      defaultTimeZone: "Asia/Tokyo",
+    });
+    expect(reply.events[0]?.attendees).toMatchObject([
+      { email: "me@example.com", status: "accepted" },
+    ]);
   });
 
   it("例外の行への返事は RECURRENCE-ID 付き", () => {

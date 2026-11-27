@@ -493,3 +493,100 @@ describe("buildItip の入力の誤り", () => {
     ).toThrow();
   });
 });
+
+describe("buildItip の行の差し込み (imip レビュー M5)", () => {
+  const props = (text: string) =>
+    unfolded(text).filter((entry) => entry.length > 0);
+
+  it("CR / LF・制御文字を含む rrule・会議 URL・UID・CN で行が増えない", () => {
+    const base = buildItip({
+      method: "REQUEST",
+      events: [event({ rrule: "FREQ=DAILY", uid: "e1@orbit" })],
+      dtstamp: STAMP,
+      defaultTimeZone: "Asia/Tokyo",
+    });
+    const text = buildItip({
+      method: "REQUEST",
+      events: [
+        event({
+          uid: "e1@orbit\rX-UID:1",
+          rrule: "FREQ=DAILY\r\nATTENDEE:mailto:victim@example.net\r\nX-EVIL:1",
+          conferenceUrl:
+            "https://meet.example.com/abc\r\nATTACH:https://evil.example/x",
+          organizer: { email: "me@example.com", name: "Me\r\nX-NAME:1" },
+          summary: "題名\u0007\r\nX-SUMMARY:1",
+        }),
+      ],
+      dtstamp: STAMP,
+      defaultTimeZone: "Asia/Tokyo",
+    });
+    expect(props(text)).toHaveLength(props(base).length);
+    expect(text).not.toMatch(
+      /\r\n(ATTENDEE:mailto:victim|X-EVIL|ATTACH|X-UID|X-NAME)/,
+    );
+    // CRLF 以外の CR・LF が残っていない。
+    expect(text.replace(/\r\n/g, "")).not.toMatch(
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字が残っていないことを確かめる
+      /[\r\n\u0000-\u0008\u000b-\u001f]/,
+    );
+    const parsed = read(text).events;
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.attendees.map((a) => a.email)).toEqual([
+      "me@example.com",
+      "bob@example.com",
+      "carol@example.com",
+    ]);
+  });
+});
+
+describe("buildItip の STATUS と RECURRENCE-ID の形", () => {
+  it("未定 (tentative) の予定は STATUS:TENTATIVE (L9)", () => {
+    const text = buildItip({
+      method: "REQUEST",
+      events: [event({ status: "tentative" })],
+      dtstamp: STAMP,
+      defaultTimeZone: "Asia/Tokyo",
+    });
+    expect(unfolded(text)).toContain("STATUS:TENTATIVE");
+  });
+
+  it("取り消し済みの行の CANCEL は行の SEQUENCE のまま (L2)", () => {
+    const text = buildItip({
+      method: "CANCEL",
+      events: [event({ status: "cancelled", sequence: 4 })],
+      dtstamp: STAMP,
+      defaultTimeZone: "Asia/Tokyo",
+    });
+    expect(unfolded(text)).toContain("SEQUENCE:4");
+    const deleted = buildItip({
+      method: "CANCEL",
+      events: [event({ sequence: 4 })],
+      dtstamp: STAMP,
+      defaultTimeZone: "Asia/Tokyo",
+    });
+    expect(unfolded(deleted)).toContain("SEQUENCE:5");
+  });
+
+  it("原本の形を渡すと、終日に変えた回の RECURRENCE-ID も原本の形で書く (L8)", () => {
+    const exception = event({
+      recurrenceId: "2026-12-08T01:00:00Z",
+      allDay: true,
+      startAt: null,
+      endAt: null,
+      startDate: "2026-12-08",
+      endDate: "2026-12-09",
+      startTimeZone: null,
+      endTimeZone: null,
+    });
+    const text = buildItip({
+      method: "REQUEST",
+      events: [exception],
+      dtstamp: STAMP,
+      defaultTimeZone: "Asia/Tokyo",
+      masterTiming: { allDay: false, startTimeZone: "Asia/Tokyo" },
+    });
+    expect(unfolded(text)).toContain(
+      "RECURRENCE-ID;TZID=Asia/Tokyo:20261208T100000",
+    );
+  });
+});

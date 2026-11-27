@@ -77,8 +77,10 @@ import {
   loadSchedulingInfo,
   loadSeriesWithExtras,
   MAIL_CALENDAR_SOURCES,
+  pendingRemovalRecipients,
   recordInviteFailed,
   schedulingInfo,
+  withRemovalCancels,
 } from "../lib/event-imip.js";
 import {
   enqueueEventOperation,
@@ -193,17 +195,40 @@ const timing = z
     { message: "終わりが始まりより前です。" },
   );
 
+/** 暦にある日付か (2026-02-30 などを断る)。 */
+function validDate(date: string): boolean {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === date
+  );
+}
+
+/**
+ * 回の ID: 日付 (YYYY-MM-DD) か、オフセット付きの日時。iCalendar (CalDAV の書き戻しと招待メール)
+ * にそのまま書くので、日時として読めない値と制御文字は断る (imip レビュー L7、M5)。
+ */
 const recurrenceIdValue = z
   .string()
   .max(40)
-  .refine((value) => /^\d{4}-\d{2}-\d{2}(T.+)?$/.test(value));
+  .refine(
+    (value) =>
+      /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2}))?$/i.test(
+        value,
+      ) &&
+      validDate(value.slice(0, 10)) &&
+      !Number.isNaN(Date.parse(value)),
+  );
 
 const recurrence = z.object({
-  /** RRULE の値。null で繰り返しをやめる。 */
+  /**
+   * RRULE の値。null で繰り返しをやめる。iCalendar の 1 行にそのまま書くので、規則に使う文字
+   * (英数字と = ; , : + -) だけを受け付ける (改行で行を差し込めないように。imip レビュー M5)。
+   */
   rrule: z
     .string()
     .max(1000)
-    .regex(/^(RRULE:)?FREQ=/i)
+    .regex(/^(RRULE:)?FREQ=[A-Z0-9=;,:+-]*$/i)
     .nullable(),
   rdates: z.array(recurrenceIdValue).max(1000).nullable().default(null),
   exdates: z.array(recurrenceIdValue).max(5000).nullable().default(null),
@@ -242,7 +267,15 @@ const eventFields = z
     busy: z.boolean(),
     time: timing,
     recurrence,
-    conferenceUrl: z.url().max(2000).nullable(),
+    // 空白と制御文字 (改行を含む) を含む URL は、URL として読む (改行を黙って除く) 前に断る
+    // (iCalendar に行を差し込めないように。imip レビュー M5)。
+    conferenceUrl: z
+      .string()
+      .max(2000)
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を断るための正規表現
+      .refine((value) => !/[\s\u0000-\u001f\u007f]/.test(value))
+      .pipe(z.url())
+      .nullable(),
     useDefaultReminders: z.boolean(),
     reminders: z.array(reminder).max(20),
     attendees: z.array(attendee).max(500),
@@ -803,8 +836,8 @@ async function resetReplies(tx: Tx, row: EventRow) {
 }
 
 /** トランザクションの中で投げた InviteLimitError を、応答のエラーコードにする。 */
-function inviteLimit(error: unknown): "invite_limit" {
-  if (error instanceof InviteLimitError) return "invite_limit";
+function inviteLimit(error: unknown): "invite_limit" | "invite_too_many" {
+  if (error instanceof InviteLimitError) return error.code;
   throw error;
 }
 
@@ -976,18 +1009,25 @@ export function calendarRoutes({
         calendarId: calendar.id,
         eventId,
         title,
-        plan,
+        // 一部だけ積めたときは、積めなかったメッセージだけを記録する (L12)。
+        plan:
+          result.skipped === null
+            ? { ...plan, messages: result.incompleteMessages }
+            : plan,
         reason,
       });
       await recordChanges(tx, calendar.userId, "calendar", [calendar.id]);
     }
   };
 
-  /** 招待の本文に使う行 (原本の変更なら原本と例外、例外の変更ならその行)。 */
+  /**
+   * 招待の本文に使う行 (原本の変更なら原本と例外、例外の変更ならその行と、RECURRENCE-ID の形を
+   * そろえるための原本。L8)。
+   */
   const inviteRows = (tx: Tx, row: EventRow) =>
     row.parentId === null
       ? loadSeriesWithExtras(tx, row.id)
-      : loadEventsWithExtras(tx, [row.id]);
+      : loadEventsWithExtras(tx, [row.id, row.parentId]);
 
   /**
    * applyChanges で採用した項目があれば、変更の書き戻しを積む。imip は招待メールの計画
@@ -1269,10 +1309,31 @@ export function calendarRoutes({
     const extras = (await loadExtras(tx, [row.id])).get(row.id);
     const role = await roleOf(tx, row, extras);
     if (role !== "organizer") return null;
+    // 原本を消すときは、例外の回にだけいる参加者にも取り消しを送る (L3)。
+    const attendees = [...(extras?.attendees ?? [])];
+    if (row.parentId === null) {
+      const seen = new Set(attendees.map((item) => item.email.toLowerCase()));
+      const children = await tx
+        .select({ id: events.id })
+        .from(events)
+        .where(eq(events.parentId, row.id));
+      const childExtras = await loadExtras(
+        tx,
+        children.map((child) => child.id),
+      );
+      for (const child of childExtras.values()) {
+        for (const attendee of child.attendees) {
+          const key = attendee.email.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          attendees.push(attendee);
+        }
+      }
+    }
     return planInvites(tx, {
       info,
       calendar,
-      before: imipEventOf(row, extras?.attendees ?? []),
+      before: imipEventOf(row, attendees),
       after: null,
       operation: "delete",
       role,
@@ -1281,6 +1342,41 @@ export function calendarRoutes({
       eventId: row.id,
       title: row.summary,
     });
+  };
+
+  /**
+   * 予定 (row と、原本ならその例外) を消すとき、まだ書き戻していない変更で参加者から外した人への
+   * 取り消しを、削除の計画に足す (imip レビュー M3)。その変更は cancelPendingWrites で計画ごと
+   * 消えるため。cancelPendingWrites の前に呼ぶ。CalDAV (書き戻しのあるカレンダー) だけ。
+   */
+  const withPendingRemovals = async (
+    tx: Tx,
+    calendar: CalendarRow,
+    row: EventRow,
+    plan: ImipPlan | null,
+    now: Date,
+  ) => {
+    if (!isProviderCalendar(calendar)) return plan;
+    const children =
+      row.parentId === null
+        ? await tx
+            .select({ id: events.id })
+            .from(events)
+            .where(eq(events.parentId, row.id))
+        : [];
+    const removals = await pendingRemovalRecipients(tx, calendar.accountId, [
+      row.id,
+      ...children.map((child) => child.id),
+    ]);
+    if (!removals) return plan;
+    const extras = (await loadExtras(tx, [row.id])).get(row.id);
+    return withRemovalCancels(
+      plan,
+      removals,
+      imipEventOf(row, extras?.attendees ?? []),
+      now,
+      zoneOf(calendar),
+    );
   };
 
   const ownCalendar = async (
@@ -1541,29 +1637,57 @@ export function calendarRoutes({
     async (c) => {
       const { id } = c.req.valid("param");
       const userId = c.var.user.id;
-      const result = await db.transaction(async (tx) => {
-        const row = await ownCalendar(tx, userId, id);
-        if (!row) return "not_found" as const;
-        if (row.source !== "local" && row.source !== "ics") {
-          return "read_only" as const;
-        }
-        const removed = await tx
-          .delete(events)
-          .where(eq(events.calendarId, id))
-          .returning({ id: events.id });
-        await tx.delete(calendars).where(eq(calendars.id, id));
-        await recordChanges(
-          tx,
-          userId,
-          "event",
-          removed.map((event) => event.id),
-          "delete",
-        );
-        await recordChanges(tx, userId, "calendar", [id], "delete");
-        return "ok" as const;
-      });
+      const now = new Date();
+      const result = await db
+        .transaction(async (tx) => {
+          const row = await ownCalendar(tx, userId, id);
+          if (!row) return "not_found" as const;
+          if (row.source !== "local" && row.source !== "ics") {
+            return "read_only" as const;
+          }
+          // 主催している予定の参加者へ取り消し (CANCEL) を積んでから消す (imip レビュー M9)。
+          // 積んだ取り消しは、カレンダーが消えた後も送る (worker の送る直前の検査)。
+          if (row.source === "local") {
+            const info = await loadSchedulingInfo(tx, row, false);
+            if (info.scheduling === "mail") {
+              const masters = await tx
+                .select()
+                .from(events)
+                .where(and(eq(events.calendarId, id), isNull(events.parentId)));
+              for (const master of masters) {
+                const plan = await planCancel(tx, info, row, master, now);
+                await dispatchInvites(
+                  tx,
+                  row,
+                  plan,
+                  [],
+                  master.id,
+                  eventDeleteKey(master.id),
+                  master.summary,
+                );
+              }
+            }
+          }
+          const removed = await tx
+            .delete(events)
+            .where(eq(events.calendarId, id))
+            .returning({ id: events.id });
+          await tx.delete(calendars).where(eq(calendars.id, id));
+          await recordChanges(
+            tx,
+            userId,
+            "event",
+            removed.map((event) => event.id),
+            "delete",
+          );
+          await recordChanges(tx, userId, "calendar", [id], "delete");
+          return "ok" as const;
+        })
+        .catch(inviteLimit);
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
+      if (result === "invite_limit" || result === "invite_too_many")
+        return c.json({ error: result }, 409);
       return c.body(null, 204);
     },
   );
@@ -1957,7 +2081,8 @@ export function calendarRoutes({
       })
       .catch(inviteLimit);
     if (result === "not_found") return c.json({ error: "not_found" }, 404);
-    if (result === "invite_limit") return c.json({ error: result }, 409);
+    if (result === "invite_limit" || result === "invite_too_many")
+      return c.json({ error: result }, 409);
     if (result === "read_only") return c.json({ error: "read_only" }, 409);
     if (result === "calendar_disabled" || result === "calendar_sync_stopped")
       return c.json({ error: result }, 409);
@@ -2015,7 +2140,8 @@ export function calendarRoutes({
         })
         .catch(inviteLimit);
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
-      if (result === "invite_limit") return c.json({ error: result }, 409);
+      if (result === "invite_limit" || result === "invite_too_many")
+        return c.json({ error: result }, 409);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
       if (result === "calendar_disabled" || result === "calendar_sync_stopped")
         return c.json({ error: result }, 409);
@@ -2093,7 +2219,8 @@ export function calendarRoutes({
         })
         .catch(inviteLimit);
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
-      if (result === "invite_limit") return c.json({ error: result }, 409);
+      if (result === "invite_limit" || result === "invite_too_many")
+        return c.json({ error: result }, 409);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
       if (result === "calendar_disabled" || result === "calendar_sync_stopped")
         return c.json({ error: result }, 409);
@@ -2323,7 +2450,13 @@ export function calendarRoutes({
           const info = await loadSchedulingInfo(tx, calendar, false);
           let plan: ImipPlan | null = null;
           if (exception) {
-            plan = await planCancel(tx, info, calendar, exception, now);
+            plan = await withPendingRemovals(
+              tx,
+              calendar,
+              exception,
+              await planCancel(tx, info, calendar, exception, now),
+              now,
+            );
           } else if (info.scheduling === "mail") {
             const extras = (await loadExtras(tx, [master.id])).get(master.id);
             const role = await roleOf(tx, master, extras);
@@ -2391,7 +2524,8 @@ export function calendarRoutes({
         })
         .catch(inviteLimit);
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
-      if (result === "invite_limit") return c.json({ error: result }, 409);
+      if (result === "invite_limit" || result === "invite_too_many")
+        return c.json({ error: result }, 409);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
       if (result === "calendar_disabled" || result === "calendar_sync_stopped")
         return c.json({ error: result }, 409);
@@ -2442,7 +2576,13 @@ export function calendarRoutes({
           }
           // 主催者として消すなら、参加者へ取り消し (CANCEL) を送る。行が消えるので先に作る。
           const info = await loadSchedulingInfo(tx, calendar, false);
-          const plan = await planCancel(tx, info, calendar, row, now);
+          const plan = await withPendingRemovals(
+            tx,
+            calendar,
+            row,
+            await planCancel(tx, info, calendar, row, now),
+            now,
+          );
           let master: EventRow | undefined;
           if (row.parentId && row.recurrenceId) {
             // 例外を消す = その回を消す。プロバイダへは原本の繰り返しの変更として書き戻す。
@@ -2494,7 +2634,8 @@ export function calendarRoutes({
         })
         .catch(inviteLimit);
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
-      if (result === "invite_limit") return c.json({ error: result }, 409);
+      if (result === "invite_limit" || result === "invite_too_many")
+        return c.json({ error: result }, 409);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
       if (result === "calendar_disabled" || result === "calendar_sync_stopped")
         return c.json({ error: result }, 409);
@@ -2567,7 +2708,12 @@ async function applyChanges(
     .set({
       ...eventFieldColumns(accepted),
       fieldUpdatedAt,
-      ...(accepted.time !== undefined || accepted.recurrence !== undefined
+      // 時刻・繰り返しの変更と、取り消し (cancelled) にする・戻すときは SEQUENCE を上げる
+      // (取り消しの CANCEL と、戻した後の REQUEST を新しい版として送るため。imip レビュー L2)。
+      ...(accepted.time !== undefined ||
+      accepted.recurrence !== undefined ||
+      (accepted.status !== undefined &&
+        (accepted.status === "cancelled") !== (row.status === "cancelled"))
         ? { sequence: row.sequence + 1 }
         : {}),
     })

@@ -1111,12 +1111,18 @@ ${hrefs.map((href) => `  <d:href>${escapeXml(href)}</d:href>`).join("\n")}
 
   /**
    * サーバーが招待と返事を自分で送るか (RFC 6638 の calendar-auto-schedule) を調べる。
-   * urls を順に OPTIONS で試し (カレンダーのコレクション、駄目ならホーム)、最初に答えた
-   * URL の DAV ヘッダーで決める。どれも答えず、一時的な失敗 (接続の失敗、5xx、408、429) が
-   * あれば null (調べられなかった。呼び出し側は前の値を残す)。どれも 4xx (405 など) なら false。
+   * urls を順に OPTIONS で試し (カレンダーのコレクション、駄目ならホーム)、最初に 2xx で答えた
+   * URL の DAV ヘッダーで決める (autoScheduleOf)。
+   * - true: calendar-auto-schedule (または古い草案の calendar-schedule) を名乗った。
+   * - false: DAV ヘッダーに calendar-access があり、どちらの語も無い (送らないと分かる)。
+   * - "unconfirmed": ヘッダーが無い・calendar-access が無い・どれも 4xx (405 など) で、
+   *   送るかどうかを確かめられない。Orbit は送らない側に倒す (imip レビュー H2)。
+   * - null: どれも答えず、一時的な失敗 (接続の失敗、5xx、408、429) があった (前の値を残す)。
    * 認証の失敗 (CaldavAuthError) だけは投げる。
    */
-  async supportsAutoSchedule(urls: readonly string[]): Promise<boolean | null> {
+  async supportsAutoSchedule(
+    urls: readonly string[],
+  ): Promise<AutoScheduleProbe> {
     let transient = false;
     for (const url of urls) {
       let response: CaldavResponse;
@@ -1138,9 +1144,9 @@ ${hrefs.map((href) => `  <d:href>${escapeXml(href)}</d:href>`).join("\n")}
         }
         continue;
       }
-      return hasAutoSchedule(response.headers.get("dav"));
+      return autoScheduleOf(response.headers.get("dav"));
     }
-    return transient ? null : false;
+    return transient ? null : "unconfirmed";
   }
 
   /** リソース 1 つを取る。無ければ null。 */
@@ -1206,15 +1212,39 @@ ${hrefs.map((href) => `  <d:href>${escapeXml(href)}</d:href>`).join("\n")}
   }
 }
 
+/** supportsAutoSchedule の結果。 */
+export type AutoScheduleProbe = boolean | "unconfirmed" | null;
+
+function davTokens(dav: string | null): Set<string> {
+  return new Set(
+    (dav ?? "")
+      .split(",")
+      .map((token) => token.trim().toLowerCase())
+      .filter((token) => token.length > 0),
+  );
+}
+
 /**
  * OPTIONS の DAV ヘッダー ("1, 2, access-control, calendar-access, calendar-auto-schedule" の形)
  * に calendar-auto-schedule があるか。大文字と小文字は区別しない。
  */
 export function hasAutoSchedule(dav: string | null): boolean {
-  if (!dav) return false;
-  return dav
-    .split(",")
-    .some((token) => token.trim().toLowerCase() === "calendar-auto-schedule");
+  return davTokens(dav).has("calendar-auto-schedule");
+}
+
+/**
+ * 2xx の OPTIONS の DAV ヘッダーから、サーバーが招待を送るかを決める。
+ * false (Orbit が送ってよい) にするのは、CalDAV のサーバー自身の答え (calendar-access を含む)
+ * で、calendar-auto-schedule も古い草案の calendar-schedule も無いときだけ。
+ * ヘッダーが無い (手前のプロキシが OPTIONS に答えた など) は "unconfirmed"。
+ */
+export function autoScheduleOf(dav: string | null): boolean | "unconfirmed" {
+  const tokens = davTokens(dav);
+  if (tokens.has("calendar-auto-schedule")) return true;
+  // 古い草案の語だけを名乗るサーバーは、送るかどうかが分からない。送らない側に倒す。
+  if (tokens.has("calendar-schedule")) return "unconfirmed";
+  if (!tokens.has("calendar-access")) return "unconfirmed";
+  return false;
 }
 
 /** エラーの応答の本文にある CalDAV の前提条件の名前 (valid-calendar-data など)。 */

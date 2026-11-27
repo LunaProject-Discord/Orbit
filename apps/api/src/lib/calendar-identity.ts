@@ -40,7 +40,8 @@ export function ownsCalendar(
 export type CalendarIdentity = {
   /**
    * 自分のアドレス: カレンダーのアカウントのアドレスと、招待メールの送信元のアドレス
-   * (Orbit 内と CalDAV のカレンダー。imip-design 4.4)。どちらも無ければ undefined。
+   * (Orbit 内と CalDAV のカレンダー。imip-design 4.4)、Orbit 内と自動スケジュールでない CalDAV
+   * では利用者の全アカウントのアドレス (M7)。どれも無ければ undefined。
    */
   addresses: ReadonlySet<string> | undefined;
   owned: boolean;
@@ -92,6 +93,14 @@ export async function calendarIdentities(
     if (list && SENDER_SOURCES.has(row.source)) {
       const { sender } = pickImipSender(list, row);
       if (sender) addresses.add(sender.email.trim().toLowerCase());
+      // 利用者の全アカウントのアドレスも自分に数える (送信元を変えた後も、前の送信元で
+      // 主催した予定を自分の予定として扱う。imip レビュー M7)。自動スケジュールの CalDAV は
+      // worker の取り込みと同じく足さない。
+      if (row.providerState?.autoSchedule !== true) {
+        for (const account of list) {
+          for (const address of ownAddresses(account)) addresses.add(address);
+        }
+      }
     }
     map.set(row.calendarId, {
       addresses: addresses.size > 0 ? addresses : undefined,

@@ -707,7 +707,7 @@ describe("CalDAV の招待と出欠 (段取り 8)", () => {
     ).toHaveLength(1);
   });
 
-  it("返さないサーバーと、OPTIONS に対応しない (405) サーバーは false", async () => {
+  it("calendar-access だけを返すサーバーは false。OPTIONS に対応しない (405) サーバーは null (確かめられない。H2)", async () => {
     const plain = setup();
     expect(
       (await workCalendar(plain.provider, plain.ctx)).providerState,
@@ -715,7 +715,7 @@ describe("CalDAV の招待と出欠 (段取り 8)", () => {
     const unsupported = setup({ optionsStatus: 405 });
     expect(
       (await workCalendar(unsupported.provider, unsupported.ctx)).providerState,
-    ).toMatchObject({ autoSchedule: false });
+    ).toMatchObject({ autoSchedule: null });
     // コレクションで失敗したら、ホームでも尋ねる。
     expect(
       unsupported.server.requests.filter(
@@ -874,6 +874,46 @@ describe("CalDAV と招待メールの送信元 (imip-design 4.4)", () => {
     expect(again?.[0]?.organizer?.self).toBe(true);
     const without = await provider.getEvent(ctx, calendar, ref);
     expect(without?.[0]?.organizer?.self).toBe(false);
+  });
+
+  it("M7: 送信元を変えた後も、利用者のほかのアカウントのアドレスで主催した予定は自分の予定のまま", async () => {
+    const { provider, ctx } = setup();
+    const calendar = await workCalendar(provider, ctx);
+    const before: ProviderContext = {
+      ...ctx,
+      imipAddresses: new Map([[calendar.id, "old@mail.example"]]),
+    };
+    const created = await provider.createEvent(before, calendar, {
+      event: makeEventSnapshot({
+        organizer: null,
+        attendees: [attendee("guest@other.example")],
+      }),
+      master: null,
+      exceptions: [],
+      fields: [],
+    });
+    if (created.status !== "ok") throw new Error(created.status);
+    const ref = {
+      remoteId: created.events[0]?.remoteId ?? "",
+      etag: null,
+      uid: created.events[0]?.uid ?? "",
+      recurrenceId: null,
+      parentRemoteId: null,
+    };
+    // 送信元を new@ に変えた。利用者の全アカウントのアドレスがあれば、old@ の予定も自分のもの。
+    const after: ProviderContext = {
+      ...ctx,
+      imipAddresses: new Map([[calendar.id, "new@mail.example"]]),
+      userAddresses: new Set(["old@mail.example", "new@mail.example"]),
+    };
+    expect(
+      (await provider.getEvent(after, calendar, ref))?.[0]?.organizer?.self,
+    ).toBe(true);
+    const withoutUser: ProviderContext = { ...after, userAddresses: undefined };
+    expect(
+      (await provider.getEvent(withoutUser, calendar, ref))?.[0]?.organizer
+        ?.self,
+    ).toBe(false);
   });
 
   it("取り込んだ招待の主催者を、自分のアドレスに書き換えない", async () => {

@@ -37,7 +37,6 @@ type Executor = Pick<
   "select" | "insert" | "execute"
 >;
 
-type AccountRow = typeof accounts.$inferSelect;
 type CalendarRow = typeof calendars.$inferSelect;
 
 export type ImipEnqueueContext = {
@@ -83,6 +82,8 @@ export type ImipEnqueueResult = {
    * 削除のように行が消える操作は、計画に content を入れておく約束。
    */
   incomplete: number;
+  /** 本文を作れずに飛ばしたメッセージ (invite_failed の記録に使う。積めた分は含めない)。 */
+  incompleteMessages: ImipPlanMessage[];
 };
 
 const lower = (email: string) => email.trim().toLowerCase();
@@ -105,6 +106,18 @@ export type CalendarImipSenderResolution =
   | { sender: CalendarImipSender; blocked: null }
   | { sender: null; blocked: "no_sender" | "receive_only" };
 
+/** 送信元の判定に使うアカウントの値 (サイドバーの並び順に並べて渡す)。 */
+export type ImipSenderCandidate = {
+  id: string;
+  email: string;
+  username: string;
+  displayName: string | null;
+  mailEnabled: boolean;
+  protocol: string;
+  smtpHost: string | null;
+  status: string;
+};
+
 /** アカウントの自分のアドレス (email と、@ を含む username)。小文字。 */
 function ownAddresses(account: { email: string; username: string }) {
   return new Set(
@@ -114,7 +127,7 @@ function ownAddresses(account: { email: string; username: string }) {
   );
 }
 
-function toSender(account: AccountRow): CalendarImipSender {
+function toSender(account: ImipSenderCandidate): CalendarImipSender {
   return {
     accountId: account.id,
     email: account.email,
@@ -131,22 +144,13 @@ function toSender(account: AccountRow): CalendarImipSender {
  * 4. 利用者の送信できるアカウントが 1 つだけ → それ
  * 5. 2 つ以上 → サイドバーの並び順 (sortOrder、追加した順) の先頭
  * 6. 1 つも無い → no_sender
- * API の resolveImipSender と worker (CalDAV の self の判定) が同じ結果になるよう、ここに置く。
+ * list は利用者のアカウントをサイドバーの並び順に並べたもの。API (画面と計画) と worker
+ * (CalDAV の self の判定) が同じ結果になるよう、判定はこの関数 1 つに置く (imip レビュー L11)。
  */
-export async function resolveCalendarImipSender(
-  db: Pick<Executor, "select">,
-  calendar: Pick<CalendarRow, "userId" | "accountId" | "imipAccountId">,
-): Promise<CalendarImipSenderResolution> {
-  const list = await db
-    .select()
-    .from(accounts)
-    .where(eq(accounts.userId, calendar.userId))
-    .orderBy(
-      asc(accounts.sortOrder),
-      asc(accounts.createdAt),
-      asc(accounts.id),
-    );
-  const sendable = list.filter(isSendableAccount);
+export function pickCalendarImipSender(
+  list: readonly ImipSenderCandidate[],
+  calendar: Pick<CalendarRow, "accountId" | "imipAccountId">,
+): CalendarImipSenderResolution {
   if (calendar.imipAccountId) {
     const chosen = list.find(
       (account) => account.id === calendar.imipAccountId,
@@ -174,9 +178,66 @@ export async function resolveCalendarImipSender(
       return { sender: null, blocked: "receive_only" };
     }
   }
-  const first = sendable[0];
+  const first = list.find(isSendableAccount);
   if (!first) return { sender: null, blocked: "no_sender" };
   return { sender: toSender(first), blocked: null };
+}
+
+/** 利用者のアカウントを、サイドバーの並び順 (sortOrder → 作った順) で読む。 */
+export async function loadImipSenderCandidates(
+  db: Pick<Executor, "select">,
+  userId: string,
+): Promise<ImipSenderCandidate[]> {
+  return db
+    .select({
+      id: accounts.id,
+      email: accounts.email,
+      username: accounts.username,
+      displayName: accounts.displayName,
+      mailEnabled: accounts.mailEnabled,
+      protocol: accounts.protocol,
+      smtpHost: accounts.smtpHost,
+      status: accounts.status,
+    })
+    .from(accounts)
+    .where(eq(accounts.userId, userId))
+    .orderBy(
+      asc(accounts.sortOrder),
+      asc(accounts.createdAt),
+      asc(accounts.id),
+    );
+}
+
+/** カレンダーの送信元を、利用者のアカウントを読んで決める (pickCalendarImipSender)。 */
+export async function resolveCalendarImipSender(
+  db: Pick<Executor, "select">,
+  calendar: Pick<CalendarRow, "userId" | "accountId" | "imipAccountId">,
+): Promise<CalendarImipSenderResolution> {
+  return pickCalendarImipSender(
+    await loadImipSenderCandidates(db, calendar.userId),
+    calendar,
+  );
+}
+
+/**
+ * 利用者の「自分のアドレス」(全アカウントの email と、@ を含む username。小文字)。
+ * CalDAV の取り込みと API の役割の判定で、主催者・参加者が自分かを決めるのに使う。
+ * いまの送信元だけにすると、送信元を変えた後に、前の送信元で主催した予定が「他人の予定」になる
+ * (imip レビュー M7)。
+ */
+export async function userOwnAddresses(
+  db: Pick<Executor, "select">,
+  userId: string,
+): Promise<Set<string>> {
+  const list = await db
+    .select({ email: accounts.email, username: accounts.username })
+    .from(accounts)
+    .where(eq(accounts.userId, userId));
+  const result = new Set<string>();
+  for (const account of list) {
+    for (const address of ownAddresses(account)) result.add(address);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +388,94 @@ function targetRows(
     ...series.filter((row) => row.recurrenceId === null),
     ...series.filter((row) => row.recurrenceId !== null),
   ];
+}
+
+/** REQUEST (変更) を送る理由になる項目 (参加者の役割の変更も含めて attendees)。 */
+const UPDATE_FIELDS = new Set([
+  "time",
+  "recurrence",
+  "summary",
+  "location",
+  "description",
+  "conferenceUrl",
+  "status",
+  "attendees",
+]);
+
+/**
+ * CalDAV の書き戻しの後に、計画を「相手側に実際に書いた内容」に絞る (imip レビュー M1)。
+ * 競合のマージで負けた項目の計画を、そのまま送らないため。
+ * - writtenFields (変更で書いた項目。null は絞らない): attendees を書いていなければ参加者の
+ *   追加・削除のメッセージを、内容の項目を書いていなければ変更の REQUEST を、status を書いて
+ *   いなければ取り消し (STATUS:CANCELLED) の CANCEL を、recurrence を書いていなければ
+ *   1 回だけの取り消しの CANCEL を捨てる。持ち越したメッセージ (carried) はここでは絞らない。
+ * - rows (書いた後の行): REQUEST は「いまも参加者にいる人」だけに、参加者を外す CANCEL は
+ *   「いま参加者にいない人」だけに送る。宛先が無くなったメッセージは捨てる。
+ */
+export function narrowImipPlan(
+  plan: ImipPlan,
+  writtenFields: readonly string[] | null,
+  rows: readonly EventWithExtras[],
+  eventId: string,
+): ImipPlan {
+  const messages: ImipPlanMessage[] = [];
+  for (const message of plan.messages) {
+    if (message.method === "REPLY") {
+      messages.push(message);
+      continue;
+    }
+    if (writtenFields && !message.carried) {
+      const wrote = (field: string) => writtenFields.includes(field);
+      const keep =
+        message.reason === "add" || message.reason === "remove"
+          ? wrote("attendees")
+          : message.reason === "update"
+            ? writtenFields.some((field) => UPDATE_FIELDS.has(field))
+            : message.reason === "delete"
+              ? message.content !== undefined
+                ? wrote("recurrence")
+                : wrote("status")
+              : true;
+      if (!keep) continue;
+    }
+    // 本文を計画の時点で作ってある削除は、行と突き合わせない (行は消えている)。
+    if (message.content !== undefined) {
+      messages.push(message);
+      continue;
+    }
+    const [target] = targetRows(
+      { ...message, scope: "occurrence" },
+      rows,
+      eventId,
+    ).filter((row) =>
+      message.scope === "series" ? row.recurrenceId === null : true,
+    );
+    if (!target) {
+      // 行が無ければ enqueueImip が本文を作れないメッセージとして扱う。
+      messages.push(message);
+      continue;
+    }
+    const present = new Set(
+      target.attendees.map((attendee) => lower(attendee.email)),
+    );
+    const isRemove = message.method === "CANCEL" && message.reason === "remove";
+    const fits = (address: string) =>
+      isRemove ? !present.has(lower(address)) : present.has(lower(address));
+    if (message.method === "CANCEL" && !isRemove) {
+      messages.push(message);
+      continue;
+    }
+    const to = message.to.filter((entry) => fits(entry.address));
+    if (to.length === 0) continue;
+    messages.push({
+      ...message,
+      to,
+      ...(message.attendees
+        ? { attendees: message.attendees.filter((address) => fits(address)) }
+        : {}),
+    });
+  }
+  return { ...plan, messages };
 }
 
 /** 予定の表示用のタイムゾーン。 */
@@ -538,10 +687,13 @@ export async function enqueueImip(
   eventRows: readonly EventWithExtras[],
   context: ImipEnqueueContext,
 ): Promise<ImipEnqueueResult> {
-  const none = (
-    skipped: ImipEnqueueResult["skipped"],
-    incomplete = 0,
-  ): ImipEnqueueResult => ({ enqueued: 0, skipped, incomplete });
+  const incompleteMessages: ImipPlanMessage[] = [];
+  const none = (skipped: ImipEnqueueResult["skipped"]): ImipEnqueueResult => ({
+    enqueued: 0,
+    skipped,
+    incomplete: incompleteMessages.length,
+    incompleteMessages,
+  });
   if (plan.messages.length === 0) return none(null);
 
   const [account] = await tx
@@ -589,16 +741,20 @@ export async function enqueueImip(
 
   type Pending = { key: string; payload: ImipSendPayload };
   const pending: Pending[] = [];
-  let incomplete = 0;
   let index = 0;
   for (const message of plan.messages) {
     const rows = message.content
       ? []
       : targetRows(message, eventRows, context.eventId);
     if (!message.content && rows.length === 0) {
-      incomplete++;
+      incompleteMessages.push(message);
       continue;
     }
+    // 1 回だけのメッセージの RECURRENCE-ID は、原本の DTSTART の形で書く (L8)。
+    const uid = rows[0]?.uid;
+    const master = uid
+      ? eventRows.find((row) => row.uid === uid && row.recurrenceId === null)
+      : undefined;
     const self = rows
       .flatMap((row) => row.attendees)
       .find((attendee) => attendee.self);
@@ -611,25 +767,36 @@ export async function enqueueImip(
               to.some((entry) => lower(entry.address) === lower(address)),
             )
           : message.attendees;
-      const content =
-        message.content ??
-        buildItip({
-          method: message.method,
-          events: rows.map(imipEventData),
-          ...(attendees ? { attendees } : {}),
-          ...(message.method === "REPLY"
-            ? { comment: self?.comment ?? null }
-            : {}),
-          dtstamp: stamp,
-          defaultTimeZone: context.defaultTimeZone,
-        });
-      const event = primaryEvent(
-        content,
-        context.defaultTimeZone,
-        message.recurrenceId ?? null,
-      );
+      let content: string;
+      try {
+        content =
+          message.content ??
+          buildItip({
+            method: message.method,
+            events: rows.map(imipEventData),
+            ...(attendees ? { attendees } : {}),
+            ...(message.method === "REPLY"
+              ? { comment: self?.comment ?? null }
+              : {}),
+            dtstamp: stamp,
+            defaultTimeZone: context.defaultTimeZone,
+            masterTiming: master
+              ? { allDay: master.allDay, startTimeZone: master.startTimeZone }
+              : null,
+          });
+      } catch {
+        // 読めない日時 (壊れた EXDATE など) で本文を作れない。積まずに記録する (L7)。
+        content = "";
+      }
+      const event = content
+        ? primaryEvent(
+            content,
+            context.defaultTimeZone,
+            message.recurrenceId ?? null,
+          )
+        : null;
       if (!event) {
-        incomplete++;
+        incompleteMessages.push({ ...message, to });
         continue;
       }
       // From = 役のアドレス (REQUEST / CANCEL は ORGANIZER、REPLY は自分の ATTENDEE)。4.2。
@@ -680,7 +847,7 @@ export async function enqueueImip(
       });
     }
   }
-  if (pending.length === 0) return none(null, incomplete);
+  if (pending.length === 0) return none(null);
 
   if (
     await imipLimitExceeded(tx, context.userId, plan, {
@@ -700,7 +867,7 @@ export async function enqueueImip(
           eq(outbox.idempotencyKey, pending[0]?.key ?? ""),
         ),
       );
-    if (!already) return none("limit", incomplete);
+    if (!already) return none("limit");
   }
 
   let enqueued = 0;
@@ -720,5 +887,10 @@ export async function enqueueImip(
   if (enqueued > 0) {
     await tx.execute(sql`select pg_notify(${CHANNEL_OUTBOX}, ${account.id})`);
   }
-  return { enqueued, skipped: null, incomplete };
+  return {
+    enqueued,
+    skipped: null,
+    incomplete: incompleteMessages.length,
+    incompleteMessages,
+  };
 }

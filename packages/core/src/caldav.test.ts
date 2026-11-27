@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
+  autoScheduleOf,
   CaldavAuthError,
   CaldavClient,
   CaldavXmlError,
@@ -140,6 +141,24 @@ describe("CaldavClient", () => {
       expect(hasAutoSchedule(null)).toBe(false);
     });
 
+    it("autoScheduleOf: false は calendar-access があり、どちらの語も無いときだけ (H2)", () => {
+      expect(
+        autoScheduleOf("1, 2, calendar-access, calendar-auto-schedule"),
+      ).toBe(true);
+      expect(autoScheduleOf("1, 2, access-control, calendar-access")).toBe(
+        false,
+      );
+      // ヘッダーが無い・空 (手前のプロキシが答えた) は確かめられない。
+      expect(autoScheduleOf(null)).toBe("unconfirmed");
+      expect(autoScheduleOf("")).toBe("unconfirmed");
+      // calendar-access が無い (CalDAV のサーバーの答えでない)。
+      expect(autoScheduleOf("1, 2")).toBe("unconfirmed");
+      // 古い草案の語だけ。
+      expect(autoScheduleOf("1, calendar-access, calendar-schedule")).toBe(
+        "unconfirmed",
+      );
+    });
+
     it("ヘッダーにあれば true、無ければ false", async () => {
       const seen: string[] = [];
       const yes = clientWith(
@@ -159,6 +178,11 @@ describe("CaldavClient", () => {
       expect(
         await no.supportsAutoSchedule(["https://dav.example.com/cal/"]),
       ).toBe(false);
+      // 2xx でも DAV ヘッダーが無ければ確かめられない。
+      const bare = clientWith(() => new Response(null, { status: 200 }));
+      expect(
+        await bare.supportsAutoSchedule(["https://dav.example.com/cal/"]),
+      ).toBe("unconfirmed");
     });
 
     it("どれも一時的に失敗したら null (調べられなかった)。4xx が混じっても一時的な失敗があれば null", async () => {
@@ -190,7 +214,7 @@ describe("CaldavClient", () => {
       ).toBeNull();
     });
 
-    it("コレクションで失敗したらホームを試し、どれも 4xx なら false", async () => {
+    it("コレクションで失敗したらホームを試し、どれも 4xx なら unconfirmed", async () => {
       const seen: string[] = [];
       const fallback = clientWith((url) => {
         if (url.endsWith("/cal/")) throw new Error("ECONNRESET");
@@ -208,7 +232,7 @@ describe("CaldavClient", () => {
       const failing = clientWith(() => new Response(null, { status: 405 }));
       expect(
         await failing.supportsAutoSchedule(["https://dav.example.com/cal/"]),
-      ).toBe(false);
+      ).toBe("unconfirmed");
     });
 
     it("401 は認証の失敗として投げる", async () => {

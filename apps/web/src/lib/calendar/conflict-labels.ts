@@ -230,6 +230,8 @@ export function errorReasonLabel(code: string | null): string {
       return "このカレンダーからは招待を送れません";
     case "invite_limit":
       return "招待メールの送信数が上限に達しました。しばらくしてからもう一度保存してください";
+    case "invite_too_many":
+      return "1 回の変更で招待メールを送れる宛先の上限 (200 件) を超えています。参加者を減らしてください";
     default:
       return code.startsWith("http_")
         ? `サーバーの応答 ${code.slice(5)}`

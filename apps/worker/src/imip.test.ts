@@ -16,7 +16,7 @@ import {
   parseICalendar,
 } from "@orbit/core";
 import {
-  type accounts,
+  accounts,
   calendars,
   type Database,
   enqueueImip,
@@ -27,10 +27,11 @@ import {
   imipLimitExceeded,
   imipRecipientUsage,
   mailboxes,
+  narrowImipPlan,
   outbox,
   resolveCalendarImipSender,
 } from "@orbit/db";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { simpleParser } from "mailparser";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { calendarImipAddresses } from "./calendar/account-calendar-sync.js";
@@ -46,7 +47,7 @@ import {
 } from "./calendar/testing/test-db.js";
 import { buildMime } from "./mime.js";
 import { processOutbox } from "./outbox.js";
-import { processSends, type SendOutcome } from "./send.js";
+import { failStaleImipSends, processSends, type SendOutcome } from "./send.js";
 
 const STAMP = "2026-11-27T03:00:00.000Z";
 
@@ -302,7 +303,12 @@ describe.skipIf(!adminUrl)("招待メール (imip_send)", () => {
       const first = await db.transaction((tx) =>
         enqueueImip(tx, p, rows, context),
       );
-      expect(first).toEqual({ enqueued: 1, skipped: null, incomplete: 0 });
+      expect(first).toEqual({
+        enqueued: 1,
+        skipped: null,
+        incomplete: 0,
+        incompleteMessages: [],
+      });
       const again = await db.transaction((tx) =>
         enqueueImip(tx, p, rows, context),
       );
@@ -638,7 +644,12 @@ describe.skipIf(!adminUrl)("招待メール (imip_send)", () => {
           },
         ),
       );
-      expect(result).toEqual({ enqueued: 1, skipped: null, incomplete: 1 });
+      expect(result).toMatchObject({
+        enqueued: 1,
+        skipped: null,
+        incomplete: 1,
+        incompleteMessages: [{ method: "CANCEL", scope: "occurrence" }],
+      });
       const [row] = await imipRows(mail.id);
       const payload = row?.payload as unknown as ImipSendPayload;
       expect(payload.message.calendar?.content).toBe(content);
@@ -1014,10 +1025,22 @@ describe.skipIf(!adminUrl)("招待メール (imip_send)", () => {
       expect(await conflictsOf(userId)).toHaveLength(0);
     });
 
+    it("ほかの worker が送っている最中 (processing になったばかり) の行は取らない (L6)", async () => {
+      const { mail } = await enqueueOne("REQUEST", {
+        status: "processing",
+        attempts: 1,
+      });
+      const { send, result } = run(mail, { status: "sent" });
+      expect((await result).sent).toBe(0);
+      expect(send).not.toHaveBeenCalled();
+      expect((await allRows(mail.id))[0]?.status).toBe("processing");
+    });
+
     it("送信の途中で止まった行 (processing) は送り直し、上限を超えたら失敗にする", async () => {
       const { mail } = await enqueueOne("REQUEST", {
         status: "processing",
         attempts: 1,
+        updatedAt: new Date(Date.now() - 60 * 60_000),
       });
       const { send, result } = run(mail, { status: "sent" });
       expect((await result).sent).toBe(1);
@@ -1029,12 +1052,53 @@ describe.skipIf(!adminUrl)("招待メール (imip_send)", () => {
       const exhausted = await enqueueOne("REQUEST", {
         status: "processing",
         attempts: 5,
+        updatedAt: new Date(Date.now() - 60 * 60_000),
       });
       const second = run(exhausted.mail, { status: "sent" });
       expect((await second.result).failed).toBe(1);
       expect(second.send).not.toHaveBeenCalled();
       expect((await allRows(exhausted.mail.id))[0]?.status).toBe("failed");
       expect(await conflictsOf(exhausted.userId)).toHaveLength(1);
+    });
+
+    it("カレンダーが消えていても取り消し (CANCEL) は送り、招待 (REQUEST) は送らない (M9)", async () => {
+      const request = await enqueueOne();
+      await db.delete(calendars).where(eq(calendars.id, request.calendar.id));
+      const first = run(request.mail, { status: "sent" });
+      expect((await first.result).failed).toBe(1);
+      expect(first.send).not.toHaveBeenCalled();
+
+      const cancel = await enqueueOne();
+      await db
+        .update(outbox)
+        .set({
+          payload: sql`jsonb_set(${outbox.payload}, '{imip,method}', '"CANCEL"')`,
+        })
+        .where(eq(outbox.accountId, cancel.mail.id));
+      await db.delete(calendars).where(eq(calendars.id, cancel.calendar.id));
+      const second = run(cancel.mail, { status: "sent" });
+      expect((await second.result).sent).toBe(1);
+      expect(second.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("同期が止まった送信元 (再ログイン待ち) の招待は、1 時間たったら失敗にして記録する (M8)", async () => {
+      const { mail, userId } = await enqueueOne();
+      await db
+        .update(accounts)
+        .set({ status: "auth_required" })
+        .where(eq(accounts.id, mail.id));
+      // まだ 1 時間たっていない。
+      expect(await failStaleImipSends(db)).toBe(0);
+      expect((await allRows(mail.id))[0]?.status).toBe("pending");
+      expect(
+        await failStaleImipSends(db, new Date(Date.now() + 2 * 60 * 60_000)),
+      ).toBeGreaterThanOrEqual(1);
+      const [row] = await allRows(mail.id);
+      expect(row?.status).toBe("failed");
+      const conflicts = await conflictsOf(userId);
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]?.reason).toContain("再ログイン");
+      expect(conflicts[0]?.lost).toMatchObject({ outboxId: row?.id });
     });
 
     it("送る直前に scheduling が mail でなくなっていたら送らない", async () => {
@@ -1263,6 +1327,197 @@ describe.skipIf(!adminUrl)("招待メール (imip_send)", () => {
         eventId: id,
         lost: { outboxId: null, method: "REQUEST", to: ["a@other.example"] },
       });
+    });
+
+    it("M1: 書いた後の行と項目に計画を絞る (残った人に外した通知、いない人に招待を送らない)", async () => {
+      const { userId, mail, calendar } = await setup();
+      const { id, rows } = await insertEvent(userId, calendar, {
+        organizer: mail.email,
+        attendees: [{ email: "b@other.example" }, { email: "c@other.example" }],
+      });
+      const base = plan(mail.id, [
+        {
+          method: "REQUEST",
+          to: [{ address: "c@other.example" }, { address: "d@other.example" }],
+          scope: "series",
+          reason: "update",
+        },
+        {
+          method: "CANCEL",
+          to: [{ address: "b@other.example" }, { address: "e@other.example" }],
+          attendees: ["b@other.example", "e@other.example"],
+          scope: "series",
+          reason: "remove",
+        },
+      ]);
+      // 参加者の変更が相手側の新しい変更に負けた (time だけ書けた)。
+      const timeOnly = narrowImipPlan(base, ["time"], rows, id);
+      expect(timeOnly.messages).toHaveLength(1);
+      expect(timeOnly.messages[0]?.to).toEqual([
+        { address: "c@other.example" },
+      ]);
+      // 参加者も書けたなら、いまもいる b には取り消しを送らず、e にだけ送る。
+      const both = narrowImipPlan(base, ["attendees", "time"], rows, id);
+      expect(both.messages[1]).toMatchObject({
+        method: "CANCEL",
+        to: [{ address: "e@other.example" }],
+        attendees: ["e@other.example"],
+      });
+      // 内容の項目が 1 つも書けていなければ、変更の REQUEST も捨てる。
+      expect(narrowImipPlan(base, ["reminders"], rows, id).messages).toEqual(
+        [],
+      );
+    });
+
+    it("M2: 同じ予定に後ろの変更が残っていれば持ち越し、後ろが確定して失敗したら送らずに記録する", async () => {
+      const { userId, mail, dav, calendar, fake, run } = await setup();
+      const { id } = await insertEvent(userId, calendar, {
+        organizer: mail.email,
+        attendees: [{ email: "a@other.example" }],
+      });
+      await enqueueEvent(
+        dav.id,
+        "event_create",
+        {
+          eventId: id,
+          calendarId: calendar.id,
+          imip: plan(mail.id, [request([{ address: "a@other.example" }])]),
+        },
+        `event_create:${id}`,
+      );
+      await enqueueEvent(
+        dav.id,
+        "event_update",
+        { eventId: id, calendarId: calendar.id, fields: ["summary"] },
+        `event_update:${id}:1`,
+      );
+      fake.enqueue("updateEvent", {
+        status: "rejected",
+        reason: "サーバーに拒否されました",
+      });
+      expect(await run()).toMatchObject({ done: 1, failed: 1 });
+      expect(await imipRows(mail.id)).toHaveLength(0);
+      const conflicts = (await conflictsOf(userId)).filter(
+        (item) => item.kind === "invite_failed",
+      );
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]?.reason).toContain("後の変更を反映できなかった");
+    });
+
+    it("M2: 後ろの変更が書けたら、持ち越した招待をその時点の行から 1 回だけ積む", async () => {
+      const { userId, mail, dav, calendar, run } = await setup();
+      const { id } = await insertEvent(userId, calendar, {
+        organizer: mail.email,
+        attendees: [{ email: "a@other.example" }],
+      });
+      await enqueueEvent(
+        dav.id,
+        "event_create",
+        {
+          eventId: id,
+          calendarId: calendar.id,
+          imip: plan(mail.id, [request([{ address: "a@other.example" }])]),
+        },
+        `event_create:${id}`,
+      );
+      await enqueueEvent(
+        dav.id,
+        "event_update",
+        { eventId: id, calendarId: calendar.id, fields: ["reminders"] },
+        `event_update:${id}:1`,
+      );
+      expect(await run()).toMatchObject({ done: 2, failed: 0 });
+      const list = await imipRows(mail.id);
+      expect(list.map((row) => row.idempotencyKey)).toEqual([
+        `imip:event_update:${id}:1:REQUEST:0`,
+      ]);
+    });
+
+    it("M4: 不参加で返事をして削除しても、計画の本文で主催者へ REPLY を積む", async () => {
+      const { userId, mail, dav, calendar, fake, run } = await setup();
+      fake.putRemote(calendar.remoteId as string, [
+        {
+          remoteId: "inv",
+          summary: "打ち合わせ",
+          organizer: { email: "boss@other.example" },
+          attendees: [
+            {
+              email: "boss@other.example",
+              name: null,
+              role: "chair",
+              status: "accepted",
+              self: false,
+            },
+            {
+              email: mail.email,
+              name: null,
+              role: "required",
+              status: "needs_action",
+              self: true,
+            },
+          ],
+        },
+      ]);
+      const goneId = crypto.randomUUID();
+      const content = buildItip({
+        method: "REPLY",
+        events: [
+          {
+            ...sampleEvent,
+            uid: "inv@fake",
+            organizer: { email: "boss@other.example" },
+            attendees: [
+              {
+                email: mail.email,
+                name: null,
+                role: "required",
+                status: "declined",
+              },
+            ],
+          },
+        ],
+        attendees: [mail.email],
+        dtstamp: new Date(STAMP),
+        defaultTimeZone: "Asia/Tokyo",
+      });
+      await db.insert(outbox).values({
+        accountId: dav.id,
+        kind: "event_respond",
+        payload: {
+          eventId: goneId,
+          calendarId: calendar.id,
+          status: "declined",
+          comment: null,
+          target: {
+            eventId: goneId,
+            calendarId: calendar.id,
+            remoteId: "inv",
+            etag: null,
+            uid: "inv@fake",
+            recurrenceId: null,
+            parentRemoteId: null,
+          },
+          imip: plan(mail.id, [
+            {
+              method: "REPLY",
+              to: [{ address: "boss@other.example" }],
+              scope: "occurrence",
+              attendees: [mail.email],
+              reason: "respond",
+              recurrenceId: null,
+              content,
+            },
+          ]),
+        },
+        idempotencyKey: `event_respond:${goneId}`,
+      });
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      const list = await imipRows(mail.id);
+      expect(list).toHaveLength(1);
+      const payload = list[0]?.payload as unknown as ImipSendPayload;
+      expect(payload.imip.method).toBe("REPLY");
+      expect(payload.message.to).toEqual([{ address: "boss@other.example" }]);
+      expect(userId).toBeTruthy();
     });
 
     it("自動スケジュールに変わったカレンダーでは積まず、記録も残さない", async () => {

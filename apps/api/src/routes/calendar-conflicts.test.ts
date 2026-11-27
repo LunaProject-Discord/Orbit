@@ -266,14 +266,33 @@ describe.skipIf(!adminUrl)("反映されなかった変更の API", () => {
     ).toBe(404);
   });
 
+  const imipPayload = (method: string, reason: string) => ({
+    message: {
+      to: [{ address: "a@example.com" }],
+      calendar: { method, content: "" },
+    },
+    imip: {
+      method,
+      reason,
+      userId,
+      calendarId: googleCalendarId,
+      eventId: randomUUID(),
+      uid: `${randomUUID()}@orbit`,
+      recurrenceId: null,
+      sequence: 0,
+      title: "定例",
+    },
+  });
+
   it("招待メールの失敗は resend-invite で outbox の行を pending に戻す。ほかは 409、ほかの利用者は 404", async () => {
     const [failed] = await db
       .insert(outbox)
       .values({
         accountId,
         kind: "imip_send",
-        payload: { message: { to: [{ address: "a@example.com" }] } },
-        idempotencyKey: `imip:event_create:${randomUUID()}:REQUEST:0`,
+        // 消した予定の取り消し (予定がもう無いので、送り直してよい)。
+        payload: imipPayload("CANCEL", "delete"),
+        idempotencyKey: `imip:event_delete:${randomUUID()}:CANCEL:0`,
         status: "failed",
         attempts: 5,
         lastError: "550 拒否",
@@ -334,6 +353,29 @@ describe.skipIf(!adminUrl)("反映されなかった変更の API", () => {
     expect(
       (await call("POST", `/conflicts/${lost.id}/resend-invite`)).status,
     ).toBe(409);
+    // 予定が消えた後の招待 (REQUEST) は送り直さない (L4)。
+    const [staleRequest] = await db
+      .insert(outbox)
+      .values({
+        accountId,
+        kind: "imip_send",
+        payload: imipPayload("REQUEST", "create"),
+        idempotencyKey: `imip:event_create:${randomUUID()}:REQUEST:0`,
+        status: "failed",
+      })
+      .returning({ id: outbox.id });
+    const stale = await insertConflict({
+      kind: "invite_failed",
+      fields: [],
+      lost: {
+        outboxId: staleRequest?.id,
+        method: "REQUEST",
+        to: ["a@example.com"],
+      },
+    });
+    expect(
+      (await call("POST", `/conflicts/${stale.id}/resend-invite`)).body,
+    ).toEqual({ error: "not_resendable" });
     expect(
       (await call("POST", `/conflicts/${randomUUID()}/resend-invite`)).status,
     ).toBe(404);

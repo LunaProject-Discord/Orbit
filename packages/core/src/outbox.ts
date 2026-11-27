@@ -312,8 +312,16 @@ export type ImipPlanMessage = {
    * 送信の記録 (ImipSendPayload.imip.recurrenceId) に使う。
    */
   recurrenceId?: string | null;
-  /** 行が消える操作 (削除、1 回だけの取り消し) では、計画を作った時点の iCalendar を入れる。 */
+  /**
+   * 行が消える操作 (削除、1 回だけの取り消し) と返事 (REPLY。書き戻しの前に行が消えても送れるように)
+   * では、計画を作った時点の iCalendar を入れる。
+   */
   content?: string;
+  /**
+   * CalDAV で、前の書き戻しから後ろの書き戻しへ持ち越したメッセージ (imip レビュー M2)。
+   * 後ろの行で書いた項目による絞り込みはしない。後ろの行が確定して失敗したら invite_failed を残す。
+   */
+  carried?: true;
 };
 
 /** API が変更を受け付けた時点で決める「何を誰に送るか」。CalDAV では event_* の payload の imip に載せる。 */

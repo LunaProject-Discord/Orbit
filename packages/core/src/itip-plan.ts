@@ -24,6 +24,8 @@ export type ImipEvent = Omit<ICalEventData, "organizer" | "attendees"> & {
   organizer: { email: string; name?: string; self?: boolean } | null;
   attendees: readonly (ICalEventData["attendees"][number] & {
     self: boolean;
+    /** 返事のコメント (自分の REPLY の COMMENT に書く)。 */
+    comment?: string | null;
   })[];
 };
 
@@ -118,6 +120,17 @@ function recurringOf(event: ICalEventData): RecurringEvent | null {
   };
 }
 
+/** 残っている参加者の役割 (ROLE) が変わったか (名前だけの変更は送らない。L9)。 */
+function rolesChanged(before: ImipEvent, after: ImipEvent): boolean {
+  const roles = new Map(
+    before.attendees.map((attendee) => [lower(attendee.email), attendee.role]),
+  );
+  return after.attendees.some((attendee) => {
+    const previous = roles.get(lower(attendee.email));
+    return previous !== undefined && previous !== attendee.role;
+  });
+}
+
 /** 最後の回が終わっている (これからの回が 1 つも無い) か。読めない予定は終わっていない側に倒す。 */
 function hasEnded(
   event: ICalEventData,
@@ -138,23 +151,41 @@ function hasEnded(
     }
     return Temporal.Instant.compare(recurring.endAt, now.toISOString()) <= 0;
   }
+  // 終わりの無い繰り返し (UNTIL も COUNT も無い RRULE) は、展開せずに続いているとみなす。
+  if (event.rrule && !/(^|[;:])(UNTIL|COUNT)=/i.test(event.rrule)) return false;
+  const nowIso = now.toISOString();
+  const endsAfterNow = (
+    occurrence: ReturnType<typeof expandOccurrences>[number],
+  ) =>
+    occurrence.allDay
+      ? Temporal.PlainDate.compare(occurrence.endDate, today) > 0
+      : Temporal.Instant.compare(occurrence.endAt, nowIso) > 0;
   try {
-    const occurrences = expandOccurrences(
+    // 明日以降に掛かる回が 1 つでもあれば終わっていない (EXDATE で除いた回の分だけ多めに探す)。
+    const tomorrow = today.add({ days: 1 });
+    const later = expandOccurrences(
+      recurring,
+      [],
+      {
+        from: tomorrow.toString(),
+        to: today.add({ years: 100 }).toString(),
+        timeZone: defaultTimeZone,
+      },
+      { defaultTimeZone, limit: (event.exdates?.length ?? 0) + 1 },
+    );
+    if (later.length > 0) return false;
+    // 今日の回は、終わった回を飛ばして「いまより後に終わる回」があるかを見る。
+    const todays = expandOccurrences(
       recurring,
       [],
       {
         from: today.toString(),
-        to: today.add({ years: 100 }).toString(),
+        to: tomorrow.toString(),
         timeZone: defaultTimeZone,
       },
-      // EXDATE で除いた回の分だけ多めに探す。
-      { defaultTimeZone, limit: (event.exdates?.length ?? 0) + 1 },
+      { defaultTimeZone },
     );
-    return !occurrences.some((occurrence) =>
-      occurrence.allDay
-        ? Temporal.PlainDate.compare(occurrence.endDate, today) > 0
-        : Temporal.Instant.compare(occurrence.endAt, now.toISOString()) > 0,
-    );
+    return !todays.some(endsAfterNow);
   } catch {
     return false;
   }
@@ -242,6 +273,16 @@ export function planImip(
       attendees: [me.email],
       reason: "respond",
       recurrenceId: after.recurrenceId,
+      // CalDAV では書き戻しの後に積むので、その前に行が消えても (不参加で返事をして削除)
+      // 送れるよう、受け付けた時点で本文を作っておく (imip レビュー M4)。
+      content: buildItip({
+        method: "REPLY",
+        events: [after],
+        attendees: [me.email],
+        comment: me.comment ?? null,
+        dtstamp: accepted.stamp,
+        defaultTimeZone: zone,
+      }),
     });
   } else if (role !== "organizer") {
     return null;
@@ -296,8 +337,24 @@ export function planImip(
           recurrenceId: after.recurrenceId,
         });
       }
+    } else if (before.status === "cancelled") {
+      // 取り消しを戻した (API が SEQUENCE を上げる)。全員にもう一度 REQUEST を送る (L2)。
+      if (after.status === "cancelled" || hasEnded(after, now, zone)) {
+        return null;
+      }
+      const to = recipients(after);
+      if (to.length > 0) {
+        messages.push({
+          method: "REQUEST",
+          to,
+          scope: scopeOf(after),
+          reason: "update",
+          ...(after.recurrenceId === null
+            ? {}
+            : { recurrenceId: after.recurrenceId }),
+        });
+      }
     } else {
-      if (before.status === "cancelled") return null;
       if (hasEnded(before, now, zone) && hasEnded(after, now, zone)) {
         return null;
       }
@@ -350,7 +407,8 @@ export function planImip(
           text(before.location) !== text(after.location) ||
           text(before.description) !== text(after.description) ||
           text(before.conferenceUrl) !== text(after.conferenceUrl) ||
-          before.status !== after.status;
+          before.status !== after.status ||
+          rolesChanged(before, after);
         if (
           kept.length > 0 &&
           (timeChanged || recurrenceChanged || contentChanged)

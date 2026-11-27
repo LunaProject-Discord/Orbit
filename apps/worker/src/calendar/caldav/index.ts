@@ -63,11 +63,12 @@ type PageState = {
 type CaldavCalendarState = {
   syncCollection?: boolean;
   /**
-   * サーバーが calendar-auto-schedule (RFC 6638) を返した。API はこれで、参加者を足せるか
-   * (scheduling が server か none か) を決める。OPTIONS が一時的に失敗して調べられなかった
-   * ときは鍵を書かない (保存は浅く重ねるので前の値が残る。初めてのカレンダーは none 扱い)。
+   * サーバーが calendar-auto-schedule (RFC 6638) を返したら true、送らないと分かったら false
+   * (Orbit が招待メールを送る。core の autoScheduleOf)。確かめられなかったら null (none 扱い。
+   * 前に false と書いていても消す)。OPTIONS が一時的に失敗して調べられなかったときは鍵を
+   * 書かない (保存は浅く重ねるので前の値が残る。初めてのカレンダーは none 扱い)。
    */
-  autoSchedule?: boolean;
+  autoSchedule?: boolean | null;
 };
 
 function startUrlOf(account: AccountRow): string {
@@ -189,14 +190,16 @@ export function createCaldavProvider(
   /**
    * 自分のアドレス: アカウントの email と @ を含む username に、カレンダーの招待メールの
    * 送信元のアドレス (imip-design 4.4。メールアカウントのアドレスで主催・参加した予定を、
-   * 取り込みのたびに他人の予定にしないため) を足す。
+   * 取り込みのたびに他人の予定にしないため) を足す。自動スケジュールでないカレンダーでは、
+   * 利用者の全アカウントのアドレスも足す (送信元を変えた後も自分の予定のまま。M7)。
    */
   function selfAddresses(
     account: AccountRow,
     imipAddress: string | null | undefined,
+    userAddresses: ReadonlySet<string> = new Set(),
   ): Set<string> {
     return new Set(
-      [account.email, account.username, imipAddress ?? ""]
+      [account.email, account.username, imipAddress ?? "", ...userAddresses]
         .filter((value) => value.includes("@"))
         .map((value) => value.trim().toLowerCase()),
     );
@@ -213,7 +216,13 @@ export function createCaldavProvider(
     });
     const account = ctx?.account ?? null;
     const self = account
-      ? selfAddresses(account, ctx?.imipAddresses?.get(calendar.id))
+      ? selfAddresses(
+          account,
+          ctx?.imipAddresses?.get(calendar.id),
+          calendar.providerState?.autoSchedule === true
+            ? undefined
+            : ctx?.userAddresses,
+        )
       : new Set<string>();
     return parsed.events.map((event) => ({
       ...event,
@@ -448,12 +457,14 @@ export function createCaldavProvider(
           (collection) => collection?.supportsEvents,
         );
         // null = 一時的に調べられなかった。前の値を上書きしない (レビュー 8)。
-        const autoSchedule = firstCollection
+        // "unconfirmed" = 送るかどうかを確かめられない。null を書いて none に倒す (imip レビュー H2)。
+        const probe = firstCollection
           ? await client.supportsAutoSchedule([
               firstCollection.url,
               ...found.homeUrls,
             ])
-          : false;
+          : "unconfirmed";
+        const autoSchedule = probe === "unconfirmed" ? null : probe;
         const seen = new Set<string>();
         const result: RemoteCalendar[] = [];
         for (const collection of collections) {
@@ -473,7 +484,7 @@ export function createCaldavProvider(
             kind: "normal",
             providerState: {
               syncCollection: collection.supportsSyncCollection,
-              ...(autoSchedule === null ? {} : { autoSchedule }),
+              ...(probe === null ? {} : { autoSchedule }),
             } satisfies CaldavCalendarState,
           });
         }

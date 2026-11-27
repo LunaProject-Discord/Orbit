@@ -13,6 +13,7 @@ import {
   listEventKeys,
   resolveCalendarImipSender,
   upsertAccountCalendars,
+  userOwnAddresses,
 } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import { recordChanges } from "../changes.js";
@@ -293,7 +294,10 @@ export class AccountCalendarSync {
     const ctx: ProviderContext = {
       ...this.context(),
       ...(this.provider.source === "caldav"
-        ? { imipAddresses: await calendarImipAddresses(this.db, this.account) }
+        ? {
+            imipAddresses: await calendarImipAddresses(this.db, this.account),
+            userAddresses: await userOwnAddresses(this.db, this.account.userId),
+          }
         : {}),
     };
     const log = (message: string) => this.log(message);

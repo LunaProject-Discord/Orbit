@@ -739,8 +739,10 @@ export function CalendarApp({ user }: { user: User }) {
           error instanceof OfflineUnavailableError
           ? "接続していないので、いまは操作できません。接続してからもう一度お試しください。"
           : error instanceof ApiError && error.code === "not_resendable"
-            ? "このメールはもう送り直せません。閉じてください。"
-            : "操作できませんでした。もう一度お試しください。",
+            ? "このメールはもう送り直せません (予定が変わったか、送る相手が変わっています)。閉じてください。"
+            : error instanceof ApiError && error.code === "invite_limit"
+              ? "招待メールの送信数が上限に達しました。しばらくしてからもう一度お試しください。"
+              : "操作できませんでした。もう一度お試しください。",
       );
     } finally {
       setConflictBusy(null);
