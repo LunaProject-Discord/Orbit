@@ -19,7 +19,11 @@ import {
 
 /** リマインダーの分の上限 (28 日前)。これより大きい値は丸める。 */
 export const REMINDER_MAX_MINUTES = 28 * 24 * 60;
-/** 終日の予定の、利用者ごとの既定に使える負の分の下限 (当日 23:59 まで)。 */
+/**
+ * 終日の予定のリマインダーの分の下限 (当日 23:59 まで)。終日の予定の minutes は「開始日の 0:00
+ * (壁時計) から何分前か」で、負は当日 0:00 より後 (当日 9:00 = -540)。利用者ごとの既定と
+ * 予定ごとの両方に使える (設計 13 章の 1 を B に変更、2026-11-27)。
+ */
 export const ALL_DAY_MIN_MINUTES = -(24 * 60 - 1);
 /** 鳴らす時刻をこれより過ぎて見つけた通知は鳴らさない (遅れた通知)。 */
 export const REMINDER_LATE_LIMIT_MS = 15 * 60_000;
@@ -55,12 +59,13 @@ export const DEFAULT_REMINDER_TIME_ZONE = "Asia/Tokyo";
  */
 export const MIN_REMINDER_LIFETIME_MS = 15 * 60_000;
 
-/** 終日の予定の、予定ごとの選択肢 (前日 9:00 / 前日 17:00 / 2 日前 9:00 / 1 週間前 9:00)。 */
-export const ALL_DAY_REMINDER_MINUTES = [900, 420, 2340, 9540] as const;
 /**
- * 終日の予定の、利用者ごとの既定の選択肢 (null = オフ、当日 9:00、前日 9:00、前日 17:00)。
- * 「当日 9:00」は負の分になるので、ここ (利用者ごとの既定) でだけ使う (設計 13 章の 1、推奨 A)。
+ * 終日の予定の、予定ごとの選択肢 (当日 9:00 / 前日 9:00 / 前日 17:00 / 2 日前 9:00 /
+ * 1 週間前 9:00)。「当日 9:00」は負の分 (-540)。画面は、これ以外の値 (-1439〜) も
+ * allDayReminderTime で「何日前の何時」として出せる。
  */
+export const ALL_DAY_REMINDER_MINUTES = [-540, 900, 420, 2340, 9540] as const;
+/** 終日の予定の、利用者ごとの既定の選択肢 (null = オフ、当日 9:00、前日 9:00、前日 17:00)。 */
 export const ALL_DAY_DEFAULT_CHOICES = [null, -540, 900, 420] as const;
 /** 終日の予定の、利用者ごとの既定の標準 (当日 9:00)。 */
 export const DEFAULT_ALL_DAY_REMINDER = { minutes: -540 } as const;
@@ -157,6 +162,75 @@ export type PlannedReminder = {
   | { allDay: false; startAt: string; endAt: string }
   | { allDay: true; startDate: string; endDate: string }
 );
+
+// ---------------------------------------------------------------------------
+// 分の範囲 (終日は負を許す)
+// ---------------------------------------------------------------------------
+
+/** リマインダーの分の下限。終日は -1439 (当日 23:59)、終日以外は 0 (開始の時刻)。 */
+export function reminderMinMinutes(allDay: boolean): number {
+  return allDay ? ALL_DAY_MIN_MINUTES : 0;
+}
+
+/**
+ * リマインダーの分を、予定の種類ごとの範囲に丸める (整数にし、下限〜28 日前)。
+ * 終日以外の負の分は 0 にする。数でなければ null。
+ */
+export function clampReminderMinutes(
+  minutes: number,
+  allDay: boolean,
+): number | null {
+  if (!Number.isFinite(minutes)) return null;
+  return Math.min(
+    Math.max(Math.round(minutes), reminderMinMinutes(allDay)),
+    REMINDER_MAX_MINUTES,
+  );
+}
+
+/**
+ * 終日の予定の minutes を「開始日の何日前の何時何分」(壁時計) に直す。daysBefore = 0 は当日、
+ * 1 は前日。例: -540 → { daysBefore: 0, hour: 9, minute: 0 }、900 → { 1, 9, 0 }。
+ */
+export function allDayReminderTime(minutes: number): {
+  daysBefore: number;
+  hour: number;
+  minute: number;
+} {
+  const rounded = Math.round(minutes);
+  const daysBefore = Math.max(0, Math.ceil(rounded / (24 * 60)));
+  const ofDay = daysBefore * 24 * 60 - rounded;
+  return {
+    daysBefore,
+    hour: Math.floor(ofDay / 60),
+    minute: ofDay % 60,
+  };
+}
+
+/** allDayReminderTime の逆。「開始日の daysBefore 日前の hour:minute」を minutes にする。 */
+export function allDayReminderMinutes(time: {
+  daysBefore: number;
+  hour: number;
+  minute: number;
+}): number {
+  return time.daysBefore * 24 * 60 - (time.hour * 60 + time.minute);
+}
+
+/**
+ * 負の分 (終日の予定の当日 0:00 より後) を書けないプロバイダ (Google、Microsoft) へ書く
+ * リマインダー。負の分を除く。除いた分は Orbit の中だけの通知になる。
+ */
+export function nonNegativeReminders<T extends { minutes: number }>(
+  reminders: readonly T[],
+): T[] {
+  return reminders.filter((reminder) => reminder.minutes >= 0);
+}
+
+/** Orbit の中だけの通知 (負の分。Google・Microsoft には書けない)。 */
+export function negativeReminders<T extends { minutes: number }>(
+  reminders: readonly T[],
+): T[] {
+  return reminders.filter((reminder) => reminder.minutes < 0);
+}
 
 // ---------------------------------------------------------------------------
 // 小さな決まり
@@ -313,28 +387,28 @@ function comparePlanned(a: PlannedReminder, b: PlannedReminder): number {
   return a.fireAt - b.fireAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0);
 }
 
-/** 予定ごと・カレンダーの既定のリマインダーの分 (表示するものだけ、0〜28 日に丸める)。 */
-function displayMinutes(rules: readonly ReminderRule[] | null): number[] {
+/**
+ * 予定ごと・カレンダーの既定のリマインダーの分 (表示するものだけ)。終日は -1439〜28 日、
+ * 終日以外は 0〜28 日に丸める。
+ */
+function displayMinutes(
+  rules: readonly ReminderRule[] | null,
+  allDay: boolean,
+): number[] {
   const result = new Set<number>();
   for (const rule of rules ?? []) {
     if (rule.method !== "display") continue;
-    if (!Number.isFinite(rule.minutes)) continue;
-    result.add(
-      Math.min(Math.max(Math.round(rule.minutes), 0), REMINDER_MAX_MINUTES),
-    );
+    const minutes = clampReminderMinutes(rule.minutes, allDay);
+    if (minutes !== null) result.add(minutes);
   }
   return [...result];
 }
 
 function allDayDefaultMinutes(settings: ReminderSettings): number[] {
   const minutes = settings.allDay?.minutes;
-  if (typeof minutes !== "number" || !Number.isFinite(minutes)) return [];
-  return [
-    Math.min(
-      Math.max(Math.round(minutes), ALL_DAY_MIN_MINUTES),
-      REMINDER_MAX_MINUTES,
-    ),
-  ];
+  if (typeof minutes !== "number") return [];
+  const clamped = clampReminderMinutes(minutes, true);
+  return clamped === null ? [] : [clamped];
 }
 
 const isoOf = (value: string | Date) =>
@@ -367,7 +441,9 @@ const dayStart = (date: string, timeZone: string) =>
  * 鳴らす通知を、鳴らす時刻の早い順に返す (設計 2.1、5.1)。
  * - 時刻のある予定: 回の開始 − minutes 分 (経過時間)。
  * - 終日の予定: 開始日の 0:00 (settings.timeZone) から minutes 分前の壁時計の時刻。
+ *   負の分は 0:00 より後 (-540 = 当日 9:00、下限 -1439)。予定ごとの値も負を使える。
  *   カレンダーの既定は使わず、useDefaultReminders なら settings.allDay を使う。
+ * - 時刻のある予定の負の分は 0 (開始の時刻) に丸める。
  * - 鳴らさない: 通知オフ・非表示のカレンダー、取り消した予定と回、自分が不参加、
  *   予定の終了より後の時刻、method が display でないもの。
  */
@@ -472,7 +548,7 @@ export function planReminders(input: PlanRemindersInput): PlannedReminder[] {
         ).epochMilliseconds;
         minutesList = event.useDefaultReminders
           ? allDayDefaultMinutes(settings)
-          : displayMinutes(event.reminders);
+          : displayMinutes(event.reminders, true);
         // 壁時計で引く (「前日 9:00」が夏時間の切り替えの前後でも 9:00 になる)。
         fireAtOf = (minutes) =>
           start
@@ -488,6 +564,7 @@ export function planReminders(input: PlanRemindersInput): PlannedReminder[] {
           event.useDefaultReminders
             ? calendar.defaultReminders
             : event.reminders,
+          false,
         );
         // 経過時間で引く (Google と同じ持ち方)。
         fireAtOf = (minutes) => startMs - minutes * 60_000;

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  allDayReminderMinutes,
+  allDayReminderTime,
   calendarNotifies,
   calendarRemindersFingerprint,
   clampReminderCoverUntil,
+  clampReminderMinutes,
   deviceCoversReminder,
   isReminderLate,
   type PlannedReminder,
@@ -11,6 +14,7 @@ import {
   planReminders,
   type ReminderCalendar,
   type ReminderEvent,
+  reminderMinMinutes,
   reminderTag,
   selectDeviceReminders,
   selfResponse,
@@ -327,10 +331,62 @@ describe("planReminders", () => {
         ],
         settings: { timeZone: "Asia/Tokyo", allDay: null },
       });
-      // 予定ごとの負の分は 0 (当日 0:00) に丸める。
+      // 予定ごとの負の分も使える (設計 13 章の 1 を B に変更)。-540 = 当日 9:00。
       expect(brief(result)).toEqual([
         ["cal-rem:e1:-:420", "2026-11-30T08:00:00.000Z"],
-        ["cal-rem:e1:-:0", "2026-11-30T15:00:00.000Z"],
+        ["cal-rem:e1:-:-540", "2026-12-01T00:00:00.000Z"],
+      ]);
+    });
+
+    it("予定ごとの負の分は -1439 (当日 23:59) まで。それより小さい値は丸める", () => {
+      const result = plan({
+        events: [
+          allDay({
+            useDefaultReminders: false,
+            reminders: [
+              { method: "display", minutes: -1439 },
+              { method: "display", minutes: -3000 },
+              { method: "email", minutes: -60 },
+            ],
+          }),
+        ],
+      });
+      expect(brief(result)).toEqual([
+        ["cal-rem:e1:-:-1439", "2026-12-01T14:59:00.000Z"],
+      ]);
+    });
+
+    it("予定ごとの「当日 9:00」は夏時間に切り替わる日でも壁時計の 9:00", () => {
+      const result = plan({
+        events: [
+          allDay({
+            startDate: "2027-03-14",
+            endDate: "2027-03-15",
+            useDefaultReminders: false,
+            reminders: [{ method: "display", minutes: -540 }],
+          }),
+        ],
+        settings: { timeZone: "America/New_York", allDay: null },
+        from: ms("2027-03-01T00:00:00Z"),
+        to: ms("2027-03-31T00:00:00Z"),
+      });
+      // 3/14 2:00 に EDT へ。0:00 EST から 9 時間の経過なら 10:00 EDT (14:00Z) になる。
+      expect(brief(result)).toEqual([
+        ["cal-rem:e1:-:-540", "2027-03-14T13:00:00.000Z"],
+      ]);
+    });
+
+    it("時刻のある予定の負の分は、今までどおり 0 (開始の時刻) に丸める", () => {
+      const result = plan({
+        events: [
+          timed({
+            useDefaultReminders: false,
+            reminders: [{ method: "display", minutes: -540 }],
+          }),
+        ],
+      });
+      expect(brief(result)).toEqual([
+        ["cal-rem:e1:-:0", "2026-12-01T01:00:00.000Z"],
       ]);
     });
 
@@ -394,6 +450,36 @@ describe("planReminders", () => {
     });
     expect(fromDates).toEqual(fromStrings);
     expect(fromStrings).toHaveLength(3);
+  });
+});
+
+describe("分の範囲と、終日の「何日前の何時」", () => {
+  it("clampReminderMinutes は終日だけ負を許す", () => {
+    expect(clampReminderMinutes(-540, true)).toBe(-540);
+    expect(clampReminderMinutes(-2000, true)).toBe(-1439);
+    expect(clampReminderMinutes(-540, false)).toBe(0);
+    expect(clampReminderMinutes(10.4, false)).toBe(10);
+    expect(clampReminderMinutes(99_999, true)).toBe(28 * 24 * 60);
+    expect(clampReminderMinutes(Number.NaN, true)).toBeNull();
+    expect(reminderMinMinutes(true)).toBe(-1439);
+    expect(reminderMinMinutes(false)).toBe(0);
+  });
+
+  it("allDayReminderTime と allDayReminderMinutes は互いに戻せる", () => {
+    const cases: [number, [number, number, number]][] = [
+      [-540, [0, 9, 0]],
+      [0, [0, 0, 0]],
+      [-1439, [0, 23, 59]],
+      [900, [1, 9, 0]],
+      [420, [1, 17, 0]],
+      [1440, [1, 0, 0]],
+      [2340, [2, 9, 0]],
+      [9540, [7, 9, 0]],
+    ];
+    for (const [minutes, [daysBefore, hour, minute]] of cases) {
+      expect(allDayReminderTime(minutes)).toEqual({ daysBefore, hour, minute });
+      expect(allDayReminderMinutes({ daysBefore, hour, minute })).toBe(minutes);
+    }
   });
 });
 
