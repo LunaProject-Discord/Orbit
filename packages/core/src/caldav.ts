@@ -1,5 +1,7 @@
-import { getDomain } from "tldts";
-import { resolvesToPrivateAddress } from "./host-check.js";
+import { lookup as dnsLookup, type LookupAddress } from "node:dns";
+import { isIP } from "node:net";
+import { Agent } from "undici";
+import { isPrivateAddress, resolvesToPrivateAddress } from "./host-check.js";
 
 /**
  * CalDAV (RFC 4791) と WebDAV の同期 (RFC 6578) の薄いクライアント。iCloud と一般の CalDAV サーバーで使う。
@@ -8,6 +10,9 @@ import { resolvesToPrivateAddress } from "./host-check.js";
  *
  * 利用者が入れた URL にサーバーが接続するので、すべての接続先 (リダイレクト先と、サーバーが返す href の先を含む)
  * について、内部ネットワークを指していないかを確かめる (allowPrivateHosts が true のときを除く)。
+ * 名前解決は、接続のときにもう一度 (undici の Agent の connect.lookup で) 確かめ、その結果の IP に接続する
+ * (検査と接続の間に名前の向き先を変える DNS rebinding を防ぐ)。
+ * https で始めた接続は、http の URL (リダイレクト先、href) へは移らない (allowPrivateHosts のときを除く)。
  */
 
 /** iCloud の CalDAV の起点。推測: Apple の公式資料では確かめられていない (広く使われている値)。 */
@@ -343,6 +348,8 @@ export type CaldavClientOptions = {
   allowPrivateHosts?: boolean;
   /** 名前解決の差し替え (テスト用)。既定は resolvesToPrivateAddress。 */
   isPrivateHost?: (host: string) => Promise<boolean>;
+  /** 1 回の応答の大きさの上限 (バイト、テスト用)。既定は 32 MiB。 */
+  maxResponseBytes?: number;
 };
 
 export type CaldavResponse = {
@@ -423,12 +430,126 @@ function hostOf(url: URL): string {
   return url.hostname.replace(/^\[(.*)\]$/, "$1");
 }
 
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number,
+) => void;
+type Resolver = (
+  hostname: string,
+  callback: (error: Error | null, addresses: LookupAddress[]) => void,
+) => void;
+
+const systemResolver: Resolver = (hostname, callback) =>
+  dnsLookup(hostname, { all: true }, (error, addresses) =>
+    callback(error, addresses ?? []),
+  );
+
+/**
+ * 接続のときの名前解決 (net.connect の lookup の形)。解決した IP がひとつでも内部ネットワークなら
+ * CaldavHostError で失敗させ、そうでなければその IP をそのまま接続に使わせる。
+ */
+export function createPinnedLookup(resolver: Resolver = systemResolver) {
+  return (
+    hostname: string,
+    options: { all?: boolean; family?: number | string },
+    callback: LookupCallback,
+  ): void => {
+    resolver(hostname, (error, resolved) => {
+      if (error) {
+        callback(error as NodeJS.ErrnoException, []);
+        return;
+      }
+      const family =
+        options.family === 4 || options.family === "IPv4"
+          ? 4
+          : options.family === 6 || options.family === "IPv6"
+            ? 6
+            : 0;
+      const addresses = resolved.filter(
+        (entry) => family === 0 || entry.family === family,
+      );
+      if (
+        addresses.length === 0 ||
+        addresses.some((entry) => isPrivateAddress(entry.address))
+      ) {
+        callback(
+          new CaldavHostError(
+            addresses.length === 0 ? "host_not_found" : "host_not_allowed",
+            addresses.length === 0
+              ? `ホスト (${hostname}) が見つかりません。`
+              : `内部ネットワークのホスト (${hostname}) には接続できません。`,
+          ) as unknown as NodeJS.ErrnoException,
+          [],
+        );
+        return;
+      }
+      if (options.all) {
+        callback(null, addresses);
+        return;
+      }
+      const first = addresses[0] as LookupAddress;
+      callback(null, first.address, first.family);
+    });
+  };
+}
+
+let pinnedAgent: Agent | null = null;
+
+/** 接続のときに名前解決を確かめる dispatcher (プロセスで 1 つを使い回す)。 */
+function pinnedDispatcher(): Agent {
+  pinnedAgent ??= new Agent({ connect: { lookup: createPinnedLookup() } });
+  return pinnedAgent;
+}
+
+/** fetch の失敗の原因をたどり、CaldavHostError があればそれを返す。 */
+function hostErrorIn(error: unknown): CaldavHostError | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (current instanceof CaldavHostError) return current;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** 本文を上限まで読む。上限を超えたら読むのをやめて例外にする。 */
+async function readLimited(response: Response, limit: number): Promise<string> {
+  const tooLarge = () =>
+    new CaldavHttpError(response.status, "応答が大きすぎます。", null);
+  const length = Number(response.headers.get("content-length") ?? "0");
+  if (length > limit) {
+    await response.body?.cancel();
+    throw tooLarge();
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let total = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw tooLarge();
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 export class CaldavClient {
   private readonly fetchFn: typeof fetch;
   private readonly authorization: string;
   private readonly hostChecks = new Map<string, Promise<void>>();
-  /** 認証情報を送ってよいサイト (登録可能なドメイン、無ければホスト名)。最初の接続先で決まる。 */
+  /**
+   * 認証情報を送ってよいサイト (スキームとホスト。iCloud だけは icloud.com の下をまとめて 1 つ)。
+   * 最初の接続先で決まる。
+   */
   private trustedSite: string | null = null;
+  /** 最初の接続先が https だった (http の URL へは移らない)。 */
+  private secureOrigin: boolean | null = null;
 
   constructor(private readonly options: CaldavClientOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
@@ -438,9 +559,32 @@ export class CaldavClient {
     ).toString("base64")}`;
   }
 
+  /**
+   * 認証情報を送る単位。スキームとホスト (ポートを含む) が同じものだけを同じとみなす。
+   * iCloud は caldav.icloud.com から pNN-caldav.icloud.com へ移るので、icloud.com の下をまとめる。
+   * (公開サフィックスの一覧は *.github.io のような私的なものを見ないので、一般には使わない。)
+   */
   private siteOf(url: URL): string {
     const host = hostOf(url).toLowerCase();
-    return getDomain(host) ?? host;
+    if (!isIP(host) && (host === "icloud.com" || host.endsWith(".icloud.com")))
+      return `${url.protocol}//icloud.com`;
+    return `${url.protocol}//${url.host.toLowerCase()}`;
+  }
+
+  /** https で始めた接続が http の URL へ移ろうとしていたら止める。 */
+  private checkScheme(url: string): void {
+    if (this.options.allowPrivateHosts) return;
+    const protocol = new URL(url).protocol;
+    if (this.secureOrigin === null) {
+      this.secureOrigin = protocol === "https:";
+      return;
+    }
+    if (this.secureOrigin && protocol !== "https:") {
+      throw new CaldavHostError(
+        "host_not_allowed",
+        "https で始めた接続から http の URL には移れません。",
+      );
+    }
   }
 
   /** 接続先が内部ネットワークを指していないかを確かめる (ホストごとに 1 回)。 */
@@ -491,7 +635,7 @@ export class CaldavClient {
 
   /**
    * 1 回のリクエスト。リダイレクトは自分で追い、行き先ごとに接続先を確かめる。
-   * 認証情報は、最初の接続先と同じサイト (登録可能なドメイン) にだけ送る。
+   * 認証情報は、最初の接続先と同じサイト (siteOf) にだけ送る。
    */
   async request(
     method: string,
@@ -507,6 +651,7 @@ export class CaldavClient {
     let target = normalizeUrl(url);
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       await this.checkUrl(target);
+      this.checkScheme(target);
       const parsed = new URL(target);
       const site = this.siteOf(parsed);
       if (this.trustedSite === null) this.trustedSite = site;
@@ -517,13 +662,22 @@ export class CaldavClient {
       if (site === this.trustedSite) headers.authorization = this.authorization;
       const signals = [AbortSignal.timeout(TIMEOUT_MS)];
       if (this.options.signal) signals.push(this.options.signal);
-      const response = await this.fetchFn(target, {
-        method,
-        headers,
-        body: init.body,
-        redirect: "manual",
-        signal: AbortSignal.any(signals),
-      });
+      let response: Response;
+      try {
+        response = await this.fetchFn(target, {
+          method,
+          headers,
+          body: init.body,
+          redirect: "manual",
+          signal: AbortSignal.any(signals),
+          // 接続のときの名前解決も確かめる (fetch の型に dispatcher が無いので広げて渡す)。
+          ...(this.options.allowPrivateHosts
+            ? {}
+            : { dispatcher: pinnedDispatcher() }),
+        } as RequestInit);
+      } catch (error) {
+        throw hostErrorIn(error) ?? error;
+      }
       if (
         follow &&
         [301, 302, 303, 307, 308].includes(response.status) &&
@@ -538,23 +692,10 @@ export class CaldavClient {
         );
         continue;
       }
-      const length = Number(response.headers.get("content-length") ?? "0");
-      if (length > MAX_RESPONSE_BYTES) {
-        await response.body?.cancel();
-        throw new CaldavHttpError(
-          response.status,
-          "応答が大きすぎます。",
-          null,
-        );
-      }
-      const body = await response.text();
-      if (body.length > MAX_RESPONSE_BYTES) {
-        throw new CaldavHttpError(
-          response.status,
-          "応答が大きすぎます。",
-          null,
-        );
-      }
+      const body = await readLimited(
+        response,
+        this.options.maxResponseBytes ?? MAX_RESPONSE_BYTES,
+      );
       if (response.status === 401) throw new CaldavAuthError();
       return {
         status: response.status,
@@ -600,6 +741,7 @@ export class CaldavClient {
   private async resolveHref(href: string, base: string): Promise<string> {
     const url = normalizeUrl(new URL(href, base).toString());
     await this.checkUrl(url);
+    this.checkScheme(url);
     return url;
   }
 

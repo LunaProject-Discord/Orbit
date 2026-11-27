@@ -209,17 +209,18 @@ export function createCaldavProvider(
     }));
   }
 
+  /** リソースを予定の行にする。iCalendar を読めなければ null (ログに残す)。 */
   function safeRemoteEvents(
     ctx: ProviderContext,
     resource: CaldavResource,
     calendar: CalendarRow,
-  ): RemoteEvent[] {
+  ): RemoteEvent[] | null {
     try {
       return toRemoteEvents(resource, calendar, ctx.account);
     } catch (error) {
       if (!(error instanceof ICalendarError)) throw error;
       ctx.log(`予定 ${resource.href} の iCalendar を読めないので飛ばします`);
-      return [];
+      return null;
     }
   }
 
@@ -285,9 +286,12 @@ export function createCaldavProvider(
   }
 
   function writeOptions(ctx: ProviderContext, calendar: CalendarRow) {
+    const email = ctx.account.email.includes("@") ? ctx.account.email : null;
     return {
       defaultTimeZone: calendar.timeZone ?? "UTC",
-      alarmEmail: ctx.account.email.includes("@") ? ctx.account.email : null,
+      alarmEmail: email,
+      // 参加者のいる予定に ORGANIZER が無ければ、このアカウントを主催者として書く。
+      organizer: email ? { email, name: ctx.account.displayName } : null,
       now: now(),
     };
   }
@@ -443,13 +447,19 @@ export function createCaldavProvider(
         if (!state.full) {
           deleted.push(...batch.filter((href) => !got.has(href)));
         }
-        const events = resources.flatMap((resource) =>
-          safeRemoteEvents(ctx, resource, calendar),
-        );
+        const events: RemoteEvent[] = [];
+        // 読めなかったリソースは、全件同期で土台に消させない (相手側にはあるため)。
+        const unreadable: string[] = [];
+        for (const resource of resources) {
+          const rows = safeRemoteEvents(ctx, resource, calendar);
+          if (rows) events.push(...rows);
+          else unreadable.push(resource.href);
+        }
         const last = rest.length === 0;
         return {
           events,
           deletedRemoteIds: deleted,
+          ...(unreadable.length > 0 ? { keptRemoteIds: unreadable } : {}),
           nextPageCursor: last
             ? null
             : JSON.stringify({ ...state, fetch: rest } satisfies PageState),
@@ -465,10 +475,9 @@ export function createCaldavProvider(
         const client = clientOf(ctx);
         const fetched = await client.get(absolute(calendar, ref.remoteId));
         if (!fetched) return null;
-        return safeRemoteEvents(
-          ctx,
-          { ...fetched, href: ref.remoteId },
-          calendar,
+        return (
+          safeRemoteEvents(ctx, { ...fetched, href: ref.remoteId }, calendar) ??
+          []
         );
       });
     },
@@ -687,10 +696,13 @@ export function createCaldavProvider(
     // まだ相手側に無い回は、原本の ETag で書く (原本を黙って上書きしないため)。
     let ifMatch =
       ref.etag ?? (newException ? (write.master?.etag ?? null) : null);
-    if (base === null) {
+    if (base === null || ifMatch === null) {
+      // ETag が分からなければ、手元の raw は古いかもしれないので、いまの内容と ETag を基に書く
+      // (If-Match: * で古い内容を基に上書きしないため)。
       const current = await client.get(absolute(calendar, href));
       if (!current) return { status: "gone" };
       base = current.data;
+      // ETag が分かっているなら、それで書く (先に変わっていれば 412 で競合にする)。
       ifMatch = ifMatch ?? current.etag;
     }
     const event = toData(write.event);

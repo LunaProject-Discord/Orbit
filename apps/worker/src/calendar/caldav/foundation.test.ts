@@ -260,4 +260,31 @@ describe.skipIf(!adminUrl)("CalDAV と土台の取り込み・書き戻し", () 
     expect(pending).toHaveLength(0);
     expect(logs.filter((line) => line.includes("失敗"))).toEqual([]);
   });
+
+  it("全件同期で iCalendar を読めなくなったリソースの行は消さない", async () => {
+    await sync();
+    expect(await rows()).toHaveLength(2);
+    // 相手側のリソースが読めない形になり、同期の位置も無効になった (全件で取り直す)。
+    server.putDirect(
+      "/cal/user/work/series.ics",
+      "BEGIN:VEVENT\r\nUID:series@example.com\r\nEND:VEVENT\r\n",
+    );
+    await db
+      .update(calendars)
+      .set({ syncToken: null })
+      .where(eq(calendars.id, calendarId));
+    await sync();
+    expect((await rows()).map((row) => [row.remoteId, row.summary])).toEqual([
+      ["/cal/user/work/series.ics", "週次 (ずらした回)"],
+      ["/cal/user/work/series.ics", "週次"],
+    ]);
+    // 消えたリソースは、全件同期で消す。
+    server.deleteDirect("/cal/user/work/series.ics");
+    await db
+      .update(calendars)
+      .set({ syncToken: null })
+      .where(eq(calendars.id, calendarId));
+    await sync();
+    expect(await rows()).toHaveLength(0);
+  });
 });

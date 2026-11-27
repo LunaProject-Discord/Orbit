@@ -415,3 +415,293 @@ describe("writeICalendar", () => {
     expect(text).not.toContain("VTIMEZONE");
   });
 });
+
+describe("writeICalendar (レビューの指摘)", () => {
+  const simple = (lines: string[]) =>
+    [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Test//EN",
+      "BEGIN:VEVENT",
+      "UID:s-1",
+      ...lines,
+      "END:VEVENT",
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n");
+
+  it("EXDATE と新しい RECURRENCE-ID は、原本の TZID 付きの現地時刻で書く", () => {
+    const [master] = read(BASE);
+    if (!master) throw new Error("読めません");
+    const text = writeICalendar({
+      base: BASE,
+      entries: [
+        {
+          event: { ...master, exdates: ["2026-12-15T14:00:00Z"] },
+          fields: ["recurrence"],
+        },
+        {
+          event: {
+            ...master,
+            recurrenceId: "2026-12-22T14:00:00Z",
+            rrule: null,
+            startAt: "2026-12-22T16:00:00Z",
+            endAt: "2026-12-22T17:00:00Z",
+          },
+          fields: "all",
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).toContain("EXDATE;TZID=America/New_York:20261215T090000");
+    expect(text).toContain(
+      "RECURRENCE-ID;TZID=America/New_York:20261222T090000",
+    );
+    expect(text).not.toMatch(/EXDATE:\d+T\d+Z/);
+    const rows = read(text);
+    expect(rows[0]?.exdates).toEqual(["2026-12-15T14:00:00Z"]);
+    expect(rows.at(-1)?.recurrenceId).toBe("2026-12-22T14:00:00Z");
+  });
+
+  it("浮動時刻と UTC の原本では、EXDATE もその形で書く", () => {
+    const floating = simple([
+      "DTSTART:20261201T090000",
+      "DTEND:20261201T100000",
+      "RRULE:FREQ=DAILY",
+    ]);
+    const [floatingMaster] = read(floating);
+    if (!floatingMaster) throw new Error("読めません");
+    const floatingText = writeICalendar({
+      base: floating,
+      entries: [
+        {
+          // 東京の 12/8 9:00 (浮動時刻は defaultTimeZone で読む)。
+          event: { ...floatingMaster, exdates: ["2026-12-08T00:00:00Z"] },
+          fields: ["recurrence"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(floatingText).toContain("EXDATE:20261208T090000\r\n");
+    expect(read(floatingText)[0]?.exdates).toEqual(["2026-12-08T00:00:00Z"]);
+
+    const utc = simple([
+      "DTSTART:20261201T090000Z",
+      "DTEND:20261201T100000Z",
+      "RRULE:FREQ=DAILY",
+    ]);
+    const [utcMaster] = read(utc);
+    if (!utcMaster) throw new Error("読めません");
+    const utcText = writeICalendar({
+      base: utc,
+      entries: [
+        {
+          event: { ...utcMaster, exdates: ["2026-12-08T09:00:00Z"] },
+          fields: ["recurrence"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(utcText).toContain("EXDATE:20261208T090000Z");
+  });
+
+  it("既存の EXDATE は、残る値を元の形のまま残す", () => {
+    const base = simple([
+      "DTSTART;TZID=America/New_York:20261201T090000",
+      "DTEND;TZID=America/New_York:20261201T100000",
+      "RRULE:FREQ=WEEKLY",
+      "EXDATE;TZID=America/New_York:20261208T090000,20261215T090000",
+    ]);
+    const [master] = read(base);
+    if (!master) throw new Error("読めません");
+    expect(master.exdates).toEqual([
+      "2026-12-08T14:00:00Z",
+      "2026-12-15T14:00:00Z",
+    ]);
+    const text = writeICalendar({
+      base,
+      entries: [
+        {
+          event: {
+            ...master,
+            exdates: ["2026-12-08T14:00:00Z", "2026-12-22T14:00:00Z"],
+          },
+          fields: ["recurrence"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).toContain("EXDATE;TZID=America/New_York:20261208T090000\r\n");
+    expect(text).toContain("EXDATE;TZID=America/New_York:20261222T090000\r\n");
+    expect(text).not.toContain("20261215T090000");
+    expect(read(text)[0]?.exdates).toEqual([
+      "2026-12-08T14:00:00Z",
+      "2026-12-22T14:00:00Z",
+    ]);
+  });
+
+  it("参加者のいる新しい予定には ORGANIZER を書き、新しい参加者に RSVP=TRUE を付ける", () => {
+    const text = writeICalendar({
+      base: null,
+      entries: [
+        {
+          event: event({
+            attendees: [
+              {
+                email: "me@example.com",
+                name: "Me",
+                role: "chair",
+                status: "accepted",
+              },
+              {
+                email: "bob@example.com",
+                name: "Bob",
+                role: "required",
+                status: "needs_action",
+              },
+            ],
+          }),
+          fields: "all",
+        },
+      ],
+      organizer: { email: "me@example.com", name: "Me" },
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).toContain("ORGANIZER;CN=Me:mailto:me@example.com");
+    const attendeeLines = text
+      .replace(/\r\n /g, "")
+      .split("\r\n")
+      .filter((entry) => entry.startsWith("ATTENDEE"));
+    expect(
+      attendeeLines.find((entry) => entry.includes("bob@example.com")),
+    ).toContain("RSVP=TRUE");
+    expect(
+      attendeeLines.find((entry) => entry.includes("me@example.com")),
+    ).not.toContain("RSVP");
+    expect(read(text)[0]?.organizer).toMatchObject({
+      email: "me@example.com",
+    });
+
+    // 参加者がいなければ書かない。
+    const alone = writeICalendar({
+      base: null,
+      entries: [{ event: event(), fields: "all" }],
+      organizer: { email: "me@example.com" },
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(alone).not.toContain("ORGANIZER");
+  });
+
+  it("新しい例外は原本の ORGANIZER を写し、既存の ORGANIZER は変えない", () => {
+    const base = simple([
+      "DTSTART:20261201T090000Z",
+      "DTEND:20261201T100000Z",
+      "RRULE:FREQ=DAILY",
+      "ORGANIZER;CN=Alice:mailto:alice@example.com",
+      "ATTENDEE;PARTSTAT=ACCEPTED:mailto:me@example.com",
+    ]);
+    const [master] = read(base);
+    if (!master) throw new Error("読めません");
+    const text = writeICalendar({
+      base,
+      entries: [
+        {
+          event: {
+            ...master,
+            recurrenceId: "2026-12-03T09:00:00Z",
+            rrule: null,
+            startAt: "2026-12-03T10:00:00Z",
+            endAt: "2026-12-03T11:00:00Z",
+          },
+          fields: "all",
+        },
+      ],
+      organizer: { email: "me@example.com" },
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(
+      text.match(/ORGANIZER;CN=Alice:mailto:alice@example.com/g),
+    ).toHaveLength(2);
+    expect(text).not.toContain("ORGANIZER:mailto:me@example.com");
+    expect(text).toContain("RECURRENCE-ID:20261203T090000Z");
+  });
+
+  it("RECURRENCE-ID を読めない VEVENT は原本と取り違えず、そのまま残す", () => {
+    const base = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "BEGIN:VEVENT",
+      "UID:s-1",
+      "RECURRENCE-ID:garbage",
+      "DTSTART:20261203T090000Z",
+      "SUMMARY:読めない例外",
+      "END:VEVENT",
+      "BEGIN:VEVENT",
+      "UID:s-1",
+      "DTSTART:20261201T090000Z",
+      "DTEND:20261201T100000Z",
+      "RRULE:FREQ=DAILY",
+      "SUMMARY:原本",
+      "END:VEVENT",
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n");
+    const master = read(base).find((row) => row.recurrenceId === null);
+    if (!master) throw new Error("読めません");
+    const text = writeICalendar({
+      base,
+      entries: [
+        { event: { ...master, summary: "原本 (改題)" }, fields: ["summary"] },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).toContain("RECURRENCE-ID:garbage");
+    expect(text).toContain("SUMMARY:読めない例外");
+    expect(text).toContain("SUMMARY:原本 (改題)");
+    expect(text.match(/BEGIN:VEVENT/g)).toHaveLength(2);
+  });
+
+  it("説明を変えたら X-ALT-DESC を消し、変えなければ残す", () => {
+    const base = simple([
+      "DTSTART:20261201T090000Z",
+      "DTEND:20261201T100000Z",
+      "DESCRIPTION:古い説明",
+      "X-ALT-DESC;FMTTYPE=text/html:<p>古い説明</p>",
+    ]);
+    const [master] = read(base);
+    if (!master) throw new Error("読めません");
+    const changed = writeICalendar({
+      base,
+      entries: [
+        {
+          event: { ...master, description: "新しい説明" },
+          fields: ["description"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(changed).toContain("DESCRIPTION:新しい説明");
+    expect(changed).not.toContain("X-ALT-DESC");
+    const same = writeICalendar({
+      base,
+      entries: [
+        {
+          event: { ...master, summary: "題" },
+          fields: ["summary", "description"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(same).toContain("X-ALT-DESC");
+  });
+});

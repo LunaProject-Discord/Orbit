@@ -71,6 +71,11 @@ export type ICalWriteOptions = {
   alarmEmail?: string | null;
   /** DTSTAMP と LAST-MODIFIED に使う時刻。 */
   now?: Date;
+  /**
+   * 参加者のいる予定に ORGANIZER が無いときに書く主催者 (アカウントのアドレス)。
+   * 省けば event.organizer を使う。新しい例外は原本の ORGANIZER を写す。
+   */
+  organizer?: { email: string; name?: string | null } | null;
 };
 
 export const ICAL_PRODID = "-//Orbit//Orbit Calendar//JA";
@@ -267,8 +272,41 @@ function timeLine(
   return line(name, utcStamp(instant));
 }
 
-/** RDATE / EXDATE / RECURRENCE-ID の値。終日は日付、時刻付きは UTC。 */
-function recurrenceValue(recurrenceId: string): {
+/**
+ * 原本の DTSTART の書き方。RDATE / EXDATE / RECURRENCE-ID はこれに合わせる
+ * (RFC 5545 の 3.8.4.4 と 3.8.5.1。違う形だと回を突き合わせられないサーバーがある)。
+ */
+type TimeForm =
+  | { kind: "date" }
+  | { kind: "utc" }
+  | { kind: "zone"; zone: string }
+  | { kind: "floating" };
+
+function timeFormOf(dtstart: Line | undefined): TimeForm {
+  if (!dtstart) return { kind: "utc" };
+  const value = dtstart.value.trim();
+  if (
+    dtstart.params.get("VALUE")?.toUpperCase() === "DATE" ||
+    /^\d{8}$/.test(value)
+  ) {
+    return { kind: "date" };
+  }
+  if (/Z$/i.test(value)) return { kind: "utc" };
+  const tzid = dtstart.params.get("TZID");
+  if (tzid !== undefined) {
+    // IANA で無い TZID (Windows の名前など) は現地時刻を求められないので UTC で書く。
+    return isIanaZone(tzid) ? { kind: "zone", zone: tzid } : { kind: "utc" };
+  }
+  return { kind: "floating" };
+}
+
+/** RDATE / EXDATE / RECURRENCE-ID の値。form (原本の DTSTART の形) に合わせる。日付だけの回は日付で書く。 */
+function recurrenceValue(
+  recurrenceId: string,
+  form: TimeForm,
+  defaultTimeZone: string,
+  zones: Set<string>,
+): {
   value: string;
   params: [string, string][];
 } {
@@ -276,7 +314,34 @@ function recurrenceValue(recurrenceId: string): {
   if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
     return { value: basicDate(normalized), params: [["VALUE", "DATE"]] };
   }
-  return { value: utcStamp(Temporal.Instant.from(normalized)), params: [] };
+  const instant = Temporal.Instant.from(normalized);
+  switch (form.kind) {
+    case "date":
+      return {
+        value: basicDate(
+          instant.toZonedDateTimeISO(defaultTimeZone).toPlainDate().toString(),
+        ),
+        params: [["VALUE", "DATE"]],
+      };
+    case "zone":
+      zones.add(form.zone);
+      return {
+        value: localStamp(
+          instant.toZonedDateTimeISO(form.zone).toPlainDateTime(),
+        ),
+        params: [["TZID", form.zone]],
+      };
+    case "floating":
+      // 浮動時刻は defaultTimeZone で読まれる (parseICalendar と同じ)。
+      return {
+        value: localStamp(
+          instant.toZonedDateTimeISO(defaultTimeZone).toPlainDateTime(),
+        ),
+        params: [],
+      };
+    case "utc":
+      return { value: utcStamp(instant), params: [] };
+  }
 }
 
 function offsetText(offset: string): string {
@@ -430,12 +495,24 @@ const PARTSTAT_VALUES: Record<
   delegated: "DELEGATED",
 };
 
+type FieldContext = {
+  zones: Set<string>;
+  /** この VEVENT の (書いたあとの) DTSTART の形。 */
+  form: TimeForm;
+  defaultTimeZone: string;
+  /** 既存の EXDATE の 1 つの値を回 (normalizeRecurrenceId の書き方) にする。読めなければ null。 */
+  recurrenceIdOfValue: (prop: Line, value: string) => string | null;
+  /** 主催者のアドレス (小文字)。新しい参加者に RSVP を付けるかの判断に使う。 */
+  organizerEmail: string | null;
+};
+
 function fieldLines(
   field: EventFieldName,
   event: ICalEventData,
   existing: readonly Line[],
-  zones: Set<string>,
+  context: FieldContext,
 ): Line[] {
+  const { zones } = context;
   const optionalText = (name: string, value: string | null) =>
     value && value.length > 0 ? [line(name, escapeICalText(value))] : [];
   switch (field) {
@@ -478,15 +555,37 @@ function fieldLines(
       const lines: Line[] = [];
       const rule = event.rrule?.trim().replace(/^RRULE:/i, "");
       if (rule) lines.push(line("RRULE", rule));
-      for (const [name, values] of [
-        ["RDATE", event.rdates],
-        ["EXDATE", event.exdates],
-      ] as const) {
-        for (const value of [...new Set(values ?? [])]) {
-          const written = recurrenceValue(value);
-          lines.push(line(name, written.value, written.params));
+      const write = (name: string, value: string) => {
+        const written = recurrenceValue(
+          value,
+          context.form,
+          context.defaultTimeZone,
+          zones,
+        );
+        lines.push(line(name, written.value, written.params));
+      };
+      for (const value of new Set(
+        (event.rdates ?? []).map(normalizeRecurrenceId),
+      )) {
+        write("RDATE", value);
+      }
+      // 既存の EXDATE は、残る回の値を元の形 (TZID、VALUE=DATE など) のまま残す。
+      const remaining = new Set(
+        (event.exdates ?? []).map(normalizeRecurrenceId),
+      );
+      for (const prop of existing) {
+        if (prop.name !== "EXDATE") continue;
+        const keptValues = prop.value.split(",").filter((value) => {
+          const id = context.recurrenceIdOfValue(prop, value);
+          if (id === null || !remaining.has(id)) return false;
+          remaining.delete(id);
+          return true;
+        });
+        if (keptValues.length > 0) {
+          lines.push(line("EXDATE", keptValues.join(","), [...prop.params]));
         }
       }
+      for (const value of remaining) write("EXDATE", value);
       return lines;
     }
     case "conferenceUrl": {
@@ -519,6 +618,14 @@ function fieldLines(
         if (attendee.name) params.unshift(["CN", attendee.name]);
         params.push(["ROLE", ROLE_VALUES[attendee.role]]);
         params.push(["PARTSTAT", PARTSTAT_VALUES[attendee.status]]);
+        // 新しく足した参加者には返事を求める (主催者自身を除く)。
+        if (
+          !old &&
+          attendee.email.toLowerCase() !== context.organizerEmail &&
+          !params.some(([key]) => key === "RSVP")
+        ) {
+          params.push(["RSVP", "TRUE"]);
+        }
         return line(
           "ATTENDEE",
           old?.value ?? `mailto:${attendee.email}`,
@@ -576,11 +683,36 @@ function alarmComponents(
   return alarms;
 }
 
+type VEventOptions = {
+  zones: Set<string>;
+  alarmEmail: string | null;
+  now: Date;
+  defaultTimeZone: string;
+  timezones: readonly Component[];
+  /** 新しい VEVENT の RECURRENCE-ID の形 (原本の DTSTART の形)。 */
+  recurrenceForm: TimeForm;
+  /** 参加者がいて ORGANIZER が無いときに書く ORGANIZER の行。 */
+  organizer: Line | null;
+};
+
+function unescapeICalText(value: string): string {
+  return value.replace(/\\([\\;,nN])/g, (_, char: string) =>
+    char === "n" || char === "N" ? "\n" : char,
+  );
+}
+
+function mailtoAddress(value: string): string {
+  return value
+    .trim()
+    .replace(/^mailto:/i, "")
+    .toLowerCase();
+}
+
 /** VEVENT を書き換える (base が null なら新しく作る)。 */
 function writeVEvent(
   base: Component | null,
   entry: ICalWriteEntry,
-  options: { zones: Set<string>; alarmEmail: string | null; now: Date },
+  options: VEventOptions,
 ): Component {
   const { event } = entry;
   const fields =
@@ -590,20 +722,76 @@ function writeVEvent(
   for (const field of fields) {
     for (const name of FIELD_PROPERTIES[field]) removeNames.add(name);
   }
+  // 説明を変えたら、HTML の説明 (X-ALT-DESC) は古い内容のままになるので消す。
+  if (base !== null && fields.includes("description")) {
+    const previous = existing.find((prop) => prop.name === "DESCRIPTION");
+    const before = previous ? unescapeICalText(previous.value) : "";
+    if (before !== (event.description ?? "")) removeNames.add("X-ALT-DESC");
+  }
   const head: Line[] = [];
   if (!base) {
     head.push(line("UID", event.uid));
     if (event.recurrenceId !== null) {
-      const written = recurrenceValue(event.recurrenceId);
+      const written = recurrenceValue(
+        event.recurrenceId,
+        options.recurrenceForm,
+        options.defaultTimeZone,
+        options.zones,
+      );
       head.push(line("RECURRENCE-ID", written.value, written.params));
     }
     head.push(line("CREATED", utcStamp(toInstant(options.now))));
   }
   const kept = existing.filter((prop) => !removeNames.has(prop.name));
+  const existingOrganizer = kept.find((prop) => prop.name === "ORGANIZER");
+  const organizerEmail = existingOrganizer
+    ? mailtoAddress(existingOrganizer.value)
+    : options.organizer
+      ? mailtoAddress(options.organizer.value)
+      : null;
+  const context: Omit<FieldContext, "form"> = {
+    zones: options.zones,
+    defaultTimeZone: options.defaultTimeZone,
+    organizerEmail,
+    recurrenceIdOfValue: (prop, value) => {
+      const parsed = probeEvent(
+        [line("EXDATE", value, [...prop.params])],
+        options.timezones,
+        options.defaultTimeZone,
+      );
+      const id = parsed?.exdates?.[0];
+      return id ? normalizeRecurrenceId(id) : null;
+    },
+  };
+  // 繰り返しの値は DTSTART の形に合わせるので、時刻を先に決める。
   const added: Line[] = [];
   for (const field of fields) {
-    added.push(...fieldLines(field, event, existing, options.zones));
+    if (field === "recurrence") continue;
+    added.push(
+      ...fieldLines(field, event, existing, {
+        ...context,
+        form: { kind: "utc" },
+      }),
+    );
   }
+  if (fields.includes("recurrence")) {
+    const dtstart =
+      added.find((prop) => prop.name === "DTSTART") ??
+      kept.find((prop) => prop.name === "DTSTART");
+    added.push(
+      ...fieldLines("recurrence", event, existing, {
+        ...context,
+        form: timeFormOf(dtstart),
+      }),
+    );
+  }
+  // 参加者がいるのに主催者が無ければ、主催者を書く (RFC 5545 の 3.8.4.3)。
+  const organizer: Line[] =
+    !existingOrganizer &&
+    options.organizer &&
+    [...kept, ...added].some((prop) => prop.name === "ATTENDEE")
+      ? [options.organizer]
+      : [];
   const baseSequence = Number.parseInt(
     existing.find((prop) => prop.name === "SEQUENCE")?.value ?? "0",
     10,
@@ -621,6 +809,7 @@ function writeVEvent(
     line("DTSTAMP", stamp),
     line("LAST-MODIFIED", stamp),
     line("SEQUENCE", String(sequence)),
+    ...organizer,
     ...added,
   ];
   let children = base?.children ?? [];
@@ -636,35 +825,57 @@ function writeVEvent(
   return { name: "VEVENT", props, children };
 }
 
-/** 基の VEVENT の回 (recurrenceId) を、parseICalendar と同じ読み方で求める。 */
-function recurrenceIdOf(
-  component: Component,
-  timezones: Component[],
+/**
+ * プロパティの行だけの VEVENT を parseICalendar で読む (回や EXDATE を、読み取りと同じ読み方で求める)。
+ * UID と DTSTART が無ければ、読むためだけに補う。読めなければ null。
+ */
+function probeEvent(
+  props: readonly Line[],
+  timezones: readonly Component[],
   defaultTimeZone: string,
-): { uid: string | null; recurrenceId: string | null } {
-  const uid =
-    component.props.find((prop) => prop.name === "UID")?.value.trim() ?? null;
-  if (!component.props.some((prop) => prop.name === "RECURRENCE-ID")) {
-    return { uid, recurrenceId: null };
-  }
+) {
   const out: string[] = ["BEGIN:VCALENDAR", "VERSION:2.0"];
   for (const timezone of timezones) serialize(timezone, out);
-  // DTSTART が無いと読めないので、回を求めるためだけに補う。
   const probe: Component = {
     name: "VEVENT",
-    props: component.props.some((prop) => prop.name === "DTSTART")
-      ? component.props
-      : [...component.props, line("DTSTART", "20000101T000000Z")],
+    props: [
+      ...(props.some((prop) => prop.name === "UID")
+        ? []
+        : [line("UID", "probe")]),
+      ...(props.some((prop) => prop.name === "DTSTART")
+        ? []
+        : [line("DTSTART", "20000101T000000Z")]),
+      ...props,
+    ],
     children: [],
   };
   serialize(probe, out);
   out.push("END:VCALENDAR");
   try {
-    const parsed = parseICalendar(out.join("\r\n"), { defaultTimeZone });
-    return { uid, recurrenceId: parsed.events[0]?.recurrenceId ?? null };
+    return (
+      parseICalendar(out.join("\r\n"), { defaultTimeZone }).events[0] ?? null
+    );
   } catch {
-    return { uid, recurrenceId: null };
+    return null;
   }
+}
+
+/**
+ * 基の VEVENT の回 (recurrenceId) を、parseICalendar と同じ読み方で求める。
+ * RECURRENCE-ID があるのに読めなければ readable: false (原本と取り違えないため)。
+ */
+function recurrenceIdOf(
+  component: Component,
+  timezones: readonly Component[],
+  defaultTimeZone: string,
+): { recurrenceId: string | null; readable: boolean } {
+  if (!component.props.some((prop) => prop.name === "RECURRENCE-ID")) {
+    return { recurrenceId: null, readable: true };
+  }
+  const recurrenceId =
+    probeEvent(component.props, timezones, defaultTimeZone)?.recurrenceId ??
+    null;
+  return { recurrenceId, readable: recurrenceId !== null };
 }
 
 /**
@@ -672,7 +883,10 @@ function recurrenceIdOf(
  * - base の VEVENT のうち、entries と同じ回のものは、指定した項目だけを差し替える。
  * - entries のうち base に無い回は、新しい VEVENT として足す。
  * - remove の回の VEVENT は取り除く。
- * - それ以外のコンポーネントとプロパティは、そのまま残す。
+ * - それ以外のコンポーネントとプロパティは、そのまま残す (RECURRENCE-ID を読めない VEVENT も
+ *   突き合わせに使わず、そのまま残す)。
+ * - RDATE / EXDATE / 新しい RECURRENCE-ID は、原本の DTSTART の形 (TZID 付きの現地時刻、浮動、UTC、日付) で書く。
+ * - 参加者がいて ORGANIZER が無い VEVENT には ORGANIZER を書く (新しい例外は原本のものを写す)。
  * - 書いた TZID の VTIMEZONE が無ければ足す。
  */
 export function writeICalendar(options: ICalWriteOptions): string {
@@ -700,12 +914,12 @@ export function writeICalendar(options: ICalWriteOptions): string {
   const located = new Map<Component, string>();
   for (const component of calendar.children) {
     if (component.name !== "VEVENT") continue;
-    const { recurrenceId } = recurrenceIdOf(
+    const { recurrenceId, readable } = recurrenceIdOf(
       component,
       timezones,
       options.defaultTimeZone,
     );
-    located.set(component, keyOf(recurrenceId));
+    if (readable) located.set(component, keyOf(recurrenceId));
   }
   const removeKeys = new Set((options.remove ?? []).map(keyOf));
   const zones = new Set<string>();
@@ -714,6 +928,32 @@ export function writeICalendar(options: ICalWriteOptions): string {
   const pending = new Map(
     options.entries.map((entry) => [keyOf(entry.event.recurrenceId), entry]),
   );
+  /** 原本の VEVENT (書いたあとのもの)。新しい例外の RECURRENCE-ID と ORGANIZER に使う。 */
+  let master: Component | null = null;
+  const organizerFor = (entry: ICalWriteEntry, isNew: boolean): Line | null => {
+    if (isNew && entry.event.recurrenceId !== null) {
+      const copied = master?.props.find((prop) => prop.name === "ORGANIZER");
+      if (copied) return copied;
+    }
+    const who = options.organizer ?? entry.event.organizer;
+    if (!who?.email) return null;
+    return line(
+      "ORGANIZER",
+      `mailto:${who.email}`,
+      who.name ? [["CN", who.name]] : [],
+    );
+  };
+  const vEventOptions = (entry: ICalWriteEntry, isNew: boolean) => ({
+    zones,
+    alarmEmail: options.alarmEmail ?? null,
+    now,
+    defaultTimeZone: options.defaultTimeZone,
+    timezones,
+    recurrenceForm: timeFormOf(
+      master?.props.find((prop) => prop.name === "DTSTART"),
+    ),
+    organizer: organizerFor(entry, isNew),
+  });
   for (const component of calendar.children) {
     const key = located.get(component);
     if (key === undefined) {
@@ -722,28 +962,23 @@ export function writeICalendar(options: ICalWriteOptions): string {
     }
     if (removeKeys.has(key) || written.has(key)) continue;
     const entry = pending.get(key);
+    let result = component;
     if (entry) {
-      children.push(
-        writeVEvent(component, entry, {
-          zones,
-          alarmEmail: options.alarmEmail ?? null,
-          now,
-        }),
-      );
+      result = writeVEvent(component, entry, vEventOptions(entry, false));
       written.add(key);
-      continue;
     }
-    children.push(component);
+    children.push(result);
+    if (key === "") master = result;
   }
-  for (const [key, entry] of pending) {
-    if (written.has(key) || removeKeys.has(key)) continue;
-    children.push(
-      writeVEvent(null, entry, {
-        zones,
-        alarmEmail: options.alarmEmail ?? null,
-        now,
-      }),
-    );
+  // 新しく足す VEVENT は、原本を先に書く (例外が原本の DTSTART の形と ORGANIZER を使うため)。
+  const additions = [...pending].filter(
+    ([key]) => !written.has(key) && !removeKeys.has(key),
+  );
+  additions.sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : 0));
+  for (const [key, entry] of additions) {
+    const result = writeVEvent(null, entry, vEventOptions(entry, true));
+    children.push(result);
+    if (key === "") master = result;
   }
   // 足りない VTIMEZONE を、最初の VEVENT の前に足す。
   const known = new Set(

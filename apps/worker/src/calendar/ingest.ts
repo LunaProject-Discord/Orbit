@@ -564,7 +564,7 @@ async function markRemoteDeletionDeferred(
  * - 届いた remoteId の既存の行のうち、今回届かなかった (uid, recurrenceId) の行は消す
  *   (CalDAV でリソースから消えた例外)。書き戻し待ちの行は残す。
  * - 全件 (delta.full) の最後のページでは、どのページにも出てこなかった remoteId の行を消す。
- *   書き戻し待ちの予定と、その原本は残す。
+ *   書き戻し待ちの予定と、その原本と、delta.keptRemoteIds に入っていた remoteId は残す。
  * - 最後のページでは、calendars の syncToken / etag / lastSyncedAt / syncAttemptedAt / lastError を更新する。
  * seen は全件同期の間に出てきた remoteId を貯める入れ物、carry は uid を補えなかった例外を
  * 次のページへ持ち越す入れ物で、どちらも呼び出し側が同期 1 回ごとに作って渡す。
@@ -596,6 +596,7 @@ export async function ingestEventDelta(
   const result = await db.transaction(async (tx) => {
     const guard = await loadPendingEventGuard(tx, account.id);
     for (const event of delta.events) seen.add(event.remoteId);
+    for (const remoteId of delta.keptRemoteIds ?? []) seen.add(remoteId);
     const { resolved, unresolved } = await resolveRemoteUids(tx, calendar.id, [
       ...carry,
       ...delta.events,

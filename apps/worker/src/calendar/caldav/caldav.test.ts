@@ -87,19 +87,21 @@ for (const syncCollection of [true, false]) {
 
 describe("CalDAV の探索", () => {
   it("well-known から principal、calendar-home-set (別のホスト) をたどり、予定のカレンダーだけを返す", async () => {
+    // iCloud は caldav.icloud.com から pNN-caldav.icloud.com へ移る (icloud.com の下には認証情報を送る)。
     const { server, provider, ctx } = setup({
-      homeOrigin: "https://p01-dav.example.com",
+      origin: "https://caldav.icloud.com",
+      homeOrigin: "https://p01-caldav.icloud.com",
     });
     const list = await provider.listCalendars(ctx);
     expect(list).toEqual([
       {
-        remoteId: "https://p01-dav.example.com/cal/user/work/",
+        remoteId: "https://p01-caldav.icloud.com/cal/user/work/",
         name: "仕事",
         description: null,
         color: "#ff2968",
         timeZone: null,
         readOnly: false,
-        url: "https://p01-dav.example.com/cal/user/work/",
+        url: "https://p01-caldav.icloud.com/cal/user/work/",
         defaultReminders: null,
         kind: "normal",
         providerState: { syncCollection: false },
@@ -572,5 +574,119 @@ describe("CalDAV の書き込み", () => {
       fields: [],
     });
     expect(result.status).toBe("rejected");
+  });
+});
+
+describe("CalDAV (レビューの指摘)", () => {
+  /** VCALENDAR が無いので parseICalendar が ICalendarError を投げる (calendar-query には残る)。 */
+  const BROKEN = "BEGIN:VEVENT\r\nUID:broken@example.com\r\nEND:VEVENT\r\n";
+
+  for (const syncCollection of [true, false]) {
+    it(`全件同期で読めないリソースは keptRemoteIds で返す (sync-collection ${syncCollection ? "あり" : "なし"})`, async () => {
+      const { server, provider, ctx } = setup({ syncCollection });
+      server.putDirect("/cal/user/work/series.ics", SERIES);
+      server.putDirect("/cal/user/work/broken.ics", BROKEN);
+      const calendar = await workCalendar(provider, ctx);
+      const delta = await provider.syncEvents(ctx, calendar, {
+        syncToken: null,
+        pageCursor: null,
+        knownEtags: async () => new Map(),
+        knownEvents: async () => new Map(),
+      });
+      expect(delta.full).toBe(true);
+      expect(delta.keptRemoteIds).toEqual(["/cal/user/work/broken.ics"]);
+      expect(
+        delta.events.some(
+          (event) => event.remoteId === "/cal/user/work/broken.ics",
+        ),
+      ).toBe(false);
+      expect(
+        delta.events.filter(
+          (event) => event.remoteId === "/cal/user/work/series.ics",
+        ),
+      ).toHaveLength(2);
+    });
+  }
+
+  it("etag の無い行の書き換えは、いまの内容を GET してその ETag で PUT する (If-Match: * で古い raw を基にしない)", async () => {
+    const { server, provider, ctx } = setup();
+    server.putDirect("/cal/user/work/series.ics", SERIES);
+    const calendar = await workCalendar(provider, ctx);
+    const { events } = await readAllPages(provider, ctx, calendar, null);
+    const master = events.find(
+      (event) => event.uid === "series@example.com" && !event.recurrenceId,
+    );
+    if (!master) throw new Error("原本がありません");
+    // 相手側で項目が足された (手元の raw は古い)。
+    server.putDirect(
+      "/cal/user/work/series.ics",
+      SERIES.replace(
+        "SUMMARY:週次\r\n",
+        "SUMMARY:週次\r\nX-NEW-ON-SERVER:1\r\n",
+      ),
+    );
+    const current = server.resources.get("/cal/user/work/series.ics");
+    server.requests.length = 0;
+    const result = await provider.updateEvent(
+      ctx,
+      calendar,
+      {
+        remoteId: master.remoteId,
+        etag: null,
+        uid: "series@example.com",
+        recurrenceId: null,
+        parentRemoteId: null,
+      },
+      {
+        event: makeEventSnapshot({
+          uid: "series@example.com",
+          remoteId: master.remoteId,
+          etag: null,
+          raw: master.raw,
+          summary: "週次 (改題)",
+          rrule: "FREQ=WEEKLY",
+        }),
+        master: null,
+        exceptions: [],
+        fields: ["summary"],
+      },
+    );
+    expect(result.status).toBe("ok");
+    const methods = server.requests.map((request) => request.method);
+    expect(methods.indexOf("GET")).toBeGreaterThanOrEqual(0);
+    expect(methods.indexOf("GET")).toBeLessThan(methods.indexOf("PUT"));
+    const put = server.requests.find((request) => request.method === "PUT");
+    expect(put?.headers.get("if-match")).toBe(current?.etag);
+    expect(put?.body).toContain("X-NEW-ON-SERVER:1");
+    expect(put?.body).toContain("SUMMARY:週次 (改題)");
+  });
+
+  it("参加者のいる予定を作ると、アカウントのアドレスを ORGANIZER に書く", async () => {
+    const { server, provider, ctx } = setup();
+    const calendar = await workCalendar(provider, ctx);
+    const snapshot = makeEventSnapshot({
+      organizer: null,
+      attendees: [
+        {
+          email: "bob@example.com",
+          name: "Bob",
+          role: "required",
+          status: "needs_action",
+          self: false,
+        },
+      ] as ReturnType<typeof makeEventSnapshot>["attendees"],
+    });
+    const created = await provider.createEvent(
+      { ...ctx, account: { ...ctx.account, displayName: "User" } },
+      calendar,
+      { event: snapshot, master: null, exceptions: [], fields: [] },
+    );
+    expect(created.status).toBe("ok");
+    const put = server.requests.find((request) => request.method === "PUT");
+    const body = put?.body.replace(/\r\n /g, "") ?? "";
+    expect(body).toContain("ORGANIZER;CN=User:mailto:user@example.com");
+    expect(body).toMatch(
+      /ATTENDEE[^\r\n]*RSVP=TRUE[^\r\n]*:mailto:bob@example\.com/,
+    );
   });
 });
