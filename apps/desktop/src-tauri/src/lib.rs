@@ -1,11 +1,13 @@
 //! Orbit のデスクトップ版 (いまは Orbit Mail のみ。カレンダーと連絡先は同じアプリのウィンドウとして足す)。
 //! 画面は apps/web の静的出力をそのまま載せ、ここでは OS との橋渡しだけを受け持つ
-//! (ウィンドウ枠、トレイ、未読数のバッジ、新着メールの通知、外部リンク、自動更新)。
+//! (ウィンドウ枠、トレイ、未読数のバッジ、新着メールと予定の通知、外部リンク、自動更新)。
 
 mod badge;
 mod browser;
 mod fonts;
 mod launch;
+mod reminder_xml;
+mod reminders;
 mod settings;
 mod system_menu;
 #[cfg(windows)]
@@ -42,7 +44,7 @@ pub(crate) const OPEN_MESSAGE_EVENT: &str = "desktop://open-message";
 const APP_URL_EVENT: &str = "desktop://app-url";
 /// アプリ専用の URL のスキーム。外のブラウザーでの Google / Microsoft のログインから戻るときに使う
 /// (tauri.conf.json の plugins.deep-link、Web 側の lib/native/oauth.ts と合わせる)。
-const APP_URL_SCHEME: &str = "jp.lunaproject.orbit.mail";
+pub(crate) const APP_URL_SCHEME: &str = "jp.lunaproject.orbit.mail";
 
 pub(crate) struct AppState {
     pub settings: Mutex<Settings>,
@@ -316,6 +318,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             notify_new_mail,
             dismiss_notifications,
+            reminders::reminder_capabilities,
+            reminders::schedule_reminders,
+            reminders::clear_reminders,
+            reminders::notify_calendar,
+            launch::take_pending_open_event,
             set_unread_count,
             open_window,
             browser::force_reload,
@@ -341,6 +348,8 @@ pub fn run() {
             });
 
             updater::setup(&handle)?;
+            // 予定のリマインダーのタイマー (src/reminders.rs)。コマンドより先に状態を置く。
+            reminders::start(&handle);
             create_main_window(&handle)?;
             tray::setup(&handle)?;
 
@@ -349,11 +358,26 @@ pub fn run() {
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             let _ = app.deep_link().register_all();
 
+            // 予定の通知 (Windows のトースト) を押してアプリが起動されたときは、その予定を開く
+            // (起動の引数の URL。画面が受け取りに来るまで launch.rs が覚えておく)。
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    if let Some(target) = reminder_xml::parse_event_url(&url) {
+                        launch::open_event(&handle, target);
+                    }
+                }
+            }
+
             // 外のブラウザーでのログインから戻ってきたら、ウィンドウを前に出して画面へ渡す。
+            // 予定の URL (jp.lunaproject.orbit.mail://calendar/events/<id>) なら、カレンダーでその予定を開く。
             let url_handle = handle.clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
                     if url.scheme() != APP_URL_SCHEME {
+                        continue;
+                    }
+                    if let Some(target) = reminder_xml::parse_event_url(&url) {
+                        launch::open_event(&url_handle, target);
                         continue;
                     }
                     show_main_window(&url_handle);
@@ -362,9 +386,17 @@ pub fn run() {
             });
 
             // 通知が押されたら、ウィンドウを前に出してそのメールを開く。
+            // 予定の通知 (macOS / Linux) なら、カレンダーでその予定を開く。
             let action_handle = handle.clone();
             app.notification().on_action(move |action| {
                 if action.action_id() != "tap" {
+                    return;
+                }
+                if let Some(target) = action
+                    .notification()
+                    .and_then(|notification| reminders::target_from_extra(notification.extra()))
+                {
+                    launch::open_event(&action_handle, target);
                     return;
                 }
                 let message_id = action

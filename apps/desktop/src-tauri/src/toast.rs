@@ -42,7 +42,7 @@ struct NotificationAction {
 /// 通知に使うアプリの ID (AppUserModelID)。インストールしたアプリは識別子、
 /// 開発中 (target\debug などから直接動かしている) は PowerShell の ID を借りる
 /// (通知のプラグインと同じ決め方。登録されていない ID では通知が出ないため)。
-fn app_id(app: &AppHandle) -> String {
+pub(crate) fn app_id(app: &AppHandle) -> String {
     const POWERSHELL_APP_ID: &str =
         "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
     let installed = tauri::utils::platform::current_exe()
