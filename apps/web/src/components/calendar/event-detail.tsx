@@ -46,9 +46,9 @@ import {
 } from "@/lib/calendar/rsvp";
 
 const STATUS: Record<Attendee["status"], { label: string; tone: string }> = {
-  accepted: { label: "参加", tone: "text-emerald-600" },
-  declined: { label: "不参加", tone: "text-rose-500" },
-  tentative: { label: "未定", tone: "text-amber-600" },
+  accepted: { label: "参加", tone: "text-emerald-600 dark:text-emerald-500" },
+  declined: { label: "不参加", tone: "text-rose-500 dark:text-rose-400" },
+  tentative: { label: "未定", tone: "text-amber-600 dark:text-amber-500" },
   needs_action: { label: "未返信", tone: "text-muted-foreground" },
   delegated: { label: "代理", tone: "text-muted-foreground" },
 };
@@ -257,7 +257,13 @@ function DetailBody({
               variant="ghost"
               size="icon-sm"
               aria-label="削除"
-              onClick={onDelete}
+              onClick={() => {
+                // 確認のダイアログ (AlertDialog、z-50) より吹き出し (Popover、z-[70]) が手前に
+                // 重なって押せなくならないよう、先に詳細を閉じてから削除に進む
+                // (Mail の人物カードが、操作の前にカードを閉じるのと同じ)。
+                onClose();
+                onDelete();
+              }}
             >
               <Trash2Icon />
             </Button>
