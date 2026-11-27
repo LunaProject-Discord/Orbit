@@ -64,7 +64,7 @@ export function MiniMonth({
           </Button>
         </span>
       </div>
-      <div className="grid grid-cols-7 text-center text-[11px] text-muted-foreground">
+      <div className="grid grid-cols-7 text-center text-[11px] leading-4 text-muted-foreground">
         {WEEKDAY_LABELS.map((label, index) => (
           <span key={label} className={cn("py-1", weekdayTone(index))}>
             {label}
@@ -94,7 +94,7 @@ export function MiniMonth({
               aria-label={`${day.month}月${day.day}日`}
               aria-current={isToday ? "date" : undefined}
               className={cn(
-                "relative flex h-7 items-center justify-center text-xs tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "relative flex h-7 items-center justify-center text-xs tabular-nums outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
                 highlighted && "bg-sidebar-accent",
                 first && "rounded-l-md",
                 last && "rounded-r-md",
