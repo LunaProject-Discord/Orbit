@@ -1,0 +1,256 @@
+import {
+  calendarScheduling,
+  type ImipEvent,
+  type ImipPlan,
+  imipRecipientCount,
+  type SchedulingBlocked,
+  schedulingBlocked,
+} from "@orbit/core";
+import {
+  type calendars,
+  type Database,
+  type EventWithExtras,
+  eventAttendees,
+  eventConflicts,
+  eventReminders,
+  events,
+  imipLimitExceeded,
+} from "@orbit/db";
+import { asc, eq, inArray, sql } from "drizzle-orm";
+import {
+  type ImipSender,
+  loadSenderAccounts,
+  pickImipSender,
+  type SenderAccount,
+} from "./imip-sender.js";
+
+/**
+ * 予定の API (calendars.ts) が招待メール (iMIP) を計画して積むための補助 (imip-design 3・4・6 章)。
+ */
+
+type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+type Executor = Pick<Database, "select">;
+type EventRow = typeof events.$inferSelect;
+type CalendarRow = typeof calendars.$inferSelect;
+
+/** 送信数の上限 (6.6) を超える変更。トランザクションを巻き戻して 409 invite_limit にする。 */
+export class InviteLimitError extends Error {
+  constructor() {
+    super("invite_limit");
+    this.name = "InviteLimitError";
+  }
+}
+
+/** Orbit が招待メールを送りうるカレンダー (Orbit 内と CalDAV)。 */
+export const MAIL_CALENDAR_SOURCES: ReadonlySet<string> = new Set([
+  "local",
+  "caldav",
+]);
+
+/** カレンダーが招待をどう送るか (scheduling) と、その送信元。 */
+export type CalendarSchedulingInfo = {
+  scheduling: ReturnType<typeof calendarScheduling>;
+  /** 解決した送信元 (Orbit 内と CalDAV のカレンダーだけ。ほかは null)。 */
+  sender: ImipSender | null;
+  blocked: SchedulingBlocked | null;
+};
+
+/**
+ * カレンダーの scheduling を、送信元の解決 (4.2) と合わせて決める。readOnly は Orbit から
+ * 書き込めないこと (書き戻しに対応していないプロバイダを含む)。list は利用者のアカウント。
+ */
+export function schedulingInfo(
+  row: CalendarRow,
+  readOnly: boolean,
+  list: readonly SenderAccount[],
+): CalendarSchedulingInfo {
+  const resolution = MAIL_CALENDAR_SOURCES.has(row.source)
+    ? pickImipSender(list, row)
+    : null;
+  const input = {
+    source: row.source,
+    readOnly,
+    providerState: row.providerState,
+    imipSender: resolution?.sender != null,
+    senderBlocked: resolution?.blocked ?? null,
+  };
+  return {
+    scheduling: calendarScheduling(input),
+    sender: resolution?.sender ?? null,
+    blocked: schedulingBlocked(input),
+  };
+}
+
+/** schedulingInfo の、アカウントを読むところまで含めた形 (トランザクションの中で 1 件ずつ使う)。 */
+export async function loadSchedulingInfo(
+  db: Executor,
+  row: CalendarRow,
+  readOnly: boolean,
+): Promise<CalendarSchedulingInfo & { accounts: SenderAccount[] }> {
+  const list = MAIL_CALENDAR_SOURCES.has(row.source)
+    ? await loadSenderAccounts(db, row.userId)
+    : [];
+  return { ...schedulingInfo(row, readOnly, list), accounts: list };
+}
+
+type AttendeeLike = {
+  email: string;
+  name: string | null;
+  role: string;
+  status: string;
+  self: boolean;
+};
+
+/** 予定の行と参加者を、計画 (planImip) の入力にする。 */
+export function imipEventOf(
+  row: EventRow,
+  attendees: readonly AttendeeLike[],
+  reminders: readonly { method: "display" | "email"; minutes: number }[] = [],
+): ImipEvent {
+  return {
+    uid: row.uid,
+    recurrenceId: row.recurrenceId,
+    summary: row.summary,
+    location: row.location,
+    description: row.description,
+    status: row.status,
+    busy: row.busy,
+    allDay: row.allDay,
+    startAt: row.startAt,
+    endAt: row.endAt,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    startTimeZone: row.startTimeZone,
+    endTimeZone: row.endTimeZone,
+    rrule: row.rrule,
+    rdates: row.rdates,
+    exdates: row.exdates,
+    organizer: row.organizer
+      ? {
+          email: row.organizer.email,
+          ...(row.organizer.name ? { name: row.organizer.name } : {}),
+          ...(typeof row.organizer.self === "boolean"
+            ? { self: row.organizer.self }
+            : {}),
+        }
+      : null,
+    attendees: attendees.map((attendee) => ({
+      email: attendee.email,
+      name: attendee.name,
+      role: attendee.role as ImipEvent["attendees"][number]["role"],
+      status: attendee.status as ImipEvent["attendees"][number]["status"],
+      self: attendee.self,
+    })),
+    sequence: row.sequence,
+    conferenceUrl: row.conferenceUrl,
+    useDefaultReminders: row.useDefaultReminders,
+    reminders,
+  };
+}
+
+/** 予定の行を、参加者とリマインダー付きで読む (enqueueImip の eventRows)。順番は ids のまま。 */
+export async function loadEventsWithExtras(
+  db: Executor,
+  ids: readonly string[],
+): Promise<EventWithExtras[]> {
+  if (ids.length === 0) return [];
+  const list = [...new Set(ids)];
+  const [rows, attendeeRows, reminderRows] = await Promise.all([
+    db.select().from(events).where(inArray(events.id, list)),
+    db
+      .select()
+      .from(eventAttendees)
+      .where(inArray(eventAttendees.eventId, list))
+      .orderBy(asc(eventAttendees.id)),
+    db
+      .select()
+      .from(eventReminders)
+      .where(inArray(eventReminders.eventId, list))
+      .orderBy(asc(eventReminders.minutes)),
+  ]);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return list.flatMap((id) => {
+    const row = byId.get(id);
+    if (!row) return [];
+    return [
+      {
+        ...row,
+        attendees: attendeeRows.filter((item) => item.eventId === id),
+        reminders: reminderRows
+          .filter((item) => item.eventId === id)
+          .map((item) => ({ method: item.method, minutes: item.minutes })),
+      },
+    ];
+  });
+}
+
+/** 原本と、その例外 (scope が series の招待の本文に使う)。 */
+export async function loadSeriesWithExtras(
+  db: Executor,
+  masterId: string,
+): Promise<EventWithExtras[]> {
+  const children = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(eq(events.parentId, masterId))
+    .orderBy(asc(events.recurrenceId));
+  return loadEventsWithExtras(db, [masterId, ...children.map((row) => row.id)]);
+}
+
+/**
+ * 計画の宛先を足すと送信数の上限 (1 時間 200 件、1 日 1000 件。REPLY は数えない) を超えるなら
+ * InviteLimitError を投げる。数え方は worker と同じ imipLimitExceeded (積んだ imip_send と、
+ * まだ書き戻していない CalDAV の event_* の計画)。同じ利用者の変更が同時に来ても上限を
+ * 抜けないよう、利用者ごとの勧告ロックを取ってから数える。
+ */
+export async function assertInviteLimit(
+  tx: Tx,
+  userId: string,
+  plan: ImipPlan | null,
+  now: Date,
+): Promise<void> {
+  if (!plan || imipRecipientCount(plan) === 0) return;
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`imip-limit:${userId}`}, 0))`,
+  );
+  if (await imipLimitExceeded(tx, userId, plan, { now })) {
+    throw new InviteLimitError();
+  }
+}
+
+/**
+ * 招待メールを送れなかったことを記録する (4.3: 既にある予定の主催者アドレスのアカウントが
+ * 無い・受信専用になった)。変更は保存し、送れなかったメールごとに invite_failed を 1 件残す。
+ * outboxId は null (積んでいないので「もう一度送る」はできない)。
+ */
+export async function recordInviteFailed(
+  tx: Tx,
+  input: {
+    userId: string;
+    calendarId: string;
+    eventId: string;
+    title: string | null;
+    plan: ImipPlan;
+    reason: string;
+  },
+): Promise<void> {
+  const rows = input.plan.messages.map((message) => ({
+    userId: input.userId,
+    calendarId: input.calendarId,
+    eventId: input.eventId,
+    kind: "invite_failed" as const,
+    lost: {
+      outboxId: null,
+      method: message.method,
+      to: message.to.map((to) => to.address),
+    },
+    title: input.title,
+    reason:
+      message.method === "REPLY"
+        ? `出欠の返事を主催者へ送れませんでした: ${input.reason}`
+        : message.method === "CANCEL"
+          ? `取り消しのメールを送れませんでした: ${input.reason}`
+          : `招待メールを送れませんでした: ${input.reason}`,
+  }));
+  if (rows.length > 0) await tx.insert(eventConflicts).values(rows);
+}

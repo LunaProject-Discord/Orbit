@@ -2,8 +2,10 @@ import { zValidator } from "@hono/zod-validator";
 import {
   type CalendarSyncNotification,
   CHANNEL_CALENDAR_SYNC,
+  CHANNEL_OUTBOX,
+  IMIP_OUTBOX_KIND,
 } from "@orbit/core";
-import { calendars, eventConflicts, events, outbox } from "@orbit/db";
+import { accounts, calendars, eventConflicts, events, outbox } from "@orbit/db";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -33,6 +35,14 @@ function publicConflict(row: ConflictRow) {
     snapshot: row.snapshot,
     title: row.title,
     reason: row.reason,
+    /**
+     * 招待メールの失敗 (invite_failed) で、resend-invite で送り直せるか (outbox の行がある)。
+     * 送信元が無くて積まなかったものは false (「閉じる」だけ)。
+     */
+    resendable:
+      row.kind === "invite_failed" &&
+      typeof row.lost?.outboxId === "string" &&
+      row.lost?.partial !== true,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -101,6 +111,7 @@ export function calendarConflictRoutes({ db }: Pick<RouteDeps, "db">) {
           and(eq(eventConflicts.id, id), eq(eventConflicts.userId, userId)),
         );
       if (!conflict) return "not_found" as const;
+      // 招待メールの失敗 (invite_failed) は resend-invite で送り直す。
       if (conflict.kind !== "create_failed") return "not_retryable" as const;
       const [calendar] = await tx
         .select()
@@ -166,6 +177,74 @@ export function calendarConflictRoutes({ db }: Pick<RouteDeps, "db">) {
       return c.json({ error: "not_retryable" }, 409);
     }
     if (result === "gone") return c.json({ error: "gone" }, 410);
+    return c.body(null, 202);
+  });
+
+  /**
+   * 送れなかった招待メールを送り直す (invite_failed だけ。imip-design 6.5)。lost.outboxId の
+   * imip_send の行を pending に戻して送信へ知らせ、記録を閉じる。同じメール (同じ Message-ID・
+   * DTSTAMP・本文) を送り直すので、予定が既に消えた取り消しでも使える。
+   * - 404 not_found: 記録が無い。
+   * - 409 not_resendable: invite_failed ではない、積んでいない (送信元が無くて送らなかった)、
+   *   一部の宛先だけの失敗 (partial)、
+   *   outbox の行が無い・失敗のままでない。
+   */
+  app.post("/:id/resend-invite", zValidator("param", idParam), async (c) => {
+    const { id } = c.req.valid("param");
+    const userId = c.var.user.id;
+    const result = await db.transaction(async (tx) => {
+      const [conflict] = await tx
+        .select()
+        .from(eventConflicts)
+        .where(
+          and(eq(eventConflicts.id, id), eq(eventConflicts.userId, userId)),
+        )
+        .for("update");
+      if (!conflict) return "not_found" as const;
+      const outboxId = conflict.lost?.outboxId;
+      if (
+        conflict.kind !== "invite_failed" ||
+        typeof outboxId !== "string" ||
+        // 一部の宛先だけ拒否された (ほかの宛先には届いた) ものは送り直さない。
+        conflict.lost?.partial === true ||
+        !z.uuid().safeParse(outboxId).success
+      ) {
+        return "not_resendable" as const;
+      }
+      // 送信元のアカウントがその利用者のものであることも確かめる。
+      const [reset] = await tx
+        .update(outbox)
+        .set({
+          status: "pending",
+          attempts: 0,
+          lastError: null,
+          firstFailedAt: null,
+          runAfter: new Date(),
+        })
+        .where(
+          and(
+            eq(outbox.id, outboxId),
+            eq(outbox.kind, IMIP_OUTBOX_KIND),
+            eq(outbox.status, "failed"),
+            sql`${outbox.accountId} in (select ${accounts.id} from ${accounts} where ${accounts.userId} = ${userId})`,
+          ),
+        )
+        .returning({ accountId: outbox.accountId });
+      if (!reset) return "not_resendable" as const;
+      await tx
+        .update(eventConflicts)
+        .set({ resolvedAt: new Date() })
+        .where(eq(eventConflicts.id, id));
+      await recordChanges(tx, userId, "calendar", [conflict.calendarId]);
+      await tx.execute(
+        sql`select pg_notify(${CHANNEL_OUTBOX}, ${reset.accountId})`,
+      );
+      return "ok" as const;
+    });
+    if (result === "not_found") return c.json({ error: "not_found" }, 404);
+    if (result === "not_resendable") {
+      return c.json({ error: "not_resendable" }, 409);
+    }
     return c.body(null, 202);
   });
 
