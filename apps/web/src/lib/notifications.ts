@@ -1,5 +1,7 @@
 import {
+  ApiError,
   deletePushSubscription,
+  getMessage,
   getPushPublicKey,
   type MailboxSummary,
   type MailNotification,
@@ -7,6 +9,7 @@ import {
   savePushSubscription,
 } from "@/lib/api";
 import {
+  dismissDesktopNotifications,
   isDesktopApp,
   listenDesktop,
   NOTIFICATION_ACTION_EVENT,
@@ -262,6 +265,8 @@ export async function showPageNotification(
     ? `${notification.body}\n${notification.preview}`
     : notification.body;
   if (isDesktopApp()) {
+    if (notification.messageId)
+      rememberDesktopNotification(notification.messageId);
     // 押されたときは、アプリ側からのイベントが onNotificationOpen に届く。
     // ボタンと返信欄 (Windows のみ) の操作は onNotificationAction に届く。
     await notifyNewMail({
@@ -383,6 +388,97 @@ export function onNotificationOpen(
   navigator.serviceWorker.addEventListener("message", onMessage);
   return () =>
     navigator.serviceWorker.removeEventListener("message", onMessage);
+}
+
+/** デスクトップ版で通知を出したメールと、出した時刻 (古い順)。既読にしたら通知を消すために覚えておく。 */
+const desktopNotified = new Map<string, number>();
+/** 覚えておく通知の上限。超えた分は古いものから忘れる。 */
+const MAX_NOTIFIED = 200;
+/** 覚えておく期間。Windows の通知センターに通知が残るのは既定で 3 日まで。 */
+const NOTIFIED_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+
+function rememberDesktopNotification(messageId: string) {
+  desktopNotified.delete(messageId);
+  desktopNotified.set(messageId, Date.now());
+  for (const id of desktopNotified.keys()) {
+    if (desktopNotified.size <= MAX_NOTIFIED) break;
+    desktopNotified.delete(id);
+  }
+}
+
+/** 出ている (出した) 新着メールの通知の、メッセージの ID。 */
+export async function notifiedMessageIds(): Promise<string[]> {
+  if (isDesktopApp()) {
+    const since = Date.now() - NOTIFIED_TTL_MS;
+    for (const [id, at] of desktopNotified) {
+      if (at < since) desktopNotified.delete(id);
+    }
+    return [...desktopNotified.keys()];
+  }
+  if (!supported()) return [];
+  try {
+    const registration = await existingRegistration();
+    if (!registration) return [];
+    const shown = await registration.getNotifications();
+    return shown.flatMap((item) => {
+      const messageId: unknown = (item.data as { messageId?: unknown } | null)
+        ?.messageId;
+      return typeof messageId === "string" ? [messageId] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 既読にした (または移動・削除した) メールの通知を消す。
+ * 出ていない通知を指定しても何も起きない。
+ */
+export async function dismissNotifications(
+  messageIds: string[],
+): Promise<void> {
+  if (messageIds.length === 0) return;
+  if (isDesktopApp()) {
+    const targets = messageIds.filter((id) => desktopNotified.has(id));
+    if (targets.length === 0) return;
+    for (const id of targets) desktopNotified.delete(id);
+    await dismissDesktopNotifications(targets).catch(() => null);
+    return;
+  }
+  if (!supported()) return;
+  try {
+    const registration = await existingRegistration();
+    if (!registration) return;
+    const ids = new Set(messageIds);
+    for (const item of await registration.getNotifications()) {
+      const messageId: unknown = (item.data as { messageId?: unknown } | null)
+        ?.messageId;
+      if (typeof messageId === "string" && ids.has(messageId)) item.close();
+    }
+  } catch {
+    // 通知を消せなくても、メールの操作には影響しない。
+  }
+}
+
+/** 一度に確かめる通知の数 (新しいものから)。 */
+const MAX_CHECKS = 10;
+
+/**
+ * 通知を出したメールが、ほかの端末などで既読になっていないか (消されていないか) を
+ * サーバーに確かめ、そうなっていれば通知を消す。変更の知らせが届いたときに呼ぶ。
+ */
+export async function dismissReadNotifications(): Promise<void> {
+  const ids = (await notifiedMessageIds()).slice(-MAX_CHECKS);
+  const done = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        return (await getMessage(id)).seen ? id : null;
+      } catch (error) {
+        return error instanceof ApiError && error.status === 404 ? id : null;
+      }
+    }),
+  );
+  await dismissNotifications(done.filter((id): id is string => id !== null));
 }
 
 /** SSE の mail イベントの中身を取り出す。形式が違えば空。 */

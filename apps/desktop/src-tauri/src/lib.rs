@@ -125,6 +125,25 @@ fn notify_new_mail(
     }
 }
 
+/// 既読にしたメールなどの通知を、通知センターから消す (Windows のみ。ほかの OS では何もしない)。
+#[tauri::command]
+fn dismiss_notifications(app: AppHandle, message_ids: Vec<String>) -> Result<(), String> {
+    let message_ids: Vec<String> = message_ids
+        .into_iter()
+        .filter(|id| is_message_id(id))
+        .take(500)
+        .collect();
+    #[cfg(windows)]
+    {
+        return toast::remove(&app, &message_ids).map_err(|error| error.to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, message_ids);
+        Ok(())
+    }
+}
+
 /// 受信トレイの未読数を、トレイとタスクバー (Dock) のアイコンに出す。
 #[tauri::command]
 fn set_unread_count(app: AppHandle, count: u32) {
@@ -285,6 +304,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             notify_new_mail,
+            dismiss_notifications,
             set_unread_count,
             open_window,
             browser::force_reload,

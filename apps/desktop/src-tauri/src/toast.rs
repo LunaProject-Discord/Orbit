@@ -22,6 +22,9 @@ use crate::toast_xml::{
 };
 use crate::{show_main_window, OpenMessage, MAIN_WINDOW, OPEN_MESSAGE_EVENT};
 
+/// 新着メールの通知に付けるグループ名。タグ (メッセージの ID) と合わせて、通知を消すときに使う。
+const TOAST_GROUP: &str = "mail";
+
 /// ボタンが押された、または返信が送られたときに画面へ送るイベント。
 pub(crate) const NOTIFICATION_ACTION_EVENT: &str = "desktop://notification-action";
 
@@ -129,6 +132,7 @@ fn handle_activation(
 }
 
 /// 送信ボタンの絵 (アプリに埋め込んだ PNG)。作成画面の送信ボタンと同じ Lucide の send を黒で描いたもの。
+/// Windows は絵をボタンの枠いっぱいに広げるので、周りに余白を付けて文字と同じくらいの大きさにしている。
 /// Windows はダークモードのトーストでこの絵の色を反転させる (黒は白になる) ので、色は付けない。
 /// トーストは絵をファイルで受け取るので、
 /// アプリのキャッシュのフォルダへ書き出して file:/// の URL を返す。書き出せなければ None
@@ -168,8 +172,9 @@ pub(crate) fn show(
     )))?;
     let toast = ToastNotification::CreateToastNotification(&doc)?;
     if let Some(id) = &message_id {
-        // 同じメールの通知は置き換える (二重に出さない)。
+        // 同じメールの通知は置き換える (二重に出さない)。既読にしたときは、この印で通知センターから消す。
         toast.SetTag(&HSTRING::from(id.as_str()))?;
+        toast.SetGroup(&HSTRING::from(TOAST_GROUP))?;
     }
     let handle = app.clone();
     toast.Activated(&TypedEventHandler::<
@@ -182,4 +187,16 @@ pub(crate) fn show(
         Ok(())
     }))?;
     ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app_id(app)))?.Show(&toast)
+}
+
+/// 指定したメールの通知を、画面と通知センターから消す (既読にしたメールなど)。
+/// 出していない通知を指定しても何も起きない。
+pub(crate) fn remove(app: &AppHandle, message_ids: &[String]) -> windows::core::Result<()> {
+    let history = ToastNotificationManager::History()?;
+    let app_id = HSTRING::from(app_id(app));
+    let group = HSTRING::from(TOAST_GROUP);
+    for id in message_ids {
+        history.RemoveGroupedTagWithId(&HSTRING::from(id.as_str()), &group, &app_id)?;
+    }
+    Ok(())
 }
