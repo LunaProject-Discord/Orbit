@@ -344,6 +344,13 @@
       "when": 1795782052020,
       "tag": "0048_imip",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1795788225935,
+      "tag": "0049_calendar_notifications",
+      "breakpoints": true
     }
   ]
 }
