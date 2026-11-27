@@ -177,7 +177,7 @@ export class AccountSync {
       db,
       account,
       imapBodyFetcher(db, (task) => this.attachmentDownloader.withClient(task)),
-      imapHeaderFetcher(db, (task) =>
+      imapHeaderFetcher(db, account, (task) =>
         this.attachmentDownloader.withClient(task),
       ),
       (message) => this.log(message),

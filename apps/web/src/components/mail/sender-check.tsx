@@ -8,12 +8,13 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import { Hint } from "@/components/hint";
-import type {
-  Address,
-  AuthMethodResult,
-  AuthResults,
-  SenderCheck,
-  SenderWarning,
+import {
+  type Address,
+  type AuthMethodResult,
+  type AuthResults,
+  isVerifiedSender,
+  type SenderCheck,
+  type SenderWarning,
 } from "@/lib/api";
 
 /** 注意の見出し。 */
@@ -150,7 +151,7 @@ export function VerifiedSenderMark({
 }: {
   check: SenderCheck | null | undefined;
 }) {
-  if (!check?.verified || check.warnings.length > 0) return null;
+  if (!isVerifiedSender(check)) return null;
   const label = "送信元を確認済み (差出人のドメインの DMARC に合格)";
   return (
     <Hint label={label}>
@@ -180,7 +181,7 @@ export function AuthResultsRows({
   if (auth.dmarc) items.push({ name: "DMARC", result: auth.dmarc });
   if (auth.spf) items.push({ name: "SPF", result: auth.spf });
   for (const dkim of auth.dkim) items.push({ name: "DKIM", result: dkim });
-  const verified = check?.verified === true && check.warnings.length === 0;
+  const verified = isVerifiedSender(check);
   const failed = (check?.warnings ?? []).some(
     (warning) => warning === "dmarc_fail" || warning === "auth_fail",
   );

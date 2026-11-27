@@ -397,7 +397,29 @@ export type SenderCheck = {
   warnings: SenderWarning[];
   /** name_mismatch のとき、表示名が名乗っている相手。 */
   claimed: string | null;
+  /** 判定の決まりの版 (@orbit/core の SENDER_CHECK_VERSION)。古い結果には無い。 */
+  version?: number;
 };
+
+/**
+ * 送信元の確認結果の決まりの版 (@orbit/core の SENDER_CHECK_VERSION と同じ値)。
+ * 2 = 受信サーバーの信頼する判定 (authserv-id) だけを使う。
+ */
+export const SENDER_CHECK_VERSION = 2;
+
+/**
+ * 「確認済み」の印や BIMI のロゴを出してよいか (DMARC に合格し、注意が無い)。
+ * サーバーは古い決まりの結果を返さないが、端末に保存してあった古い内容にも出さない。
+ */
+export function isVerifiedSender(
+  check: SenderCheck | null | undefined,
+): boolean {
+  return (
+    check?.verified === true &&
+    check.warnings.length === 0 &&
+    check.version === SENDER_CHECK_VERSION
+  );
+}
 
 export type Attachment = {
   id: string;

@@ -49,7 +49,8 @@ export type ICalEventData = {
   rrule: string | null;
   rdates: readonly string[] | null;
   exdates: readonly string[] | null;
-  organizer: { email: string; name?: string } | null;
+  /** self: false は他人が主催する予定 (メールの招待から取り込んだものなど)。 */
+  organizer: { email: string; name?: string; self?: boolean } | null;
   attendees: readonly {
     email: string;
     name?: string | null;
@@ -444,8 +445,11 @@ function writeVEvent(
   const significant =
     base !== null && (fields.includes("time") || fields.includes("recurrence"));
   const known = Number.isFinite(baseSequence) ? baseSequence : 0;
+  // 他人が主催する予定 (取り込んだ招待など) では上げない。SEQUENCE を決めるのは主催者で、
+  // 上げると主催者の次の更新が古く見え、こちらの返事の SEQUENCE もずれる (レビュー 8b 指摘 15)。
+  const bump = significant && event.organizer?.self !== false;
   const sequence =
-    event.sequence > known ? event.sequence : known + (significant ? 1 : 0);
+    event.sequence > known ? event.sequence : known + (bump ? 1 : 0);
   const stamp = utcStamp(toInstant(options.now));
   const props = [
     ...head,

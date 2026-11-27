@@ -1,13 +1,14 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import {
   attachmentPath,
-  calendarScheduling,
   type InviteAction,
   type InviteActionState,
   type InviteApplyExpect,
   type InviteBlocked,
+  type InviteConfirmReason,
   type InviteSenderAuth,
   inviteRole,
+  isCurrentSenderCheck,
   type MessageInviteImipFields,
   normalizeRecurrenceId,
   type ParsedCalendar,
@@ -23,19 +24,34 @@ import {
   eventAttendees,
   events,
   messages,
-  outbox,
 } from "@orbit/db";
-import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import { ownAddresses } from "./calendar-identity.js";
-import { recordChanges } from "./changes.js";
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
+  type CalendarIdentity,
+  calendarIdentities,
+  ownAddresses,
+} from "./calendar-identity.js";
+import { recordChanges } from "./changes.js";
+import { loadSchedulingInfo } from "./event-imip.js";
+import {
+  cancelPendingWrites,
+  enqueueDelete,
   enqueueEventOperation,
+  enqueueEventUpdate,
   eventCreateKey,
-  eventDeleteKey,
-  eventUpdateKey,
+  excludeOccurrence,
   isProviderCalendar,
   lockCalendarAccount,
+  lockEventForWrite,
+  providerWriteBlocked,
 } from "./event-outbox.js";
+import {
+  type EventAttendeeInput,
+  type EventFieldsInput,
+  eventFieldColumns,
+  insertEvent,
+  replaceEventExtras,
+} from "./event-rows.js";
 import type { EventsHub } from "./events-hub.js";
 import {
   ensureReceivedAttachment,
@@ -48,6 +64,7 @@ import {
  *
  * 書き込みは利用者の操作 (apply) でだけ行い、サーバーが添付をもう一度読んで決める
  * (端末が送った内容は信用しない)。COUNTER / REFRESH などの METHOD、代理 (SENT-BY) は扱わない。
+ * 予定の行は event-rows.ts、書き戻しは event-outbox.ts の、calendars.ts と同じ処理で書く。
  */
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -65,8 +82,38 @@ export const MAX_INVITE_BYTES = 1024 * 1024;
  */
 export const MAX_INVITE_LINES = 10_000;
 
-/** REPLY の DTSTAMP が、いまよりこれ以上先なら断る (8.2 の 8)。 */
-const FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+/**
+ * SEQUENCE の上限。これを超える招待は扱わない (invite: null)。ふつうの予定は数十まで。
+ * 大きな値の偽の更新で、以後の本物の更新を「古い」にさせないため (レビュー 8b 指摘 4)。
+ */
+export const MAX_INVITE_SEQUENCE = 1_000_000;
+
+/** 更新で SEQUENCE がこれより大きく飛ぶときは、確認を挟む (指摘 4)。 */
+const SEQUENCE_JUMP = 1000;
+
+/**
+ * 招待の値の上限 (calendars.ts の作成・変更と同じ基準。指摘 5)。文字は切り詰め、
+ * UID・参加者の数・繰り返しが上限を超える招待は扱わない。
+ */
+const LIMITS = {
+  uid: 255,
+  summary: 1000,
+  location: 2000,
+  description: 100_000,
+  name: 300,
+  attendees: 500,
+  rrule: 1000,
+  rdates: 1000,
+  exdates: 5000,
+  recurrenceId: 40,
+  conferenceUrl: 2000,
+};
+
+/**
+ * REPLY の DTSTAMP が、いまよりこれ以上先なら断る (8.2 の 8)。メールを受け取った時刻より
+ * 先の DTSTAMP は受け取った時刻に丸める (指摘 10: 未来の DTSTAMP で本物の返事を止めない)。
+ */
+const FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 const lower = (value: string) => value.trim().toLowerCase();
 
@@ -96,6 +143,69 @@ export type LoadInviteResult =
       status: ReturnType<typeof statusOfFetchError>;
       error: string;
     };
+
+const clip = (value: string | null, max: number) =>
+  value === null ? null : value.slice(0, max);
+
+/** http(s) の URL で長すぎないものだけ (calendars.ts の conferenceUrl と同じ扱い)。 */
+function safeUrl(value: string | null): string | null {
+  if (!value || value.length > LIMITS.conferenceUrl) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 招待として扱う RRULE か (FREQ= で始まり、1 秒・1 分ごとの繰り返しではない)。 */
+function acceptableRrule(value: string | null): boolean {
+  if (value === null) return true;
+  const rule = value.replace(/^RRULE:/i, "");
+  if (rule.length > LIMITS.rrule || !/^FREQ=/i.test(rule)) return false;
+  return !/^FREQ=(SECONDLY|MINUTELY)\b/i.test(rule);
+}
+
+/**
+ * 招待の VEVENT を、取り込める大きさと形にそろえる (指摘 4・5)。題名・場所・メモ・名前は
+ * 切り詰め、SEQUENCE・参加者の数・繰り返し・時刻が扱えないものがあれば null (招待として扱わない)。
+ * アドレスの形 (空白なし、320 文字まで) は parseICalendar が確かめている。
+ */
+function sanitizeEntry(entry: ParsedEvent): ParsedEvent | null {
+  if (entry.sequence > MAX_INVITE_SEQUENCE) return null;
+  if (entry.attendees.length > LIMITS.attendees) return null;
+  if (!acceptableRrule(entry.rrule)) return null;
+  if ((entry.rdates?.length ?? 0) > LIMITS.rdates) return null;
+  if ((entry.exdates?.length ?? 0) > LIMITS.exdates) return null;
+  if (
+    entry.recurrenceId !== null &&
+    entry.recurrenceId.length > LIMITS.recurrenceId
+  ) {
+    return null;
+  }
+  if (entry.allDay ? !entry.startDate || !entry.endDate : !entry.startAt) {
+    return null;
+  }
+  return {
+    ...entry,
+    summary: clip(entry.summary, LIMITS.summary),
+    location: clip(entry.location, LIMITS.location),
+    description: clip(entry.description, LIMITS.description),
+    conferenceUrl: safeUrl(entry.conferenceUrl),
+    organizer: entry.organizer
+      ? {
+          ...entry.organizer,
+          ...(entry.organizer.name
+            ? { name: entry.organizer.name.slice(0, LIMITS.name) }
+            : {}),
+        }
+      : null,
+    attendees: entry.attendees.map((attendee) => ({
+      ...attendee,
+      name: clip(attendee.name, LIMITS.name),
+    })),
+  };
+}
 
 /** 招待として読む添付か。text/calendar を優先し、次に名前が .ics のもの。 */
 function invitePriority(file: {
@@ -167,9 +277,14 @@ export async function loadMessageInvite(
       error: result.error,
     };
   }
-  const content = await readFile(
-    attachmentPath(dir, result.attachment.storageKey),
-  ).catch(() => null);
+  const path = attachmentPath(dir, result.attachment.storageKey);
+  // 申告の大きさが小さくても、実体が大きければ読まない (メモリに載せない)。
+  const size = await stat(path)
+    .then((info) => info.size)
+    .catch(() => null);
+  if (size === null) return { ok: false, status: 502, error: "fetch_failed" };
+  if (size > MAX_INVITE_BYTES) return { ok: true, invite: null };
+  const content = await readFile(path).catch(() => null);
   if (!content) return { ok: false, status: 502, error: "fetch_failed" };
   if (content.byteLength > MAX_INVITE_BYTES) return { ok: true, invite: null };
 
@@ -185,19 +300,26 @@ export async function loadMessageInvite(
     return { ok: true, invite: null };
   }
   const uid = parsed.events[0]?.uid;
-  if (!uid) return { ok: true, invite: null };
+  // 長すぎる UID は扱わない (索引の行の大きさを超えて 500 になるため。指摘 5)。
+  if (!uid || uid.length > LIMITS.uid) return { ok: true, invite: null };
   // 同じ回が重なっていれば先の方を使う。
   const seen = new Set<string>();
-  const entries = parsed.events.filter((event) => {
-    if (event.uid !== uid) return false;
+  const picked: ParsedEvent[] = [];
+  for (const event of parsed.events) {
+    if (event.uid !== uid) continue;
     const key = event.recurrenceId ?? "";
-    if (seen.has(key)) return false;
+    if (seen.has(key)) continue;
     seen.add(key);
-    return true;
-  });
-  const primary =
-    entries.find((entry) => entry.recurrenceId === null) ?? entries[0];
+    const entry = sanitizeEntry(event);
+    if (!entry) return { ok: true, invite: null };
+    picked.push(entry);
+  }
+  const master = picked.find((entry) => entry.recurrenceId === null);
+  const primary = master ?? picked[0];
   if (!primary) return { ok: true, invite: null };
+  // 原本の無い招待は、先頭の 1 回だけを扱う (7.3 の「繰り返さない 1 件の予定」。同じ UID の
+  // 親の無い行を複数作ると、CalDAV に同じ UID のリソースが 2 つ積まれるため。指摘 9)。
+  const entries = master ? picked : [primary];
   return {
     ok: true,
     invite: {
@@ -223,7 +345,8 @@ export async function loadMessageInvite(
 export function senderAuth(
   check: InviteMessage["senderCheck"],
 ): InviteSenderAuth {
-  if (!check) return "pending";
+  // 信頼する判定サーバーとの照合を入れる前の結果は使わない (取り直すまで確認中)。
+  if (!isCurrentSenderCheck(check)) return "pending";
   if (
     check.warnings.includes("dmarc_fail") ||
     check.warnings.includes("auth_fail")
@@ -235,7 +358,9 @@ export function senderAuth(
 
 /**
  * 招待を取り込める・反映できるカレンダーか (7.2、未決 11 の推奨 A)。書き込めて、scheduling が
- * mail か none の、Orbit 内か CalDAV (自動スケジュールでない) のカレンダー。
+ * mail か none の、Orbit 内か CalDAV のカレンダー。CalDAV は自動スケジュールでないと
+ * 分かっているもの (autoSchedule === false) だけ。まだ調べていない (不明) ものは入れない
+ * (実は自動スケジュールなら、サーバーが主催者へ返事を送り直すおそれ。指摘 6)。
  */
 export function isMailSideCalendar(
   calendar: Pick<
@@ -250,7 +375,7 @@ export function isMailSideCalendar(
     calendar.source === "caldav" &&
     writable.has("caldav") &&
     calendar.accountId !== null &&
-    calendar.providerState?.autoSchedule !== true
+    calendar.providerState?.autoSchedule === false
   );
 }
 
@@ -264,7 +389,12 @@ function isServerCalendar(
 ): boolean {
   if (calendar.readOnly || calendar.accountId === null) return false;
   if (!writable.has(calendar.source)) return false;
-  return calendarScheduling(calendar) === "server";
+  return (
+    calendar.source === "google" ||
+    calendar.source === "microsoft" ||
+    (calendar.source === "caldav" &&
+      calendar.providerState?.autoSchedule === true)
+  );
 }
 
 /** 予定の行と、そのカレンダー。 */
@@ -273,11 +403,7 @@ type Candidate = { event: EventRow; calendar: CalendarRow };
 /** inspectInvite が決めた、実行する対象 (apply が使う)。 */
 type InvitePlan =
   | { kind: "none" }
-  | {
-      kind: "import";
-      /** self にする参加者のアドレス。無ければ null (出欠は返せない)。 */
-      selfAddress: string | null;
-    }
+  | { kind: "import" }
   | { kind: "update"; calendar: CalendarRow; target: EventRow }
   | { kind: "remove"; calendar: CalendarRow; target: EventRow }
   | {
@@ -299,18 +425,32 @@ export type InviteInspection = {
   eventId: string | null;
 };
 
-const result = (
-  base: Pick<MessageInviteImipFields, "dtstamp" | "sender" | "calendars">,
+type Base = Pick<MessageInviteImipFields, "dtstamp" | "sender" | "calendars">;
+
+function result(
+  base: Base,
   action: InviteAction,
   actionState: InviteActionState,
   blocked: InviteBlocked | null,
-  plan: InvitePlan = { kind: "none" },
-  eventId: string | null = null,
-): InviteInspection => ({
-  fields: { ...base, action, actionState, blocked },
-  plan,
-  eventId,
-});
+  options: {
+    plan?: InvitePlan;
+    eventId?: string | null;
+    confirmReason?: InviteConfirmReason | null;
+  } = {},
+): InviteInspection {
+  return {
+    fields: {
+      ...base,
+      action,
+      actionState,
+      blocked,
+      confirmReason:
+        actionState === "confirm" ? (options.confirmReason ?? null) : null,
+    },
+    plan: options.plan ?? { kind: "none" },
+    eventId: options.eventId ?? null,
+  };
+}
 
 /** 利用者のすべてのメールアカウントのアドレスと、そのメールを受け取ったアカウントのアドレス。 */
 async function userAddresses(
@@ -334,6 +474,35 @@ async function userAddresses(
     if (row.id === receivingAccountId) receiving = own;
   }
   return { all, receiving };
+}
+
+type UserAddresses = Awaited<ReturnType<typeof userAddresses>>;
+
+/**
+ * 取り込む予定の self にする参加者のアドレス (7.3、指摘 7)。
+ * - CalDAV: そのカレンダーの「自分」(アカウントのアドレスと送信元。calendarIdentities) にある
+ *   参加者だけ。書き戻した後の読み直しで、同期は同じアドレスで self を決めるため、ほかのアドレスを
+ *   self にしても消えてしまう。
+ * - Orbit 内: メールを受け取ったアカウント → カレンダーの送信元 → 利用者のほかのアカウントの順。
+ * どれにも無ければ null (self なしで取り込み、出欠は返せない)。
+ */
+function selfAddressFor(
+  entry: ParsedEvent,
+  calendar: Pick<CalendarRow, "source">,
+  identity: CalendarIdentity | undefined,
+  addresses: UserAddresses,
+): string | null {
+  const find = (set: ReadonlySet<string> | undefined) =>
+    set
+      ? (entry.attendees.find((attendee) => set.has(lower(attendee.email)))
+          ?.email ?? null)
+      : null;
+  if (calendar.source === "caldav") return find(identity?.addresses);
+  return (
+    find(addresses.receiving) ??
+    find(identity?.addresses) ??
+    find(addresses.all)
+  );
 }
 
 /** 主催者が自分か (inviteRole の organizer)。印が無ければカレンダーのアカウントのアドレスで決める。 */
@@ -382,6 +551,39 @@ function compareInvite(
   const diff = stamp.getTime() - row.inviteStamp.getTime();
   if (diff > 0) return "newer";
   return diff < 0 ? "older" : "same";
+}
+
+/** 同じ回か (RECURRENCE-ID の書き方の違いを無視する)。null は原本。 */
+function sameRecurrence(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  return normalizeRecurrenceId(a) === normalizeRecurrenceId(b);
+}
+
+/**
+ * 招待全体の新旧。原本 (primary) が古ければ older。原本が同じでも、例外のどれか 1 つが
+ * カレンダーの同じ回の行 (無ければ原本の行) より新しければ newer (指摘 14)。
+ */
+function compareWholeInvite(
+  entries: readonly ParsedEvent[],
+  primary: ParsedEvent,
+  found: Candidate,
+  rows: readonly Candidate[],
+): "newer" | "same" | "older" {
+  const order = compareInvite(primary, found.event);
+  if (order !== "same") return order;
+  for (const entry of entries) {
+    if (entry === primary || entry.recurrenceId === null) continue;
+    const row = rows.find(
+      (candidate) =>
+        candidate.calendar.id === found.calendar.id &&
+        candidate.event.parentId === found.event.id &&
+        sameRecurrence(candidate.event.recurrenceId, entry.recurrenceId),
+    );
+    if (compareInvite(entry, row?.event ?? found.event) === "newer") {
+      return "newer";
+    }
+  }
+  return "same";
 }
 
 /**
@@ -446,14 +648,14 @@ export async function inspectInvite(
       : undefined;
   const claimed =
     method === "REPLY" ? replying?.email : primary.organizer?.email;
-  const base = {
+  const base: Base = {
     dtstamp,
     sender: {
       email: from ?? "",
       matches: from !== null && !!claimed && lower(claimed) === from,
       auth,
     },
-    calendars: [] as MessageInviteImipFields["calendars"],
+    calendars: [],
   };
 
   if (method === "REPLY") {
@@ -463,6 +665,7 @@ export async function inspectInvite(
       replying,
       mailSide,
       onServer,
+      writable,
       now,
     });
   }
@@ -480,7 +683,9 @@ export async function inspectInvite(
   // カレンダーにある、メールの予定に当たる行 (原本の招待なら原本、1 回だけなら同じ回)。
   const hasMaster = entries.some((entry) => entry.recurrenceId === null);
   const pick = (recurrenceId: string | null) =>
-    mailSide.find((row) => row.event.recurrenceId === recurrenceId);
+    mailSide.find((row) =>
+      sameRecurrence(row.event.recurrenceId, recurrenceId),
+    );
   let found: Candidate | undefined = hasMaster
     ? pick(null)
     : pick(primary.recurrenceId);
@@ -490,6 +695,16 @@ export async function inspectInvite(
     found = pick(null);
     occurrenceOfMaster = found !== undefined;
   }
+  // 既にある予定を変える操作は、送信元を確認できたときだけそのまま実行できる。認証の結果が
+  // 無い (unknown) ときは、主催者からの連絡か確かめてもらう (指摘 2)。
+  const changeState = (
+    jump: boolean,
+  ): { state: InviteActionState; reason: InviteConfirmReason | null } =>
+    auth !== "verified"
+      ? { state: "confirm", reason: "sender_unverified" }
+      : jump
+        ? { state: "confirm", reason: "sequence_jump" }
+        : { state: "ready", reason: null };
 
   if (method === "CANCEL") {
     if (!found) {
@@ -501,18 +716,12 @@ export async function inspectInvite(
         onServer ? "server_calendar" : null,
       );
     }
+    const eventId = found.event.id;
     if (occurrenceOfMaster) {
       const exdates = (found.event.exdates ?? []).map(normalizeRecurrenceId);
       const recurrenceId = normalizeRecurrenceId(primary.recurrenceId ?? "");
       if (exdates.includes(recurrenceId)) {
-        return result(
-          base,
-          "remove",
-          "done",
-          null,
-          { kind: "none" },
-          found.event.id,
-        );
+        return result(base, "remove", "done", null, { eventId });
       }
     }
     const blocked = await existingChecks(db, found, {
@@ -522,58 +731,33 @@ export async function inspectInvite(
       organizerEmail: organizer.email,
     });
     if (blocked) {
-      return result(
-        base,
-        "remove",
-        "blocked",
-        blocked,
-        { kind: "none" },
-        found.event.id,
-      );
+      return result(base, "remove", "blocked", blocked, { eventId });
     }
     if (primary.sequence < found.event.sequence) {
-      return result(
-        base,
-        "remove",
-        "stale",
-        null,
-        { kind: "none" },
-        found.event.id,
-      );
+      return result(base, "remove", "stale", null, { eventId });
     }
-    return result(
-      base,
-      "remove",
-      "ready",
-      null,
-      { kind: "remove", calendar: found.calendar, target: found.event },
-      found.event.id,
-    );
+    const { state, reason } = changeState(false);
+    return result(base, "remove", state, null, {
+      plan: { kind: "remove", calendar: found.calendar, target: found.event },
+      eventId,
+      confirmReason: reason,
+    });
   }
 
   // REQUEST
   if (found && occurrenceOfMaster) {
     // 例外の行が無い回の変更は対象外 (未決 7 の推奨 A)。
-    return result(
-      base,
-      "update",
-      "blocked",
-      "occurrence_unsupported",
-      { kind: "none" },
-      found.event.id,
-    );
+    return result(base, "update", "blocked", "occurrence_unsupported", {
+      eventId: found.event.id,
+    });
   }
   if (found) {
-    const order = compareInvite(primary, found.event);
+    const eventId = found.event.id;
+    const order = compareWholeInvite(entries, primary, found, mailSide);
     if (order !== "newer") {
-      return result(
-        base,
-        "update",
-        order === "same" ? "done" : "stale",
-        null,
-        { kind: "none" },
-        found.event.id,
-      );
+      return result(base, "update", order === "same" ? "done" : "stale", null, {
+        eventId,
+      });
     }
     const blocked = await existingChecks(db, found, {
       ownEvent,
@@ -582,23 +766,16 @@ export async function inspectInvite(
       organizerEmail: organizer.email,
     });
     if (blocked) {
-      return result(
-        base,
-        "update",
-        "blocked",
-        blocked,
-        { kind: "none" },
-        found.event.id,
-      );
+      return result(base, "update", "blocked", blocked, { eventId });
     }
-    return result(
-      base,
-      "update",
-      "ready",
-      null,
-      { kind: "update", calendar: found.calendar, target: found.event },
-      found.event.id,
+    const { state, reason } = changeState(
+      primary.sequence > found.event.sequence + SEQUENCE_JUMP,
     );
+    return result(base, "update", state, null, {
+      plan: { kind: "update", calendar: found.calendar, target: found.event },
+      eventId,
+      confirmReason: reason,
+    });
   }
   if (onServer) {
     // サービスのカレンダーにある予定は、サービスが更新する (8a のまま、返事だけ)。
@@ -606,15 +783,26 @@ export async function inspectInvite(
   }
 
   // 新しく追加 (7.3・7.4)。
+  const identities = await calendarIdentities(
+    db,
+    targets.map((row) => row.id),
+  );
+  const addressed =
+    selfAddressFor(primary, { source: "local" }, undefined, addresses) !== null;
+  // 自分宛ての招待なら、自分を self にできない CalDAV のカレンダーは既定にしない (指摘 7)。
+  const usable = (row: CalendarRow) =>
+    !addressed ||
+    selfAddressFor(primary, row, identities.get(row.id), addresses) !== null;
   const candidates = targets.map((row) => ({ id: row.id, default: false }));
   const preferred =
     targets.find(
       (row) =>
-        row.imipAccountId === message.accountId ||
-        row.accountId === message.accountId,
+        usable(row) &&
+        (row.imipAccountId === message.accountId ||
+          row.accountId === message.accountId),
     ) ??
     targets.find((row) => row.source === "local") ??
-    targets[0];
+    targets.find(usable);
   for (const entry of candidates) entry.default = entry.id === preferred?.id;
   const withCalendars = { ...base, calendars: candidates };
   if (ownEvent) return result(withCalendars, "import", "blocked", "own_event");
@@ -625,20 +813,12 @@ export async function inspectInvite(
     // 送信元の確認が済むまでは追加しない (画面は「送信元を確認中です」)。
     return result(withCalendars, "import", "blocked", "sender_unverified");
   }
-  const selfAddress =
-    primary.attendees.find((attendee) =>
-      addresses.receiving.has(lower(attendee.email)),
-    )?.email ??
-    primary.attendees.find((attendee) =>
-      addresses.all.has(lower(attendee.email)),
-    )?.email ??
-    null;
   return result(
     withCalendars,
     "import",
     auth === "failed" ? "confirm" : "ready",
     null,
-    { kind: "import", selfAddress },
+    { plan: { kind: "import" }, confirmReason: "sender_failed" },
   );
 }
 
@@ -684,15 +864,16 @@ const REPLY_STATUSES = new Set(["accepted", "tentative", "declined"]);
 async function inspectReply(
   db: Executor,
   options: {
-    base: Pick<MessageInviteImipFields, "dtstamp" | "sender" | "calendars">;
+    base: Base;
     invite: LoadedInvite;
     replying: ParsedEvent["attendees"][number] | undefined;
     mailSide: Candidate[];
     onServer: boolean;
+    writable: ReadonlySet<string>;
     now: Date;
   },
 ): Promise<InviteInspection> {
-  const { base, invite, replying, mailSide, onServer, now } = options;
+  const { base, invite, replying, mailSide, onServer, writable, now } = options;
   const { message, primary } = invite;
   const from = message.fromAddress;
   // 1. 返事をした ATTENDEE。
@@ -705,60 +886,65 @@ async function inspectReply(
   if (base.sender.auth === "pending" || base.sender.auth === "failed") {
     return result(base, "apply_reply", "blocked", "sender_unverified");
   }
-  // 4. 自分が主催する予定 (原本)。
-  let organized: { candidate: Candidate; attendees: AttendeeRow[] } | null =
-    null;
-  for (const candidate of mailSide) {
-    if (candidate.event.recurrenceId !== null) continue;
-    const attendees = await db
-      .select()
-      .from(eventAttendees)
-      .where(eq(eventAttendees.eventId, candidate.event.id));
-    if (await isOrganizerRow(db, candidate, attendees)) {
-      organized = { candidate, attendees };
-      break;
-    }
-  }
-  if (!organized) {
-    // 1 回だけの (親の無い) 予定を主催している場合。
+  // 4. 自分が主催する予定 (原本、無ければ同じ回の親の無い行)。
+  const organizedOf = async (
+    accept: (candidate: Candidate) => boolean,
+  ): Promise<{ candidate: Candidate; attendees: AttendeeRow[] } | null> => {
     for (const candidate of mailSide) {
-      if (candidate.event.parentId !== null) continue;
-      if (candidate.event.recurrenceId !== primary.recurrenceId) continue;
+      if (!accept(candidate)) continue;
       const attendees = await db
         .select()
         .from(eventAttendees)
         .where(eq(eventAttendees.eventId, candidate.event.id));
       if (await isOrganizerRow(db, candidate, attendees)) {
-        organized = { candidate, attendees };
-        break;
+        return { candidate, attendees };
       }
     }
-  }
+    return null;
+  };
+  const organized =
+    (await organizedOf((row) => row.event.recurrenceId === null)) ??
+    (primary.recurrenceId !== null
+      ? await organizedOf(
+          (row) =>
+            row.event.parentId === null &&
+            row.event.recurrenceId !== null &&
+            sameRecurrence(row.event.recurrenceId, primary.recurrenceId),
+        )
+      : null);
   if (!organized) {
     return onServer
       ? result(base, "apply_reply", "blocked", "server_calendar")
       : result(base, "none", "blocked", null);
   }
+  // 4 の続き: カレンダーの scheduling が mail (Orbit が招待をメールで送る) のときだけ反映する
+  // (送信元の無いカレンダー・自動スケジュールか不明の CalDAV は返事を受け取る立場にない。指摘 12)。
+  const organizedCalendar = organized.candidate.calendar;
+  const scheduling = await loadSchedulingInfo(
+    db,
+    organizedCalendar,
+    !isMailSideCalendar(organizedCalendar, writable),
+  );
+  if (scheduling.scheduling !== "mail") {
+    return result(base, "none", "blocked", null, {
+      eventId: organized.candidate.event.id,
+    });
+  }
   // 6. この回だけの返事なら、その回の例外の行がある。
   let target = organized.candidate.event;
   let attendees = organized.attendees;
   if (primary.recurrenceId !== null && target.recurrenceId === null) {
-    const recurrenceId = normalizeRecurrenceId(primary.recurrenceId);
+    const masterId = target.id;
     const exception = mailSide.find(
       (row) =>
-        row.event.parentId === target.id &&
+        row.event.parentId === masterId &&
         row.event.recurrenceId !== null &&
-        normalizeRecurrenceId(row.event.recurrenceId) === recurrenceId,
+        sameRecurrence(row.event.recurrenceId, primary.recurrenceId),
     );
     if (!exception) {
-      return result(
-        base,
-        "apply_reply",
-        "blocked",
-        "occurrence_unsupported",
-        { kind: "none" },
-        target.id,
-      );
+      return result(base, "apply_reply", "blocked", "occurrence_unsupported", {
+        eventId: target.id,
+      });
     }
     target = exception.event;
     attendees = await db
@@ -766,72 +952,44 @@ async function inspectReply(
       .from(eventAttendees)
       .where(eq(eventAttendees.eventId, target.id));
   }
+  const eventId = target.id;
   // 5. ATTENDEE がその予定の参加者にいる。
   const attendee = attendees.find(
     (row) => lower(row.email) === lower(replying.email),
   );
   if (!attendee) {
-    return result(
-      base,
-      "apply_reply",
-      "blocked",
-      "not_attendee_of_event",
-      { kind: "none" },
-      target.id,
-    );
+    return result(base, "apply_reply", "blocked", "not_attendee_of_event", {
+      eventId,
+    });
   }
   // 7. SEQUENCE が予定と同じ。
   if (primary.sequence !== target.sequence) {
-    return result(
-      base,
-      "apply_reply",
-      "stale",
-      null,
-      { kind: "none" },
-      target.id,
-    );
+    return result(base, "apply_reply", "stale", null, { eventId });
   }
-  // 8. DTSTAMP (無ければメールの日時) が、前に反映した返事より新しい。未来すぎるものは断る。
-  const stamp = stampOf(primary) ?? message.sentAt ?? message.receivedAt;
+  // 8. DTSTAMP (無ければメールの日時) が、前に反映した返事より新しい。メールを受け取った時刻より
+  //    先の DTSTAMP は受け取った時刻に丸め、それでも未来すぎるものは断る。
+  let stamp = stampOf(primary) ?? message.sentAt ?? message.receivedAt;
+  if (stamp.getTime() > message.receivedAt.getTime()) {
+    stamp = message.receivedAt;
+  }
   if (stamp.getTime() > now.getTime() + FUTURE_SKEW_MS) {
-    return result(
-      base,
-      "apply_reply",
-      "stale",
-      null,
-      { kind: "none" },
-      target.id,
-    );
+    return result(base, "apply_reply", "stale", null, { eventId });
   }
   if (attendee.repliedAt && stamp.getTime() <= attendee.repliedAt.getTime()) {
-    return result(
-      base,
-      "apply_reply",
-      "done",
-      null,
-      { kind: "none" },
-      target.id,
-    );
+    return result(base, "apply_reply", "done", null, { eventId });
   }
   // 9. PARTSTAT が accepted / tentative / declined。
   if (!REPLY_STATUSES.has(replying.status)) {
-    return result(
-      base,
-      "apply_reply",
-      "blocked",
-      "unsupported_method",
-      { kind: "none" },
-      target.id,
-    );
+    return result(base, "apply_reply", "blocked", "unsupported_method", {
+      eventId,
+    });
   }
-  return result(
-    base,
-    "apply_reply",
-    base.sender.auth === "verified" ? "auto" : "ready",
-    null,
-    {
+  // 自動では反映しない (いつもボタン)。送信元の確認済みは、受信サーバーが RFC 8601 のとおりに
+  // 偽のヘッダーを消しているかに頼るため、利用者の目を通らない書き換えの根拠にしない (指摘 1 の B・D)。
+  return result(base, "apply_reply", "ready", null, {
+    plan: {
       kind: "apply_reply",
-      calendar: organized.candidate.calendar,
+      calendar: organizedCalendar,
       target,
       attendee,
       status: replying.status as "accepted" | "tentative" | "declined",
@@ -841,8 +999,8 @@ async function inspectReply(
       stamp,
       sequence: primary.sequence,
     },
-    target.id,
-  );
+    eventId,
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -874,25 +1032,40 @@ const INVITE_FIELDS = [
   "conferenceUrl",
   "attendees",
 ] as const;
+type InviteField = (typeof INVITE_FIELDS)[number];
 
-/** 予定の行に入れる、主催者が決める項目。 */
-function inviteColumns(entry: ParsedEvent) {
+/** 予定の行に入れる、主催者が決める項目 (event-rows.ts の形。calendars.ts と同じ変換を通す)。 */
+function inviteFields(entry: ParsedEvent): EventFieldsInput {
   const master = entry.recurrenceId === null;
   return {
     summary: entry.summary,
     location: entry.location,
     description: entry.description,
     status: entry.status,
-    allDay: entry.allDay,
-    startAt: entry.startAt ? new Date(entry.startAt) : null,
-    endAt: entry.endAt ? new Date(entry.endAt) : null,
-    startDate: entry.startDate,
-    endDate: entry.endDate,
-    startTimeZone: entry.startTimeZone,
-    endTimeZone: entry.endTimeZone,
-    rrule: master ? entry.rrule : null,
-    rdates: master ? entry.rdates : null,
-    exdates: master ? entry.exdates : null,
+    // sanitizeEntry が、終日なら日付、時刻付きなら開始があることを確かめている。
+    time: entry.allDay
+      ? {
+          allDay: true,
+          startDate: entry.startDate as string,
+          endDate: entry.endDate as string,
+        }
+      : {
+          allDay: false,
+          startAt: entry.startAt as string,
+          endAt: entry.endAt ?? (entry.startAt as string),
+          startTimeZone: entry.startTimeZone,
+          endTimeZone: entry.endTimeZone,
+        },
+    recurrence: master
+      ? { rrule: entry.rrule, rdates: entry.rdates, exdates: entry.exdates }
+      : { rrule: null, rdates: null, exdates: null },
+    conferenceUrl: entry.conferenceUrl,
+  };
+}
+
+/** 主催者・SEQUENCE・DTSTAMP (項目の外の列)。 */
+function inviteMeta(entry: ParsedEvent) {
+  return {
     organizer: entry.organizer
       ? {
           email: entry.organizer.email,
@@ -901,141 +1074,58 @@ function inviteColumns(entry: ParsedEvent) {
         }
       : null,
     sequence: entry.sequence,
-    conferenceUrl: entry.conferenceUrl,
     inviteStamp: stampOf(entry),
   };
 }
 
-/** 参加者の行 (同じアドレスは 1 行に)。selfAddress に self を付ける。keep は self の行の出欠を残す。 */
-function attendeeRows(
-  eventId: string,
+/** self の行の出欠の扱い。undefined の項目は、いまの行から引き継ぐ (replaceEventExtras)。 */
+type SelfKeep = Pick<EventAttendeeInput, "status" | "comment" | "repliedAt">;
+
+/**
+ * 参加者 (event-rows.ts の形)。ほかの参加者の出欠は主催者が書いた値。self の出欠は keep の値、
+ * keep に無い項目は、inherit なら同じアドレスのいまの行から引き継ぎ (replaceEventExtras)、
+ * そうでなければ (新しい行) 招待に書かれた値。同じアドレスの重なりは replaceEventExtras がまとめる。
+ */
+function inviteAttendees(
   entry: ParsedEvent,
   selfAddress: string | null,
-  keep?: { status: AttendeeRow["status"]; comment: string | null } | null,
-): (typeof eventAttendees.$inferInsert)[] {
-  const seen = new Set<string>();
-  const rows: (typeof eventAttendees.$inferInsert)[] = [];
-  for (const attendee of entry.attendees) {
-    const key = lower(attendee.email);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    const self = selfAddress !== null && key === lower(selfAddress);
-    rows.push({
-      eventId,
-      email: attendee.email,
-      name: attendee.name,
-      role: attendee.role,
-      status: self && keep ? keep.status : attendee.status,
-      self,
-      ...(self && keep ? { comment: keep.comment } : {}),
-    });
-  }
-  return rows;
-}
-
-async function providerWriteBlocked(
-  tx: Tx,
-  calendar: CalendarRow,
-): Promise<"calendar_disabled" | "calendar_sync_stopped" | null> {
-  if (!isProviderCalendar(calendar)) return null;
-  const [account] = await tx
-    .select({
-      calendarEnabled: accounts.calendarEnabled,
-      calendarError: accounts.calendarError,
-    })
-    .from(accounts)
-    .where(eq(accounts.id, calendar.accountId));
-  if (!account || !account.calendarEnabled) return "calendar_disabled";
-  if (account.calendarError !== null) return "calendar_sync_stopped";
-  return null;
-}
-
-/** 変更の書き戻しを積む (CalDAV のカレンダーだけ。calendars.ts の enqueueUpdate と同じ形)。 */
-async function enqueueUpdate(
-  tx: Tx,
-  calendar: CalendarRow,
-  row: Pick<EventRow, "id">,
-  fields: (typeof INVITE_FIELDS)[number][],
-  fieldUpdatedAt: Record<string, string>,
-  values: Record<string, unknown>,
-) {
-  const sorted = [...fields].sort();
-  await enqueueEventOperation(
-    tx,
-    calendar,
-    {
-      kind: "event_update",
-      payload: { eventId: row.id, calendarId: calendar.id, fields: sorted },
-    },
-    eventUpdateKey(row.id, sorted, fieldUpdatedAt, values),
+  keep: SelfKeep,
+  inherit: boolean,
+): EventAttendeeInput[] {
+  const self = selfAddress === null ? null : lower(selfAddress);
+  return entry.attendees.map((attendee) =>
+    lower(attendee.email) === self
+      ? {
+          email: attendee.email,
+          name: attendee.name,
+          role: attendee.role,
+          self: true,
+          ...(inherit ? {} : { status: attendee.status }),
+          ...keep,
+        }
+      : {
+          email: attendee.email,
+          name: attendee.name,
+          role: attendee.role,
+          status: attendee.status,
+          self: false,
+        },
   );
 }
 
-/** 消した予定に向けた、まだ実行していない作成と変更の書き戻しを取り消す (calendars.ts と同じ)。 */
-async function cancelPendingWrites(
+/** 変更の書き戻し (CalDAV)。冪等キーのハッシュは、その回の DTSTAMP と SEQUENCE から作る。 */
+async function enqueueInviteUpdate(
   tx: Tx,
   calendar: CalendarRow,
-  eventIds: string[],
+  row: Pick<EventRow, "id" | "fieldUpdatedAt">,
+  fields: readonly InviteField[],
+  marker: Record<string, unknown>,
 ) {
-  if (!isProviderCalendar(calendar) || eventIds.length === 0) return;
-  await tx
-    .delete(outbox)
-    .where(
-      and(
-        eq(outbox.accountId, calendar.accountId),
-        or(
-          and(
-            inArray(outbox.kind, ["event_create", "event_update"]),
-            eq(outbox.status, "pending"),
-          ),
-          and(eq(outbox.kind, "event_create"), eq(outbox.status, "failed")),
-        ),
-        inArray(sql<string>`${outbox.payload}->>'eventId'`, eventIds),
-      ),
-    );
-}
-
-/** 予定 (原本か単発) を消したときの書き戻しを積む (calendars.ts の enqueueDelete と同じ)。 */
-async function enqueueDelete(
-  tx: Tx,
-  calendar: CalendarRow,
-  row: EventRow,
-  deletedAt: Date,
-) {
-  if (!isProviderCalendar(calendar)) return;
-  if (row.remoteId === null) {
-    const [running] = await tx
-      .select({ id: outbox.id })
-      .from(outbox)
-      .where(
-        and(
-          eq(outbox.accountId, calendar.accountId),
-          eq(outbox.idempotencyKey, eventCreateKey(row.id)),
-          eq(outbox.status, "processing"),
-        ),
-      );
-    if (!running) return;
-  }
-  await enqueueEventOperation(
+  await enqueueEventUpdate(
     tx,
     calendar,
-    {
-      kind: "event_delete",
-      payload: {
-        calendarId: calendar.id,
-        target: {
-          eventId: row.id,
-          calendarId: calendar.id,
-          remoteId: row.remoteId,
-          etag: row.etag,
-          uid: row.uid,
-          recurrenceId: row.recurrenceId,
-          parentRemoteId: null,
-        },
-        deletedAt: deletedAt.toISOString(),
-      },
-    },
-    eventDeleteKey(row.id),
+    row,
+    Object.fromEntries(fields.map((field) => [field, marker])),
   );
 }
 
@@ -1086,6 +1176,7 @@ export async function applyInvite(
       return { ok: false, status: 409, error: blocked ?? "changed" } as const;
     }
     if (actionState === "confirm" && options.confirmed !== true) {
+      // 確認 (送信元を確認できていない、SEQUENCE の大きな飛び) を経ていない。
       return { ok: false, status: 409, error: "sender_unverified" } as const;
     }
     const plan = inspection.plan;
@@ -1095,7 +1186,6 @@ export async function applyInvite(
           userId,
           invite,
           writable,
-          selfAddress: plan.selfAddress,
           calendarId:
             options.calendarId ??
             inspection.fields.calendars.find((entry) => entry.default)?.id,
@@ -1113,6 +1203,29 @@ export async function applyInvite(
   });
 }
 
+/**
+ * 書き換える予定の行をロックし、判定のときに読んだ行から変わっていないか確かめる
+ * (同時の PATCH・同期と排他する。calendars.ts の lockEventForWrite と同じ順)。
+ */
+async function lockUnchanged(
+  tx: Tx,
+  userId: string,
+  target: EventRow,
+): Promise<EventRow | null> {
+  const row = await lockEventForWrite(tx, userId, target.id);
+  if (
+    !row ||
+    row.calendarId !== target.calendarId ||
+    row.sequence !== target.sequence ||
+    (row.inviteStamp?.getTime() ?? null) !==
+      (target.inviteStamp?.getTime() ?? null) ||
+    (row.organizer?.email ?? null) !== (target.organizer?.email ?? null)
+  ) {
+    return null;
+  }
+  return row;
+}
+
 /** 7.3: メールの REQUEST から予定を作る。 */
 async function importInvite(
   tx: Tx,
@@ -1120,12 +1233,11 @@ async function importInvite(
     userId: string;
     invite: LoadedInvite;
     writable: ReadonlySet<string>;
-    selfAddress: string | null;
     calendarId: string | undefined;
     now: Date;
   },
 ): Promise<ApplyOutcome> {
-  const { userId, invite, writable, selfAddress, now } = options;
+  const { userId, invite, writable, now } = options;
   if (!options.calendarId) {
     return { ok: false, status: 409, error: "no_calendar" };
   }
@@ -1150,6 +1262,18 @@ async function importInvite(
   if (isProviderCalendar(calendar)) {
     await lockCalendarAccount(tx, calendar.accountId);
   }
+  // self は取り込み先が決まってから選ぶ (指摘 7)。
+  const addresses = await userAddresses(tx, userId, invite.message.accountId);
+  const identity = (await calendarIdentities(tx, [calendar.id])).get(
+    calendar.id,
+  );
+  const selfAddress = selfAddressFor(
+    invite.primary,
+    calendar,
+    identity,
+    addresses,
+  );
+
   const at = now.toISOString();
   const fieldUpdatedAt = Object.fromEntries(
     [...INVITE_FIELDS, "busy"].map((key) => [key, at]),
@@ -1157,26 +1281,80 @@ async function importInvite(
   const ordered = [...invite.entries].sort(
     (a, b) => Number(a.recurrenceId !== null) - Number(b.recurrenceId !== null),
   );
+  const hasMaster = ordered[0]?.recurrenceId === null;
+
+  // 先に 1 回だけの招待で入れた、親の無い例外の行 (同じカレンダー・同じ UID) は、原本の招待で
+  // 置き換える (指摘 8)。同じ回が招待にあればその内容で作り直し、無ければ原本の繰り返しに任せる。
+  // 自分の出欠は、その回の SEQUENCE が変わっていなければ引き継ぐ。
+  const orphanSelf = new Map<string, SelfKeep>();
+  const removed: string[] = [];
+  if (hasMaster) {
+    const orphans = await tx
+      .select()
+      .from(events)
+      .where(
+        and(
+          eq(events.calendarId, calendar.id),
+          eq(events.uid, invite.uid),
+          isNull(events.parentId),
+          isNotNull(events.recurrenceId),
+        ),
+      )
+      .for("update");
+    for (const orphan of orphans) {
+      const entry = ordered.find((item) =>
+        sameRecurrence(item.recurrenceId, orphan.recurrenceId),
+      );
+      const [self] = await tx
+        .select()
+        .from(eventAttendees)
+        .where(
+          and(
+            eq(eventAttendees.eventId, orphan.id),
+            eq(eventAttendees.self, true),
+          ),
+        );
+      if (entry && self && entry.sequence === orphan.sequence) {
+        orphanSelf.set(normalizeRecurrenceId(orphan.recurrenceId as string), {
+          status: self.status,
+          comment: self.comment,
+        });
+      }
+      removed.push(orphan.id);
+    }
+    if (removed.length > 0) {
+      await tx.delete(events).where(inArray(events.id, removed));
+      await cancelPendingWrites(tx, calendar, removed);
+      for (const orphan of orphans) {
+        await enqueueDelete(tx, calendar, orphan, now);
+      }
+    }
+  }
+
   let masterId: string | null = null;
   const created: string[] = [];
   const topLevel: string[] = [];
   for (const entry of ordered) {
     const parentId: string | null =
       entry.recurrenceId === null ? null : masterId;
-    const [row]: { id: string }[] = await tx
-      .insert(events)
-      .values({
-        userId,
-        calendarId: calendar.id,
-        uid: invite.uid,
-        recurrenceId: entry.recurrenceId,
-        parentId,
-        ...inviteColumns(entry),
+    const keep =
+      entry.recurrenceId !== null
+        ? orphanSelf.get(normalizeRecurrenceId(entry.recurrenceId))
+        : undefined;
+    const row = await insertEvent(tx, {
+      userId,
+      calendarId: calendar.id,
+      uid: invite.uid,
+      recurrenceId: entry.recurrenceId,
+      parentId,
+      fields: {
+        ...inviteFields(entry),
         busy: entry.busy,
-        fieldUpdatedAt,
-      })
-      .onConflictDoNothing()
-      .returning({ id: events.id });
+        attendees: inviteAttendees(entry, selfAddress, keep ?? {}, false),
+      },
+      ...inviteMeta(entry),
+      fieldUpdatedAt,
+    });
     if (!row) {
       // 同じカレンダーに同じ予定が既にある (ほかの経路で入った)。作らない。
       if (created.length === 0) {
@@ -1194,9 +1372,8 @@ async function importInvite(
     if (entry.recurrenceId === null) masterId = row.id;
     if (parentId === null) topLevel.push(row.id);
     created.push(row.id);
-    const attendees = attendeeRows(row.id, entry, selfAddress);
-    if (attendees.length > 0) await tx.insert(eventAttendees).values(attendees);
   }
+  await recordChanges(tx, userId, "event", removed, "delete");
   await recordChanges(tx, userId, "event", created);
   // CalDAV なら作成を書き戻す (原本が例外もまとめて書く)。取り込みでは招待メールを送らない。
   for (const id of topLevel) {
@@ -1231,8 +1408,8 @@ async function updateInvite(
   const { calendar } = plan;
   const blocked = await providerWriteBlocked(tx, calendar);
   if (blocked) return { ok: false, status: 409, error: blocked };
-  if (isProviderCalendar(calendar)) {
-    await lockCalendarAccount(tx, calendar.accountId);
+  if (!(await lockUnchanged(tx, userId, plan.target))) {
+    return { ok: false, status: 409, error: "changed" };
   }
   const at = now.toISOString();
   const hasMaster = invite.entries.some((entry) => entry.recurrenceId === null);
@@ -1241,50 +1418,54 @@ async function updateInvite(
     .from(events)
     .where(and(eq(events.calendarId, calendar.id), eq(events.uid, invite.uid)))
     .for("update");
-  const byRecurrence = new Map(
-    existing.map((row) => [row.recurrenceId ?? "", row]),
-  );
-  const master = hasMaster ? byRecurrence.get("") : undefined;
+  const master = hasMaster
+    ? existing.find((row) => row.recurrenceId === null)
+    : undefined;
+  const rowOf = (entry: ParsedEvent) =>
+    existing.find(
+      (row) =>
+        sameRecurrence(row.recurrenceId, entry.recurrenceId) &&
+        (entry.recurrenceId === null ||
+          row.parentId === (master?.id ?? null) ||
+          row.id === plan.target.id),
+    );
+  const masterSelf = master ? await selfOf(tx, master.id) : undefined;
   const touched: string[] = [];
   for (const entry of invite.entries) {
-    const row = byRecurrence.get(entry.recurrenceId ?? "");
+    const row = rowOf(entry);
     const fields = INVITE_FIELDS.filter(
       (field) => field !== "recurrence" || entry.recurrenceId === null,
     );
+    const marker = { stamp: entry.dtstamp, sequence: entry.sequence };
     if (!row) {
       // 原本の招待に入っていた新しい例外。1 回だけの招待では、ここには来ない。
       if (!master) continue;
       const fieldUpdatedAt = Object.fromEntries(
         [...fields, "busy"].map((key) => [key, at]),
       );
-      const [inserted] = await tx
-        .insert(events)
-        .values({
-          userId,
-          calendarId: calendar.id,
-          uid: invite.uid,
-          recurrenceId: entry.recurrenceId,
-          parentId: master.id,
-          ...inviteColumns(entry),
+      const inserted = await insertEvent(tx, {
+        userId,
+        calendarId: calendar.id,
+        uid: invite.uid,
+        recurrenceId: entry.recurrenceId,
+        parentId: master.id,
+        fields: {
+          ...inviteFields(entry),
           busy: master.busy,
           useDefaultReminders: master.useDefaultReminders,
-          fieldUpdatedAt,
-        })
-        .returning({ id: events.id });
-      if (!inserted) continue;
-      const selfRow = await selfOf(tx, master.id);
-      await insertAttendees(
-        tx,
-        inserted.id,
-        entry,
-        selfRow?.email ?? null,
-        null,
-      );
-      touched.push(inserted.id);
-      await enqueueUpdate(tx, calendar, inserted, fields, fieldUpdatedAt, {
-        stamp: entry.dtstamp,
-        sequence: entry.sequence,
+          attendees: inviteAttendees(
+            entry,
+            masterSelf?.email ?? null,
+            {},
+            false,
+          ),
+        },
+        ...inviteMeta(entry),
+        fieldUpdatedAt,
       });
+      if (!inserted) continue;
+      touched.push(inserted.id);
+      await enqueueInviteUpdate(tx, calendar, inserted, fields, marker);
       continue;
     }
     const fieldUpdatedAt = {
@@ -1293,31 +1474,43 @@ async function updateInvite(
     };
     await tx
       .update(events)
-      .set({ ...inviteColumns(entry), fieldUpdatedAt })
+      .set({
+        ...eventFieldColumns(inviteFields(entry)),
+        ...inviteMeta(entry),
+        fieldUpdatedAt,
+      })
       .where(eq(events.id, row.id));
-    // 自分の出欠は残す。SEQUENCE が上がっていれば (時刻などの変更) 未返信に戻す。
+    // 自分の出欠は残す (replaceEventExtras が同じアドレスの行から引き継ぐ)。SEQUENCE が
+    // 上がっていれば (時刻などの変更) 未返信に戻す。
     const selfRow = await selfOf(tx, row.id);
-    const keep = selfRow
-      ? entry.sequence > row.sequence
-        ? { status: "needs_action" as const, comment: null }
-        : { status: selfRow.status, comment: selfRow.comment }
-      : null;
-    await tx.delete(eventAttendees).where(eq(eventAttendees.eventId, row.id));
-    await insertAttendees(tx, row.id, entry, selfRow?.email ?? null, keep);
-    touched.push(row.id);
-    await enqueueUpdate(tx, calendar, row, fields, fieldUpdatedAt, {
-      stamp: entry.dtstamp,
-      sequence: entry.sequence,
+    const keep: SelfKeep =
+      entry.sequence > row.sequence
+        ? { status: "needs_action", comment: null, repliedAt: null }
+        : {};
+    await replaceEventExtras(tx, row.id, {
+      attendees: inviteAttendees(entry, selfRow?.email ?? null, keep, true),
     });
+    touched.push(row.id);
+    await enqueueInviteUpdate(
+      tx,
+      calendar,
+      { id: row.id, fieldUpdatedAt },
+      fields,
+      marker,
+    );
   }
   const removed: string[] = [];
   if (master && calendar.source === "local") {
     // 原本の招待に入っていない例外は、主催者が取りやめた (Orbit 内のカレンダーだけ)。
-    const wanted = new Set(
-      invite.entries.map((entry) => entry.recurrenceId ?? ""),
-    );
+    // CalDAV では、例外の VEVENT だけをリソースから取り除く書き戻しが無い (回の削除は EXDATE を
+    // 足して回そのものを消してしまう) ので、残す (指摘 13。読み直しで戻らないようにするため)。
     for (const row of existing) {
-      if (row.parentId === master.id && !wanted.has(row.recurrenceId ?? "")) {
+      if (
+        row.parentId === master.id &&
+        !invite.entries.some((entry) =>
+          sameRecurrence(entry.recurrenceId, row.recurrenceId),
+        )
+      ) {
         removed.push(row.id);
       }
     }
@@ -1340,17 +1533,6 @@ async function selfOf(tx: Tx, eventId: string) {
   return row;
 }
 
-async function insertAttendees(
-  tx: Tx,
-  eventId: string,
-  entry: ParsedEvent,
-  selfAddress: string | null,
-  keep: { status: AttendeeRow["status"]; comment: string | null } | null,
-) {
-  const rows = attendeeRows(eventId, entry, selfAddress, keep);
-  if (rows.length > 0) await tx.insert(eventAttendees).values(rows);
-}
-
 /** 7.1・未決 12 の推奨 A: CANCEL で予定を消す。RECURRENCE-ID 付きなら、その回だけ消す。 */
 async function removeInvite(
   tx: Tx,
@@ -1362,36 +1544,21 @@ async function removeInvite(
   },
 ): Promise<ApplyOutcome> {
   const { userId, invite, plan, now } = options;
-  const { calendar, target } = plan;
+  const { calendar } = plan;
   const blocked = await providerWriteBlocked(tx, calendar);
   if (blocked) return { ok: false, status: 409, error: blocked };
-  if (isProviderCalendar(calendar)) {
-    await lockCalendarAccount(tx, calendar.accountId);
-  }
+  const target = await lockUnchanged(tx, userId, plan.target);
+  if (!target) return { ok: false, status: 409, error: "changed" };
   const occurrence = invite.primary.recurrenceId;
   if (occurrence !== null && target.recurrenceId === null) {
-    // 原本の 1 回を取り消す: EXDATE に足し、その回の例外があれば消す。
+    // 原本の 1 回を取り消す: EXDATE に足し、その回の例外があれば消す (calendars.ts の回の削除と同じ)。
     const recurrenceId = normalizeRecurrenceId(occurrence);
-    const [master] = await tx
-      .select()
-      .from(events)
-      .where(eq(events.id, target.id))
-      .for("update");
-    if (!master) return { ok: true, applied: false, eventId: null };
-    const exdates = [...new Set([...(master.exdates ?? []), recurrenceId])];
-    const fieldUpdatedAt = {
-      ...(master.fieldUpdatedAt ?? {}),
-      recurrence: now.toISOString(),
-    };
-    await tx
-      .update(events)
-      .set({ exdates, fieldUpdatedAt })
-      .where(eq(events.id, master.id));
+    await excludeOccurrence(tx, calendar, target, recurrenceId, now);
     const removed = await tx
       .delete(events)
       .where(
         and(
-          eq(events.parentId, master.id),
+          eq(events.parentId, target.id),
           eq(events.recurrenceId, recurrenceId),
         ),
       )
@@ -1401,22 +1568,7 @@ async function removeInvite(
       calendar,
       removed.map((row) => row.id),
     );
-    await enqueueEventOperation(
-      tx,
-      calendar,
-      {
-        kind: "event_update",
-        payload: {
-          eventId: master.id,
-          calendarId: calendar.id,
-          fields: ["recurrence"],
-        },
-      },
-      eventUpdateKey(master.id, ["recurrence"], fieldUpdatedAt, {
-        recurrence: { exdates },
-      }),
-    );
-    await recordChanges(tx, userId, "event", [master.id]);
+    await recordChanges(tx, userId, "event", [target.id]);
     await recordChanges(
       tx,
       userId,
@@ -1424,49 +1576,25 @@ async function removeInvite(
       removed.map((row) => row.id),
       "delete",
     );
-    return { ok: true, applied: true, eventId: master.id };
+    return { ok: true, applied: true, eventId: target.id };
   }
   let master: EventRow | undefined;
   if (target.parentId && target.recurrenceId) {
     // 例外の行の取り消し = その回を消す。原本の EXDATE に足す。
-    [master] = await tx
-      .select()
-      .from(events)
-      .where(eq(events.id, target.parentId))
-      .for("update");
+    master = await lockEventForWrite(tx, userId, target.parentId);
     if (master) {
-      const exdates = [
-        ...new Set([...(master.exdates ?? []), target.recurrenceId]),
-      ];
-      const fieldUpdatedAt = {
-        ...(master.fieldUpdatedAt ?? {}),
-        recurrence: now.toISOString(),
-      };
-      await tx
-        .update(events)
-        .set({ exdates, fieldUpdatedAt })
-        .where(eq(events.id, master.id));
-      await enqueueEventOperation(
-        tx,
-        calendar,
-        {
-          kind: "event_update",
-          payload: {
-            eventId: master.id,
-            calendarId: calendar.id,
-            fields: ["recurrence"],
-          },
-        },
-        eventUpdateKey(master.id, ["recurrence"], fieldUpdatedAt, {
-          recurrence: { exdates },
-        }),
-      );
+      await excludeOccurrence(tx, calendar, master, target.recurrenceId, now);
       await recordChanges(tx, userId, "event", [master.id]);
     }
   }
   const removed = await tx
     .delete(events)
-    .where(or(eq(events.id, target.id), eq(events.parentId, target.id)))
+    .where(
+      and(
+        eq(events.userId, userId),
+        or(eq(events.id, target.id), eq(events.parentId, target.id)),
+      ),
+    )
     .returning({ id: events.id });
   await cancelPendingWrites(
     tx,
@@ -1494,18 +1622,13 @@ async function applyReply(
   },
 ): Promise<ApplyOutcome> {
   const { userId, plan, now } = options;
-  const { calendar, target } = plan;
+  const { calendar } = plan;
   const blocked = await providerWriteBlocked(tx, calendar);
   if (blocked) return { ok: false, status: 409, error: blocked };
-  if (isProviderCalendar(calendar)) {
-    await lockCalendarAccount(tx, calendar.accountId);
+  const row = await lockEventForWrite(tx, userId, plan.target.id);
+  if (!row || row.sequence !== plan.sequence) {
+    return { ok: false, status: 409, error: "changed" };
   }
-  const [row] = await tx
-    .select()
-    .from(events)
-    .where(eq(events.id, target.id))
-    .for("update");
-  if (!row) return { ok: false, status: 409, error: "changed" };
   await tx
     .update(eventAttendees)
     .set({
@@ -1521,10 +1644,16 @@ async function applyReply(
   };
   await tx.update(events).set({ fieldUpdatedAt }).where(eq(events.id, row.id));
   await recordChanges(tx, userId, "event", [row.id]);
-  await enqueueUpdate(tx, calendar, row, ["attendees"], fieldUpdatedAt, {
-    reply: plan.attendee.email,
-    status: plan.status,
-    stamp: plan.stamp.toISOString(),
-  });
+  await enqueueInviteUpdate(
+    tx,
+    calendar,
+    { id: row.id, fieldUpdatedAt },
+    ["attendees"],
+    {
+      reply: plan.attendee.email,
+      status: plan.status,
+      stamp: plan.stamp.toISOString(),
+    },
+  );
   return { ok: true, applied: true, eventId: row.id };
 }

@@ -172,7 +172,7 @@ describe("メールの招待カード (8b の操作)", () => {
     });
   });
 
-  it("検証済みの返事 (auto) は開いたときに 1 回だけ反映する", async () => {
+  it("検証済みの返事も自動では反映しない。古い API が auto を返してもボタンで反映する", async () => {
     const apply = vi.fn(async () => ({ applied: true, eventId: NEW_EVENT }));
     const reply = invite({
       method: "reply",
@@ -184,13 +184,50 @@ describe("メールの招待カード (8b の操作)", () => {
     await act(async () => {
       render(reply, apply);
     });
-    await act(async () => {
-      render({ ...reply }, apply);
-    });
+    expect(apply).not.toHaveBeenCalled();
+    expect(text()).toContain("田中 さんからの出欠の返事 (参加)");
+    await click("出欠に反映");
     expect(apply).toHaveBeenCalledTimes(1);
     expect(apply).toHaveBeenCalledWith({ expect: "apply_reply" });
     expect(text()).toContain("田中 さんの返事 (参加) を予定に反映しました");
-    expect(text()).toContain("カレンダーで開く");
+  });
+
+  it("送信元を確認できていない更新・取り消しは、確認してから confirmed: true で反映する", async () => {
+    const apply = vi.fn(async () => ({ applied: true, eventId: "e1" }));
+    render(
+      invite({
+        action: "update",
+        actionState: "confirm",
+        confirmReason: "sender_unverified",
+        eventId: "e1",
+        sender: { email: "sato@example.com", matches: true, auth: "unknown" },
+      }),
+      apply,
+    );
+    expect(text()).toContain(
+      "送信元を確認できていません。主催者からの連絡か確かめてから反映してください。",
+    );
+    await click("更新を反映");
+    expect(apply).not.toHaveBeenCalled();
+    expect(text()).toContain("送信元を確認できていないメールを反映しますか?");
+    await click("反映する");
+    expect(apply).toHaveBeenCalledWith({ expect: "update", confirmed: true });
+  });
+
+  it("SEQUENCE が大きく飛んだ更新は、その理由で確認する", async () => {
+    const apply = vi.fn(async () => ({ applied: true, eventId: "e1" }));
+    render(
+      invite({
+        action: "update",
+        actionState: "confirm",
+        confirmReason: "sequence_jump",
+        eventId: "e1",
+      }),
+      apply,
+    );
+    expect(text()).toContain("招待の版 (SEQUENCE) が大きく飛んでいます");
+    await click("更新を反映");
+    expect(text()).toContain("版が大きく飛んだ招待を反映しますか?");
   });
 
   it("未検証の返事はボタンで反映する", async () => {

@@ -38,6 +38,11 @@ import {
   statusOfFetchError,
 } from "../lib/received-attachments.js";
 import {
+  currentAuthResults,
+  currentSenderCheck,
+  senderCheckStale,
+} from "../lib/sender-check.js";
+import {
   inConversation,
   isThreadHead,
   threadCount,
@@ -99,7 +104,7 @@ export function messageRoutes({
         subject: messages.subject,
         from: messages.from,
         to: messages.to,
-        senderCheck: messages.senderCheck,
+        senderCheck: currentSenderCheck(messages.senderCheck),
         receivedAt: messages.receivedAt,
         snippet: messages.snippet,
         // 本文をまだ取り込んでいない (端末が、見えている行の本文を先に取得するよう頼むのに使う)。
@@ -178,7 +183,10 @@ export function messageRoutes({
           inArray(messages.id, ids),
           eq(accounts.userId, c.var.user.id),
           // 送信元の確認結果を足す前に取り込んだメールは、見られたときに認証結果を補う。
-          or(isNull(messages.bodyFetchedAt), isNull(messages.senderCheck)),
+          or(
+            isNull(messages.bodyFetchedAt),
+            senderCheckStale(messages.senderCheck),
+          ),
         ),
       );
     const pending = new Map(rows.map((row) => [row.id, row.accountId]));
@@ -236,7 +244,7 @@ export function messageRoutes({
           from: t.from,
           to: t.to,
           cc: t.cc,
-          senderCheck: t.senderCheck,
+          senderCheck: currentSenderCheck(t.senderCheck),
           receivedAt: t.receivedAt,
           snippet: t.snippet,
           hasAttachments: t.hasAttachments,
@@ -284,8 +292,11 @@ export function messageRoutes({
           sender: messages.sender,
           listId: messages.listId,
           listUnsubscribe: messages.listUnsubscribe,
-          authResults: messages.authResults,
-          senderCheck: messages.senderCheck,
+          authResults: currentAuthResults(
+            messages.authResults,
+            messages.senderCheck,
+          ),
+          senderCheck: currentSenderCheck(messages.senderCheck),
           sentAt: messages.sentAt,
           receivedAt: messages.receivedAt,
           snippet: messages.snippet,

@@ -95,6 +95,9 @@ export type ParseOptions = {
  */
 export const MAX_COMPONENT_DEPTH = 4;
 
+/** SEQUENCE の上限 (PostgreSQL の integer の最大)。これより大きい値はこの値として読む。 */
+export const MAX_ICAL_SEQUENCE = 2_147_483_647;
+
 /** 行 (raw) を控えるコンポーネント。それ以外は lines を持たない。 */
 const RECORDED_COMPONENTS = new Set(["VEVENT", "VTIMEZONE"]);
 
@@ -408,9 +411,14 @@ function parseDuration(value: string): Temporal.Duration | null {
   }
 }
 
+/** アドレスの長さの上限 (API の参加者と同じ 320 文字)。 */
+const MAX_ADDRESS = 320;
+
+/** "mailto:…" を外したアドレス。空白を含む・長すぎる・@ の無い値は null (API の参加者と同じ基準)。 */
 function mailAddress(value: string): string | null {
   const address = value.trim().replace(/^mailto:/i, "");
-  return address.includes("@") ? address : null;
+  if (address.length > MAX_ADDRESS || !/^\S+@\S+$/.test(address)) return null;
+  return address;
 }
 
 /** SENT-BY のアドレス ("mailto:…" を外す)。無いか、アドレスでなければ null。 */
@@ -657,7 +665,11 @@ function parseEvent(
         }
       : null,
     attendees: attendees(component),
-    sequence: Number.isFinite(sequence) && sequence >= 0 ? sequence : 0,
+    // DB の列 (integer) に収まらない値は上限に寄せる (メールの招待は、さらに小さい上限で断る)。
+    sequence:
+      Number.isFinite(sequence) && sequence >= 0
+        ? Math.min(sequence, MAX_ICAL_SEQUENCE)
+        : 0,
     conferenceUrl: conferenceUrl(component),
     remoteUpdatedAt: modified?.kind === "time" ? modified.instant : null,
     dtstamp: dtstamp?.kind === "time" ? dtstamp.instant : null,

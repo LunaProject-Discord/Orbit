@@ -23,6 +23,7 @@ import {
   needsVerification,
   searchCondition,
 } from "../lib/search-sql.js";
+import { currentSenderCheck } from "../lib/sender-check.js";
 import {
   filterConditions,
   loadUnifiedFolder,
@@ -339,7 +340,7 @@ export function searchRoutes({ db }: Pick<RouteDeps, "db">) {
         threadKey: messages.threadKey,
         subject: messages.subject,
         from: messages.from,
-        senderCheck: messages.senderCheck,
+        senderCheck: currentSenderCheck(messages.senderCheck),
         to: messages.to,
         receivedAt: messages.receivedAt,
         snippet: messages.snippet,

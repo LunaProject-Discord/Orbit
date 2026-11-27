@@ -19,6 +19,7 @@ import type { SpecialUse } from "./mailbox-list.js";
 import { renameMailboxPaths } from "./mailbox-operations.js";
 import { removePlacements, type SyncAccount } from "./mailbox-store.js";
 import {
+  authTrustOf,
   headersPending,
   parseListHeaders,
   senderCheckPending,
@@ -125,6 +126,7 @@ export async function importRawMessage(
   const parsed = await parseRawMessage(
     raw,
     `pop:${account.id}:${options.uidl ?? crypto.randomUUID()}`,
+    authTrustOf(account),
   );
   const now = Date.now();
   // POP3 には届いた時刻が無いので、Date ヘッダーを使う (未来の日時は今に直す)。
@@ -448,7 +450,7 @@ const HEADER_BACKFILL_BATCH = 200;
  */
 export async function backfillPopHeaders(
   db: Database,
-  account: Pick<SyncAccount, "id" | "userId">,
+  account: SyncAccount,
 ): Promise<boolean> {
   const pending = await db
     .select({
@@ -469,6 +471,7 @@ export async function backfillPopHeaders(
       const info = parseListHeaders(
         row.raw ? headerSection(row.raw) : undefined,
         row.from,
+        authTrustOf(account),
       );
       await tx
         .update(messages)
@@ -490,7 +493,7 @@ export async function backfillPopHeaders(
  */
 export async function fillPopSenderChecks(
   db: Database,
-  account: Pick<SyncAccount, "id" | "userId">,
+  account: SyncAccount,
   messageIds: string[],
 ): Promise<void> {
   if (messageIds.length === 0) return;
@@ -515,6 +518,7 @@ export async function fillPopSenderChecks(
       const info = parseListHeaders(
         row.raw ? headerSection(row.raw) : undefined,
         row.from,
+        authTrustOf(account),
       );
       await tx
         .update(messages)
