@@ -401,6 +401,31 @@ describe("OfflineCalendarClient", () => {
     expect(client.conflicts()).toEqual([]);
   });
 
+  it("出欠の返事の書き戻しの失敗 (lost: null) は「閉じる」だけにする", async () => {
+    const server = new FakeCalendarServer();
+    server.addEvent(event({ id: E1 }));
+    server.conflicts = [
+      {
+        id: "k9",
+        calendarId: CALENDAR_ID,
+        eventId: E1,
+        kind: "write_failed",
+        fields: ["attendees"],
+        lost: null,
+        snapshot: null,
+        title: "定例",
+        reason: "出欠の返事を送れませんでした: 403",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        resolvedAt: null,
+      },
+    ];
+    const { client } = await setup(server);
+    await activate(client);
+    expect(client.conflicts()).toMatchObject([
+      { id: "k9", kind: "write_failed", actions: ["dismiss"] },
+    ]);
+  });
+
   it("サーバーの snapshot (作成と同じ項目の形) から、新しい ID の予定として復元する", async () => {
     const server = new FakeCalendarServer();
     server.conflicts = [

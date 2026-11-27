@@ -252,6 +252,14 @@ export function conflictMessage(
     case "field_lost":
       return `${name}の${fields}は、${provider}で後から変更された内容になりました。`;
     case "write_failed":
+      if (
+        item.source === "server" &&
+        item.lost === null &&
+        item.fields.length === 1 &&
+        item.fields[0] === "attendees"
+      ) {
+        return `${name}への出欠の返事を、${provider}に送れませんでした。`;
+      }
       return item.fields.length > 0
         ? `${name}の${fields}の変更を、${provider}に反映できませんでした。`
         : `${name}の変更を、${provider}に反映できませんでした。`;

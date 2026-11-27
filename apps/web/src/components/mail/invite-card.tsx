@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Temporal } from "temporal-polyfill";
 import { OrbitAppIcon } from "@/components/brand/orbit-logo";
 import { PendingBadge } from "@/components/calendar/pending-badge";
+import { RsvpButtons } from "@/components/calendar/rsvp-buttons";
 import { Button } from "@/components/ui/button";
 import {
   type Attachment,
@@ -23,7 +24,6 @@ import {
 import { navigateApp } from "@/lib/app-navigation";
 import { hasInvitePart } from "@/lib/attachments";
 import type {
-  AttendeeStatus,
   Calendar,
   CalendarEvent,
   EventRange,
@@ -52,58 +52,6 @@ import { useOnline } from "@/lib/offline/network";
  * 表示もカレンダーの値を使い、返事はその予定に対して CalendarClient.respond で送る
  * (偽のメールでできるのは「本物の予定のカードを出す」ことだけ。9 章)。
  */
-
-export type RsvpChoice = "accepted" | "tentative" | "declined";
-
-const RSVP_OPTIONS: { value: RsvpChoice; label: string }[] = [
-  { value: "accepted", label: "参加" },
-  { value: "tentative", label: "未定" },
-  { value: "declined", label: "不参加" },
-];
-
-/**
- * 出欠のボタン (仮)。本物は担当 2 の components/calendar/rsvp-buttons.tsx で、props は同じ
- * (設計書 7.1)。そちらが入ったら、この部品を消して import に差し替える。
- */
-export function RsvpButtons({
-  value,
-  disabled,
-  onChange,
-  note,
-}: {
-  value: AttendeeStatus | null;
-  disabled?: boolean;
-  onChange: (status: RsvpChoice) => void;
-  note?: string | null;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <fieldset
-        aria-label="出欠"
-        disabled={disabled}
-        className="grid grid-cols-3 gap-2"
-      >
-        {RSVP_OPTIONS.map((option) => {
-          const selected = value === option.value;
-          return (
-            <Button
-              key={option.value}
-              type="button"
-              size="sm"
-              variant={selected ? "default" : "outline"}
-              aria-pressed={selected}
-              disabled={disabled}
-              onClick={() => onChange(option.value)}
-            >
-              {option.label}
-            </Button>
-          );
-        })}
-      </fieldset>
-      {note && <p className="text-muted-foreground text-xs">{note}</p>}
-    </div>
-  );
-}
 
 export type InviteState = {
   /** 招待の中身。招待が無い・読めない・オフラインなら null。 */
@@ -477,7 +425,6 @@ export function InviteCard({
 
       {showButtons && invite.eventId && (
         <div className="flex flex-col gap-2 border-t pt-3">
-          <p className="font-medium text-sm">出席しますか?</p>
           <RsvpButtons
             value={me && me.status !== "needs_action" ? me.status : null}
             disabled={buttonsDisabled}

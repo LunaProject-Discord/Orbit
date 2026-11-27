@@ -321,3 +321,16 @@ describe("出欠と招待の断りの理由", () => {
     expect(errorReasonLabel(code)).toBe(label);
   });
 });
+
+describe("出欠の返事の書き戻しの失敗", () => {
+  it("参加者の変更ではなく、返事を送れなかったと出す", () => {
+    expect(
+      conflictMessage(
+        item({ kind: "write_failed", fields: ["attendees"], lost: null }),
+        google,
+      ),
+    ).toBe(
+      "「定例会議」への出欠の返事を、Google カレンダーに送れませんでした。",
+    );
+  });
+});

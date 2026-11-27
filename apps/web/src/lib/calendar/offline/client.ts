@@ -162,6 +162,18 @@ export function snapshotEvent(
   };
 }
 
+/** 出欠の返事の書き戻しの失敗 (fields: ["attendees"]、lost: null。invites-api-notes 6 章)。 */
+export function isRespondFailure(
+  conflict: Pick<CalendarConflict, "kind" | "fields" | "lost">,
+): boolean {
+  return (
+    conflict.kind === "write_failed" &&
+    conflict.lost === null &&
+    conflict.fields.length === 1 &&
+    conflict.fields[0] === "attendees"
+  );
+}
+
 function serverConflictItem(conflict: CalendarConflict): ConflictItem {
   const snapshot = snapshotEvent(conflict);
   // まだ相手側に無い回の例外の書き戻しが失敗したとき、snapshot が原本と回を持つ。
@@ -189,11 +201,16 @@ function serverConflictItem(conflict: CalendarConflict): ConflictItem {
     createdAt: conflict.createdAt,
     actions: (SERVER_ACTIONS[conflict.kind] ?? ["dismiss"]).filter(
       (action) =>
-        action !== "restore" ||
-        // 作り直す元 (予定全体) か、戻す値が無ければ「復元」は何もできない。
-        (conflict.kind === "remote_deleted"
-          ? snapshot !== null
-          : !!conflict.lost),
+        // 出欠の返事の失敗 (lost: null) は「閉じる」だけ。やり直しは詳細の出欠ボタンで行う
+        // (「もう一度試す」で参加者の一覧を PATCH しない)。
+        (action !== "retry" ||
+          conflict.kind !== "write_failed" ||
+          !isRespondFailure(conflict)) &&
+        (action !== "restore" ||
+          // 作り直す元 (予定全体) か、戻す値が無ければ「復元」は何もできない。
+          (conflict.kind === "remote_deleted"
+            ? snapshot !== null
+            : !!conflict.lost)),
     ),
     opId: null,
   };
