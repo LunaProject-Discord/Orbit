@@ -18,4 +18,7 @@ ALTER TABLE "event_conflicts" ADD CONSTRAINT "event_conflicts_user_id_users_id_f
 ALTER TABLE "event_conflicts" ADD CONSTRAINT "event_conflicts_calendar_id_calendars_id_fk" FOREIGN KEY ("calendar_id") REFERENCES "public"."calendars"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "event_conflicts_user_open_idx" ON "event_conflicts" USING btree ("user_id","created_at") WHERE "event_conflicts"."resolved_at" is null;--> statement-breakpoint
 CREATE INDEX "event_conflicts_created_idx" ON "event_conflicts" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "changes_delete_entity_idx" ON "changes" USING btree ("entity_id") WHERE "changes"."op" = 'delete';
+-- changes_delete_entity_idx (changes の削除の部分索引) はここでは作らない。changes は全利用者のメールの
+-- 同期も書き込む大きな表で、CONCURRENTLY なしに作ると作っている間、書き込みが待たされる。
+-- 同期ワーカーが起動時に CREATE INDEX CONCURRENTLY で作る (apps/worker/src/changes-index.ts)。
+-- 索引が無い間も、予定の POST の再送の確かめは正しく動く (遅いだけ)。

@@ -1388,8 +1388,13 @@ export function calendarRoutes({
         })
         .onConflictDoNothing()
         .returning();
-      // 別の利用者が同じ ID を使っていた (ほぼ起きない)。
-      if (!row) return "conflict" as const;
+      if (!row) {
+        // 同じ作成が同時に届き、先の方が確定した。同じ利用者の行なら再送と同じに、その行を返す。
+        const existing = await ownEvent(tx, userId, eventId);
+        if (existing) return existing;
+        // 別の利用者が同じ ID を使っていた (ほぼ起きない)。
+        return "conflict" as const;
+      }
       await replaceExtras(tx, row.id, fields);
       await recordChanges(tx, userId, "event", [row.id]);
       // プロバイダのカレンダーなら、作成を書き戻す (中身は実行時に行から読む)。

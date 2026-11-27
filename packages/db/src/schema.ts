@@ -686,6 +686,8 @@ export const changes = pgTable(
      * 消えた予定の作り直しを防ぐ (POST /v1/calendars/events の再送) ときに引く。
      * entity の値は条件に入れない ("event" は後から足した enum の値で、新しい DB に全部の
      * マイグレーションを 1 つのトランザクションで当てると使えないため)。
+     * changes は大きく書き込みも多い表なので、マイグレーション 0046 では作らず、同期ワーカーが
+     * 起動時に CREATE INDEX CONCURRENTLY で作る (apps/worker/src/changes-index.ts)。
      */
     index("changes_delete_entity_idx")
       .on(t.entityId)

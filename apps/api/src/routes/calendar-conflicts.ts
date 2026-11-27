@@ -111,7 +111,16 @@ export function calendarConflictRoutes({ db }: Pick<RouteDeps, "db">) {
             eq(calendars.userId, userId),
           ),
         );
-      if (!calendar || !isProviderCalendar(calendar)) return "gone" as const;
+      if (!calendar || !isProviderCalendar(calendar)) {
+        // 書き戻す先が無い。記録は閉じてから 410 を返す (開いたまま残さない)。
+        await tx
+          .update(eventConflicts)
+          .set({ resolvedAt: new Date() })
+          .where(eq(eventConflicts.id, id));
+        if (calendar)
+          await recordChanges(tx, userId, "calendar", [calendar.id]);
+        return "gone" as const;
+      }
       await lockCalendarAccount(tx, calendar.accountId);
       const [event] = await tx
         .select({ id: events.id, remoteId: events.remoteId })

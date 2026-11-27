@@ -325,6 +325,23 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     expect(days.occurrences.filter((o) => o.eventId === id)).toHaveLength(1);
   });
 
+  it("同じ ID の作成が同時に届いても、どちらも 201 で行は 1 つ (指摘 7)", async () => {
+    const id = randomUUID();
+    const body = {
+      id,
+      calendarId,
+      summary: "同時",
+      time: { allDay: true, startDate: "2026-12-12", endDate: "2026-12-13" },
+    };
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => call("POST", "/events", body)),
+    );
+    expect(results.map((r) => r.status)).toEqual([201, 201, 201, 201]);
+    expect(new Set(results.map((r) => r.body.event.id))).toEqual(new Set([id]));
+    const days = await range("2026-12-12", "2026-12-13");
+    expect(days.occurrences.filter((o) => o.eventId === id)).toHaveLength(1);
+  });
+
   it("書き込めないカレンダーや、ほかの利用者のカレンダーには作れない", async () => {
     const time = {
       allDay: true,

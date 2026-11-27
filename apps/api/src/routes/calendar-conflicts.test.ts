@@ -264,4 +264,25 @@ describe.skipIf(!adminUrl)("反映されなかった変更の API", () => {
       (await call("POST", `/conflicts/${missing.id}/retry`, otherApp)).status,
     ).toBe(404);
   });
+
+  it("カレンダーがプロバイダのものでないときは、記録を閉じてから 410", async () => {
+    const [local] = await db
+      .insert(calendars)
+      .values({ userId, source: "local", name: "ローカル" })
+      .returning({ id: calendars.id });
+    const conflict = await insertConflict({
+      kind: "create_failed",
+      calendarId: local?.id as string,
+    });
+    expect((await call("GET", "/conflicts")).body.conflicts).toHaveLength(1);
+    expect((await call("POST", `/conflicts/${conflict.id}/retry`)).status).toBe(
+      410,
+    );
+    expect((await call("GET", "/conflicts")).body.conflicts).toEqual([]);
+    const [row] = await db
+      .select({ resolvedAt: eventConflicts.resolvedAt })
+      .from(eventConflicts)
+      .where(eq(eventConflicts.id, conflict.id));
+    expect(row?.resolvedAt).not.toBeNull();
+  });
 });
