@@ -31,6 +31,7 @@ export {
   OfflineCalendarClient,
   OfflineUnavailableError,
 } from "@/lib/calendar/offline/client";
+export { isHeld } from "@/lib/calendar/offline/queue";
 export type * from "@/lib/calendar/offline/types";
 
 const api: ClientApi = {

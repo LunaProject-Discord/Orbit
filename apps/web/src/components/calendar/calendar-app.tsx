@@ -25,6 +25,7 @@ import {
   ConflictList,
   ConflictsButton,
 } from "@/components/calendar/conflict-list";
+import { useDeleteUndo } from "@/components/calendar/delete-undo";
 import { EventDetail } from "@/components/calendar/event-detail";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { ImipSenderDialog } from "@/components/calendar/imip-sender-dialog";
@@ -97,6 +98,7 @@ import {
   type CalendarClient,
   type ConflictAction,
   type ConflictItem,
+  isHeld,
   OfflineCalendarClient,
   OfflineUnavailableError,
   type QueuedOp,
@@ -579,6 +581,9 @@ export function CalendarApp({ user }: { user: User }) {
     }
   };
 
+  // 削除の「元に戻す」(Mail の削除と同じトースト・時間)。
+  const deleteWithUndo = useDeleteUndo();
+
   const remove = (target: DisplayItem, chosen: ChangeScope | null) => {
     const item = currentItem(target) ?? target;
     if (item.repeating && chosen === null) {
@@ -591,15 +596,26 @@ export function CalendarApp({ user }: { user: User }) {
       return;
     }
     try {
-      if (item.repeating && chosen === "this") {
-        const recurrenceId = itemRecurrenceId(item);
-        const masterId = item.event.parentId ?? item.event.id;
-        if (recurrenceId) client.deleteOccurrence(masterId, recurrenceId);
-      } else if (item.repeating && chosen === "all") {
-        client.deleteEvent(item.event.parentId ?? item.event.id);
-      } else {
-        client.deleteEvent(item.event.id);
-      }
+      deleteWithUndo(
+        client,
+        item.repeating && chosen === "this"
+          ? "この回を削除しました"
+          : item.repeating && chosen === "all"
+            ? "すべての回を削除しました"
+            : "予定を削除しました",
+        undoFailure(item, calendarOf(item.event.calendarId)),
+        () => {
+          if (item.repeating && chosen === "this") {
+            const recurrenceId = itemRecurrenceId(item);
+            const masterId = item.event.parentId ?? item.event.id;
+            if (recurrenceId) client.deleteOccurrence(masterId, recurrenceId);
+          } else if (item.repeating && chosen === "all") {
+            client.deleteEvent(item.event.parentId ?? item.event.id);
+          } else {
+            client.deleteEvent(item.event.id);
+          }
+        },
+      );
     } catch (error) {
       showNotice(
         error instanceof OfflineUnavailableError
@@ -644,14 +660,22 @@ export function CalendarApp({ user }: { user: User }) {
       return;
     }
     try {
-      client.respond(item.event.id, "declined");
-      const recurrenceId = itemRecurrenceId(item);
-      if (item.event.parentId && recurrenceId) {
-        // 例外の行 (この回だけ招待が変わったもの) は、その回だけを消す。
-        client.deleteOccurrence(item.event.parentId, recurrenceId);
-      } else {
-        client.deleteEvent(item.event.id);
-      }
+      // 返事も削除と一緒に待たせる (元に戻すと、まだ送っていない返事も取り消す)。
+      deleteWithUndo(
+        client,
+        "不参加にして削除しました",
+        "すでに不参加の返事を送ったため、元に戻せませんでした。",
+        () => {
+          client.respond(item.event.id, "declined");
+          const recurrenceId = itemRecurrenceId(item);
+          if (item.event.parentId && recurrenceId) {
+            // 例外の行 (この回だけ招待が変わったもの) は、その回だけを消す。
+            client.deleteOccurrence(item.event.parentId, recurrenceId);
+          } else {
+            client.deleteEvent(item.event.id);
+          }
+        },
+      );
     } catch (error) {
       showNotice(
         error instanceof OfflineUnavailableError
@@ -825,7 +849,8 @@ export function CalendarApp({ user }: { user: User }) {
   );
   const syncStatus = calendarSyncStatus({
     online,
-    pending: queue.filter((op) => op.state === "pending").length,
+    // 「元に戻す」を受け付けている間の削除は、まだ送信待ちに数えない (Mail と同じ)。
+    pending: queue.filter((op) => op.state === "pending" && !isHeld(op)).length,
     loaded: calendars !== null,
   });
 
@@ -1465,6 +1490,23 @@ function scopeNote(
     return null;
   }
   return cancelNote(calendar);
+}
+
+/** 削除を元に戻せなかった (もう送っていた) ときの知らせ。 */
+function undoFailure(
+  item: DisplayItem,
+  calendar: Calendar | undefined,
+): string {
+  const role = inviteRole(item.event);
+  const notified =
+    role === "organizer" &&
+    calendarScheduling(calendar) !== "none" &&
+    item.event.attendees.some((attendee) => !attendee.self);
+  if (!notified)
+    return "すでにサーバーへ反映済みのため、元に戻せませんでした。";
+  return calendarScheduling(calendar) === "mail"
+    ? "すでに参加者に取り消しのメールを送ったため、元に戻せませんでした。"
+    : "すでに参加者に取り消しの連絡が届いているため、元に戻せませんでした。";
 }
 
 /** 参加者のいる自分の予定を消すときの注記 (Orbit が送るならメール、サービスなら連絡)。 */
