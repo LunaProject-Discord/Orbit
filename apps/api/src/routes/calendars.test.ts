@@ -4,13 +4,25 @@
  */
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { HOLIDAYS_VERSION } from "@orbit/core";
-import { calendars, createDb, type Database, events, users } from "@orbit/db";
-import { and, eq, sql } from "drizzle-orm";
+import {
+  type CalendarSyncNotification,
+  CHANNEL_CALENDAR_SYNC,
+  HOLIDAYS_VERSION,
+} from "@orbit/core";
+import {
+  accounts,
+  calendars,
+  createDb,
+  type Database,
+  events,
+  outbox,
+  users,
+} from "@orbit/db";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Hono } from "hono";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEnv } from "../context.js";
 import { calendarRoutes, ensureHolidays, mergeFields } from "./calendars.js";
 
@@ -639,5 +651,296 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       method: "DELETE",
     });
     expect(remove.status).toBe(204);
+  });
+
+  describe("プロバイダのカレンダーへの書き戻し (outbox)", () => {
+    let accountId: string;
+    let googleCalendarId: string;
+    /** google を書き戻せる設定にした API。 */
+    let writebackApp: Hono<AppEnv>;
+    let listener: pg.Client;
+    const notifications: CalendarSyncNotification[] = [];
+
+    type OutboxRow = typeof outbox.$inferSelect;
+    const queued = async (): Promise<OutboxRow[]> =>
+      db
+        .select()
+        .from(outbox)
+        .where(eq(outbox.accountId, accountId))
+        .orderBy(asc(outbox.createdAt), asc(outbox.id));
+    const send = (method: string, path: string, body?: unknown) =>
+      call(method, path, body, writebackApp);
+    const timed = (startAt: string, endAt: string) => ({
+      allDay: false,
+      startAt,
+      endAt,
+      startTimeZone: "Asia/Tokyo",
+    });
+
+    beforeAll(async () => {
+      const [owner] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, "owner@example.com"));
+      if (!owner) throw new Error("利用者が見つかりません。");
+      const [account] = await db
+        .insert(accounts)
+        .values({
+          userId: owner.id,
+          email: "owner@gmail.com",
+          provider: "gmail",
+          authType: "oauth2",
+          username: "owner@gmail.com",
+          credentialsEncrypted: "x",
+          calendarEnabled: true,
+        })
+        .returning({ id: accounts.id });
+      accountId = account?.id as string;
+      const [calendar] = await db
+        .insert(calendars)
+        .values({
+          userId: owner.id,
+          accountId,
+          source: "google",
+          remoteId: "primary",
+          name: "Google",
+        })
+        .returning({ id: calendars.id });
+      googleCalendarId = calendar?.id as string;
+      writebackApp = new Hono<AppEnv>();
+      writebackApp.use(async (c, next) => {
+        c.set("user", {
+          id: owner.id,
+          email: "owner@example.com",
+          name: "owner",
+        });
+        await next();
+      });
+      writebackApp.route(
+        "/calendars",
+        calendarRoutes({ db, writebackSources: ["google"] }),
+      );
+      const url = new URL(adminUrl as string);
+      url.pathname = `/${dbName}`;
+      listener = new pg.Client({ connectionString: url.toString() });
+      await listener.connect();
+      listener.on("notification", (message) => {
+        if (message.channel === CHANNEL_CALENDAR_SYNC && message.payload) {
+          notifications.push(JSON.parse(message.payload));
+        }
+      });
+      await listener.query(`listen ${CHANNEL_CALENDAR_SYNC}`);
+    });
+
+    afterAll(async () => {
+      await listener?.end();
+    });
+
+    beforeEach(async () => {
+      await db.delete(outbox);
+      notifications.length = 0;
+    });
+
+    it("Orbit 内のカレンダーの変更は積まない", async () => {
+      const local = await send("POST", "", { name: "ローカル" });
+      const created = await send("POST", "/events", {
+        calendarId: (local.body.calendar as Json).id,
+        summary: "ローカル",
+        time: { allDay: true, startDate: "2027-01-05", endDate: "2027-01-06" },
+      });
+      expect(created.status).toBe(201);
+      const id = (created.body.event as Json).id as string;
+      await send("PATCH", `/events/${id}`, { changes: { summary: "変更" } });
+      await send("DELETE", `/events/${id}`);
+      expect(await db.select().from(outbox)).toEqual([]);
+    });
+
+    it("書き戻しに対応していなければ、プロバイダのカレンダーは読み取り専用", async () => {
+      const list = await call("GET", "");
+      expect(
+        (list.body.calendars as Json[]).find(
+          (row) => row.id === googleCalendarId,
+        )?.readOnly,
+      ).toBe(true);
+      const created = await call("POST", "/events", {
+        calendarId: googleCalendarId,
+        time: { allDay: true, startDate: "2027-01-05", endDate: "2027-01-06" },
+      });
+      expect(created.status).toBe(409);
+      const writable = await send("GET", "");
+      expect(
+        (writable.body.calendars as Json[]).find(
+          (row) => row.id === googleCalendarId,
+        )?.readOnly,
+      ).toBe(false);
+    });
+
+    it("作成・変更・削除を 1 行ずつ積み、再送では増えない", async () => {
+      const id = randomUUID();
+      const body = {
+        id,
+        calendarId: googleCalendarId,
+        summary: "書き戻し",
+        time: timed("2027-01-06T10:00:00+09:00", "2027-01-06T11:00:00+09:00"),
+      };
+      expect((await send("POST", "/events", body)).status).toBe(201);
+      expect((await send("POST", "/events", body)).status).toBe(201);
+      let rows = await queued();
+      expect(rows.map((row) => [row.kind, row.idempotencyKey])).toEqual([
+        ["event_create", `event_create:${id}`],
+      ]);
+      expect(rows[0]?.payload).toEqual({
+        eventId: id,
+        calendarId: googleCalendarId,
+      });
+      expect(notifications).toContainEqual({ accountId, reason: "outbox" });
+
+      // 作成を書き戻した (ワーカーが remoteId を付けて、行を done にした) ことにする。
+      await db
+        .update(events)
+        .set({ remoteId: "remote-1", etag: '"1"' })
+        .where(eq(events.id, id));
+      await db.update(outbox).set({ status: "done" });
+
+      // 作成より後の、端末で変えた時刻。
+      const changedAt = new Date().toISOString();
+      const patch = {
+        changes: { summary: "変えた", location: "会議室" },
+        changedAt: { summary: changedAt, location: changedAt },
+      };
+      expect((await send("PATCH", `/events/${id}`, patch)).status).toBe(200);
+      expect((await send("PATCH", `/events/${id}`, patch)).status).toBe(200);
+      rows = (await queued()).filter((row) => row.kind === "event_update");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.payload).toEqual({
+        eventId: id,
+        calendarId: googleCalendarId,
+        fields: ["location", "summary"],
+      });
+      expect(rows[0]?.idempotencyKey).toBe(
+        `event_update:${id}:location,summary:${changedAt}`,
+      );
+      // 全部の項目が負けた変更は積まない。
+      const stale = await send("PATCH", `/events/${id}`, {
+        changes: { summary: "古い" },
+        changedAt: { summary: new Date(Date.now() - 60_000).toISOString() },
+      });
+      expect(stale.body.rejected).toEqual(["summary"]);
+      expect(
+        (await queued()).filter((row) => row.kind === "event_update"),
+      ).toHaveLength(1);
+
+      expect((await send("DELETE", `/events/${id}`)).status).toBe(204);
+      rows = await queued();
+      // まだ実行していない変更は、削除で要らなくなるので取り消す。
+      expect(rows.map((row) => [row.kind, row.status])).toEqual([
+        ["event_create", "done"],
+        ["event_delete", "pending"],
+      ]);
+      expect(rows[1]?.idempotencyKey).toBe(`event_delete:${id}`);
+      expect(rows[1]?.payload).toMatchObject({
+        calendarId: googleCalendarId,
+        target: {
+          eventId: id,
+          calendarId: googleCalendarId,
+          remoteId: "remote-1",
+          etag: '"1"',
+          uid: `${id}@orbit`,
+          recurrenceId: null,
+          parentRemoteId: null,
+        },
+      });
+    });
+
+    it("作成を書き戻す前に消すと、作成の行を消して何も積まない", async () => {
+      const created = await send("POST", "/events", {
+        calendarId: googleCalendarId,
+        summary: "すぐ消す",
+        time: { allDay: true, startDate: "2027-01-07", endDate: "2027-01-08" },
+      });
+      const id = (created.body.event as Json).id as string;
+      await send("PATCH", `/events/${id}`, { changes: { summary: "変更" } });
+      expect((await queued()).map((row) => row.kind)).toEqual([
+        "event_create",
+        "event_update",
+      ]);
+      expect((await send("DELETE", `/events/${id}`)).status).toBe(204);
+      expect(await queued()).toEqual([]);
+    });
+
+    it("作成の書き戻しを実行中に消すと、削除を積む", async () => {
+      const created = await send("POST", "/events", {
+        calendarId: googleCalendarId,
+        summary: "実行中",
+        time: { allDay: true, startDate: "2027-01-08", endDate: "2027-01-09" },
+      });
+      const id = (created.body.event as Json).id as string;
+      await db.update(outbox).set({ status: "processing" });
+      expect((await send("DELETE", `/events/${id}`)).status).toBe(204);
+      const rows = await queued();
+      expect(rows.map((row) => [row.kind, row.status])).toEqual([
+        ["event_create", "processing"],
+        ["event_delete", "pending"],
+      ]);
+      expect(rows[1]?.payload).toMatchObject({
+        target: { eventId: id, remoteId: null, uid: `${id}@orbit` },
+      });
+    });
+
+    it("回の変更は例外の変更、回の削除は原本の繰り返しの変更として積む", async () => {
+      const created = await send("POST", "/events", {
+        calendarId: googleCalendarId,
+        summary: "週次",
+        time: timed("2027-01-11T10:00:00+09:00", "2027-01-11T10:30:00+09:00"),
+        recurrence: { rrule: "FREQ=WEEKLY;BYDAY=MO" },
+      });
+      const id = (created.body.event as Json).id as string;
+      await db
+        .update(events)
+        .set({ remoteId: "series-1" })
+        .where(eq(events.id, id));
+      await db.update(outbox).set({ status: "done" });
+
+      const moved = await send(
+        "PATCH",
+        `/events/${id}/occurrences/2027-01-18T01:00:00Z`,
+        { changes: { summary: "移動" } },
+      );
+      expect(moved.status).toBe(200);
+      const exceptionId = (moved.body.event as Json).id as string;
+      let pending = (await queued()).filter((row) => row.status === "pending");
+      expect(pending.map((row) => [row.kind, row.payload])).toEqual([
+        [
+          "event_update",
+          {
+            eventId: exceptionId,
+            calendarId: googleCalendarId,
+            fields: ["summary"],
+          },
+        ],
+      ]);
+
+      expect(
+        (await send("DELETE", `/events/${id}/occurrences/2027-01-25T01:00:00Z`))
+          .status,
+      ).toBe(204);
+      // 例外を消すのも、その回の削除 (原本の EXDATE) になる。
+      expect((await send("DELETE", `/events/${exceptionId}`)).status).toBe(204);
+      pending = (await queued()).filter((row) => row.status === "pending");
+      // 例外の変更はまだ実行していないので取り消し、原本の変更だけを積む
+      // (2 回の削除が同じミリ秒なら同じキーになり、1 行にまとまる)。
+      expect(pending.length).toBeGreaterThanOrEqual(1);
+      for (const row of pending) {
+        expect([row.kind, row.payload]).toEqual([
+          "event_update",
+          { eventId: id, calendarId: googleCalendarId, fields: ["recurrence"] },
+        ]);
+      }
+      const [master] = await db.select().from(events).where(eq(events.id, id));
+      expect(master?.exdates).toEqual([
+        "2027-01-25T01:00:00Z",
+        "2027-01-18T01:00:00Z",
+      ]);
+    });
   });
 });

@@ -1,4 +1,8 @@
-import { CHANNEL_GRAPH_PUSH } from "@orbit/core";
+import {
+  type CalendarSyncNotification,
+  CHANNEL_CALENDAR_SYNC,
+  CHANNEL_GRAPH_PUSH,
+} from "@orbit/core";
 import { type Database, users } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -20,6 +24,15 @@ import type { SystemMailer } from "./lib/system-mail.js";
 import type { BuildInfo, UpdatePolicy } from "./lib/update-policy.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
+import { caldavAccountRoutes } from "./routes/calendar-accounts-caldav.js";
+import {
+  GOOGLE_CALENDAR_WEBHOOK_PATH,
+  googleCalendarWebhookRoutes,
+} from "./routes/calendar-webhook-google.js";
+import {
+  MICROSOFT_CALENDAR_WEBHOOK_PATH,
+  microsoftCalendarWebhookRoutes,
+} from "./routes/calendar-webhook-microsoft.js";
 import { calendarRoutes } from "./routes/calendars.js";
 import { contactRoutes } from "./routes/contacts.js";
 import { draftRoutes } from "./routes/drafts.js";
@@ -157,6 +170,30 @@ export function createApp({
     }),
   );
 
+  // カレンダーの変更通知。Google と Microsoft Graph から直接呼ばれるので、ログインは要らない
+  // (送り主の確認は各受け口が行う)。メールの /webhooks/microsoft とは分ける。
+  const notifyCalendarSync = async (payload: CalendarSyncNotification) => {
+    await db.execute(
+      sql`select pg_notify(${CHANNEL_CALENDAR_SYNC}, ${JSON.stringify(payload)})`,
+    );
+  };
+  v1.route(
+    GOOGLE_CALENDAR_WEBHOOK_PATH,
+    googleCalendarWebhookRoutes({
+      db,
+      encryptionKey,
+      notify: notifyCalendarSync,
+    }),
+  );
+  v1.route(
+    MICROSOFT_CALENDAR_WEBHOOK_PATH,
+    microsoftCalendarWebhookRoutes({
+      db,
+      encryptionKey,
+      notify: notifyCalendarSync,
+    }),
+  );
+
   // 通知のボタンから呼ばれる。ログインの代わりに、通知に付けた合言葉で確かめる。
   v1.route("/", notificationActionRoutes({ db, encryptionKey }));
 
@@ -181,6 +218,8 @@ export function createApp({
     webPushPublicKey,
     fcmEnabled,
   };
+  // /accounts/:id より先に登録する。
+  authed.route("/accounts/caldav", caldavAccountRoutes(deps));
   authed.route("/accounts", accountRoutes(deps));
   authed.route("/mailboxes", mailboxRoutes(deps));
   authed.route("/unified", unifiedRoutes(deps));

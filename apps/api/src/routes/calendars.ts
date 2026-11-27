@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { zValidator } from "@hono/zod-validator";
 import {
+  CALENDAR_WRITEBACK_SOURCES,
+  type EventFieldName,
   type EventTiming,
   expandOccurrences,
   HOLIDAYS_VERSION,
@@ -18,6 +20,7 @@ import {
   eventReminders,
   eventSearch,
   events,
+  outbox,
   replaceCalendarEvents,
 } from "@orbit/db";
 import {
@@ -36,6 +39,14 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { recordChanges } from "../lib/changes.js";
+import {
+  enqueueEventOperation,
+  eventCreateKey,
+  eventDeleteKey,
+  eventUpdateKey,
+  isProviderCalendar,
+  lockCalendarAccount,
+} from "../lib/event-outbox.js";
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type EventRow = typeof events.$inferSelect;
@@ -224,7 +235,7 @@ const searchQuery = z.object({
 });
 
 /** 画面に返すカレンダー。同期の位置や変更通知の ID は返さない。 */
-function publicCalendar(row: CalendarRow) {
+function publicCalendar(row: CalendarRow, writable: ReadonlySet<string>) {
   return {
     id: row.id,
     accountId: row.accountId,
@@ -233,7 +244,7 @@ function publicCalendar(row: CalendarRow) {
     description: row.description,
     color: row.color,
     timeZone: row.timeZone,
-    readOnly: row.readOnly || !isWritable(row),
+    readOnly: row.readOnly || !isWritable(row, writable),
     visible: row.visible,
     sortOrder: row.sortOrder,
     url: row.url,
@@ -246,11 +257,13 @@ function publicCalendar(row: CalendarRow) {
 }
 
 /**
- * Orbit から予定を書き込めるカレンダーか。いまは Orbit 内のカレンダーだけ
- * (プロバイダへの書き戻しは、各プロバイダの同期と一緒に足す)。
+ * Orbit から予定を書き込めるカレンダーか。Orbit 内のカレンダーと、書き戻しに対応した
+ * プロバイダ (writable、既定は CALENDAR_WRITEBACK_SOURCES) のアカウントのカレンダー。
  */
-function isWritable(row: CalendarRow): boolean {
-  return row.source === "local" && !row.readOnly;
+function isWritable(row: CalendarRow, writable: ReadonlySet<string>): boolean {
+  if (row.readOnly) return false;
+  if (row.source === "local") return true;
+  return writable.has(row.source) && row.accountId !== null;
 }
 
 type EventExtras = {
@@ -493,19 +506,160 @@ export function mergeFields(
 }
 
 /**
- * 予定 (Orbit 内のカレンダー) の取得と変更。プロバイダのカレンダーは読むだけ
- * (書き戻しは各プロバイダの同期と一緒に足す)。
+ * 予定の取得と変更。プロバイダのカレンダーは、書き戻しに対応したものだけ変えられ、
+ * 変更は outbox に積んで同期ワーカーがプロバイダへ反映する。
  */
 export function calendarRoutes({
   db,
   allowPrivateMailHosts = false,
   fetchImpl,
+  writebackSources = CALENDAR_WRITEBACK_SOURCES,
 }: Pick<RouteDeps, "db"> &
   Partial<Pick<RouteDeps, "allowPrivateMailHosts">> & {
     /** ICS の取得 (テストで差し替える)。 */
     fetchImpl?: typeof fetch;
+    /** 予定を書き戻せるプロバイダの source (テストで差し替える)。 */
+    writebackSources?: readonly string[];
   }) {
   const app = new Hono<AppEnv>();
+  const writable: ReadonlySet<string> = new Set(writebackSources);
+  const toPublic = (row: CalendarRow) => publicCalendar(row, writable);
+  const canWrite = (row: CalendarRow | undefined): row is CalendarRow =>
+    row !== undefined && isWritable(row, writable);
+
+  /** applyChanges で採用した項目があれば、変更の書き戻しを積む。 */
+  const enqueueUpdate = async (
+    tx: Tx,
+    calendar: CalendarRow,
+    row: EventRow,
+    accepted: EventFields,
+  ) => {
+    const fields = (Object.keys(accepted) as FieldName[])
+      .filter((key) => accepted[key] !== undefined)
+      .sort();
+    if (fields.length === 0) return;
+    await enqueueEventOperation(
+      tx,
+      calendar,
+      {
+        kind: "event_update",
+        payload: {
+          eventId: row.id,
+          calendarId: calendar.id,
+          fields: fields satisfies EventFieldName[],
+        },
+      },
+      eventUpdateKey(row.id, fields, row.fieldUpdatedAt ?? {}),
+    );
+  };
+
+  /**
+   * 繰り返しの 1 回を、原本の EXDATE に足して取り消す。プロバイダのカレンダーなら、
+   * 原本の繰り返しの変更 (event_update { fields: ["recurrence"] }) を積む。
+   */
+  const excludeOccurrence = async (
+    tx: Tx,
+    calendar: CalendarRow,
+    master: EventRow,
+    recurrenceId: string,
+  ) => {
+    const exdates = [...new Set([...(master.exdates ?? []), recurrenceId])];
+    const fieldUpdatedAt = {
+      ...(master.fieldUpdatedAt ?? {}),
+      recurrence: new Date().toISOString(),
+    };
+    await tx
+      .update(events)
+      .set({ exdates, fieldUpdatedAt })
+      .where(eq(events.id, master.id));
+    await enqueueEventOperation(
+      tx,
+      calendar,
+      {
+        kind: "event_update",
+        payload: {
+          eventId: master.id,
+          calendarId: calendar.id,
+          fields: ["recurrence"],
+        },
+      },
+      eventUpdateKey(master.id, ["recurrence"], fieldUpdatedAt),
+    );
+  };
+
+  /**
+   * 消した予定 (eventIds、例外も含む) に向けた、まだ実行していない作成と変更の書き戻しを取り消す。
+   * 作成が確定して失敗した行も、予定ごと消えるので片付ける。
+   */
+  const cancelPendingWrites = async (
+    tx: Tx,
+    calendar: CalendarRow,
+    eventIds: string[],
+  ) => {
+    if (!isProviderCalendar(calendar) || eventIds.length === 0) return;
+    await tx
+      .delete(outbox)
+      .where(
+        and(
+          eq(outbox.accountId, calendar.accountId),
+          or(
+            and(
+              inArray(outbox.kind, ["event_create", "event_update"]),
+              eq(outbox.status, "pending"),
+            ),
+            and(eq(outbox.kind, "event_create"), eq(outbox.status, "failed")),
+          ),
+          inArray(sql<string>`${outbox.payload}->>'eventId'`, eventIds),
+        ),
+      );
+  };
+
+  /**
+   * 予定 (原本か単発) を消したときの書き戻しを積む。cancelPendingWrites のあとに呼ぶ。
+   * 作成をまだ書き戻していなければ (remoteId が無い)、相手側に何も無いので積まない。
+   * ただし作成の書き戻しを実行中なら、相手側にできる予定を消すために積む (remoteId は null)。
+   */
+  const enqueueDelete = async (
+    tx: Tx,
+    calendar: CalendarRow,
+    row: EventRow,
+  ) => {
+    if (!isProviderCalendar(calendar)) return;
+    if (row.remoteId === null) {
+      const [running] = await tx
+        .select({ id: outbox.id })
+        .from(outbox)
+        .where(
+          and(
+            eq(outbox.accountId, calendar.accountId),
+            eq(outbox.idempotencyKey, eventCreateKey(row.id)),
+            eq(outbox.status, "processing"),
+          ),
+        );
+      if (!running) return;
+    }
+    await enqueueEventOperation(
+      tx,
+      calendar,
+      {
+        kind: "event_delete",
+        payload: {
+          calendarId: calendar.id,
+          target: {
+            eventId: row.id,
+            calendarId: calendar.id,
+            remoteId: row.remoteId,
+            etag: row.etag,
+            uid: row.uid,
+            recurrenceId: row.recurrenceId,
+            parentRemoteId: null,
+          },
+          deletedAt: new Date().toISOString(),
+        },
+      },
+      eventDeleteKey(row.id),
+    );
+  };
 
   const ownCalendar = async (
     executor: Database | Tx,
@@ -542,7 +696,7 @@ export function calendarRoutes({
         asc(calendars.createdAt),
         asc(calendars.id),
       );
-    return c.json({ calendars: rows.map(publicCalendar) });
+    return c.json({ calendars: rows.map(toPublic) });
   });
 
   /** Orbit 内だけのカレンダーを作る。 */
@@ -564,7 +718,7 @@ export function calendarRoutes({
       return row;
     });
     if (!created) return c.json({ error: "too_many_calendars" }, 409);
-    return c.json({ calendar: publicCalendar(created) }, 201);
+    return c.json({ calendar: toPublic(created) }, 201);
   });
 
   /** ICS の URL を購読する。その場で取得して、読めなければ作らない。 */
@@ -647,7 +801,7 @@ export function calendarRoutes({
         return row;
       });
       if (!created) return c.json({ error: "too_many_calendars" }, 409);
-      return c.json({ calendar: publicCalendar(created) }, 201);
+      return c.json({ calendar: toPublic(created) }, 201);
     },
   );
 
@@ -692,7 +846,7 @@ export function calendarRoutes({
         await recordChanges(tx, userId, "calendar", [id]);
         return next ?? row;
       });
-      return c.json({ calendar: publicCalendar(updated) });
+      return c.json({ calendar: toPublic(updated) });
     },
   );
 
@@ -729,7 +883,7 @@ export function calendarRoutes({
       });
       if (updated === "not_found") return c.json({ error: "not_found" }, 404);
       if (updated === "read_only") return c.json({ error: "read_only" }, 409);
-      return c.json({ calendar: publicCalendar(updated) });
+      return c.json({ calendar: toPublic(updated) });
     },
   );
 
@@ -986,7 +1140,7 @@ export function calendarRoutes({
     const foundCalendars = new Set(calendarRows.map((row) => row.id));
     const foundEvents = new Set(eventRows.map((row) => row.id));
     return c.json({
-      calendars: calendarRows.map(publicCalendar),
+      calendars: calendarRows.map(toPublic),
       events: await publicEvents(db, eventRows),
       deleted: {
         calendars: calendarIds.filter((id) => !foundCalendars.has(id)),
@@ -1016,7 +1170,10 @@ export function calendarRoutes({
     const result = await db.transaction(async (tx) => {
       const calendar = await ownCalendar(tx, userId, body.calendarId);
       if (!calendar) return "not_found" as const;
-      if (!isWritable(calendar)) return "read_only" as const;
+      if (!canWrite(calendar)) return "read_only" as const;
+      if (isProviderCalendar(calendar)) {
+        await lockCalendarAccount(tx, calendar.accountId);
+      }
       if (body.id) {
         // 同じ ID で再送された (端末の送信待ちの再送)。作り直さずにそのまま返す。
         const existing = await ownEvent(tx, userId, body.id);
@@ -1043,6 +1200,13 @@ export function calendarRoutes({
       if (!row) return "conflict" as const;
       await replaceExtras(tx, row.id, fields);
       await recordChanges(tx, userId, "event", [row.id]);
+      // プロバイダのカレンダーなら、作成を書き戻す (中身は実行時に行から読む)。
+      await enqueueEventOperation(
+        tx,
+        calendar,
+        { kind: "event_create", payload: { eventId: row.id, calendarId } },
+        eventCreateKey(row.id),
+      );
       return row;
     });
     if (result === "not_found") return c.json({ error: "not_found" }, 404);
@@ -1066,15 +1230,23 @@ export function calendarRoutes({
       const body = c.req.valid("json");
       const userId = c.var.user.id;
       const result = await db.transaction(async (tx) => {
-        const row = await lockEvent(tx, userId, id);
+        const row = await lockEventForWrite(tx, userId, id);
         if (!row) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, row.calendarId);
-        if (!calendar || !isWritable(calendar)) return "read_only" as const;
+        if (!canWrite(calendar)) return "read_only" as const;
         // 例外では繰り返しを変えられない。
         if (row.parentId && body.changes.recurrence !== undefined) {
           return "invalid" as const;
         }
-        return applyChanges(tx, userId, row, body.changes, body.changedAt);
+        const applied = await applyChanges(
+          tx,
+          userId,
+          row,
+          body.changes,
+          body.changedAt,
+        );
+        await enqueueUpdate(tx, calendar, applied.row, applied.accepted);
+        return applied;
       });
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
@@ -1100,10 +1272,10 @@ export function calendarRoutes({
         return c.json({ error: "invalid" }, 400);
       }
       const result = await db.transaction(async (tx) => {
-        const master = await lockEvent(tx, userId, id);
+        const master = await lockEventForWrite(tx, userId, id);
         if (!master || master.parentId) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, master.calendarId);
-        if (!calendar || !isWritable(calendar)) return "read_only" as const;
+        if (!canWrite(calendar)) return "read_only" as const;
         const exception = await findOrCreateException(
           tx,
           userId,
@@ -1111,13 +1283,17 @@ export function calendarRoutes({
           normalizeRecurrenceId(recurrenceId),
         );
         if (!exception) return "invalid" as const;
-        return applyChanges(
+        const applied = await applyChanges(
           tx,
           userId,
           exception,
           body.changes,
           body.changedAt,
         );
+        // 例外の行の変更として積む。例外の remoteId が無ければ、ワーカーがその回を
+        // 上書きする書き込みとしてプロバイダへ渡す。
+        await enqueueUpdate(tx, calendar, applied.row, applied.accepted);
+        return applied;
       });
       if (result === "not_found") return c.json({ error: "not_found" }, 404);
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
@@ -1136,21 +1312,11 @@ export function calendarRoutes({
       const userId = c.var.user.id;
       const normalized = normalizeRecurrenceId(recurrenceId);
       const result = await db.transaction(async (tx) => {
-        const master = await lockEvent(tx, userId, id);
+        const master = await lockEventForWrite(tx, userId, id);
         if (!master || master.parentId) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, master.calendarId);
-        if (!calendar || !isWritable(calendar)) return "read_only" as const;
-        const exdates = [...new Set([...(master.exdates ?? []), normalized])];
-        await tx
-          .update(events)
-          .set({
-            exdates,
-            fieldUpdatedAt: {
-              ...(master.fieldUpdatedAt ?? {}),
-              recurrence: new Date().toISOString(),
-            },
-          })
-          .where(eq(events.id, master.id));
+        if (!canWrite(calendar)) return "read_only" as const;
+        await excludeOccurrence(tx, calendar, master, normalized);
         const removed = await tx
           .delete(events)
           .where(
@@ -1160,6 +1326,11 @@ export function calendarRoutes({
             ),
           )
           .returning({ id: events.id });
+        await cancelPendingWrites(
+          tx,
+          calendar,
+          removed.map((row) => row.id),
+        );
         await recordChanges(tx, userId, "event", [master.id]);
         await recordChanges(
           tx,
@@ -1184,25 +1355,20 @@ export function calendarRoutes({
       const { id } = c.req.valid("param");
       const userId = c.var.user.id;
       const result = await db.transaction(async (tx) => {
-        const row = await lockEvent(tx, userId, id);
+        const row = await lockEventForWrite(tx, userId, id);
         if (!row) return "not_found" as const;
         const calendar = await ownCalendar(tx, userId, row.calendarId);
-        if (!calendar || !isWritable(calendar)) return "read_only" as const;
+        if (!canWrite(calendar)) return "read_only" as const;
+        let master: EventRow | undefined;
         if (row.parentId && row.recurrenceId) {
-          // 例外を消す = その回を消す。
-          const [master] = await tx
+          // 例外を消す = その回を消す。プロバイダへは原本の繰り返しの変更として書き戻す。
+          [master] = await tx
             .select()
             .from(events)
             .where(eq(events.id, row.parentId))
             .for("update");
           if (master) {
-            const exdates = [
-              ...new Set([...(master.exdates ?? []), row.recurrenceId]),
-            ];
-            await tx
-              .update(events)
-              .set({ exdates })
-              .where(eq(events.id, master.id));
+            await excludeOccurrence(tx, calendar, master, row.recurrenceId);
             await recordChanges(tx, userId, "event", [master.id]);
           }
         }
@@ -1210,6 +1376,13 @@ export function calendarRoutes({
           .delete(events)
           .where(or(eq(events.id, id), eq(events.parentId, id)))
           .returning({ id: events.id });
+        await cancelPendingWrites(
+          tx,
+          calendar,
+          removed.map((event) => event.id),
+        );
+        // 原本の EXDATE で取り消した回は、削除を積まない。
+        if (!master) await enqueueDelete(tx, calendar, row);
         await recordChanges(
           tx,
           userId,
@@ -1243,6 +1416,22 @@ async function lockEvent(tx: Tx, userId: string, id: string) {
   return row;
 }
 
+/**
+ * 書き換える予定の行をロックする。プロバイダのカレンダーなら、先にカレンダーの同期の
+ * アカウント単位のロックを取る (同期ワーカーと同じ順にして、デッドロックを避ける)。
+ */
+async function lockEventForWrite(tx: Tx, userId: string, id: string) {
+  const [target] = await tx
+    .select({ source: calendars.source, accountId: calendars.accountId })
+    .from(events)
+    .innerJoin(calendars, eq(calendars.id, events.calendarId))
+    .where(and(eq(events.id, id), eq(events.userId, userId)));
+  if (target && isProviderCalendar(target)) {
+    await lockCalendarAccount(tx, target.accountId);
+  }
+  return lockEvent(tx, userId, id);
+}
+
 async function applyChanges(
   tx: Tx,
   userId: string,
@@ -1256,7 +1445,7 @@ async function applyChanges(
     changedAt,
     new Date(),
   );
-  if (Object.keys(accepted).length === 0) return { row, rejected };
+  if (Object.keys(accepted).length === 0) return { row, rejected, accepted };
   const [next] = await tx
     .update(events)
     .set({
@@ -1270,7 +1459,7 @@ async function applyChanges(
     .returning();
   await replaceExtras(tx, row.id, accepted);
   await recordChanges(tx, userId, "event", [row.id]);
-  return { row: next ?? row, rejected };
+  return { row: next ?? row, rejected, accepted };
 }
 
 /** 回の例外を探し、無ければ原本の中身を写して作る。回が原本の規則に無ければ null。 */
