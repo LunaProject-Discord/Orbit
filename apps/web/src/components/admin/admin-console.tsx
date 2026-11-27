@@ -178,7 +178,7 @@ function AdminShell({ admin }: { admin: Admin }) {
           <ThemeToggle />
           <Button variant="outline" size="sm" onClick={() => void signOut()}>
             <LogOutIcon />
-            ログアウト
+            <span className="max-sm:sr-only">ログアウト</span>
           </Button>
         </div>
       </header>
