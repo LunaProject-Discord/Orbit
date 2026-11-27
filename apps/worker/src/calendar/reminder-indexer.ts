@@ -41,6 +41,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -50,7 +51,9 @@ import pg from "pg";
  * 予定のリマインダーの控え (event_occurrences と event_reminder_jobs) を作り直す (段取り 9、設計 5.3)。
  * - changes (entity が event / calendar) を追い、変わった予定の原本を 1 つの単位として作り直す。
  *   予定を書く箇所 (API・取り込み・書き戻し・iMIP) を直さずに済み、作り直しは何度やっても同じ結果になる。
- * - 1 時間ごとに、繰り返しの回を今日 + 35 日まで展開し直し、古い回と job を消す。
+ * - 1 時間ごとに、繰り返しの回を今日 + 35 日まで展開し直し、古い回と job を消す
+ *   (カレンダーを小分けにし、間に変更の処理を挟む)。
+ * - 原本 1 件の計算の失敗はその原本だけを飛ばし、利用者 1 人の失敗はその利用者だけを後でやり直す。
  * - calendars.expandedUntil が null のカレンダー (マイグレーション直後・新しいカレンダー) は全部を作る。
  * job の changeSeq は、鳴らす時刻が変わったときだけ、その変更の seq にする (端末の coverSeq と比べる)。
  */
@@ -69,6 +72,10 @@ type ReminderIndexerOptions = {
 const MASTER_CHUNK = 100;
 /** changes を 1 回に読む行数。 */
 const CHANGE_BATCH = 1000;
+/** 同じ変更を作り直せなかったときに、読み直す回数の上限 (超えたら飛ばす)。 */
+const MAX_CHANGE_ATTEMPTS = 3;
+/** 繰り上げで、列を譲るまでに作り直すカレンダーの数。 */
+const ROLL_CALENDAR_CHUNK = 10;
 /** 繰り上げと掃除の間隔。 */
 const ROLL_INTERVAL_MS = 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -204,6 +211,14 @@ type UserContext = {
   calendars: Map<string, CalendarRow>;
 };
 
+type RebuildOptions = {
+  /**
+   * 鳴らす時刻が先へ動いても、送信済みの印を保つ (利用者の設定の変更。タイムゾーンを変えて
+   * 同じリマインダーがもう一度鳴らないように。L4)。
+   */
+  keepSent?: boolean;
+};
+
 const occurrenceKey = (masterId: string, recurrenceId: string | null) =>
   `${masterId}\u0000${recurrenceId ?? ""}`;
 
@@ -225,6 +240,33 @@ export function calendarFingerprint(row: CalendarRow): string {
   return calendarRemindersFingerprint(reminderCalendarOf(row));
 }
 
+const errorText = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
+/** 繰り返す原本か (SQL)。 */
+const recurringSql = or(
+  isNotNull(events.rrule),
+  sql`jsonb_array_length(coalesce(${events.rdates}, '[]'::jsonb)) > 0`,
+);
+
+/** 控えに入れる原本か (繰り返すか、終了が keepAfter より後。SQL)。 */
+function currentSql(keepAfter: number) {
+  const at = new Date(keepAfter).toISOString();
+  return or(
+    recurringSql,
+    sql`coalesce(${events.endAt}, ${events.startAt}) > ${at}::timestamptz`,
+    sql`coalesce(${events.endDate}, ${events.startDate}) >= ${at.slice(0, 10)}::date`,
+  );
+}
+
+type ChangeRow = {
+  seq: bigint;
+  userId: string;
+  entity: string;
+  entityId: string;
+  op: string;
+};
+
 export class ReminderIndexer {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
@@ -238,6 +280,14 @@ export class ReminderIndexer {
   private history: { at: number; seq: bigint }[] = [];
   /** base より後で処理済みの seq。 */
   private processed = new Set<bigint>();
+  /** 作り直せなかった変更の seq と失敗の回数 (base はこれより先へ進めない)。 */
+  private failures = new Map<bigint, number>();
+  /** 設定の変更で作り直しを待っている利用者 (同じ利用者の NOTIFY は 1 つにまとめる)。 */
+  private pendingUsers = new Set<string>();
+  /** 繰り上げが列に入っているか、走っている途中か。 */
+  private rolling = false;
+  /** この回の繰り上げで失敗したカレンダー (同じ回では飛ばす)。 */
+  private rollSkip = new Set<string>();
 
   constructor(
     private readonly db: Database,
@@ -248,18 +298,19 @@ export class ReminderIndexer {
     this.log = options.log ?? ((message) => console.warn(message));
   }
 
-  /** 待ち受けと定期の処理を始める。最初の埋め込み (繰り上げ) は裏で動かす。 */
+  /**
+   * 待ち受けと定期の処理を始める。最初の埋め込み (繰り上げ) は裏で動かす。
+   * 先に changes の位置を取っておき、埋め込みの間の変更は後の processChanges で読む (M7)。
+   */
   start() {
-    void this.enqueue(() => this.roll());
+    void this.enqueue(() => this.loadBase());
+    this.scheduleRoll();
     void this.enqueue(() => this.processChanges());
     this.pollTimer = setInterval(
       () => void this.enqueue(() => this.processChanges()),
       REMINDER_INDEXER_POLL_MS,
     );
-    this.rollTimer = setInterval(
-      () => void this.enqueue(() => this.roll()),
-      ROLL_INTERVAL_MS,
-    );
+    this.rollTimer = setInterval(() => this.scheduleRoll(), ROLL_INTERVAL_MS);
     this.listen();
   }
 
@@ -281,15 +332,43 @@ export class ReminderIndexer {
         return await task();
       } catch (error) {
         this.log(
-          `予定のリマインダーの控えを作り直せませんでした: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `予定のリマインダーの控えを作り直せませんでした: ${errorText(error)}`,
         );
         return undefined;
       }
     });
     this.queue = next;
     return next;
+  }
+
+  /** 設定の変更による作り直しを積む。同じ利用者の待ちがあれば相乗りする (M8)。 */
+  requestUserRebuild(userId: string) {
+    if (this.pendingUsers.has(userId)) return;
+    this.pendingUsers.add(userId);
+    void this.enqueue(async () => {
+      this.pendingUsers.delete(userId);
+      return this.rebuildUser(userId);
+    });
+  }
+
+  /**
+   * 繰り上げを積む。カレンダーを小分けにして 1 つずつ列に積み直し、間に入った変更の処理を
+   * 先に走らせる (繰り上げで列を長く塞がない。M8)。
+   */
+  scheduleRoll() {
+    if (this.rolling || this.stopped) return;
+    this.rolling = true;
+    const step = () =>
+      void this.enqueue(async () => {
+        let more = false;
+        try {
+          more = await this.rollStep();
+        } finally {
+          if (more && !this.stopped) step();
+          else this.rolling = false;
+        }
+      });
+    step();
   }
 
   private listen() {
@@ -306,7 +385,7 @@ export class ReminderIndexer {
     client.on("notification", (message) => {
       if (message.channel === CHANNEL_CALENDAR_NOTIFICATION_SETTINGS) {
         const userId = parseSettingsNotification(message.payload);
-        if (userId) void this.enqueue(() => this.rebuildUser(userId));
+        if (userId) this.requestUserRebuild(userId);
         return;
       }
       // 変更のたびに積まず、待ちが 1 つあれば相乗りする。
@@ -365,7 +444,8 @@ export class ReminderIndexer {
   /**
    * base より後の changes (event / calendar) を読み、作り直す。seq はコミットの順と前後し得るので、
    * base は「2 分前に読み終えていた位置」にして重ねて読み、処理済みの seq は飛ばす。
-   * 返すのは処理した変更の数。
+   * 作り直しは利用者ごとに切り離し、失敗した利用者の変更は次の回に読み直す (MAX_CHANGE_ATTEMPTS 回
+   * まで。base はその seq より先へ進めない)。返すのは処理した変更の数。
    */
   async processChanges(): Promise<number> {
     const base = await this.loadBase();
@@ -394,16 +474,30 @@ export class ReminderIndexer {
       after = rows.at(-1)?.seq ?? after;
       const fresh = rows.filter((row) => !this.processed.has(row.seq));
       if (fresh.length > 0) {
-        await this.handle(fresh);
-        for (const row of fresh) this.processed.add(row.seq);
-        count += fresh.length;
+        const failed = await this.handle(fresh);
+        for (const row of fresh) {
+          if (!failed.has(row.seq)) {
+            this.processed.add(row.seq);
+            this.failures.delete(row.seq);
+            continue;
+          }
+          const attempts = (this.failures.get(row.seq) ?? 0) + 1;
+          if (attempts >= MAX_CHANGE_ATTEMPTS) {
+            // 何度やっても作り直せない変更は飛ばす (次にその予定が変わるか、繰り上げで直る)。
+            this.failures.delete(row.seq);
+            this.processed.add(row.seq);
+          } else {
+            this.failures.set(row.seq, attempts);
+          }
+        }
+        count += fresh.length - failed.size;
       }
       if (after > maxSeen) maxSeen = after;
       if (rows.length < CHANGE_BATCH) break;
     }
     const now = this.now();
     this.history.push({ at: now, seq: maxSeen });
-    // 2 分より前に読み終えていた位置まで base を進める。
+    // 2 分より前に読み終えていた位置まで base を進める。失敗した変更の手前より先へは進めない。
     let nextBase = base;
     while (
       this.history.length > 1 &&
@@ -411,6 +505,9 @@ export class ReminderIndexer {
         now - REMINDER_INDEXER_OVERLAP_MS
     ) {
       nextBase = (this.history.shift() as { seq: bigint }).seq;
+    }
+    for (const seq of this.failures.keys()) {
+      if (seq - 1n < nextBase) nextBase = seq - 1n;
     }
     if (nextBase > base) {
       this.base = nextBase;
@@ -423,98 +520,119 @@ export class ReminderIndexer {
     return count;
   }
 
-  private async handle(
-    rows: {
-      seq: bigint;
-      userId: string;
-      entity: string;
-      entityId: string;
-      op: string;
-    }[],
-  ) {
+  /** 利用者ごとに作り直す。返すのは作り直せなかった利用者の変更の seq。 */
+  private async handle(rows: ChangeRow[]): Promise<Set<bigint>> {
     const byUser = new Map<
       string,
-      { events: Set<string>; calendars: Set<string>; seq: bigint }
+      {
+        events: Set<string>;
+        calendars: Set<string>;
+        seq: bigint;
+        rows: ChangeRow[];
+      }
     >();
     for (const row of rows) {
       const entry = byUser.get(row.userId) ?? {
         events: new Set<string>(),
         calendars: new Set<string>(),
         seq: 0n,
+        rows: [],
       };
       if (row.entity === "event") entry.events.add(row.entityId);
       else if (row.op !== "delete") entry.calendars.add(row.entityId);
       if (row.seq > entry.seq) entry.seq = row.seq;
+      entry.rows.push(row);
       byUser.set(row.userId, entry);
     }
+    const failed = new Set<bigint>();
     for (const [userId, entry] of byUser) {
-      const masters = new Set<string>();
-      const ids = [...entry.events];
-      const found = new Set<string>();
-      for (const batch of chunks(ids)) {
-        for (const row of await this.db
-          .select({ id: events.id, parentId: events.parentId })
-          .from(events)
-          .where(inArray(events.id, batch))) {
-          found.add(row.id);
-          masters.add(row.parentId ?? row.id);
+      if (this.stopped) {
+        for (const row of entry.rows) failed.add(row.seq);
+        continue;
+      }
+      try {
+        await this.handleUser(userId, entry);
+      } catch (error) {
+        this.log(
+          `利用者 ${userId} の予定のリマインダーの控えを作り直せませんでした: ${errorText(error)}`,
+        );
+        for (const row of entry.rows) failed.add(row.seq);
+      }
+    }
+    return failed;
+  }
+
+  private async handleUser(
+    userId: string,
+    entry: { events: Set<string>; calendars: Set<string>; seq: bigint },
+  ) {
+    const masters = new Set<string>();
+    const ids = [...entry.events];
+    const found = new Set<string>();
+    for (const batch of chunks(ids)) {
+      for (const row of await this.db
+        .select({ id: events.id, parentId: events.parentId })
+        .from(events)
+        .where(inArray(events.id, batch))) {
+        found.add(row.id);
+        masters.add(row.parentId ?? row.id);
+      }
+    }
+    if (ids.some((id) => !found.has(id))) {
+      // 消えた予定。原本なら回も job も FK の cascade で消えている。例外なら、その回の行の
+      // eventId が null になって残るので、その原本だけを作り直す (M8)。
+      for (const id of await this.orphanedMasters(userId)) masters.add(id);
+    }
+    const hashes: { id: string; hash: string }[] = [];
+    if (entry.calendars.size > 0) {
+      const rows = await this.db
+        .select()
+        .from(calendars)
+        .where(
+          and(
+            eq(calendars.userId, userId),
+            inArray(calendars.id, [...entry.calendars]),
+          ),
+        );
+      for (const calendar of rows) {
+        const hash = calendarFingerprint(calendar);
+        if (hash === calendar.remindersHash) continue;
+        hashes.push({ id: calendar.id, hash });
+        for (const id of await this.calendarMasters(calendar.id, false)) {
+          masters.add(id);
         }
       }
-      if (ids.some((id) => !found.has(id))) {
-        // 消えた予定。原本なら回も job も FK の cascade で消えている。例外なら、その回の行が
-        // cascade で消え、原本の回が欠けているので、繰り返す原本を作り直す (どの原本かは引けない)。
-        for (const id of await this.recurringMasters(userId)) masters.add(id);
-      }
-      const hashes: { id: string; hash: string }[] = [];
-      if (entry.calendars.size > 0) {
-        const rows = await this.db
-          .select()
-          .from(calendars)
-          .where(
-            and(
-              eq(calendars.userId, userId),
-              inArray(calendars.id, [...entry.calendars]),
-            ),
-          );
-        for (const calendar of rows) {
-          const hash = calendarFingerprint(calendar);
-          if (hash === calendar.remindersHash) continue;
-          hashes.push({ id: calendar.id, hash });
-          for (const id of await this.calendarMasters(calendar.id)) {
-            masters.add(id);
-          }
-        }
-      }
-      await this.rebuildMasters(userId, [...masters], entry.seq);
-      for (const { id, hash } of hashes) {
-        await this.db
-          .update(calendars)
-          .set({ remindersHash: hash })
-          .where(eq(calendars.id, id));
-      }
+    }
+    await this.rebuildMasters(userId, [...masters], entry.seq);
+    for (const { id, hash } of hashes) {
+      await this.db
+        .update(calendars)
+        .set({ remindersHash: hash })
+        .where(eq(calendars.id, id));
     }
   }
 
-  private async recurringMasters(userId: string): Promise<string[]> {
+  /** 例外の行が消えて、中身の予定を失った回を持つ原本。 */
+  private async orphanedMasters(userId: string): Promise<string[]> {
     const rows = await this.db
-      .select({ id: events.id })
-      .from(events)
+      .selectDistinct({ id: eventOccurrences.masterId })
+      .from(eventOccurrences)
       .where(
         and(
-          eq(events.userId, userId),
-          isNull(events.parentId),
-          or(
-            isNotNull(events.rrule),
-            sql`jsonb_array_length(coalesce(${events.rdates}, '[]'::jsonb)) > 0`,
-          ),
+          eq(eventOccurrences.userId, userId),
+          isNull(eventOccurrences.eventId),
         ),
       );
     return rows.map((row) => row.id);
   }
 
+  /**
+   * カレンダーの原本。recurringOnly なら繰り返すものだけ、そうでなければ繰り返すものと
+   * 終了が「今 − 1 日」より後のもの (終わった予定は控えに入れないので読まない。M8)。
+   */
   private async calendarMasters(
     calendarId: string,
-    recurringOnly = false,
+    recurringOnly: boolean,
   ): Promise<string[]> {
     const rows = await this.db
       .select({ id: events.id })
@@ -524,35 +642,51 @@ export class ReminderIndexer {
           eq(events.calendarId, calendarId),
           isNull(events.parentId),
           recurringOnly
-            ? or(
-                isNotNull(events.rrule),
-                sql`jsonb_array_length(coalesce(${events.rdates}, '[]'::jsonb)) > 0`,
-              )
-            : undefined,
+            ? recurringSql
+            : currentSql(this.now() - SERVER_OCCURRENCE_KEEP_MS),
         ),
       );
     return rows.map((row) => row.id);
   }
 
-  /** 利用者のいまの changes の位置 (繰り上げ・設定の変更で作る job の changeSeq)。 */
+  /**
+   * 利用者の予定の changes の位置 (繰り上げ・設定の変更で作る job の changeSeq)。端末の coverSeq
+   * (GET /v1/calendars/sync の latestSeq) と同じく、予定とカレンダーの変更だけを数える (M2)。
+   */
   private async currentSeq(userId: string): Promise<bigint> {
     const [row] = await this.db
       .select({ seq: sql<string>`coalesce(max(${changes.seq}), 0)` })
       .from(changes)
-      .where(eq(changes.userId, userId));
+      .where(
+        and(
+          eq(changes.userId, userId),
+          inArray(changes.entity, ["event", "calendar"]),
+        ),
+      );
     return BigInt(row?.seq ?? 0);
   }
 
-  /** 利用者の設定 (タイムゾーン、終日の通知) が変わった: その利用者の全部を作り直す。 */
+  /**
+   * 利用者の設定 (タイムゾーン、終日の通知) が変わった: 設定で鳴る時刻が変わる予定
+   * (終日と浮動時刻) だけを作り直す。送信済みの印は保つ (L4)。
+   */
   async rebuildUser(userId: string): Promise<void> {
     const rows = await this.db
       .select({ id: events.id })
       .from(events)
-      .where(and(eq(events.userId, userId), isNull(events.parentId)));
+      .where(
+        and(
+          eq(events.userId, userId),
+          isNull(events.parentId),
+          or(eq(events.allDay, true), isNull(events.startTimeZone)),
+          currentSql(this.now() - SERVER_OCCURRENCE_KEEP_MS),
+        ),
+      );
     await this.rebuildMasters(
       userId,
       rows.map((row) => row.id),
       await this.currentSeq(userId),
+      { keepSent: true },
     );
     this.options.onIndexed?.();
   }
@@ -562,43 +696,67 @@ export class ReminderIndexer {
   // -------------------------------------------------------------------------
 
   /**
-   * 1 時間ごと (と起動時) の処理。expandedUntil が今日 + 35 日より前のカレンダーの繰り返す原本を
-   * 作り直して expandedUntil を進める。null のカレンダーは全部の原本を作る (最初の埋め込み)。
-   * 終わった回と、古い job を消す。
+   * 繰り上げを最後まで行う (起動時と 1 時間ごとは scheduleRoll で小分けにする)。
+   * expandedUntil が今日 + 35 日より前のカレンダーの繰り返す原本を作り直して expandedUntil を
+   * 進める。null のカレンダーは全部の原本を作る (最初の埋め込み)。終わった回と、古い job を消す。
    */
   async roll(): Promise<void> {
+    while (!this.stopped && (await this.rollStep())) {
+      // 次の小分けへ。
+    }
+  }
+
+  /** 繰り上げの 1 回分 (ROLL_CALENDAR_CHUNK 個のカレンダー)。まだ残っていれば true。 */
+  async rollStep(): Promise<boolean> {
     const now = this.now();
     const windowEnd = occurrenceWindowEnd(now);
+    const skip = [...this.rollSkip];
     const due = await this.db
       .select()
       .from(calendars)
       .where(
-        or(
-          isNull(calendars.expandedUntil),
-          lt(calendars.expandedUntil, windowEnd),
+        and(
+          or(
+            isNull(calendars.expandedUntil),
+            lt(calendars.expandedUntil, windowEnd),
+          ),
+          skip.length > 0 ? notInArray(calendars.id, skip) : undefined,
         ),
-      );
+      )
+      .orderBy(calendars.id)
+      .limit(ROLL_CALENDAR_CHUNK);
     for (const calendar of due) {
-      if (this.stopped) return;
-      const masters = await this.calendarMasters(
-        calendar.id,
-        calendar.expandedUntil !== null,
-      );
-      await this.rebuildMasters(
-        calendar.userId,
-        masters,
-        await this.currentSeq(calendar.userId),
-      );
-      await this.db
-        .update(calendars)
-        .set({
-          expandedUntil: windowEnd,
-          ...(calendar.remindersHash === null
-            ? { remindersHash: calendarFingerprint(calendar) }
-            : {}),
-        })
-        .where(eq(calendars.id, calendar.id));
+      if (this.stopped) return false;
+      try {
+        const masters = await this.calendarMasters(
+          calendar.id,
+          calendar.expandedUntil !== null,
+        );
+        await this.rebuildMasters(
+          calendar.userId,
+          masters,
+          await this.currentSeq(calendar.userId),
+        );
+        await this.db
+          .update(calendars)
+          .set({
+            expandedUntil: windowEnd,
+            ...(calendar.remindersHash === null
+              ? { remindersHash: calendarFingerprint(calendar) }
+              : {}),
+          })
+          .where(eq(calendars.id, calendar.id));
+      } catch (error) {
+        // 1 つのカレンダーの失敗で、ほかのカレンダーの繰り上げを止めない (M1)。
+        this.rollSkip.add(calendar.id);
+        this.log(
+          `カレンダー ${calendar.id} の繰り返しの回を展開できませんでした: ${errorText(error)}`,
+        );
+      }
     }
+    if (due.length > 0) this.options.onIndexed?.();
+    if (due.length === ROLL_CALENDAR_CHUNK) return true;
+    this.rollSkip.clear();
     const keepAfter = new Date(now - SERVER_OCCURRENCE_KEEP_MS);
     await this.db
       .delete(eventOccurrences)
@@ -618,7 +776,7 @@ export class ReminderIndexer {
     await this.db
       .delete(eventReminderJobs)
       .where(lt(eventReminderJobs.fireAt, new Date(now - DAY_MS)));
-    if (due.length > 0) this.options.onIndexed?.();
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -651,25 +809,64 @@ export class ReminderIndexer {
 
   /**
    * 原本ごとに回と job を作り直す。消えた原本の回は消す。seq は、鳴らす時刻が変わった job と
-   * 新しい job の changeSeq にする。
+   * 新しい job の changeSeq にする。まとまりのトランザクションが失敗したら 1 件ずつやり直し、
+   * それでも失敗した原本があれば最後に投げる (呼び出し側が後でやり直す)。
    */
   async rebuildMasters(
     userId: string,
     masterIds: readonly string[],
     seq: bigint,
+    options: RebuildOptions = {},
   ): Promise<void> {
     if (masterIds.length === 0) return;
     const context = await this.userContext(userId);
+    const run = (batch: string[]) =>
+      this.db.transaction((tx) =>
+        rebuildChunk(tx, userId, batch, seq, context, this.now(), {
+          ...options,
+          log: this.log,
+        }),
+      );
+    let failed = 0;
+    let lastError: unknown = null;
     for (const batch of chunks([...new Set(masterIds)], MASTER_CHUNK)) {
       if (this.stopped) return;
-      await this.db.transaction((tx) =>
-        rebuildChunk(tx, userId, batch, seq, context, this.now()),
+      try {
+        await run(batch);
+      } catch (error) {
+        if (batch.length === 1) {
+          failed += 1;
+          lastError = error;
+          continue;
+        }
+        for (const id of batch) {
+          try {
+            await run([id]);
+          } catch (single) {
+            failed += 1;
+            lastError = single;
+            this.log(
+              `予定 ${id} のリマインダーの控えを作り直せませんでした: ${errorText(single)}`,
+            );
+          }
+        }
+      }
+    }
+    if (failed > 0) {
+      throw new Error(
+        `${failed} 件の予定を作り直せませんでした (${errorText(lastError)})`,
       );
     }
   }
 }
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+type Computed = {
+  master: EventRow;
+  occurrences: ComputedOccurrence[];
+  planned: PlannedReminder[];
+};
 
 async function rebuildChunk(
   tx: Tx,
@@ -678,7 +875,12 @@ async function rebuildChunk(
   seq: bigint,
   context: UserContext,
   now: number,
+  options: RebuildOptions & { log: (message: string) => void },
 ) {
+  // 複数台の worker が同じ利用者を同時に作り直さないように (一意の索引の衝突を防ぐ。L8)。
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${`reminder-indexer:${userId}`}))`,
+  );
   const windowEnd = occurrenceWindowEnd(now);
   const windowEndMs = Date.parse(`${windowEnd}T00:00:00Z`);
   const rows = await tx
@@ -694,41 +896,44 @@ async function rebuildChunk(
   const responses = new Map<string, string>();
   const reminders = new Map<string, { method: string; minutes: number }[]>();
   if (ids.length > 0) {
-    for (const row of await tx
-      .select({
-        eventId: eventAttendees.eventId,
-        status: eventAttendees.status,
-      })
-      .from(eventAttendees)
-      .where(
-        and(
-          inArray(eventAttendees.eventId, ids),
-          eq(eventAttendees.self, true),
-        ),
-      )) {
-      responses.set(row.eventId, row.status);
-    }
-    for (const row of await tx
-      .select({
-        eventId: eventReminders.eventId,
-        method: eventReminders.method,
-        minutes: eventReminders.minutes,
-      })
-      .from(eventReminders)
-      .where(inArray(eventReminders.eventId, ids))) {
-      const list = reminders.get(row.eventId) ?? [];
-      list.push({ method: row.method, minutes: row.minutes });
-      reminders.set(row.eventId, list);
+    for (const batch of chunks(ids)) {
+      for (const row of await tx
+        .select({
+          eventId: eventAttendees.eventId,
+          status: eventAttendees.status,
+        })
+        .from(eventAttendees)
+        .where(
+          and(
+            inArray(eventAttendees.eventId, batch),
+            eq(eventAttendees.self, true),
+          ),
+        )) {
+        responses.set(row.eventId, row.status);
+      }
+      for (const row of await tx
+        .select({
+          eventId: eventReminders.eventId,
+          method: eventReminders.method,
+          minutes: eventReminders.minutes,
+        })
+        .from(eventReminders)
+        .where(inArray(eventReminders.eventId, batch))) {
+        const list = reminders.get(row.eventId) ?? [];
+        list.push({ method: row.method, minutes: row.minutes });
+        reminders.set(row.eventId, list);
+      }
     }
   }
+  const masterSet = new Set(masterIds);
   const masters = new Map<string, EventRow>();
   const children = new Map<string, EventRow[]>();
   for (const row of rows) {
-    if (row.parentId && masterIds.includes(row.parentId)) {
+    if (row.parentId && masterSet.has(row.parentId)) {
       const list = children.get(row.parentId) ?? [];
       list.push(row);
       children.set(row.parentId, list);
-    } else if (masterIds.includes(row.id)) {
+    } else if (masterSet.has(row.id)) {
       masters.set(row.id, row);
     }
   }
@@ -741,21 +946,31 @@ async function rebuildChunk(
   const existingByKey = new Map(
     existing.map((row) => [occurrenceKey(row.masterId, row.recurrenceId), row]),
   );
-  const existingJobs =
-    existing.length > 0
-      ? await tx
-          .select()
-          .from(eventReminderJobs)
-          .where(
-            inArray(
-              eventReminderJobs.occurrenceId,
-              existing.map((row) => row.id),
-            ),
-          )
-      : [];
+  const existingJobs: (typeof eventReminderJobs.$inferSelect)[] = [];
+  for (const batch of chunks(existing.map((row) => row.id))) {
+    existingJobs.push(
+      ...(await tx
+        .select()
+        .from(eventReminderJobs)
+        .where(inArray(eventReminderJobs.occurrenceId, batch))),
+    );
+  }
   const jobsByKey = new Map(
     existingJobs.map((job) => [`${job.occurrenceId}\u0000${job.minutes}`, job]),
   );
+  // 回のキーが変わる (繰り返すかどうかを変えた) ときに、同じ時刻の送信済みを引き継ぐ (L4)。
+  const masterOfOccurrence = new Map(
+    existing.map((row) => [row.id, row.masterId]),
+  );
+  const sentBefore = new Map<string, Date>();
+  for (const job of existingJobs) {
+    if (!job.sentAt) continue;
+    const masterId = masterOfOccurrence.get(job.occurrenceId);
+    sentBefore.set(
+      `${masterId}\u0000${job.minutes}\u0000${job.fireAt.getTime()}`,
+      job.sentAt,
+    );
+  }
 
   const toReminderEvent = (row: EventRow): ReminderEvent => ({
     id: row.id,
@@ -777,20 +992,39 @@ async function rebuildChunk(
     myResponse: responses.get(row.id) ?? null,
   });
 
-  const keepOccurrences = new Set<string>();
-  const keepJobs = new Set<string>();
+  // 1. 原本ごとに計算する。投げた原本は飛ばし、その回と job は消す (M1)。
+  const computed: Computed[] = [];
   for (const master of masters.values()) {
     const calendar = context.calendars.get(master.calendarId);
     if (!calendar) continue;
     const kids = children.get(master.id) ?? [];
-    const defaultTimeZone = calendar.timeZone ?? context.settings.timeZone;
-    const computed = computeOccurrences(master, kids, {
-      defaultTimeZone,
-      now,
-      windowEnd,
-    });
-    const occurrenceIds = new Map<string, string>();
-    for (const occurrence of computed) {
+    try {
+      const occurrences = computeOccurrences(master, kids, {
+        defaultTimeZone: calendar.timeZone ?? context.settings.timeZone,
+        now,
+        windowEnd,
+      });
+      const planned = planReminders({
+        calendars: [reminderCalendarOf(calendar)],
+        events: [master, ...kids].map(toReminderEvent),
+        settings: context.settings,
+        from: now - REMINDER_LATE_LIMIT_MS,
+        to: isRecurring(master) ? windowEndMs : FAR_FUTURE_MS,
+      });
+      computed.push({ master, occurrences, planned });
+    } catch (error) {
+      options.log(
+        `予定 ${master.id} のリマインダーを計算できませんでした (飛ばします): ${errorText(error)}`,
+      );
+    }
+  }
+
+  // 2. 回を突き合わせる。新しい回はまとめて入れる。
+  const keepOccurrences = new Set<string>();
+  const occurrenceIds = new Map<string, string>();
+  const newOccurrences: (typeof eventOccurrences.$inferInsert)[] = [];
+  for (const { master, occurrences } of computed) {
+    for (const occurrence of occurrences) {
       const key = occurrenceKey(master.id, occurrence.recurrenceId);
       const current = existingByKey.get(key);
       const values = {
@@ -801,80 +1035,91 @@ async function rebuildChunk(
         startDate: occurrence.startDate,
         endDate: occurrence.endDate,
       };
-      if (current) {
-        if (
-          current.eventId !== values.eventId ||
-          current.allDay !== values.allDay ||
-          current.calendarId !== master.calendarId ||
-          !sameTime(current.startAt, values.startAt) ||
-          !sameTime(current.endAt, values.endAt) ||
-          current.startDate !== values.startDate ||
-          current.endDate !== values.endDate
-        ) {
-          await tx
-            .update(eventOccurrences)
-            .set({ ...values, calendarId: master.calendarId })
-            .where(eq(eventOccurrences.id, current.id));
-        }
-        keepOccurrences.add(current.id);
-        occurrenceIds.set(key, current.id);
-      } else {
-        const [inserted] = await tx
-          .insert(eventOccurrences)
-          .values({
-            ...values,
-            userId,
-            calendarId: master.calendarId,
-            masterId: master.id,
-            recurrenceId: occurrence.recurrenceId,
-          })
-          .returning({ id: eventOccurrences.id });
-        if (inserted) occurrenceIds.set(key, inserted.id);
+      if (!current) {
+        newOccurrences.push({
+          ...values,
+          userId,
+          calendarId: master.calendarId,
+          masterId: master.id,
+          recurrenceId: occurrence.recurrenceId,
+        });
+        continue;
       }
+      if (
+        current.eventId !== values.eventId ||
+        current.allDay !== values.allDay ||
+        current.calendarId !== master.calendarId ||
+        !sameTime(current.startAt, values.startAt) ||
+        !sameTime(current.endAt, values.endAt) ||
+        current.startDate !== values.startDate ||
+        current.endDate !== values.endDate
+      ) {
+        await tx
+          .update(eventOccurrences)
+          .set({ ...values, calendarId: master.calendarId })
+          .where(eq(eventOccurrences.id, current.id));
+      }
+      keepOccurrences.add(current.id);
+      occurrenceIds.set(key, current.id);
     }
+  }
+  for (const batch of chunks(newOccurrences)) {
+    for (const row of await tx
+      .insert(eventOccurrences)
+      .values(batch)
+      .returning({
+        id: eventOccurrences.id,
+        masterId: eventOccurrences.masterId,
+        recurrenceId: eventOccurrences.recurrenceId,
+      })) {
+      occurrenceIds.set(occurrenceKey(row.masterId, row.recurrenceId), row.id);
+    }
+  }
 
-    const planned: PlannedReminder[] = planReminders({
-      calendars: [reminderCalendarOf(calendar)],
-      events: [master, ...kids].map(toReminderEvent),
-      settings: context.settings,
-      from: now - REMINDER_LATE_LIMIT_MS,
-      to: isRecurring(master) ? windowEndMs : FAR_FUTURE_MS,
-    });
+  // 3. job を突き合わせる。新しい job はまとめて入れる。
+  const keepJobs = new Set<string>();
+  const newJobs: (typeof eventReminderJobs.$inferInsert)[] = [];
+  for (const { master, planned } of computed) {
     for (const item of planned) {
       const occurrenceId = occurrenceIds.get(
         occurrenceKey(master.id, item.recurrenceId),
       );
       if (!occurrenceId) continue;
-      const jobKey = `${occurrenceId}\u0000${item.minutes}`;
-      const job = jobsByKey.get(jobKey);
+      const job = jobsByKey.get(`${occurrenceId}\u0000${item.minutes}`);
       const fireAt = new Date(item.fireAt);
       if (!job) {
-        await tx
-          .insert(eventReminderJobs)
-          .values({
-            userId,
-            occurrenceId,
-            minutes: item.minutes,
-            fireAt,
-            changeSeq: seq,
-          })
-          .onConflictDoNothing();
+        newJobs.push({
+          userId,
+          occurrenceId,
+          minutes: item.minutes,
+          fireAt,
+          changeSeq: seq,
+          sentAt:
+            sentBefore.get(
+              `${master.id}\u0000${item.minutes}\u0000${item.fireAt}`,
+            ) ?? null,
+        });
         continue;
       }
       keepJobs.add(job.id);
       if (job.fireAt.getTime() === item.fireAt) continue;
+      // 先へ動いたら送り直す (設定の変更では送信済みを保つ)。前へ動いたときは、送ったものはそのまま。
+      const resend = item.fireAt > job.fireAt.getTime() && !options.keepSent;
       await tx
         .update(eventReminderJobs)
         .set({
           fireAt,
           changeSeq: seq,
-          // 先へ動いたら送り直す。前へ動いたときは、送ったものはそのまま。
-          ...(item.fireAt > job.fireAt.getTime() ? { sentAt: null } : {}),
+          ...(resend ? { sentAt: null, claimedAt: null, attempts: 0 } : {}),
         })
         .where(eq(eventReminderJobs.id, job.id));
     }
   }
+  for (const batch of chunks(newJobs)) {
+    await tx.insert(eventReminderJobs).values(batch).onConflictDoNothing();
+  }
 
+  // 4. 要らなくなった job と回を消す。
   const staleJobs = existingJobs
     .filter((job) => !keepJobs.has(job.id))
     .map((job) => job.id);

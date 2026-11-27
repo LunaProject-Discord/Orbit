@@ -9,6 +9,8 @@ import {
   formatEventWhen,
   inviteBatchText,
   inviteText,
+  NOTICE_OVERFLOW_TAG,
+  noticeOverflowText,
   readCalendarNotificationSettings,
   reminderText,
   rsvpFailedText,
@@ -206,6 +208,7 @@ describe("リマインダーの文言", () => {
       eventId: "e1",
       recurrenceId: null,
       expiresAt: Date.parse(meeting.endAt),
+      fireAt: Date.parse(meeting.startAt) - 10 * 60_000,
       calendarId: "c1",
     });
     expect(toCalendarFcmData(message)).toEqual({
@@ -215,6 +218,8 @@ describe("リマインダーの文言", () => {
       tag: "cal-rem:e1:-:10",
       eventId: "e1",
       expiresAt: String(Date.parse(meeting.endAt)),
+      // 鳴らす時刻 (延期で開始だけが動いたときに、端末が別の通知と分かるように)。
+      fireAt: String(Date.parse(meeting.startAt) - 10 * 60_000),
       calendarId: "c1",
       channel: "calendar-reminders",
     });
@@ -269,6 +274,45 @@ describe("招待・変更・取り消しの文言", () => {
       title: "出欠を反映できませんでした",
       body: "定例会議",
     });
+  });
+
+  it("文言の日時を差し替えられる (繰り返す予定の次の回)", () => {
+    const next = {
+      allDay: false as const,
+      startAt: "2026-12-05T01:00:00Z",
+      endAt: "2026-12-05T02:00:00Z",
+    };
+    const series = snapshot({ rrule: "FREQ=WEEKLY" });
+    expect(inviteText(series, tokyo, next).body).toBe(
+      "山田 太郎 さんから · 12月5日(土) 10:00〜11:00",
+    );
+    expect(cancelText(series, tokyo, next).body).toBe(
+      "12月5日(土) 10:00〜11:00 の予定は取り消されました",
+    );
+    // 変わった項目の判定は snapshot どうしで行い、日時だけ差し替える。
+    expect(
+      updateText(series, { ...series, location: "会議室 B" }, tokyo, next).body,
+    ).toBe("場所が 会議室 B になりました");
+  });
+
+  it("タイムゾーンだけが変わっても、日時の変更にしない", () => {
+    expect(
+      eventNoticeChanges(
+        snapshot(),
+        snapshot({ timeZone: "America/New_York" }),
+      ),
+    ).toEqual({ when: false, location: false });
+    const day = {
+      allDay: true,
+      startDate: "2026-11-30",
+      endDate: "2026-12-01",
+    } as Partial<EventNoticeSnapshot>;
+    expect(
+      eventNoticeChanges(
+        snapshot(day),
+        snapshot({ ...day, timeZone: "Europe/London" }),
+      ).when,
+    ).toBe(false);
   });
 
   it("日時と場所の変化を見分ける (書き方の違いは同じ時刻)", () => {
@@ -339,11 +383,47 @@ describe("その他", () => {
       ),
     ).toBe(86400);
     expect(calendarPushTtlSeconds({ kind: "event-invite" }, now)).toBe(86400);
+    // 期限が過ぎたリマインダーも下限の 60 秒 (送る側で捨てるが、念のため)。
+    expect(
+      calendarPushTtlSeconds(
+        { kind: "event-reminder", expiresAt: now - 3600_000 },
+        now,
+      ),
+    ).toBe(60);
+    // 招待・変更は expiresAt があっても 24 時間。
+    expect(
+      calendarPushTtlSeconds(
+        { kind: "event-cancel", expiresAt: now - 3600_000 },
+        now,
+      ),
+    ).toBe(86400);
+  });
+
+  it("上限を超えた分のまとめは「予定の通知」で、tag は毎回同じ (L3)", () => {
+    expect(noticeOverflowText(5)).toEqual({
+      title: "予定の通知 5 件",
+      body: "招待と予定の変更をまとめました",
+    });
+    expect(NOTICE_OVERFLOW_TAG).toBe("cal-inv-batch:all");
   });
 
   it("制御文字と改行を空白にする", () => {
     expect(cleanNotificationText("a\u0007\u2028b\r\nc", 10)).toBe("a b c");
     expect(cleanNotificationText(null, 10)).toBe("");
+  });
+
+  it("文字の向きを変える文字と幅の無い文字を除く (L10)", () => {
+    expect(
+      cleanNotificationText(
+        "請求書\u202Efdp.exe\u202C \u2066a\u2069\u200Bb\uFEFF\u200E\u061C",
+        50,
+      ),
+    ).toBe("請求書fdp.exe ab");
+    expect(inviteText(snapshot({ title: "\u202E会議" }), tokyo).title).toBe(
+      "招待: 会議",
+    );
+    // 除いたあとの長さで切る。
+    expect(cleanNotificationText(`${"\u200B".repeat(10)}abc`, 3)).toBe("abc");
   });
 
   it("出欠のボタンの送り先を FCM の data に載せる", () => {

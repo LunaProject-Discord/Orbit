@@ -21,6 +21,7 @@ import {
   calendarFcmTransport,
   calendarWebPushTransport,
 } from "./calendar/calendar-push.js";
+import { seedEventNoticeBaselines } from "./calendar/invite-notices.js";
 import { CalendarSyncManager } from "./calendar/manager.js";
 import { NotificationDispatcher } from "./calendar/notification-dispatcher.js";
 import { ReminderIndexer } from "./calendar/reminder-indexer.js";
@@ -98,6 +99,10 @@ const reminderIndexer = new ReminderIndexer(db, databaseUrl, {
 });
 reminderIndexer.start();
 notificationDispatcher.start();
+// 導入前からある招待に「前に知らせた内容」の基準を入れる (最初の 1 回だけ。裏で動かす)。
+void seedEventNoticeBaselines(db).catch((error) => {
+  console.error("予定の通知の基準を作れませんでした。", error);
+});
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件、カレンダー: ${calendarManager.count} 件)`,
 );

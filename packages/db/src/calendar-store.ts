@@ -467,16 +467,17 @@ async function selectEvents(
  * etag、raw、parentId、remoteId が同じ行は触らない。相手側で UID が変わった (remoteId だけ一致する)
  * 行は先に消す。原本を入れたら、先に届いていた例外 (孤児) の parentId を付け直す。
  * 返すのは、作った・変えた行 (引き取った孤児を含む) と、UID が変わって消した行 (子を含む) の ID。
+ * created は upserted のうち新しく作った行 (予定の通知で、基準の無い既存の行と見分けるため)。
  */
 export async function upsertCalendarEvents(
   tx: Executor,
   { userId, calendarId }: { userId: string; calendarId: string },
   inputs: readonly RemoteEventInput[],
-): Promise<{ upserted: string[]; deleted: string[] }> {
+): Promise<{ upserted: string[]; deleted: string[]; created: string[] }> {
   const wanted = new Map<string, RemoteEventInput>();
   for (const input of inputs)
     wanted.set(keyOf(input.uid, input.recurrenceId), input);
-  if (wanted.size === 0) return { upserted: [], deleted: [] };
+  if (wanted.size === 0) return { upserted: [], deleted: [], created: [] };
   const list = [...wanted.values()];
 
   const existing = await selectEvents(tx, calendarId, {
@@ -510,6 +511,7 @@ export async function upsertCalendarEvents(
   );
 
   const upserted = new Set<string>();
+  const created = new Set<string>();
   // 今回の呼び出しで入れた・確かめた原本 (uid → id、remoteId → id)。
   const masterByUid = new Map<string, string>();
   const masterByRemoteId = new Map<string, string>();
@@ -574,6 +576,7 @@ export async function upsertCalendarEvents(
       const attendeeRows: (typeof eventAttendees.$inferInsert)[] = [];
       for (const row of rows) {
         upserted.add(row.id);
+        created.add(row.id);
         const input = wanted.get(keyOf(row.uid, row.recurrenceId));
         if (!input) continue;
         if (row.recurrenceId === null) {
@@ -668,7 +671,7 @@ export async function upsertCalendarEvents(
     }
   }
 
-  return { upserted: [...upserted], deleted };
+  return { upserted: [...upserted], deleted, created: [...created] };
 }
 
 /**

@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  CHANNEL_CALENDAR_NOTICE,
+  CHANNEL_CALENDAR_NOTIFICATION_SETTINGS,
   DEFAULT_CALENDAR_NOTIFICATION_SETTINGS,
   NOTIFICATION_ACTION_PATH,
   NOTIFICATION_EVENT_ACTION_PATH,
@@ -303,6 +305,7 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
   let tokenB: string;
   /** 管理者 (一般の利用者とは別のアカウント) のトークン。 */
   let adminToken: string;
+  let dbUrl: string;
 
   const request = (
     token: string,
@@ -342,6 +345,7 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     await admin.query(`create database ${dbName}`);
     const url = new URL(adminUrl as string);
     url.pathname = `/${dbName}`;
+    dbUrl = url.toString();
     ({ db, pool } = createDb(url.toString()));
     // uuidv7() は PostgreSQL 18 から。古い版で確かめるときだけ、代わりの関数を置く。
     await db.execute(sql`do $$ begin
@@ -1228,7 +1232,11 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       });
 
     /** A の Google のカレンダーに、A が招待された予定を作る。 */
-    const inviteOfA = async (mark: string, status?: "cancelled") => {
+    const inviteOfA = async (
+      mark: string,
+      status?: "cancelled",
+      options: { selfEmail?: string; readOnly?: boolean } = {},
+    ) => {
       await db
         .update(accounts)
         .set({ calendarEnabled: true })
@@ -1241,6 +1249,7 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
           source: "google",
           remoteId: `alice-private-${mark}`,
           name: `alice-private-${mark}`,
+          readOnly: options.readOnly ?? false,
         })
         .returning({ id: calendars.id });
       const [event] = await db
@@ -1260,7 +1269,11 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       const eventId = event?.id as string;
       await db.insert(eventAttendees).values([
         { eventId, email: "boss@example.com", status: "accepted" },
-        { eventId, email: "alice-private@example.com", self: true },
+        {
+          eventId,
+          email: options.selfEmail ?? "alice-private@example.com",
+          self: true,
+        },
       ]);
       return eventId;
     };
@@ -1410,6 +1423,171 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
         code: "cancelled",
       });
       expect(await myStatus(eventId)).toBe("needs_action");
+    });
+
+    it("未来の respondedAt は受け取った時刻に丸め、同じ合言葉で出欠を変え直せる (期限内)", async () => {
+      const eventId = await inviteOfA("notice-future");
+      const token = signEventNotificationAction(
+        encryptionKey,
+        a.userId,
+        eventId,
+      );
+      const future = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+      const first = await postEventAction({
+        eventId,
+        status: "accepted",
+        token,
+        respondedAt: future,
+      });
+      expect(await first.json()).toMatchObject({ ok: true, applied: true });
+      const [me] = await db
+        .select({ repliedAt: eventAttendees.repliedAt })
+        .from(eventAttendees)
+        .where(
+          sql`${eventAttendees.eventId} = ${eventId} and ${eventAttendees.self}`,
+        );
+      expect(me?.repliedAt?.getTime() ?? 0).toBeLessThanOrEqual(
+        Date.now() + 1000,
+      );
+      // 未来の時刻で、以後の返事を封じられない。
+      for (const status of ["declined", "accepted"] as const) {
+        const response = await postEventAction({ eventId, status, token });
+        expect(await response.json()).toMatchObject({ applied: true, status });
+      }
+      expect(await myStatus(eventId)).toBe("accepted");
+      expect(await respondOps(eventId)).toHaveLength(3);
+    });
+
+    it("共有カレンダーの他人の出欠は 409 not_attendee、読み取り専用は 409 read_only", async () => {
+      const others = await inviteOfA("notice-colleague", undefined, {
+        selfEmail: "colleague@example.com",
+      });
+      const notMine = await postEventAction({
+        eventId: others,
+        status: "accepted",
+        token: signEventNotificationAction(encryptionKey, a.userId, others),
+      });
+      expect(notMine.status).toBe(409);
+      expect(await notMine.json()).toEqual({
+        error: "not_attendee",
+        code: "not_attendee",
+      });
+      const readOnly = await inviteOfA("notice-readonly", undefined, {
+        readOnly: true,
+      });
+      const locked = await postEventAction({
+        eventId: readOnly,
+        status: "accepted",
+        token: signEventNotificationAction(encryptionKey, a.userId, readOnly),
+      });
+      expect(locked.status).toBe(409);
+      expect(await locked.json()).toEqual({ error: "read_only" });
+      expect(await myStatus(others)).toBe("needs_action");
+      expect(await myStatus(readOnly)).toBe("needs_action");
+    });
+
+    it("SSE の予定の通知は本人の接続にだけ届き、出欠の合言葉を落とす", async () => {
+      const hub = new EventsHub(dbUrl);
+      await hub.start();
+      const toA: unknown[] = [];
+      const toB: unknown[] = [];
+      const offA = hub.subscribe(a.userId, (event) => toA.push(event));
+      const offB = hub.subscribe(b.userId, (event) => toB.push(event));
+      const payload = {
+        userId: a.userId,
+        notifications: [
+          {
+            kind: "event-invite",
+            title: "招待: alice-private-sse",
+            body: "",
+            tag: "cal-inv:x",
+            eventId: null,
+            rsvp: { url: "https://api.example/v1/x", token: "secret-token" },
+          },
+        ],
+      };
+      await db.execute(
+        sql`select pg_notify(${CHANNEL_CALENDAR_NOTICE}, ${JSON.stringify(payload)})`,
+      );
+      for (let i = 0; i < 50 && toA.length === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      offA();
+      offB();
+      await hub.stop();
+      expect(toA).toEqual([
+        {
+          type: "calendar",
+          notifications: [
+            {
+              kind: "event-invite",
+              title: "招待: alice-private-sse",
+              body: "",
+              tag: "cal-inv:x",
+              eventId: null,
+            },
+          ],
+        },
+      ]);
+      expect(JSON.stringify(toB)).not.toContain("alice-private");
+      expect(
+        toB.filter((event) => (event as { type: string }).type === "calendar"),
+      ).toEqual([]);
+    });
+
+    it("予定の通知の設定は、鳴らす時刻に関わる値が変わったときだけ作り直しを頼む", async () => {
+      const [calendar] = await db
+        .insert(calendars)
+        .values({ userId: b.userId, source: "local", name: "bob-notify" })
+        .returning({ id: calendars.id });
+      const listener = new pg.Client({ connectionString: dbUrl });
+      await listener.connect();
+      const notified: string[] = [];
+      listener.on("notification", (message) => {
+        notified.push(message.payload ?? "");
+      });
+      await listener.query(`LISTEN ${CHANNEL_CALENDAR_NOTIFICATION_SETTINGS}`);
+      const calendarChanges = async () =>
+        (
+          await db
+            .select({ seq: changes.seq })
+            .from(changes)
+            .where(
+              sql`${changes.userId} = ${b.userId} and ${changes.entity} = 'calendar' and ${changes.entityId} = ${calendar?.id}`,
+            )
+        ).length;
+      const put = (body: unknown) =>
+        request(tokenB, "PUT", "/settings/calendar-notifications", body);
+      const wait = () => new Promise((resolve) => setTimeout(resolve, 100));
+      const current = (await (await put({})).json()) as {
+        calendarNotifications: Record<string, unknown>;
+        timeZone: string | null;
+      };
+      await wait();
+      notified.length = 0;
+      const before = await calendarChanges();
+      // 同じ値・鳴らす時刻に関わらない値 (招待のオン・オフ) では頼まない。
+      await put(current);
+      await put({ calendarNotifications: { invites: false } });
+      await wait();
+      expect(notified).toEqual([]);
+      expect(await calendarChanges()).toBe(before);
+      // 終日の通知を変えたら頼み、カレンダーの変更として位置を進める。
+      await put({ calendarNotifications: { allDay: { minutes: 420 } } });
+      await wait();
+      expect(notified.map((payload) => JSON.parse(payload))).toEqual([
+        { userId: b.userId },
+      ]);
+      expect(await calendarChanges()).toBe(before + 1);
+      // タイムゾーンも同じ。
+      await put({ timeZone: "Europe/London" });
+      await wait();
+      expect(notified).toHaveLength(2);
+      await listener.end();
+      // 後のテストのために、B の設定を消しておく。
+      await db.execute(
+        sql`delete from user_settings where user_id = ${b.userId}`,
+      );
     });
 
     it("端末の登録は旗を省くと今までどおり (メールだけ)。未知の項目は無視する", async () => {

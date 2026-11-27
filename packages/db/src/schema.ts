@@ -1505,9 +1505,11 @@ export const eventOccurrences = pgTable(
     masterId: uuid()
       .notNull()
       .references(() => events.id, { onDelete: "cascade" }),
-    eventId: uuid()
-      .notNull()
-      .references(() => events.id, { onDelete: "cascade" }),
+    /**
+     * 例外の行が消えたときは null になる (原本の回は残る)。ReminderIndexer は null の行の原本だけを
+     * 作り直す (例外の削除で利用者の繰り返す原本を全部作り直さないため。レビュー M8)。
+     */
+    eventId: uuid().references(() => events.id, { onDelete: "set null" }),
     /** この回の元の開始 (events.recurrenceId と同じ書き方)。繰り返さない予定は null。 */
     recurrenceId: text(),
     allDay: boolean().notNull().default(false),
@@ -1549,6 +1551,13 @@ export const eventReminderJobs = pgTable(
     fireAt: timestamp({ withTimezone: true }).notNull(),
     changeSeq: bigint({ mode: "bigint" }).notNull(),
     sentAt: timestamp({ withTimezone: true }),
+    /**
+     * NotificationDispatcher が送るために取った時刻。送り終えたら sentAt を付ける。
+     * 取ったまま一定の時間 (worker の停止など) たったものは取り直す。
+     */
+    claimedAt: timestamp({ withTimezone: true }),
+    /** 取った回数。上限に達したら送らずに済ませる (同じ行で worker が落ち続けないように)。 */
+    attempts: integer().notNull().default(0),
   },
   (t) => [
     uniqueIndex("event_reminder_jobs_occurrence_minutes_idx").on(
@@ -1573,6 +1582,8 @@ export type StoredEventNoticeSnapshot = {
   sequence: number;
   rrule?: string | null;
   timeZone: string | null;
+  /** 記録したときの自分の出欠 (取り消しを不参加の予定で出さないため)。古い行には無い。 */
+  selfStatus?: string | null;
   allDay: boolean;
   startAt?: string;
   endAt?: string;
@@ -1599,12 +1610,16 @@ export const eventNotices = pgTable(
     snapshot: jsonb().$type<StoredEventNoticeSnapshot>().notNull(),
     createdAt: createdAt(),
     sentAt: timestamp({ withTimezone: true }),
+    /** 送るために取った時刻 (event_reminder_jobs と同じ)。静かに入れた基準の行は null のまま。 */
+    claimedAt: timestamp({ withTimezone: true }),
+    attempts: integer().notNull().default(0),
   },
   (t) => [
     index("event_notices_event_idx").on(t.eventId, t.createdAt),
     index("event_notices_pending_idx")
       .on(t.createdAt)
       .where(sql`${t.sentAt} is null`),
+    index("event_notices_user_idx").on(t.userId, t.claimedAt),
   ],
 );
 
