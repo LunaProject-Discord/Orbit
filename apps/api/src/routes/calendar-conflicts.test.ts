@@ -181,6 +181,7 @@ describe.skipIf(!adminUrl)("反映されなかった変更の API", () => {
         snapshot: { summary: "消えた予定", parentId: null, recurrenceId: null },
         title: "定例",
         reason: "相手側で後から変更された内容になりました。",
+        resendable: false,
         createdAt: "2026-11-02T00:00:00.000Z",
       },
       expect.objectContaining({ id: older.id }),
@@ -262,6 +263,79 @@ describe.skipIf(!adminUrl)("反映されなかった変更の API", () => {
     );
     expect(
       (await call("POST", `/conflicts/${missing.id}/retry`, otherApp)).status,
+    ).toBe(404);
+  });
+
+  it("招待メールの失敗は resend-invite で outbox の行を pending に戻す。ほかは 409、ほかの利用者は 404", async () => {
+    const [failed] = await db
+      .insert(outbox)
+      .values({
+        accountId,
+        kind: "imip_send",
+        payload: { message: { to: [{ address: "a@example.com" }] } },
+        idempotencyKey: `imip:event_create:${randomUUID()}:REQUEST:0`,
+        status: "failed",
+        attempts: 5,
+        lastError: "550 拒否",
+        firstFailedAt: new Date(),
+      })
+      .returning({ id: outbox.id });
+    const conflict = await insertConflict({
+      kind: "invite_failed",
+      fields: [],
+      lost: { outboxId: failed?.id, method: "REQUEST", to: ["a@example.com"] },
+      reason: "招待メールを送れませんでした: 550 拒否",
+    });
+    const listed = (await call("GET", "/conflicts")).body.conflicts as Json[];
+    expect(listed[0]).toMatchObject({
+      kind: "invite_failed",
+      resendable: true,
+    });
+    // invite_failed は作成のやり直し (retry) の対象ではない。
+    expect((await call("POST", `/conflicts/${conflict.id}/retry`)).status).toBe(
+      409,
+    );
+    expect(
+      (await call("POST", `/conflicts/${conflict.id}/resend-invite`, otherApp))
+        .status,
+    ).toBe(404);
+    expect(
+      (await call("POST", `/conflicts/${conflict.id}/resend-invite`)).status,
+    ).toBe(202);
+    const [row] = await db
+      .select()
+      .from(outbox)
+      .where(eq(outbox.id, failed?.id as string));
+    expect(row).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+      firstFailedAt: null,
+    });
+    expect((await call("GET", "/conflicts")).body.conflicts).toEqual([]);
+    // 2 回目は行が失敗のままでないので 409。
+    expect(
+      (await call("POST", `/conflicts/${conflict.id}/resend-invite`)).body,
+    ).toEqual({ error: "not_resendable" });
+
+    // 積んでいない (送信元が無かった) 失敗と、ほかの種類は送り直せない。
+    const unsent = await insertConflict({
+      kind: "invite_failed",
+      fields: [],
+      lost: { outboxId: null, method: "CANCEL", to: ["a@example.com"] },
+    });
+    expect(
+      ((await call("GET", "/conflicts")).body.conflicts as Json[])[0],
+    ).toMatchObject({ id: unsent.id, resendable: false });
+    expect(
+      (await call("POST", `/conflicts/${unsent.id}/resend-invite`)).status,
+    ).toBe(409);
+    const lost = await insertConflict();
+    expect(
+      (await call("POST", `/conflicts/${lost.id}/resend-invite`)).status,
+    ).toBe(409);
+    expect(
+      (await call("POST", `/conflicts/${randomUUID()}/resend-invite`)).status,
     ).toBe(404);
   });
 
