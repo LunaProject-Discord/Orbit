@@ -59,6 +59,7 @@ import {
   stripSentinel,
   toggleQuote,
 } from "@/lib/editor-format";
+import { insertIntoField } from "@/lib/emoji/insert";
 
 /** 書式のボタンで実行する操作。 */
 export type FormatCommand =
@@ -869,5 +870,58 @@ function ColorChoices({
         ))}
       </div>
     </fieldset>
+  );
+}
+
+/**
+ * テキストだけで書くときの本文の入力欄。書式のボタンは無く、ツールバーには絵文字だけを渡す。
+ * children は入力欄とツールバーの間に置くもの (添付ファイルの一覧など)。
+ */
+export function TextEditor({
+  textRef,
+  value,
+  disabled,
+  label = "本文",
+  onChange,
+  onFiles,
+  toolbar,
+  children,
+}: {
+  textRef: React.RefObject<HTMLTextAreaElement | null>;
+  value: string;
+  disabled: boolean;
+  label?: string;
+  onChange: (text: string) => void;
+  onFiles?: (files: File[]) => void;
+  /** format は絵文字のボタン。 */
+  toolbar: (format: ReactNode) => ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <>
+      <textarea
+        ref={textRef}
+        aria-label={label}
+        value={value}
+        readOnly={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        onPaste={(event) => {
+          const files = [...event.clipboardData.files];
+          if (files.length === 0) return;
+          event.preventDefault();
+          onFiles?.(files);
+        }}
+        className="min-h-40 flex-1 resize-none bg-transparent px-4 py-3 text-base leading-relaxed outline-none md:text-sm"
+      />
+      {children}
+      {toolbar(
+        <EmojiPickerButton
+          disabled={disabled}
+          onSelect={(emoji) =>
+            insertIntoField(textRef.current, value, emoji, onChange)
+          }
+        />,
+      )}
+    </>
   );
 }

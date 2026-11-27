@@ -139,6 +139,7 @@ import {
   buildDraftFrom,
   type ComposeDraft,
   type ComposeMode,
+  draftAsFormat,
   draftFromOutgoing,
   draftFromServer,
   draftSaveInput,
@@ -154,6 +155,10 @@ import {
   storeUnsavedDraft,
   withReplyText,
 } from "@/lib/compose";
+import {
+  composeFormatFor,
+  refreshComposeFormat,
+} from "@/lib/compose-format-settings";
 import { refreshDateStyle } from "@/lib/date-format-settings";
 import {
   desktopPlatform,
@@ -1063,6 +1068,7 @@ const MailView = memo(function MailView({
     void refreshSwipeSettings();
     void refreshDateStyle();
     void refreshSenderIconSettings();
+    void refreshComposeFormat();
     void loadSignatureRules();
   }, [
     loadAccounts,
@@ -1837,8 +1843,7 @@ const MailView = memo(function MailView({
         void refreshSwipeSettings();
         void refreshDateStyle();
         void refreshSenderIconSettings();
-        void refreshSenderIconSettings();
-        void refreshSenderIconSettings();
+        void refreshComposeFormat();
         void loadSignatureRules();
         void loadFirstPage(selectionRef.current, false);
         setRefreshKey((key) => key + 1);
@@ -1877,7 +1882,7 @@ const MailView = memo(function MailView({
       void refreshSwipeSettings();
       void refreshDateStyle();
       void refreshSenderIconSettings();
-      void refreshSenderIconSettings();
+      void refreshComposeFormat();
       void loadSignatureRules();
       void loadFirstPage(selectionRef.current, false);
       void saverRef.current?.flush();
@@ -2038,7 +2043,13 @@ const MailView = memo(function MailView({
     const accountId = senderAccount(accounts ?? [], preferred)?.id ?? preferred;
     if (!accountId) return;
     const account = accounts?.find((item) => item.id === accountId);
-    showInCompose(newDraft(accountId, account?.signatureHtml), false);
+    showInCompose(
+      draftAsFormat(
+        newDraft(accountId, account?.signatureHtml),
+        composeFormatFor(account),
+      ),
+      false,
+    );
   }
 
   /** プロフィールカードから、そのアドレス宛ての新しいメールを書き始める。 */
@@ -2055,7 +2066,10 @@ const MailView = memo(function MailView({
       accounts ?? [],
       signatureRules,
     );
-    const next = newDraft(account.id, signature.html);
+    const next = draftAsFormat(
+      newDraft(account.id, signature.html),
+      composeFormatFor(account),
+    );
     showInCompose(
       { ...next, to },
       // 宛先を入れてあるので、下書きとして保存する。
@@ -2126,8 +2140,15 @@ const MailView = memo(function MailView({
     /** 本文の下の返信欄に書いてあった文章。あれば本文の先頭に入れる。 */
     text = "",
   ) => {
-    const built = buildDraftFrom(mode, message, accounts ?? [], signatureRules);
-    showInCompose(withReplyText(built, text), text.trim() !== "");
+    const built = withReplyText(
+      buildDraftFrom(mode, message, accounts ?? [], signatureRules),
+      text,
+    );
+    // 書くアカウントの設定がテキストなら、テキストで書き始める (引用は行頭の > になる)。
+    const format = composeFormatFor(
+      accounts?.find((item) => item.id === built.accountId),
+    );
+    showInCompose(draftAsFormat(built, format), text.trim() !== "");
   };
 
   /** 本文の下の返信欄から、差出人へそのまま返信する。署名と引用は、作成画面と同じように付く。 */
@@ -2148,7 +2169,12 @@ const MailView = memo(function MailView({
       setNotice({ message: NO_SENDABLE_ACCOUNT, tone: "error" });
       return false;
     }
-    const html = sanitizeHtml(reply.html);
+    const html = sanitizeHtml(reply.html, { rich: true });
+    // テキストで書く設定のアカウントでは、HTML を付けずに送る。
+    const plain =
+      composeFormatFor(
+        accounts?.find((item) => item.id === reply.accountId),
+      ) === "text";
     let result: "sent" | "queued";
     try {
       // サーバーに届かなければ端末で預かり、接続後に自動で送る。
@@ -2161,7 +2187,7 @@ const MailView = memo(function MailView({
           bcc: [],
           subject: reply.subject,
           text: htmlToText(html),
-          html,
+          ...(plain ? {} : { html }),
           mode: "reply",
           sourceMessageId: message.id,
         },

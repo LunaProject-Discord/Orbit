@@ -3,6 +3,7 @@
 import { cn } from "cn";
 import {
   AppWindowIcon,
+  EllipsisVerticalIcon,
   FileIcon,
   FileTextIcon,
   ImageIcon,
@@ -28,9 +29,25 @@ import {
 } from "react";
 import { EmojiPickerButton } from "@/components/emoji-picker";
 import { Hint } from "@/components/hint";
-import { Editor } from "@/components/mail/editor";
+import { Editor, TextEditor } from "@/components/mail/editor";
 import { RecipientInput } from "@/components/mail/recipient-input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -56,14 +73,17 @@ import {
   attachmentLimit,
   type ComposeDraft,
   canSendFrom,
+  draftAsFormat,
+  draftBody,
   draftSignature,
-  htmlToText,
+  hasFormatting,
+  isTextDraft,
   MAX_ATTACHMENT_COUNT,
   NO_SENDABLE_ACCOUNT,
   RECEIVE_ONLY_SEND_ERROR,
   replaceSignature,
+  replaceTextSignature,
   resolveRecipients,
-  sanitizeHtml,
   senderAccount,
 } from "@/lib/compose";
 import { useDateStyle } from "@/lib/date-format-settings";
@@ -210,6 +230,10 @@ export function ComposeWindow({
   const [extraShownFor, setExtraShownFor] = useState<string | null>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  /** テキストだけで書くときの入力欄。 */
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  /** 書式付きからテキストに切り替える前の確認を出しているか。 */
+  const [confirmPlain, setConfirmPlain] = useState(false);
   const subjectRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** 送信中の処理から、最新の下書きを読むためのもの。 */
@@ -237,6 +261,7 @@ export function ComposeWindow({
 
   const draftKey = draft?.idempotencyKey ?? null;
   const mode = draft?.mode;
+  const plain = draft ? isTextDraft(draft) : false;
 
   // 別の下書きに切り替わったら、前の下書きの送信途中のファイルは止める。
   // biome-ignore lint/correctness/useExhaustiveDependencies: draftKey は切り替わりのきっかけとして使う
@@ -250,9 +275,16 @@ export function ComposeWindow({
   }, [draftKey]);
 
   // 開いたときに、返信では本文の先頭、新規と転送では宛先から書き始める。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 形式を切り替えたときは書き始めの位置に戻さない (plain は入れない)
   useEffect(() => {
     if (!open || minimized || !draftKey) return;
-    if (mode === "reply") {
+    if (mode === "reply" && plain) {
+      const text = textRef.current;
+      if (!text) return;
+      text.focus();
+      text.setSelectionRange(0, 0);
+      text.scrollTop = 0;
+    } else if (mode === "reply") {
       const editor = editorRef.current;
       if (!editor) return;
       editor.focus();
@@ -457,6 +489,12 @@ export function ComposeWindow({
       const before = draftSignature(current, accounts, signatureRules).html;
       const after = draftSignature(next, accounts, signatureRules).html;
       if ((before ?? "") === (after ?? "")) return next;
+      if (isTextDraft(next)) {
+        return {
+          ...next,
+          text: replaceTextSignature(next.text ?? "", before, after),
+        };
+      }
       const editor = editorRef.current;
       const html = replaceSignature(editor?.innerHTML ?? next.html, after);
       if (editor) editor.innerHTML = html;
@@ -511,9 +549,7 @@ export function ComposeWindow({
       );
       return;
     }
-    const html = sanitizeHtml(editorRef.current?.innerHTML ?? draft.html, {
-      rich: true,
-    });
+    const body = draftBody(draft, editorRef.current?.innerHTML);
     setError(null);
     setSending(true);
     try {
@@ -528,8 +564,9 @@ export function ComposeWindow({
           cc: cc.addresses,
           bcc: bcc.addresses,
           subject: draft.subject,
-          text: htmlToText(html),
-          html,
+          text: body.text,
+          // テキストだけで書いたメールは、HTML を付けずに送る。
+          ...(body.html !== null ? { html: body.html } : {}),
           attachmentIds: draft.attachments.map((file) => file.id),
           mode: draft.mode,
           ...(draft.sourceMessageId
@@ -629,6 +666,215 @@ export function ComposeWindow({
       </section>
     );
   }
+
+  /**
+   * 書式付きとテキストを切り替える。書式付きからテキストにすると失われる書式があれば、先に確かめる。
+   */
+  function changeFormat(next: "html" | "text", confirmed = false) {
+    if (!draft) return;
+    if (next === "text" && !plain && !confirmed) {
+      const html = editorRef.current?.innerHTML ?? draft.html;
+      if (hasFormatting(html)) {
+        setConfirmPlain(true);
+        return;
+      }
+    }
+    commit((current) =>
+      draftAsFormat(
+        next === "text" && editorRef.current
+          ? { ...current, html: editorRef.current.innerHTML }
+          : current,
+        next,
+      ),
+    );
+  }
+
+  const renderToolbar = (format: ReactNode) => (
+    <div className="flex shrink-0 items-center gap-1 border-t px-3 py-2">
+      <Button
+        type="submit"
+        disabled={sending || uploading || !canSend}
+        className="hidden sm:inline-flex"
+      >
+        <SendIcon />
+        {sending ? "送信中…" : "送信"}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="ファイルを添付"
+        disabled={sending}
+        onClick={() => fileRef.current?.click()}
+        className="hidden sm:inline-flex"
+      >
+        <PaperclipIcon />
+      </Button>
+      <span
+        className="mx-1 hidden h-5 w-px shrink-0 bg-border sm:block"
+        aria-hidden="true"
+      />
+      {format}
+      <DropdownMenu>
+        <Hint label="その他のオプション" side="top">
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="その他のオプション"
+                disabled={sending}
+              />
+            }
+          >
+            <EllipsisVerticalIcon />
+          </DropdownMenuTrigger>
+        </Hint>
+        <DropdownMenuContent
+          align="start"
+          side="top"
+          className="w-auto min-w-56"
+        >
+          <DropdownMenuCheckboxItem
+            checked={plain}
+            onCheckedChange={(checked) =>
+              changeFormat(checked ? "text" : "html")
+            }
+          >
+            テキストのみ (書式なし)
+          </DropdownMenuCheckboxItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Hint label="下書きを破棄" side="top">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="下書きを破棄"
+          disabled={sending}
+          onClick={handleDiscard}
+          className="ml-auto"
+        >
+          <Trash2Icon />
+        </Button>
+      </Hint>
+    </div>
+  );
+
+  const extras = (
+    <>
+      {(draft.attachments.length > 0 || uploading) && (
+        <ul
+          aria-label="添付ファイル"
+          className="flex shrink-0 flex-wrap gap-2 px-4 pb-3"
+        >
+          {draft.attachments.map((file) => (
+            <li
+              key={file.id}
+              className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
+            >
+              <FileTypeIcon contentType={file.contentType} />
+              <span className="truncate">{file.filename}</span>
+              <span className="shrink-0 text-muted-foreground text-xs">
+                {formatSize(file.size)}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`${file.filename} を外す`}
+                disabled={sending}
+                onClick={() => removeAttachment(file)}
+              >
+                <XIcon />
+              </Button>
+            </li>
+          ))}
+          {pendingFiles.map((file) => (
+            <li
+              key={file.id}
+              className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
+            >
+              <FileTypeIcon contentType={file.contentType} />
+              <span className="truncate">{file.filename}</span>
+              <output className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
+                <Spinner className="size-3" />
+                取得中
+              </output>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`${file.filename} を外す`}
+                onClick={() =>
+                  draft.forwardAttachments &&
+                  set("forwardAttachments", {
+                    ...draft.forwardAttachments,
+                    files: pendingFiles.filter((item) => item.id !== file.id),
+                  })
+                }
+              >
+                <XIcon />
+              </Button>
+            </li>
+          ))}
+          {uploads.map((file) => {
+            const percent = Math.round(file.progress * 100);
+            return (
+              <li
+                key={file.key}
+                className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
+              >
+                <FileTypeIcon contentType={file.contentType} />
+                <span className="truncate">{file.filename}</span>
+                <Progress
+                  aria-label={`${file.filename} を送信中`}
+                  value={percent}
+                  className="w-20 shrink-0"
+                />
+                <span className="w-9 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
+                  {percent}%
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`${file.filename} の添付を中止`}
+                  onClick={file.abort}
+                >
+                  <XIcon />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p
+        className={cn(
+          "shrink-0 px-4 pb-2 text-muted-foreground text-xs",
+          // 広い画面では見出しに出す (見出しの無い作成専用のウィンドウを除く)。
+          !standalone && "sm:hidden",
+        )}
+      >
+        {saved}
+      </p>
+      {!online && (
+        <p className="flex shrink-0 items-center gap-2 border-t bg-muted/50 px-4 py-2 text-muted-foreground text-xs">
+          <WifiOffIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          オフラインです。送信したメールは、接続後に自動で送られます。
+        </p>
+      )}
+      {error && (
+        <p
+          role="alert"
+          className="shrink-0 border-t bg-destructive/10 px-4 py-2 text-destructive text-sm"
+        >
+          {error}
+        </p>
+      )}
+    </>
+  );
 
   return (
     <section
@@ -910,167 +1156,31 @@ export function ComposeWindow({
           />
         </Row>
 
-        <Editor
-          key={`${draft.idempotencyKey}:${contentVersion}`}
-          editorRef={editorRef}
-          initialHtml={draft.html}
-          disabled={sending}
-          onChange={(html) => set("html", html)}
-          onFiles={addFiles}
-          toolbar={(format) => (
-            <div className="flex shrink-0 items-center gap-1 border-t px-3 py-2">
-              <Button
-                type="submit"
-                disabled={sending || uploading || !canSend}
-                className="hidden sm:inline-flex"
-              >
-                <SendIcon />
-                {sending ? "送信中…" : "送信"}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="ファイルを添付"
-                disabled={sending}
-                onClick={() => fileRef.current?.click()}
-                className="hidden sm:inline-flex"
-              >
-                <PaperclipIcon />
-              </Button>
-              <span
-                className="mx-1 hidden h-5 w-px shrink-0 bg-border sm:block"
-                aria-hidden="true"
-              />
-              {format}
-              <Hint label="下書きを破棄" side="top">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="下書きを破棄"
-                  disabled={sending}
-                  onClick={handleDiscard}
-                  className="ml-auto"
-                >
-                  <Trash2Icon />
-                </Button>
-              </Hint>
-            </div>
-          )}
-        >
-          {(draft.attachments.length > 0 || uploading) && (
-            <ul
-              aria-label="添付ファイル"
-              className="flex shrink-0 flex-wrap gap-2 px-4 pb-3"
-            >
-              {draft.attachments.map((file) => (
-                <li
-                  key={file.id}
-                  className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
-                >
-                  <FileTypeIcon contentType={file.contentType} />
-                  <span className="truncate">{file.filename}</span>
-                  <span className="shrink-0 text-muted-foreground text-xs">
-                    {formatSize(file.size)}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`${file.filename} を外す`}
-                    disabled={sending}
-                    onClick={() => removeAttachment(file)}
-                  >
-                    <XIcon />
-                  </Button>
-                </li>
-              ))}
-              {pendingFiles.map((file) => (
-                <li
-                  key={file.id}
-                  className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
-                >
-                  <FileTypeIcon contentType={file.contentType} />
-                  <span className="truncate">{file.filename}</span>
-                  <output className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
-                    <Spinner className="size-3" />
-                    取得中
-                  </output>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`${file.filename} を外す`}
-                    onClick={() =>
-                      draft.forwardAttachments &&
-                      set("forwardAttachments", {
-                        ...draft.forwardAttachments,
-                        files: pendingFiles.filter(
-                          (item) => item.id !== file.id,
-                        ),
-                      })
-                    }
-                  >
-                    <XIcon />
-                  </Button>
-                </li>
-              ))}
-              {uploads.map((file) => {
-                const percent = Math.round(file.progress * 100);
-                return (
-                  <li
-                    key={file.key}
-                    className="flex h-9 max-w-full items-center gap-2 rounded-md border pr-1 pl-2.5 text-sm"
-                  >
-                    <FileTypeIcon contentType={file.contentType} />
-                    <span className="truncate">{file.filename}</span>
-                    <Progress
-                      aria-label={`${file.filename} を送信中`}
-                      value={percent}
-                      className="w-20 shrink-0"
-                    />
-                    <span className="w-9 shrink-0 text-right text-muted-foreground text-xs tabular-nums">
-                      {percent}%
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={`${file.filename} の添付を中止`}
-                      onClick={file.abort}
-                    >
-                      <XIcon />
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          <p
-            className={cn(
-              "shrink-0 px-4 pb-2 text-muted-foreground text-xs",
-              // 広い画面では見出しに出す (見出しの無い作成専用のウィンドウを除く)。
-              !standalone && "sm:hidden",
-            )}
+        {plain ? (
+          <TextEditor
+            key={`${draft.idempotencyKey}:${contentVersion}:text`}
+            textRef={textRef}
+            value={draft.text ?? ""}
+            disabled={sending}
+            onChange={(text) => set("text", text)}
+            onFiles={addFiles}
+            toolbar={renderToolbar}
           >
-            {saved}
-          </p>
-          {!online && (
-            <p className="flex shrink-0 items-center gap-2 border-t bg-muted/50 px-4 py-2 text-muted-foreground text-xs">
-              <WifiOffIcon className="size-3.5 shrink-0" aria-hidden="true" />
-              オフラインです。送信したメールは、接続後に自動で送られます。
-            </p>
-          )}
-          {error && (
-            <p
-              role="alert"
-              className="shrink-0 border-t bg-destructive/10 px-4 py-2 text-destructive text-sm"
-            >
-              {error}
-            </p>
-          )}
-        </Editor>
+            {extras}
+          </TextEditor>
+        ) : (
+          <Editor
+            key={`${draft.idempotencyKey}:${contentVersion}`}
+            editorRef={editorRef}
+            initialHtml={draft.html}
+            disabled={sending}
+            onChange={(html) => set("html", html)}
+            onFiles={addFiles}
+            toolbar={renderToolbar}
+          >
+            {extras}
+          </Editor>
+        )}
 
         <input
           ref={fileRef}
@@ -1089,6 +1199,27 @@ export function ComposeWindow({
           </div>
         )}
       </form>
+      <AlertDialog open={confirmPlain} onOpenChange={setConfirmPlain}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>テキストのみに切り替えますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              太字や色、リンク、リストなどの書式は失われます。引用は行頭の「&gt;」になります。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmPlain(false);
+                changeFormat("text", true);
+              }}
+            >
+              切り替える
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

@@ -84,3 +84,8 @@ export const senderIconSettings = z.object({
   /** Gravatar で探す。 */
   gravatar: z.boolean(),
 });
+
+/** メールを書くときの既定の形式。 */
+export const composeFormatSettings = z.object({
+  format: z.enum(["html", "text"]),
+});

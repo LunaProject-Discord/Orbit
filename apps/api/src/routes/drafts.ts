@@ -47,6 +47,8 @@ const saveBody = z.object({
   /** POST /v1/attachments で受け取ったファイルの ID。 */
   attachmentIds: z.array(z.uuid()).max(MAX_ATTACHMENT_COUNT).default([]),
   mode: z.enum(["new", "reply", "forward"]).default("new"),
+  /** 書いている形式。text なら text が本文で、html はそれを HTML にしたもの。 */
+  format: z.enum(["html", "text"]).default("html"),
   sourceMessageId: z.uuid().nullable().default(null),
   /** 端末が元にした revision。まだサーバーに保存していなければ null。 */
   baseRevision: z.number().int().positive().nullable(),
@@ -69,6 +71,9 @@ function toJson(row: DraftRow) {
     snippet: row.text.replace(/\s+/g, " ").trim().slice(0, 200),
     attachments: row.attachments,
     mode: row.mode,
+    format: row.format,
+    // テキストで書いている下書きは、書いたままのテキストを返す (HTML から戻すと形が崩れるため)。
+    ...(row.format === "text" ? { text: row.text } : {}),
     sourceMessageId: row.sourceMessageId,
     revision: row.revision,
     updatedAt: row.updatedAt,
@@ -138,6 +143,7 @@ export function draftRoutes({ db }: Pick<RouteDeps, "db">) {
         text: body.text,
         attachments,
         mode: body.mode,
+        format: body.format,
         sourceMessageId: body.sourceMessageId,
       };
 

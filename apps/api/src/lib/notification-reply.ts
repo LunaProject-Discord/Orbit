@@ -11,6 +11,7 @@ import {
   messages,
   outbox,
   signatureRules,
+  userSettings,
 } from "@orbit/db";
 import { and, eq, or, sql } from "drizzle-orm";
 import { notifyAccountChanged } from "./changes.js";
@@ -97,6 +98,7 @@ export async function queueNotificationReply(
       signatureHtml: mailAccounts.signatureHtml,
       protocol: mailAccounts.protocol,
       smtpHost: mailAccounts.smtpHost,
+      composeFormat: mailAccounts.composeFormat,
     })
     .from(messages)
     .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
@@ -152,6 +154,16 @@ export async function queueNotificationReply(
     ? buildNotificationReply({ source, ownAddresses, signatureHtml, text })
     : draft;
 
+  // テキストで書く設定 (アカウントか利用者の既定) なら、HTML を付けずテキストだけで送る。
+  let format = source.composeFormat;
+  if (!format) {
+    const [settings] = await db
+      .select({ composeFormat: userSettings.composeFormat })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId));
+    format = settings?.composeFormat ?? "html";
+  }
+
   const domain = source.email.split("@").pop() || "localhost";
   const message: OutgoingMessage = {
     from: {
@@ -167,7 +179,7 @@ export async function queueNotificationReply(
     bcc: [],
     subject: reply.subject.trim(),
     text: reply.text,
-    html: reply.html,
+    html: format === "text" ? null : reply.html,
     attachments: [],
     messageId: `<${randomUUID()}@${domain}>`,
     date: new Date().toISOString(),

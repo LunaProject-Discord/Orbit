@@ -3,13 +3,19 @@ import { describe, expect, it } from "vitest";
 import type { MessageDetail } from "@/lib/api";
 import {
   buildDraftFrom,
+  draftAsFormat,
+  draftBody,
+  draftSaveInput,
+  hasFormatting,
   htmlToText,
   newDraft,
   parseAddressList,
   replaceSignature,
+  replaceTextSignature,
   resolveRecipients,
   sanitizeHtml,
   senderAccount,
+  textToHtml,
   withReplyText,
 } from "@/lib/compose";
 
@@ -421,5 +427,64 @@ describe("書式の整形 (色・大きさ・インデント)", () => {
         '<ol><li>一</li><li>二</li></ol><ul><li>点</li></ul><div style="margin-left:80px">下げ</div>',
       ),
     ).toBe("1. 一\n2. 二\n- 点\n        下げ");
+  });
+});
+
+describe("テキストのみで書く", () => {
+  it("行頭の > を引用に戻す", () => {
+    expect(textToHtml("本文\n\n> 引用\n> > 二重\n戻る")).toBe(
+      "<div>本文</div><div><br></div><blockquote><div>引用</div><blockquote><div>二重</div></blockquote></blockquote><div>戻る</div>",
+    );
+  });
+
+  it("書式付きからテキストへ、テキストから書式付きへ変える", () => {
+    const draft = {
+      ...newDraft("a", "<b>署名</b>"),
+      html: "<div><br></div><div><br></div><div data-signature=''><b>署名</b></div><blockquote><div>前のメール</div></blockquote>",
+    };
+    const plain = draftAsFormat(draft, "text");
+    expect(plain.format).toBe("text");
+    expect(plain.text).toBe("\n\n署名\n> 前のメール");
+    const back = draftAsFormat(plain, "html");
+    expect(back.format).toBe("html");
+    expect(back.text).toBeUndefined();
+    expect(back.html).toContain(
+      "<blockquote><div>前のメール</div></blockquote>",
+    );
+  });
+
+  it("失われる書式があるか", () => {
+    expect(
+      hasFormatting("<div>a</div><blockquote><div>b</div></blockquote>"),
+    ).toBe(false);
+    expect(hasFormatting("<div><b>a</b></div>")).toBe(true);
+    expect(hasFormatting('<div style="text-align:center">a</div>')).toBe(true);
+    expect(hasFormatting('<a href="https://example.com">a</a>')).toBe(true);
+  });
+
+  it("テキストの下書きは HTML を付けずに送り、保存では HTML も作る", () => {
+    const draft = {
+      ...newDraft("a"),
+      format: "text" as const,
+      text: "一\n> 二\n",
+    };
+    expect(draftBody(draft)).toEqual({ text: "一\n> 二", html: null });
+    const input = draftSaveInput(draft, null);
+    expect(input.format).toBe("text");
+    expect(input.text).toBe("一\n> 二\n");
+    expect(input.html).toBe(
+      "<div>一</div><blockquote><div>二</div></blockquote>",
+    );
+  });
+
+  it("テキストの署名を入れ替える", () => {
+    expect(
+      replaceTextSignature("本文\n\n旧署名", "旧署名", "<b>新</b>署名"),
+    ).toBe("本文\n\n新署名");
+    expect(replaceTextSignature("本文\n\n旧署名", "旧署名", null)).toBe("本文");
+    expect(replaceTextSignature("本文", null, "署名")).toBe("本文\n\n署名");
+    expect(replaceTextSignature("\n\n2026/1/1 a:\n> 引用", null, "署名")).toBe(
+      "\n\n署名\n\n2026/1/1 a:\n> 引用",
+    );
   });
 });

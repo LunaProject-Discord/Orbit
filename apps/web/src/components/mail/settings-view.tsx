@@ -71,6 +71,7 @@ import {
 import { type AccountIconName, AccountMark } from "@/lib/account-icons";
 import {
   type Account,
+  type ComposeFormat,
   isReceiveOnly,
   type NotificationAction,
   oauthProviderOf,
@@ -79,6 +80,11 @@ import {
   updateAccount,
 } from "@/lib/api";
 import { htmlHasContent } from "@/lib/compose";
+import {
+  changeDefaultComposeFormat,
+  refreshComposeFormat,
+  useDefaultComposeFormat,
+} from "@/lib/compose-format-settings";
 import { changeDateStyle, useDateStyle } from "@/lib/date-format-settings";
 import { isDesktopApp } from "@/lib/desktop/app";
 import type { FontKind } from "@/lib/font-kind";
@@ -248,8 +254,9 @@ const CATEGORIES: Record<
     icon: BellIcon,
   },
   signatures: {
-    label: "署名",
-    summary: "アカウント、連絡先、会話ごとの署名",
+    label: "作成と署名",
+    summary:
+      "メールの形式 (書式付き・テキスト)、アカウント・連絡先・会話ごとの署名",
     description: "このページの設定は、すべての端末で共通です。",
     icon: SignatureIcon,
   },
@@ -1195,9 +1202,83 @@ function NotificationsPage({
   );
 }
 
-function SignaturesPage({ accounts, onEditSignature, signatureRules }: Props) {
+function SignaturesPage({
+  accounts,
+  onEditSignature,
+  signatureRules,
+  onAccountUpdated,
+}: Props) {
+  const defaultFormat = useDefaultComposeFormat();
+  const [formatError, setFormatError] = useState(false);
+  // ほかの端末で変えた内容を、ページを開いたときに取り込む。
+  useEffect(() => {
+    void refreshComposeFormat();
+  }, []);
+  const changeAccountFormat = (
+    account: Account,
+    composeFormat: ComposeFormat | null,
+  ) => {
+    // 選んですぐ画面に反映し、保存できなければ元に戻す。
+    onAccountUpdated({ ...account, composeFormat });
+    setFormatError(false);
+    updateAccount(account.id, { composeFormat })
+      .then(onAccountUpdated)
+      .catch(() => {
+        onAccountUpdated(account);
+        setFormatError(true);
+      });
+  };
   return (
     <>
+      <Section
+        title="メールの形式"
+        description="新しいメールや返信を書き始めるときの形式です。作成画面の「その他のオプション」で、メールごとに切り替えられます。テキストのみで書いたメールは、書式を付けずに送ります。"
+      >
+        <SettingGroup>
+          <SelectRow
+            label="既定の形式"
+            value={defaultFormat}
+            onChange={(format) => {
+              setFormatError(false);
+              void changeDefaultComposeFormat(format).then((saved) =>
+                setFormatError(!saved),
+              );
+            }}
+            options={[
+              ["html", "書式付き (HTML)"],
+              ["text", "テキストのみ"],
+            ]}
+          />
+        </SettingGroup>
+        {accounts && accounts.length > 1 && (
+          <SettingGroup>
+            {accounts.map((account) => (
+              <SelectRow<"default" | ComposeFormat>
+                key={account.id}
+                label={account.displayName || account.email}
+                description={account.displayName ? account.email : undefined}
+                value={account.composeFormat ?? "default"}
+                onChange={(value) =>
+                  changeAccountFormat(
+                    account,
+                    value === "default" ? null : value,
+                  )
+                }
+                options={[
+                  ["default", "既定に従う"],
+                  ["html", "書式付き (HTML)"],
+                  ["text", "テキストのみ"],
+                ]}
+              />
+            ))}
+          </SettingGroup>
+        )}
+        {formatError && (
+          <p role="alert" className="text-destructive text-xs">
+            メールの形式を保存できませんでした。通信の状態を確認して、もう一度お試しください。
+          </p>
+        )}
+      </Section>
       <Section
         title="アカウントの署名"
         description="連絡先や会話ごとの署名が設定されていないときに使います。"

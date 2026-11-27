@@ -9,6 +9,7 @@ import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv, RouteDeps } from "../context.js";
 import {
+  composeFormatSettings,
   dateFormatSettings,
   notificationActionSettings,
   readDateFormat,
@@ -40,6 +41,7 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
         notificationActions: userSettings.notificationActions,
         dateFormat: userSettings.dateFormat,
         senderIconGravatar: userSettings.senderIconGravatar,
+        composeFormat: userSettings.composeFormat,
       })
       .from(userSettings)
       .where(eq(userSettings.userId, c.var.user.id));
@@ -49,6 +51,7 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
       // 保存していなければ null (画面側が標準の値を使う)。
       dateFormat: readDateFormat(row?.dateFormat),
       senderIconGravatar: row?.senderIconGravatar ?? false,
+      composeFormat: row?.composeFormat ?? "html",
     });
   });
 
@@ -114,6 +117,25 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
         });
       await announce(db, userId);
       return c.json({ senderIconGravatar });
+    },
+  );
+
+  /** メールを書くときの既定の形式 (書式付きかテキストか) を保存する。 */
+  app.put(
+    "/compose-format",
+    zValidator("json", composeFormatSettings),
+    async (c) => {
+      const { format: composeFormat } = c.req.valid("json");
+      const userId = c.var.user.id;
+      await db
+        .insert(userSettings)
+        .values({ userId, composeFormat })
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: { composeFormat },
+        });
+      await announce(db, userId);
+      return c.json({ composeFormat });
     },
   );
 

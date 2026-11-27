@@ -186,6 +186,8 @@ const updateAccountBody = z
     popLeaveOnServer: z.boolean().optional(),
     /** POP3: サーバーに残したメールを消すまでの日数。null なら消さない。 */
     popDeleteAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
+    /** このアカウントから書くメールの形式。null なら利用者の既定に従う。 */
+    composeFormat: z.enum(["html", "text"]).nullable().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -220,6 +222,7 @@ const publicColumns = {
   sortOrder: mailAccounts.sortOrder,
   color: mailAccounts.color,
   icon: mailAccounts.icon,
+  composeFormat: mailAccounts.composeFormat,
   createdAt: mailAccounts.createdAt,
 };
 
@@ -907,6 +910,9 @@ export function accountRoutes(
               : {}),
             ...(body.popLeaveOnServer !== undefined
               ? { popLeaveOnServer: body.popLeaveOnServer }
+              : {}),
+            ...(body.composeFormat !== undefined
+              ? { composeFormat: body.composeFormat }
               : {}),
             ...(body.popDeleteAfterDays !== undefined
               ? { popDeleteAfterDays: body.popDeleteAfterDays }
