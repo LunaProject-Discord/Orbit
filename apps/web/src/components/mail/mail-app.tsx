@@ -249,6 +249,7 @@ import {
 import { emptyFilters, isSearchActive } from "@/lib/search";
 import { completeQuery } from "@/lib/search-input";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
+import { reloadSenderIcons } from "@/lib/sender-icon";
 import { refreshSenderIconSettings } from "@/lib/sender-icon-settings";
 import { registerSheetBack } from "@/lib/sheet-back";
 import {
@@ -1564,6 +1565,7 @@ const MailView = memo(function MailView({
       setNotice({ message: PULL_OFFLINE, tone: "error" });
       return;
     }
+    reloadSenderIcons();
     const synced = await Promise.allSettled(
       ids.map((id) => syncAccountNow(id)),
     );
@@ -1590,6 +1592,7 @@ const MailView = memo(function MailView({
       setNotice({ message: PULL_OFFLINE, tone: "error" });
       return;
     }
+    reloadSenderIcons();
     await Promise.allSettled([
       sendFocus(selection.accountId, selection.mailboxId, true).catch(() =>
         setNotice({ message: SYNC_NOW_ERROR, tone: "error" }),
@@ -3275,6 +3278,7 @@ const MailView = memo(function MailView({
         if (standaloneCompose) break;
         if (standaloneMessage) {
           // メールだけのウィンドウでは、表示しているメールを取得し直す。
+          reloadSenderIcons();
           setRefreshKey((key) => key + 1);
         } else if (command === "refreshFolder") {
           void handleFolderRefresh();

@@ -51,7 +51,10 @@ import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
 import { sendRoutes } from "./routes/send.js";
-import { senderIconRoutes } from "./routes/sender-icons.js";
+import {
+  ICON_REFRESH_HEADER,
+  senderIconRoutes,
+} from "./routes/sender-icons.js";
 import { serverInfoRoutes } from "./routes/server-info.js";
 import {
   senderIconGravatarAllowed,
@@ -130,6 +133,7 @@ export function createApp({
         "Authorization",
         "X-Filename",
         AUTH_STATE_HEADER,
+        ICON_REFRESH_HEADER,
       ],
       // ログイン時に Better Auth が返すセッショントークンと、2 段階認証・パスキーの
       // 途中の値 (lib/auth-state.ts) をブラウザから読めるようにする。

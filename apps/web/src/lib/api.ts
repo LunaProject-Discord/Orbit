@@ -95,13 +95,24 @@ type RequestOptions = {
   signal?: AbortSignal;
   /** false にすると 401 でもログアウト扱いにしない (ログイン API 用)。 */
   handle401?: boolean;
+  /** ブラウザーの HTTP キャッシュの扱い (fetch の cache)。 */
+  cache?: RequestCache;
+  /** ほかに付ける見出し。 */
+  headers?: Record<string, string>;
 };
 
 export async function apiFetch(
   path: string,
-  { method = "GET", body, signal, handle401 = true }: RequestOptions = {},
+  {
+    method = "GET",
+    body,
+    signal,
+    handle401 = true,
+    cache,
+    headers: extraHeaders,
+  }: RequestOptions = {},
 ): Promise<Response> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...extraHeaders };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -120,6 +131,7 @@ export async function apiFetch(
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: "omit",
       signal,
+      ...(cache ? { cache } : {}),
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -2257,15 +2269,23 @@ export type SenderIconSource = "bimi" | "gravatar" | "favicon";
  * 差出人のアイコンを取得する。見つからなければ null。
  * 取得はサーバーが行うので、端末から差出人側へ通信は出ない。
  */
+/**
+ * 差出人のアイコンを取得する。無ければ null。refresh は利用者が更新したときで、
+ * ブラウザーの控えを使わずに取り直し、サーバーにも (控えが古ければ) 取り直してもらう。
+ */
 export async function fetchSenderIcon(
   address: string,
   sources: SenderIconSource[],
-  signal?: AbortSignal,
+  { signal, refresh = false }: { signal?: AbortSignal; refresh?: boolean } = {},
 ): Promise<{ blob: Blob; source: SenderIconSource | null } | null> {
   const params = new URLSearchParams({ address, sources: sources.join(",") });
   const response = await apiFetch(`/v1/sender-icons?${params}`, {
     signal,
     handle401: false,
+    // 取り直した結果で、ブラウザーの控え (同じ URL) も置き換える。
+    ...(refresh
+      ? { cache: "reload" as const, headers: { "X-Icon-Refresh": "1" } }
+      : {}),
   });
   if (response.status === 204) return null;
   const source = response.headers.get("x-icon-source");
