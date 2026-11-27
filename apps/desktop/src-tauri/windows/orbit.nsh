@@ -330,8 +330,11 @@ Var OrbitLegacyDir
     ${If} $OrbitLegacyDir != ""
       !insertmacro CheckIfAppIsRunning "$OrbitLegacyDir\${MAINBINARYNAME}.exe" "${ORBIT_LEGACY_NAME}"
       ; その場で動かす (_?=) と、アンインストーラー自身とフォルダーは残るので、後で消す。
+      ; ReadRegStr などが立てたエラーの印を消してから動かす (下で ExecWait の失敗を見分けるため)。
+      ClearErrors
       ExecWait '$OrbitLegacyUninstaller /S _?=$OrbitLegacyDir' $0
     ${Else}
+      ClearErrors
       ExecWait '$OrbitLegacyUninstaller /S' $0
     ${EndIf}
     ${If} ${Errors}
