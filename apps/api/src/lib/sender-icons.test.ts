@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptImage,
+  createFetchBytes,
   type FetchBytes,
   fetchBimi,
   fetchFavicon,
@@ -126,7 +127,7 @@ describe("fetchBimi", () => {
       },
     );
     const checked: string[] = [];
-    d.verifyMark = (pem, domain) => {
+    d.verifyMark = async (pem, domain) => {
       checked.push(`${pem}@${domain}`);
       return LOGO.toString();
     };
@@ -156,7 +157,7 @@ describe("fetchBimi", () => {
         ],
       },
     );
-    d.verifyMark = () => null;
+    d.verifyMark = async () => null;
     expect(await fetchBimi(d, "example.com")).toBeNull();
     expect(await fetchBimi(d, "mark.example.com")).toBeNull();
     expect(d.requested).toEqual(["https://example.com/vmc.pem"]);
@@ -233,5 +234,35 @@ describe("その他", () => {
 
   it("画像でないものは受け付けない", () => {
     expect(acceptImage(Buffer.from("hello world"))).toBeNull();
+  });
+});
+
+describe("createFetchBytes", () => {
+  const fetchImpl = (async (url: string | URL | Request) =>
+    new Response(`body of ${String(url)}`, {
+      status: 200,
+    })) as typeof fetch;
+  const fetchBytes = createFetchBytes({ allowPrivate: true, fetchImpl });
+  const options = { maxBytes: 1024, accept: "*/*" };
+
+  it("http は、失効リスト用に許したときだけ使う", async () => {
+    expect(await fetchBytes("http://crl.example/a.crl", options)).toBeNull();
+    expect(
+      (
+        await fetchBytes("http://crl.example/a.crl", {
+          ...options,
+          allowHttp: true,
+        })
+      )?.body.toString(),
+    ).toBe("body of http://crl.example/a.crl");
+    expect(
+      await fetchBytes("http://crl.example:8080/a.crl", {
+        ...options,
+        allowHttp: true,
+      }),
+    ).toBeNull();
+    expect(
+      (await fetchBytes("https://example.com/a", options))?.body.toString(),
+    ).toBe("body of https://example.com/a");
   });
 });

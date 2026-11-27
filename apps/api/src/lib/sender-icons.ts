@@ -28,6 +28,18 @@ export type FoundIcon = IconImage & { source: IconSource };
 
 /** 見つかったものを覚えておく期間。 */
 const FOUND_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** BIMI のロゴを覚えておく期間。証明書の失効を確かめ直す間隔でもある。 */
+const BIMI_FOUND_TTL_MS = 24 * 60 * 60 * 1000;
+/** 失効リストの大きさの上限。 */
+const MAX_CRL_BYTES = 2 * 1024 * 1024;
+
+/** キャッシュの扱い。 */
+type LookupOptions = {
+  /** 見つかったものを覚えておく期間。 */
+  foundTtl?: number;
+  /** 取得に失敗したとき、前に取れていた画像を使い続けるか (標準は使う)。 */
+  keepOnError?: boolean;
+};
 /** 見つからなかったことを覚えておく期間。 */
 const MISSING_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 /** 通信の失敗などで分からなかったときに、取り直すまでの期間。 */
@@ -113,17 +125,26 @@ export type FetchResult = {
   url: string;
 };
 
-/** HTTPS で取得する。見つからない、大きすぎる、内部ネットワークを指すなどの場合は null。 */
+/**
+ * HTTPS で取得する。見つからない、大きすぎる、内部ネットワークを指すなどの場合は null。
+ * allowHttp なら http (ポート 80) も使う (中身が署名で守られている失効リスト用)。
+ */
 export type FetchBytes = (
   url: string,
-  options: { maxBytes: number; accept: string },
+  options: { maxBytes: number; accept: string; allowHttp?: boolean },
 ) => Promise<FetchResult | null>;
 
 export type IconDeps = {
   fetchBytes: FetchBytes;
   resolveTxt: (name: string) => Promise<string[][]>;
-  /** BIMI の証明書を確かめ、中のロゴを返す (テストで差し替える)。省略時は verifyMarkCertificate。 */
-  verifyMark?: (pem: string, domain: string) => string | null;
+  /**
+   * BIMI の証明書を確かめ、中のロゴを返す (テストで差し替える)。省略時は verifyMarkCertificate
+   * (失効リストは fetchBytes で取得する)。
+   */
+  verifyMark?: (
+    pem: string,
+    domain: string,
+  ) => Promise<string | null | "error">;
 };
 
 export function createFetchBytes({
@@ -133,13 +154,14 @@ export function createFetchBytes({
   allowPrivate: boolean;
   fetchImpl?: typeof fetch;
 }): FetchBytes {
-  return async (url, { maxBytes, accept }) => {
+  return async (url, { maxBytes, accept, allowHttp = false }) => {
     const signal = AbortSignal.timeout(TIMEOUT_MS);
     let target = url;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const parsed = new URL(target);
-      if (parsed.protocol !== "https:") return null;
-      if (parsed.port && parsed.port !== "443") return null;
+      const http = allowHttp && parsed.protocol === "http:";
+      if (parsed.protocol !== "https:" && !http) return null;
+      if (parsed.port && parsed.port !== (http ? "80" : "443")) return null;
       if (!allowPrivate) {
         const isPrivate = await resolvesToPrivateAddress(parsed.hostname).catch(
           () => null,
@@ -463,8 +485,21 @@ export async function fetchBimi(
       accept: "application/pem-certificate-chain, application/x-pem-file, */*",
     });
     if (!result) return null;
-    const verify = deps.verifyMark ?? verifyMarkCertificate;
-    const svg = verify(result.body.toString("latin1"), recordDomain);
+    const pem = result.body.toString("latin1");
+    const svg = deps.verifyMark
+      ? await deps.verifyMark(pem, recordDomain)
+      : await verifyMarkCertificate(pem, recordDomain, {
+          fetchCrl: async (url) =>
+            (
+              await deps.fetchBytes(url, {
+                maxBytes: MAX_CRL_BYTES,
+                accept: "application/pkix-crl, */*",
+                // 失効リストは署名付きなので、http で配られるものも使う (多くは http)。
+                allowHttp: true,
+              })
+            )?.body ?? null,
+        });
+    if (svg === "error") return "error";
     if (!svg) return null;
     const image = acceptImage(Buffer.from(svg, "utf8"));
     // BIMI のロゴは SVG だけ。
@@ -601,6 +636,7 @@ export function createSenderIconService(
   const load = async (
     key: string,
     fetcher: () => Promise<Lookup>,
+    options: LookupOptions,
   ): Promise<IconImage | null> => {
     const [cached] = await db
       .select()
@@ -614,9 +650,18 @@ export function createSenderIconService(
     const result = await fetcher();
     const image = result === "error" ? null : result;
     const ttl =
-      result === "error" ? ERROR_TTL_MS : image ? FOUND_TTL_MS : MISSING_TTL_MS;
+      result === "error"
+        ? ERROR_TTL_MS
+        : image
+          ? (options.foundTtl ?? FOUND_TTL_MS)
+          : MISSING_TTL_MS;
     // 通信に失敗したときは、前に取れていた画像があればそれを使い続ける。
-    if (result === "error" && cached?.contentType && cached.data) {
+    if (
+      result === "error" &&
+      options.keepOnError !== false &&
+      cached?.contentType &&
+      cached.data
+    ) {
       await db
         .update(senderIcons)
         .set({ expiresAt: new Date(now() + ttl) })
@@ -644,10 +689,16 @@ export function createSenderIconService(
     return image;
   };
 
-  const cachedLookup = (key: string, fetcher: () => Promise<Lookup>) => {
+  const cachedLookup = (
+    key: string,
+    fetcher: () => Promise<Lookup>,
+    options: LookupOptions = {},
+  ) => {
     const running = inflight.get(key);
     if (running) return running;
-    const promise = load(key, fetcher).finally(() => inflight.delete(key));
+    const promise = load(key, fetcher, options).finally(() =>
+      inflight.delete(key),
+    );
     inflight.set(key, promise);
     return promise;
   };
@@ -660,8 +711,11 @@ export function createSenderIconService(
         let image: IconImage | null = null;
         if (source === "bimi") {
           // 証明書を確かめるようにする前のキャッシュ (bimi:) は使わない。
-          image = await cachedLookup(`bimi-mark:${domain}`, () =>
-            fetchBimi(deps, domain),
+          // 失効を早めに反映するため、覚える期間を短くし、確かめられないときは前のロゴも使わない。
+          image = await cachedLookup(
+            `bimi-mark:${domain}`,
+            () => fetchBimi(deps, domain),
+            { foundTtl: BIMI_FOUND_TTL_MS, keepOnError: false },
           );
         } else if (source === "gravatar") {
           const hash = gravatarHash(address);
