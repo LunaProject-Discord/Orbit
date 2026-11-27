@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { decryptText, encryptText } from "./credentials.js";
+import { resolvesToPrivateAddress } from "./host-check.js";
 import { fetchOrExplain } from "./network-error.js";
 
 /**
@@ -37,6 +38,11 @@ export type SsoProfile = {
   subject: string;
   /** 小文字にそろえたメールアドレス。返らなければ null。 */
   email: string | null;
+  /**
+   * IdP がメールアドレスを確かめたか (email_verified)。項目が無ければ null
+   * (Mailcow のように返さない IdP は、管理者の「信頼する」設定に任せる)。
+   */
+  emailVerified: boolean | null;
   name: string | null;
 };
 
@@ -62,6 +68,8 @@ const STATE_CONTEXT = "sso-login-state";
 export const SSO_STATE_TTL_MS = 10 * 60_000;
 /** プロフィールの値として受け付ける長さの上限。 */
 const MAX_CLAIM_LENGTH = 320;
+/** IdP の応答として読む大きさの上限。 */
+const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 type Fetch = typeof fetch;
 
@@ -84,6 +92,46 @@ export function isUsableSsoUrl(
   return options.allowHttp && url.protocol === "http:";
 }
 
+/**
+ * IdP の URL が、サーバーの内部ネットワークを指していないか (SSRF 対策)。
+ * 開発用に http を許すとき (ALLOW_PRIVATE_MAIL_HOSTS) は調べない。名前を引けなければ true。
+ */
+export async function ssoUrlPointsInside(
+  value: string,
+  options: { allowHttp: boolean },
+): Promise<boolean> {
+  if (options.allowHttp) return false;
+  try {
+    const host = new URL(value).hostname.replace(/^\[|\]$/g, "");
+    return await resolvesToPrivateAddress(host);
+  } catch {
+    return true;
+  }
+}
+
+/** 応答の JSON を、大きさの上限を付けて読む。読めなければ null。 */
+async function readJson(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** OpenID Connect の設定 (…/.well-known/openid-configuration) から 3 つの URL を読む。 */
 export async function discoverSsoEndpoints(
   discoveryUrl: string,
@@ -94,6 +142,8 @@ export async function discoverSsoEndpoints(
     discoveryUrl,
     {
       headers: { Accept: "application/json" },
+      // 転送先は確かめていないので、追わない。
+      redirect: "error",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     },
     "IdP の設定の URL",
@@ -104,10 +154,7 @@ export async function discoverSsoEndpoints(
       `IdP の設定を読めませんでした (HTTP ${response.status})`,
     );
   }
-  const body = (await response.json().catch(() => null)) as Record<
-    string,
-    unknown
-  > | null;
+  const body = (await readJson(response)) as Record<string, unknown> | null;
   const pick = (key: string) => {
     const value = body?.[key];
     return typeof value === "string" && isUsableSsoUrl(value, options)
@@ -262,7 +309,7 @@ export async function exchangeSsoCode(options: {
     },
     "IdP のトークンの URL",
   );
-  const body = (await response.json().catch(() => null)) as {
+  const body = (await readJson(response)) as {
     access_token?: unknown;
     error?: unknown;
     error_description?: unknown;
@@ -327,9 +374,15 @@ export function parseSsoProfile(
   }
   const email = claimText(readSsoClaim(body, claims.emailClaim));
   const name = claimText(readSsoClaim(body, claims.nameClaim));
+  // OpenID Connect の標準の項目。文字列の "true" を返す IdP もある。
+  const verified = body.email_verified;
   return {
     subject,
     email: email && looksLikeEmail(email) ? email.toLowerCase() : null,
+    emailVerified:
+      verified === undefined || verified === null
+        ? null
+        : verified === true || verified === "true",
     name,
   };
 }
@@ -353,7 +406,7 @@ export async function fetchSsoProfile(options: {
     },
     "IdP のプロフィールの URL",
   );
-  const body = (await response.json().catch(() => null)) as unknown;
+  const body = await readJson(response);
   if (
     !response.ok ||
     !body ||

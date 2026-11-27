@@ -778,14 +778,110 @@ export async function acceptInvitation(input: {
 // ログインまわりの設定 (パスワード、メールアドレス、2 段階認証、パスキー)
 // ---------------------------------------------------------------------------
 
-/** サーバーが、利用者へメールを送れるか (パスワードの再設定とメールアドレスの変更が使えるか)。 */
+export type AuthFeatures = {
+  /** サーバーが、利用者へメールを送れるか (パスワードの再設定とメールアドレスの変更が使えるか)。 */
+  mail: boolean;
+  /** ログイン画面に出す IdP (シングルサインオン)。 */
+  sso: SsoProviderOption[];
+};
+
+export type SsoProviderOption = { id: string; name: string };
+
+/** ログイン画面で使える機能。 */
 export async function fetchAuthFeatures(
   signal?: AbortSignal,
-): Promise<{ mail: boolean }> {
-  return apiJson<{ mail: boolean }>("/v1/auth-features", {
+): Promise<AuthFeatures> {
+  const data = await apiJson<Partial<AuthFeatures>>("/v1/auth-features", {
     signal,
     handle401: false,
   });
+  // 古いサーバーは sso を返さない。
+  return { mail: data.mail === true, sso: data.sso ?? [] };
+}
+
+// ---------------------------------------------------------------------------
+// IdP (シングルサインオン) でのログイン
+// ---------------------------------------------------------------------------
+
+/**
+ * ログインを始めた端末だけが知る合言葉。サーバーは指紋だけを state に入れ、戻ってきたときに
+ * 照合する (ほかの人が始めたログインの続きを踏ませる攻撃を防ぐ)。戻ってくるまで端末に預ける。
+ */
+const SSO_BINDING_KEY = "orbit.sso-binding.v1";
+
+function randomBinding(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** IdP のログイン画面の URL を取得する (合言葉を端末に預ける)。 */
+export async function startSsoLogin(providerId: string): Promise<string> {
+  const binding = randomBinding();
+  // 預けられない端末では、戻ってきても照合できないので始めない。
+  window.localStorage.setItem(SSO_BINDING_KEY, binding);
+  const { url } = await apiJson<{ url: string }>("/v1/auth/sso/start", {
+    method: "POST",
+    body: {
+      providerId,
+      binding,
+      // スマホアプリとデスクトップ版では、ログイン後に Web 版のページからアプリへ戻してもらう。
+      ...(usesAppOAuth() ? { app: true } : {}),
+    },
+    handle401: false,
+  });
+  return url;
+}
+
+export type SsoLoginResult = {
+  /** 続けて 2 段階認証のコードが要る (ログイン画面で入力する)。 */
+  twoFactor: boolean;
+  /** このログインで Orbit の利用者を作った。 */
+  created: boolean;
+  /** メールアカウントの追加を案内する。 */
+  suggestMailAccount: boolean;
+  email: string | null;
+};
+
+/** IdP のログイン画面から戻ってきた code と state で、ログインを終える。 */
+export async function completeSsoLogin(
+  code: string,
+  state: string,
+): Promise<SsoLoginResult> {
+  let binding: string | null = null;
+  try {
+    binding = window.localStorage.getItem(SSO_BINDING_KEY);
+    window.localStorage.removeItem(SSO_BINDING_KEY);
+  } catch {
+    // 読めなければ、下で invalid_state として扱う。
+  }
+  if (!binding) throw new ApiError(400, "invalid_state", null);
+  const response = await apiFetch("/v1/auth/sso/callback", {
+    method: "POST",
+    body: { code, state, binding },
+    handle401: false,
+  });
+  const data = (await response.json().catch(() => ({}))) as {
+    twoFactorRedirect?: boolean;
+    created?: boolean;
+    suggestMailAccount?: boolean;
+    email?: string | null;
+  };
+  const twoFactor = data.twoFactorRedirect === true;
+  if (!twoFactor && !adoptToken(response)) {
+    throw new ApiError(response.status, "token_missing", null);
+  }
+  return {
+    twoFactor,
+    created: data.created === true,
+    suggestMailAccount: data.suggestMailAccount === true,
+    email: data.email ?? null,
+  };
 }
 
 export type SecurityStatus = {

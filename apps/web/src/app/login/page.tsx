@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyRoundIcon } from "lucide-react";
+import { KeyRoundIcon, LogInIcon } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
@@ -14,7 +14,14 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, fetchAuthFeatures, NetworkError } from "@/lib/api";
+import {
+  ApiError,
+  fetchAuthFeatures,
+  NetworkError,
+  type SsoProviderOption,
+  startSsoLogin,
+} from "@/lib/api";
+import { usesAppOAuth } from "@/lib/native/oauth";
 import { PasskeyCancelled, passkeySupported } from "@/lib/passkey";
 import { apiUrl, isBundledApp } from "@/lib/server-url";
 
@@ -81,6 +88,20 @@ function passkeyMessageOf(error: unknown): string | null {
   return "パスキーでログインできませんでした。パスワードでログインしてください。";
 }
 
+function ssoStartMessageOf(error: unknown): string {
+  if (error instanceof NetworkError) return NETWORK_MESSAGE;
+  if (error instanceof ApiError) {
+    if (error.status === 429) return RATE_MESSAGE;
+    if (error.code === "provider_unavailable") {
+      return "このログイン方法は現在使えません。管理者にお問い合わせください。";
+    }
+    if (error.code === "provider_unreachable") {
+      return "ログイン先のサービスに接続できませんでした。時間をおいてもう一度お試しください。";
+    }
+  }
+  return "ログインを始められませんでした。時間をおいてもう一度お試しください。";
+}
+
 /** メールのリンクなどから戻ってきたときに、URL に付いている知らせ。 */
 function noticeOf(search: string): { text: string; error: boolean } | null {
   const params = new URLSearchParams(search);
@@ -139,14 +160,25 @@ export default function LoginPage() {
   const [server, setServer] = useState<string | null>(null);
   const [canPasskey, setCanPasskey] = useState(false);
   const [canReset, setCanReset] = useState(false);
+  const [ssoProviders, setSsoProviders] = useState<SsoProviderOption[]>([]);
   const [notice, setNotice] = useState<ReturnType<typeof noticeOf>>(null);
   useEffect(() => {
     if (isBundledApp()) setServer(new URL(apiUrl()).host);
     setCanPasskey(passkeySupported());
     setNotice(noticeOf(window.location.search));
+    // IdP でログインしたあと、2 段階認証のコードを求められたとき (/oauth/sso から来る)。
+    if (
+      new URLSearchParams(window.location.search).get("step") === "two-factor"
+    ) {
+      setStep("two-factor");
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     const controller = new AbortController();
     fetchAuthFeatures(controller.signal)
-      .then((features) => setCanReset(features.mail))
+      .then((features) => {
+        setCanReset(features.mail);
+        setSsoProviders(features.sso);
+      })
       .catch(() => {
         // 届かないときは、再設定の案内を出さない。
       });
@@ -213,6 +245,20 @@ export default function LoginPage() {
       await signInWithPasskey();
     } catch (cause) {
       setError(passkeyMessageOf(cause));
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSso(providerId: string) {
+    setError(null);
+    setSubmitting(true);
+    try {
+      // 戻り先は /oauth/sso (components/sso-callback.tsx)。
+      window.location.assign(await startSsoLogin(providerId));
+      // アプリでは外のブラウザーで開き、この画面は残る (取りやめたら押し直せるように)。
+      if (usesAppOAuth()) setSubmitting(false);
+    } catch (cause) {
+      setError(ssoStartMessageOf(cause));
       setSubmitting(false);
     }
   }
@@ -369,24 +415,42 @@ export default function LoginPage() {
           {submitting ? "ログイン中…" : "ログイン"}
         </Button>
       </form>
-      {canPasskey && (
+      {(canPasskey || ssoProviders.length > 0) && (
         <>
           <div className="my-5 flex items-center gap-3 text-muted-foreground text-xs">
             <span className="h-px flex-1 bg-border" />
             または
             <span className="h-px flex-1 bg-border" />
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            className="w-full"
-            disabled={submitting}
-            onClick={handlePasskey}
-          >
-            <KeyRoundIcon />
-            パスキーでログイン
-          </Button>
+          <div className="flex flex-col gap-3">
+            {ssoProviders.map((provider) => (
+              <Button
+                key={provider.id}
+                type="button"
+                variant="outline"
+                size="lg"
+                className="w-full"
+                disabled={submitting}
+                onClick={() => handleSso(provider.id)}
+              >
+                <LogInIcon />
+                <span className="truncate">{provider.name} でログイン</span>
+              </Button>
+            ))}
+            {canPasskey && (
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="w-full"
+                disabled={submitting}
+                onClick={handlePasskey}
+              >
+                <KeyRoundIcon />
+                パスキーでログイン
+              </Button>
+            )}
+          </div>
         </>
       )}
       {server && (

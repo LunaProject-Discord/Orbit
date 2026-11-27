@@ -343,11 +343,7 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
     });
 
     it("登録すると、シークレットを除いて返り、ログイン画面に出る", async () => {
-      const response = await asAdmin(
-        "POST",
-        "/v1/admin/sso",
-        providerBody(),
-      );
+      const response = await asAdmin("POST", "/v1/admin/sso", providerBody());
       expect(response.status).toBe(201);
       const { provider } = (await response.json()) as {
         provider: Record<string, unknown>;
@@ -495,9 +491,31 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
       expect(await response.json()).toEqual({ error: "link_required" });
     });
 
+    it("信頼する IdP でも、確かめていないメールアドレスどうしは結び付けない", async () => {
+      await updateProvider({ trustEmail: true });
+      // Orbit 側で確かめていない利用者 (メールアドレスを決めない招待で登録した人など)。
+      const unverified = await login({ id: 10, email: "carol@example.com" });
+      expect(unverified.status).toBe(403);
+      expect(await unverified.json()).toEqual({ error: "link_required" });
+
+      await db.execute(
+        sql`update users set email_verified = true where email = 'carol@example.com'`,
+      );
+      // IdP が確かめていないと返したメールアドレス。
+      const notVerified = await login({
+        id: 10,
+        email: "carol@example.com",
+        email_verified: false,
+      });
+      expect(notVerified.status).toBe(403);
+      expect(await notVerified.json()).toEqual({ error: "link_required" });
+    });
+
     it("信頼する IdP なら結び付けてログインし、利用者は増えない", async () => {
       await updateProvider({ trustEmail: true });
-      const before = await db.execute(sql`select count(*)::int as n from users`);
+      const before = await db.execute(
+        sql`select count(*)::int as n from users`,
+      );
       const response = await login({ id: 10, email: "carol@example.com" });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
@@ -576,6 +594,33 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
         providers: { id: string; linkedUsers: number }[];
       };
       expect(list.providers[0]?.linkedUsers).toBe(2);
+    });
+
+    it("ID の項目名を変えると、結び付けを解く", async () => {
+      const response = await asAdmin(
+        "PUT",
+        `/v1/admin/sso/${providerId}`,
+        providerBody({ clientSecret: "", subjectClaim: "email" }),
+      );
+      expect(await response.json()).toMatchObject({
+        unlinked: true,
+        provider: { linkedUsers: 0 },
+      });
+      // 名前だけの変更では解かない。
+      await login({ id: 77, email: "dave@example.com" });
+      const rename = await asAdmin(
+        "PUT",
+        `/v1/admin/sso/${providerId}`,
+        providerBody({
+          clientSecret: "",
+          subjectClaim: "email",
+          name: "改名",
+        }),
+      );
+      expect(await rename.json()).toMatchObject({
+        unlinked: false,
+        provider: { linkedUsers: 1 },
+      });
     });
 
     it("無効にすると、ログイン画面に出ず、始められない", async () => {

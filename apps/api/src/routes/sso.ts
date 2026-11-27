@@ -19,6 +19,7 @@ import {
   authStateToCookie,
   withAuthStateHeader,
 } from "../lib/auth-state.js";
+import { clientAddress, createRateWindow } from "../lib/rate-window.js";
 import {
   findEnabledSsoProvider,
   type SsoClientResolver,
@@ -79,8 +80,14 @@ export function ssoRoutes({
 }: Deps) {
   const app = new Hono();
   const redirectUri = ssoRedirectUri(webOrigin);
+  // どちらも IdP への通信を起こすので、IP アドレスごとに回数を制限する。
+  const startLimit = createRateWindow({ limit: 30, windowMs: 60_000 });
+  const callbackLimit = createRateWindow({ limit: 30, windowMs: 60_000 });
 
   app.post("/start", zValidator("json", startBody), async (c) => {
+    if (!startLimit.take(clientAddress(c.req.raw.headers))) {
+      return c.json({ error: "too_many_requests" }, 429);
+    }
     const body = c.req.valid("json");
     const provider = await findEnabledSsoProvider(db, body.providerId);
     if (!provider) return c.json({ error: "provider_unavailable" }, 404);
@@ -115,6 +122,9 @@ export function ssoRoutes({
   });
 
   app.post("/callback", zValidator("json", callbackBody), async (c) => {
+    if (!callbackLimit.take(clientAddress(c.req.raw.headers))) {
+      return c.json({ error: "too_many_requests" }, 429);
+    }
     const body = c.req.valid("json");
     const state = openSsoState(
       stripAppPrefix(body.state),
@@ -139,7 +149,10 @@ export function ssoRoutes({
       profile = await fetchSsoProfile({ client, accessToken });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      console.error(`IdP (${provider.name}) でのログインに失敗しました:`, detail);
+      console.error(
+        `IdP (${provider.name}) でのログインに失敗しました:`,
+        detail,
+      );
       const code =
         error instanceof SsoError && error.code === "no_subject"
           ? "profile_invalid"

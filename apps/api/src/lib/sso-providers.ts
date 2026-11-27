@@ -4,6 +4,7 @@ import {
   encryptText,
   type SsoClient,
   type SsoEndpoints,
+  ssoUrlPointsInside,
 } from "@orbit/core";
 import { type Database, ssoProviders } from "@orbit/db";
 import { and, asc, eq } from "drizzle-orm";
@@ -56,7 +57,12 @@ export async function findEnabledSsoProvider(
   return row ?? null;
 }
 
-type DiscoveryEntry = { endpoints: SsoEndpoints; expiresAt: number };
+/** 読めなかったことを覚えておく時間 (読めない IdP へ、ログインのたびに繋ぎに行かない)。 */
+const DISCOVERY_FAILURE_TTL_MS = 30_000;
+
+type DiscoveryEntry =
+  | { endpoints: SsoEndpoints; expiresAt: number }
+  | { error: Error; expiresAt: number };
 
 /**
  * IdP の設定 (行) から、通信に使う設定を作る。OpenID Connect の設定の URL があれば、
@@ -69,7 +75,27 @@ export function createSsoClientResolver(options: {
 }) {
   const cache = new Map<string, DiscoveryEntry>();
 
+  /**
+   * サーバーから通信する URL が、内部ネットワークを指していないか確かめる (SSRF 対策)。
+   * 保存したときに確かめていても、名前の向き先や IdP の設定はあとから変わりうる。
+   */
+  async function assertOutside(...urls: string[]) {
+    for (const url of urls) {
+      if (await ssoUrlPointsInside(url, { allowHttp: options.allowHttp })) {
+        throw new Error(
+          `IdP の URL がサーバーの内部ネットワークを指しています: ${url}`,
+        );
+      }
+    }
+  }
+
   async function endpointsOf(row: SsoProviderRow): Promise<SsoEndpoints> {
+    const endpoints = await loadEndpoints(row);
+    await assertOutside(endpoints.tokenUrl, endpoints.userInfoUrl);
+    return endpoints;
+  }
+
+  async function loadEndpoints(row: SsoProviderRow): Promise<SsoEndpoints> {
     if (!row.discoveryUrl) {
       if (!row.authorizationUrl || !row.tokenUrl || !row.userInfoUrl) {
         throw new Error("IdP の URL が設定されていません");
@@ -81,11 +107,24 @@ export function createSsoClientResolver(options: {
       };
     }
     const cached = cache.get(row.discoveryUrl);
-    if (cached && cached.expiresAt > Date.now()) return cached.endpoints;
-    const endpoints = await discoverSsoEndpoints(row.discoveryUrl, {
-      allowHttp: options.allowHttp,
-      ...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
-    });
+    if (cached && cached.expiresAt > Date.now()) {
+      if ("error" in cached) throw cached.error;
+      return cached.endpoints;
+    }
+    let endpoints: SsoEndpoints;
+    try {
+      await assertOutside(row.discoveryUrl);
+      endpoints = await discoverSsoEndpoints(row.discoveryUrl, {
+        allowHttp: options.allowHttp,
+        ...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
+      });
+    } catch (error) {
+      cache.set(row.discoveryUrl, {
+        error: error instanceof Error ? error : new Error(String(error)),
+        expiresAt: Date.now() + DISCOVERY_FAILURE_TTL_MS,
+      });
+      throw error;
+    }
     cache.set(row.discoveryUrl, {
       endpoints,
       expiresAt: Date.now() + DISCOVERY_TTL_MS,

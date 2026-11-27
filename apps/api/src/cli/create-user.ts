@@ -10,7 +10,8 @@
  * (コマンド履歴に残さないため、引数では受け取らない)。
  */
 import { createInterface } from "node:readline/promises";
-import { createDb } from "@orbit/db";
+import { createDb, users } from "@orbit/db";
+import { eq } from "drizzle-orm";
 import { createAuth } from "../auth.js";
 import { loadEnv } from "../env.js";
 
@@ -46,6 +47,12 @@ try {
   const { user } = await auth.api.signUpEmail({
     body: { email, name, password },
   });
+  // サーバーの運用者が作った利用者のメールアドレスは、確かめたものとして扱う
+  // (IdP のメールアドレスとの自動の結び付けは、確かめた利用者にだけ行う)。
+  await db
+    .update(users)
+    .set({ emailVerified: true })
+    .where(eq(users.id, user.id));
   console.log(`利用者を作成しました: ${user.email} (${user.id})`);
 } catch (error) {
   // DB に繋がらない場合などは、原因 (cause) の方に本当の理由が入っている。

@@ -31,6 +31,11 @@ describe("routeForAppUrl", () => {
     expect(
       routeForAppUrl("jp.lunaproject.orbit.mail://oauth/microsoft/?error=x"),
     ).toBe("/oauth/microsoft?error=x");
+    expect(
+      routeForAppUrl(
+        "jp.lunaproject.orbit.mail://oauth/sso?code=c&state=app~s",
+      ),
+    ).toBe("/oauth/sso?code=c&state=app~s");
   });
 
   it("ほかの URL は無視する", () => {

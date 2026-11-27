@@ -402,3 +402,75 @@ export const adminPasskeyApi: PasskeyApi = {
     }
   },
 };
+
+// ---------------------------------------------------------------------------
+// シングルサインオン (IdP)
+// ---------------------------------------------------------------------------
+
+export type SsoTokenAuthMethod = "client_secret_basic" | "client_secret_post";
+
+/** IdP の設定。シークレットはサーバーから返らない。 */
+export type SsoProvider = {
+  id: string;
+  name: string;
+  clientId: string;
+  discoveryUrl: string | null;
+  authorizationUrl: string | null;
+  tokenUrl: string | null;
+  userInfoUrl: string | null;
+  scopes: string;
+  subjectClaim: string;
+  emailClaim: string;
+  nameClaim: string;
+  tokenAuthMethod: SsoTokenAuthMethod;
+  usePkce: boolean;
+  allowSignUp: boolean;
+  allowedDomains: string[];
+  trustEmail: boolean;
+  skipTwoFactor: boolean;
+  suggestMailAccount: boolean;
+  enabled: boolean;
+  /** この IdP を結び付けた利用者の数。 */
+  linkedUsers: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 追加・変更で送る値。変更では clientSecret を空にすると、保存してあるものを使い続ける。 */
+export type SsoProviderInput = Omit<
+  SsoProvider,
+  "id" | "linkedUsers" | "createdAt" | "updatedAt"
+> & { clientSecret: string };
+
+export async function listSsoProviders(signal?: AbortSignal): Promise<{
+  /** IdP に登録するリダイレクト URI。 */
+  redirectUri: string;
+  providers: SsoProvider[];
+}> {
+  return adminJson("/v1/admin/sso", { signal });
+}
+
+export async function createSsoProvider(
+  input: SsoProviderInput,
+): Promise<SsoProvider> {
+  const { provider } = await adminJson<{ provider: SsoProvider }>(
+    "/v1/admin/sso",
+    { method: "POST", body: input },
+  );
+  return provider;
+}
+
+export async function updateSsoProvider(
+  id: string,
+  input: SsoProviderInput,
+): Promise<SsoProvider> {
+  const { provider } = await adminJson<{ provider: SsoProvider }>(
+    `/v1/admin/sso/${id}`,
+    { method: "PUT", body: input },
+  );
+  return provider;
+}
+
+export async function deleteSsoProvider(id: string): Promise<void> {
+  await adminFetch(`/v1/admin/sso/${id}`, { method: "DELETE" });
+}

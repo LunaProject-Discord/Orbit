@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
-import { setSessionCookie } from "better-auth/cookies";
+import { expireCookie, setSessionCookie } from "better-auth/cookies";
 import { generateRandomString } from "better-auth/crypto";
 import { z } from "zod";
 
@@ -69,6 +69,7 @@ export const ssoSignIn = () =>
               ctx.context.secret,
             );
             let trustedDevice = false;
+            let trustedIdentifier: string | null = null;
             if (trusted) {
               const [token, identifier] = trusted.split("!");
               if (
@@ -87,7 +88,30 @@ export const ssoSignIn = () =>
                   !!record &&
                   record.value === user.id &&
                   new Date(record.expiresAt).getTime() > Date.now();
+                if (trustedDevice) trustedIdentifier = identifier;
               }
+            }
+
+            if (trustedDevice && trustedIdentifier) {
+              // 使った印は作り直す (twoFactor プラグインのログイン後の処理と同じ)。
+              await ctx.context.internalAdapter.deleteVerificationByIdentifier(
+                trustedIdentifier,
+              );
+              const identifier = `trust-device-${generateRandomString(32)}`;
+              await ctx.context.internalAdapter.createVerificationValue({
+                value: user.id,
+                identifier,
+                expiresAt: new Date(Date.now() + TRUST_DEVICE_MAX_AGE * 1000),
+              });
+              await ctx.setSignedCookie(
+                trustCookie.name,
+                `${hmac(ctx.context.secret, `${user.id}!${identifier}`)}!${identifier}`,
+                ctx.context.secret,
+                trustCookie.attributes,
+              );
+            } else if (trusted) {
+              // 使えない印は捨てる。
+              expireCookie(ctx, trustCookie);
             }
 
             if (!trustedDevice) {

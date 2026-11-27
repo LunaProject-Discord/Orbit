@@ -15,6 +15,7 @@ import {
   sealSsoState,
   ssoBindingHash,
   ssoEmailDomainAllowed,
+  ssoUrlPointsInside,
 } from "./sso-oauth.js";
 
 const key = randomBytes(32);
@@ -208,7 +209,12 @@ describe("profile", () => {
         { id: 42, email: " Taro@Example.COM ", full_name: "太郎" },
         { subjectClaim: "id", emailClaim: "email", nameClaim: "full_name" },
       ),
-    ).toEqual({ subject: "42", email: "taro@example.com", name: "太郎" });
+    ).toEqual({
+      subject: "42",
+      email: "taro@example.com",
+      emailVerified: null,
+      name: "太郎",
+    });
   });
 
   it("ID が無ければ no_subject、メールアドレスらしくない値は null", () => {
@@ -220,7 +226,41 @@ describe("profile", () => {
         { sub: "x", email: "not-an-email", name: "\u0000" },
         client,
       ),
-    ).toEqual({ subject: "x", email: null, name: null });
+    ).toEqual({ subject: "x", email: null, emailVerified: null, name: null });
+  });
+
+  it("email_verified を読む (無ければ null)", () => {
+    const read = (email_verified: unknown) =>
+      parseSsoProfile({ sub: "x", email: "a@b.c", email_verified }, client)
+        .emailVerified;
+    expect(read(true)).toBe(true);
+    expect(read("true")).toBe(true);
+    expect(read(false)).toBe(false);
+    expect(read(undefined)).toBeNull();
+  });
+
+  it("大きすぎる応答は読まない", async () => {
+    const big = JSON.stringify({ sub: "u1", pad: "x".repeat(1024 * 1024) });
+    const fetchFn = vi.fn(async () => new Response(big, { status: 200 }));
+    await expect(
+      fetchSsoProfile({ client, accessToken: "at", fetchFn }),
+    ).rejects.toMatchObject({ code: "profile_failed" });
+  });
+
+  it("内部ネットワークを指す URL を見分ける (http を許すときは調べない)", async () => {
+    const options = { allowHttp: false };
+    await expect(
+      ssoUrlPointsInside("https://127.0.0.1/token", options),
+    ).resolves.toBe(true);
+    await expect(ssoUrlPointsInside("https://[::1]/x", options)).resolves.toBe(
+      true,
+    );
+    await expect(
+      ssoUrlPointsInside("https://93.184.215.14/x", options),
+    ).resolves.toBe(false);
+    await expect(
+      ssoUrlPointsInside("http://127.0.0.1/x", { allowHttp: true }),
+    ).resolves.toBe(false);
   });
 
   it("アクセストークンをヘッダーで送る", async () => {
@@ -230,7 +270,12 @@ describe("profile", () => {
       accessToken: "at",
       fetchFn,
     });
-    expect(profile).toEqual({ subject: "u1", email: "a@b.jp", name: null });
+    expect(profile).toEqual({
+      subject: "u1",
+      email: "a@b.jp",
+      emailVerified: null,
+      name: null,
+    });
     const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBe(
       "Bearer at",

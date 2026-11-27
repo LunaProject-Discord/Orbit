@@ -12,8 +12,7 @@ export type SsoUserResult =
     }
   | {
       ok: false;
-      error:
-        /** IdP がメールアドレスを返さず、結び付ける先も作る先も決められない。 */
+      error: /** IdP がメールアドレスを返さず、結び付ける先も作る先も決められない。 */
         | "email_missing"
         /** 同じメールアドレスの利用者がいるが、この IdP のメールアドレスは信頼しない設定。 */
         | "link_required"
@@ -49,12 +48,12 @@ async function findLinkedUser(
 async function findUserByEmail(
   db: Database,
   email: string,
-): Promise<string | null> {
+): Promise<{ id: string; emailVerified: boolean } | null> {
   const [row] = await db
-    .select({ id: users.id })
+    .select({ id: users.id, emailVerified: users.emailVerified })
     .from(users)
     .where(sql`lower(${users.email}) = ${email}`);
-  return row?.id ?? null;
+  return row ?? null;
 }
 
 /** 利用者に IdP のアカウントを結び付ける。すでに誰かに結び付いていれば、その利用者を返す。 */
@@ -82,6 +81,9 @@ function localPart(email: string): string {
  * IdP で確かめた人を、Orbit の利用者に当てはめる。管理者が IdP ごとに決めた設定に従う。
  *   1. この IdP のアカウントを結び付けた利用者がいれば、その人。
  *   2. 同じメールアドレスの利用者がいれば、メールアドレスを信頼する IdP なら結び付ける。
+ *      ただし、IdP が「確かめていない」と返したメールアドレス (email_verified: false) と、
+ *      Orbit 側で確かめていない利用者 (招待で任意のアドレスを登録した人など) には結び付けない
+ *      (先に他人のアドレスで登録しておき、本人のログインを横取りする攻撃を防ぐ)。
  *   3. いなければ、自動で作る設定で、ドメインも許されていれば作る。
  */
 export async function resolveSsoUser(
@@ -96,14 +98,18 @@ export async function resolveSsoUser(
   const email = profile.email;
   if (!email) return { ok: false, error: "email_missing" };
 
+  /** この IdP が返したメールアドレスを、持ち主のものとして扱えるか。 */
+  const emailTrusted = provider.trustEmail && profile.emailVerified !== false;
   const existing = await findUserByEmail(db, email);
   if (existing) {
-    if (!provider.trustEmail) return { ok: false, error: "link_required" };
+    if (!emailTrusted || !existing.emailVerified) {
+      return { ok: false, error: "link_required" };
+    }
     const userId = await linkSsoAccount(
       db,
       providerKey,
       profile.subject,
-      existing,
+      existing.id,
     );
     return { ok: true, userId, created: false };
   }
@@ -120,7 +126,7 @@ export async function resolveSsoUser(
         email,
         name: profile.name ?? localPart(email),
         // 確かめたかどうかは IdP 次第なので、信頼する設定のときだけ確認済みにする。
-        emailVerified: provider.trustEmail,
+        emailVerified: emailTrusted,
       })
       .onConflictDoNothing({ target: users.email })
       .returning({ id: users.id });
@@ -137,7 +143,7 @@ export async function resolveSsoUser(
   // 同時に同じ人が作った (2 つのタブでログインしたなど)。もう一度当てはめ直す。
   const again = await findLinkedUser(db, providerKey, profile.subject);
   if (again) return { ok: true, userId: again, created: false };
-  return provider.trustEmail
+  return emailTrusted
     ? resolveSsoUser(db, { ...provider, allowSignUp: false }, profile)
     : { ok: false, error: "link_required" };
 }

@@ -1,5 +1,9 @@
 import { zValidator } from "@hono/zod-validator";
-import { discoverSsoEndpoints, isUsableSsoUrl } from "@orbit/core";
+import {
+  discoverSsoEndpoints,
+  isUsableSsoUrl,
+  ssoUrlPointsInside,
+} from "@orbit/core";
 import { authAccounts, type Database, ssoProviders } from "@orbit/db";
 import { asc, count, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -126,11 +130,22 @@ async function checkEndpoints(
 > {
   const usable = (value: string | null) =>
     !!value && isUsableSsoUrl(value, { allowHttp });
+  /** サーバーの内部ネットワークを指す URL があるか (SSRF 対策)。 */
+  const inside = async (...values: string[]) =>
+    (
+      await Promise.all(
+        values.map((value) => ssoUrlPointsInside(value, { allowHttp })),
+      )
+    ).some(Boolean);
   const discoveryUrl = input.discoveryUrl || null;
   if (discoveryUrl) {
     if (!usable(discoveryUrl)) return { ok: false, error: "invalid_url" };
+    if (await inside(discoveryUrl)) return { ok: false, error: "private_url" };
     try {
-      await discoverSsoEndpoints(discoveryUrl, { allowHttp });
+      const found = await discoverSsoEndpoints(discoveryUrl, { allowHttp });
+      if (await inside(found.tokenUrl, found.userInfoUrl)) {
+        return { ok: false, error: "private_url" };
+      }
     } catch (error) {
       return {
         ok: false,
@@ -153,6 +168,10 @@ async function checkEndpoints(
   if (!usable(authorizationUrl) || !usable(tokenUrl) || !usable(userInfoUrl)) {
     return { ok: false, error: "invalid_url" };
   }
+  // 認可 URL は利用者のブラウザーが開くだけなので、調べない。
+  if (await inside(tokenUrl, userInfoUrl)) {
+    return { ok: false, error: "private_url" };
+  }
   return {
     ok: true,
     discoveryUrl: null,
@@ -160,6 +179,25 @@ async function checkEndpoints(
     tokenUrl,
     userInfoUrl,
   };
+}
+
+/**
+ * 結び付けた IdP のアカウントを、同じ人として扱い続けられるか決める値。ID の項目名と、
+ * プロフィールを読む先 (OpenID Connect の設定か UserInfo の URL) のオリジン。
+ */
+function identityOf(row: {
+  subjectClaim: string;
+  discoveryUrl: string | null;
+  userInfoUrl: string | null;
+}): string {
+  const url = row.discoveryUrl ?? row.userInfoUrl ?? "";
+  let origin = url;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    // 保存してある URL は確かめ済みなので、ここには来ない。
+  }
+  return `${row.subjectClaim}\n${origin}`;
 }
 
 function valuesOf(input: Input) {
@@ -263,6 +301,16 @@ export function adminSsoRoutes({
         );
       }
       const { ok: _, ...urls } = endpoints;
+      // 別の IdP に付け替えたり、ID の項目を変えたりすると、同じ ID が別の人を指しうる。
+      // そのときは結び付けを解いて、次のログインで結び付け直す。
+      const unlink =
+        identityOf(current) !==
+        identityOf({ subjectClaim: input.subjectClaim, ...urls });
+      if (unlink) {
+        await db
+          .delete(authAccounts)
+          .where(eq(authAccounts.providerId, ssoAccountProviderId(id)));
+      }
       const [row] = await db
         .update(ssoProviders)
         .set({
@@ -284,6 +332,7 @@ export function adminSsoRoutes({
       const counts = await linkedCounts();
       return c.json({
         provider: publicOf(row, counts.get(ssoAccountProviderId(id)) ?? 0),
+        unlinked: unlink,
       });
     },
   );
