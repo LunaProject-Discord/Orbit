@@ -16,6 +16,8 @@ import {
   MAX_NOTICES_PER_MINUTE,
   MAX_SINGLE_INVITE_NOTIFICATIONS,
   MIN_REMINDER_LIFETIME_MS,
+  NOTICE_OVERFLOW_TAG,
+  noticeOverflowText,
   type PlannedReminder,
   REMINDER_DISPATCH_INTERVAL_MS,
   readCalendarNotificationSettings,
@@ -38,26 +40,38 @@ import {
 import {
   and,
   asc,
+  count,
   desc,
   eq,
+  gt,
   inArray,
+  isNotNull,
   isNull,
   lt,
   lte,
-  ne,
+  notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import type { CalendarDelivery, CalendarPushSender } from "./calendar-push.js";
 import { pruneEventNotices } from "./invite-notices.js";
+import { safeNoticeOccurrence, zonedDayStart } from "./notice-timing.js";
+
+export { zonedDayStart };
 
 /**
  * 予定の通知を送る (段取り 9、設計 4.1)。
- * - リマインダー: event_reminder_jobs の fire_at が来たものを FOR UPDATE SKIP LOCKED で取り、
- *   sent_at を付けてから送る。15 分より遅れたもの・予定が終わったものは送らずに済ませる。
+ * - リマインダー: event_reminder_jobs の fire_at が来たものを FOR UPDATE SKIP LOCKED で取り
+ *   (claimed_at を付ける)、送り終えたら sent_at を付ける。取ったまま CLAIM_LEASE_MS たったもの
+ *   (worker の停止など) は取り直し、MAX_ATTEMPTS 回取っても済まないものは送らずに済ませる。
+ *   15 分より遅れたもの・予定が終わったものは送らずに済ませる。
  *   Android の端末は、自分で予約済み (deviceCoversReminder) なら省く。
- * - 招待・変更・取り消し: event_notices の sent_at の無い行を取り、Web Push・FCM と、
+ * - 招待・変更・取り消し: event_notices の sent_at の無い行を同じように取り、Web Push・FCM と、
  *   CHANNEL_CALENDAR_NOTICE (API の EventsHub → SSE の "calendar") で送る。
- *   1 回分で同じカレンダーの招待が 4 件以上ならまとめ、1 分に 30 件を超えたら残りをまとめる。
+ *   1 回分で同じカレンダーの招待が 4 件以上ならまとめ、1 分に 30 件を超えたら残りをまとめる
+ *   (直近 1 分に送った行の数は DB で数えるので、再起動や複数台でも同じ上限になる)。
+ * - 送信は利用者ごとに切り離して並べ (同時に USER_CONCURRENCY 人まで)、1 人分に
+ *   DELIVER_TIMEOUT_MS の上限を付ける。1 人の遅さや失敗で、ほかの利用者を待たせない。
  */
 
 const JOB_BATCH = 200;
@@ -65,6 +79,14 @@ const NOTICE_BATCH = 500;
 /** NOTIFY の payload の上限 (8000 バイト) に余裕を持たせた値。 */
 const NOTIFY_PAYLOAD_LIMIT = 7000;
 const PRUNE_INTERVAL_MS = 60 * 60_000;
+/** 取ったまま送り終えていない行を、取り直してよくなるまでの時間。 */
+export const CLAIM_LEASE_MS = 2 * 60_000;
+/** 1 つの行を取る回数の上限。超えたら送らずに済ませる。 */
+export const MAX_DISPATCH_ATTEMPTS = 3;
+/** 同時に送る利用者の数。 */
+const USER_CONCURRENCY = 8;
+/** 利用者 1 人分の送信の上限。過ぎたら待たずに次へ進む (送信そのものは裏で続く)。 */
+const DELIVER_TIMEOUT_MS = 60_000;
 
 export type RsvpConfig = {
   /** 合言葉の鍵 (API と同じ CREDENTIALS_ENCRYPTION_KEY)。 */
@@ -78,6 +100,8 @@ type DispatcherOptions = {
   rsvp?: RsvpConfig;
   now?: () => number;
   log?: (message: string) => void;
+  /** 利用者 1 人分の送信の上限 (テスト用)。 */
+  deliverTimeoutMs?: number;
 };
 
 type UserNoticeSettings = {
@@ -86,6 +110,11 @@ type UserNoticeSettings = {
 };
 
 export type DispatchResult = { reminders: number; notices: number };
+
+type NoticeRow = typeof eventNotices.$inferSelect;
+
+const errorText = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
 
 export class NotificationDispatcher {
   private readonly now: () => number;
@@ -96,8 +125,6 @@ export class NotificationDispatcher {
   private again = false;
   private stopped = false;
   private lastPrune = 0;
-  /** 利用者ごとの、直近 1 分に送った招待・変更の通知の時刻。 */
-  private recent = new Map<string, number[]>();
 
   constructor(
     private readonly db: Database,
@@ -128,11 +155,7 @@ export class NotificationDispatcher {
     }
     this.running = this.dispatch()
       .catch((error) => {
-        this.log(
-          `予定の通知を送れませんでした: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        this.log(`予定の通知を送れませんでした: ${errorText(error)}`);
         return { reminders: 0, notices: 0 };
       })
       .finally(() => {
@@ -152,7 +175,13 @@ export class NotificationDispatcher {
     const [row] = await this.db
       .select({ fireAt: sql<Date | null>`min(${eventReminderJobs.fireAt})` })
       .from(eventReminderJobs)
-      .where(isNull(eventReminderJobs.sentAt))
+      .where(
+        and(
+          isNull(eventReminderJobs.sentAt),
+          // 取ったままの行は、取り直せる時刻まで定期の確認に任せる (すぐに起こし続けない)。
+          isNull(eventReminderJobs.claimedAt),
+        ),
+      )
       .catch(() => [] as { fireAt: Date | null }[]);
     if (!row?.fireAt) return;
     const delay = new Date(row.fireAt).getTime() - this.now();
@@ -165,14 +194,14 @@ export class NotificationDispatcher {
   async dispatch(): Promise<DispatchResult> {
     const result: DispatchResult = { reminders: 0, notices: 0 };
     for (;;) {
-      const count = await this.dispatchReminders();
-      result.reminders += count;
-      if (count < JOB_BATCH || this.stopped) break;
+      const claimed = await this.dispatchReminders();
+      result.reminders += claimed;
+      if (claimed < JOB_BATCH || this.stopped) break;
     }
     for (;;) {
-      const count = await this.dispatchNotices();
-      result.notices += count;
-      if (count < NOTICE_BATCH || this.stopped) break;
+      const claimed = await this.dispatchNotices();
+      result.notices += claimed;
+      if (claimed < NOTICE_BATCH || this.stopped) break;
     }
     const now = this.now();
     if (now - this.lastPrune >= PRUNE_INTERVAL_MS) {
@@ -218,6 +247,53 @@ export class NotificationDispatcher {
     return map;
   }
 
+  /**
+   * 利用者ごとの仕事を並べて走らせる (同時に USER_CONCURRENCY 人まで)。1 人分には上限の時間を
+   * 付け、過ぎたら待たずに done を呼ぶ。投げた利用者は done を呼ばない (取ったまま残し、
+   * CLAIM_LEASE_MS の後に取り直す)。
+   */
+  private async perUser(
+    userIds: readonly string[],
+    work: (userId: string) => Promise<void>,
+    done: (userId: string) => Promise<void>,
+  ) {
+    const timeoutMs = this.options.deliverTimeoutMs ?? DELIVER_TIMEOUT_MS;
+    const queue = [...userIds];
+    const runner = async () => {
+      for (;;) {
+        const userId = queue.shift();
+        if (userId === undefined) return;
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          const timedOut = await Promise.race([
+            work(userId).then(() => false),
+            new Promise<boolean>((resolve) => {
+              timer = setTimeout(() => resolve(true), timeoutMs);
+            }),
+          ]);
+          if (timedOut) {
+            this.log(
+              `利用者 ${userId} への予定の通知の送信が ${timeoutMs / 1000} 秒で終わりませんでした。待たずに次へ進みます`,
+            );
+          }
+          await done(userId);
+        } catch (error) {
+          this.log(
+            `利用者 ${userId} への予定の通知を送れませんでした (後でやり直します): ${errorText(error)}`,
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(USER_CONCURRENCY, userIds.length) },
+        runner,
+      ),
+    );
+  }
+
   // -------------------------------------------------------------------------
   // リマインダー
   // -------------------------------------------------------------------------
@@ -234,28 +310,43 @@ export class NotificationDispatcher {
           fireAt: eventReminderJobs.fireAt,
           changeSeq: eventReminderJobs.changeSeq,
           occurrenceId: eventReminderJobs.occurrenceId,
+          attempts: eventReminderJobs.attempts,
         })
         .from(eventReminderJobs)
         .where(
           and(
             isNull(eventReminderJobs.sentAt),
             lte(eventReminderJobs.fireAt, new Date(now)),
+            or(
+              isNull(eventReminderJobs.claimedAt),
+              lt(eventReminderJobs.claimedAt, new Date(now - CLAIM_LEASE_MS)),
+            ),
+            // 例外の行が消えて中身の無い回は、Indexer が作り直すまで取らない。
+            sql`exists (select 1 from ${eventOccurrences} where ${eventOccurrences.id} = ${eventReminderJobs.occurrenceId} and ${eventOccurrences.eventId} is not null)`,
           ),
         )
         .orderBy(asc(eventReminderJobs.fireAt))
         .limit(JOB_BATCH)
         .for("update", { skipLocked: true });
       if (jobs.length === 0) return [];
+      const ids = jobs.map((job) => job.id);
+      const exhausted = jobs
+        .filter((job) => job.attempts >= MAX_DISPATCH_ATTEMPTS)
+        .map((job) => job.id);
       await tx
         .update(eventReminderJobs)
-        .set({ sentAt: new Date(now) })
-        .where(
-          inArray(
-            eventReminderJobs.id,
-            jobs.map((job) => job.id),
-          ),
-        );
-      return jobs;
+        .set({
+          claimedAt: new Date(now),
+          attempts: sql`${eventReminderJobs.attempts} + 1`,
+        })
+        .where(inArray(eventReminderJobs.id, ids));
+      if (exhausted.length > 0) {
+        await tx
+          .update(eventReminderJobs)
+          .set({ sentAt: new Date(now) })
+          .where(inArray(eventReminderJobs.id, exhausted));
+      }
+      return jobs.filter((job) => job.attempts < MAX_DISPATCH_ATTEMPTS);
     });
     if (claimed.length === 0) return 0;
 
@@ -270,7 +361,7 @@ export class NotificationDispatcher {
         endAt: eventOccurrences.endAt,
         startDate: eventOccurrences.startDate,
         endDate: eventOccurrences.endDate,
-        eventId: eventOccurrences.eventId,
+        eventId: events.id,
         summary: events.summary,
         location: events.location,
       })
@@ -287,33 +378,52 @@ export class NotificationDispatcher {
       ...new Set(claimed.map((job) => job.userId)),
     ]);
     const deliveries = new Map<string, CalendarDelivery[]>();
+    const jobIds = new Map<string, string[]>();
     for (const job of claimed) {
-      const occurrence = byId.get(job.occurrenceId);
-      const user = users.get(job.userId);
-      if (!occurrence || !user) continue;
-      const fireAt = job.fireAt.getTime();
-      if (isReminderLate(fireAt, now)) continue;
-      const planned = plannedOf(occurrence, job, user.timeZone);
-      if (!planned || planned.expiresAt <= now) continue;
-      const message = toReminderMessage(planned, occurrence, {
-        timeZone: user.timeZone,
-        now,
-        detail: user.settings.detail,
-      });
-      const list = deliveries.get(job.userId) ?? [];
-      list.push({
-        message,
-        skipDevice: (cover) =>
-          deviceCoversReminder(cover, { fireAt, changeSeq: job.changeSeq }),
-      });
-      deliveries.set(job.userId, list);
-    }
-    const push = this.options.push;
-    if (push?.enabled) {
-      for (const [userId, list] of deliveries) {
-        await push.deliver(userId, list, now);
+      const ids = jobIds.get(job.userId) ?? [];
+      ids.push(job.id);
+      jobIds.set(job.userId, ids);
+      try {
+        const occurrence = byId.get(job.occurrenceId);
+        const user = users.get(job.userId);
+        if (!occurrence || !user) continue;
+        const fireAt = job.fireAt.getTime();
+        if (isReminderLate(fireAt, now)) continue;
+        const planned = plannedOf(occurrence, job, user.timeZone);
+        if (!planned || planned.expiresAt <= now) continue;
+        const message = toReminderMessage(planned, occurrence, {
+          timeZone: user.timeZone,
+          now,
+          detail: user.settings.detail,
+        });
+        const list = deliveries.get(job.userId) ?? [];
+        list.push({
+          message,
+          skipDevice: (cover) =>
+            deviceCoversReminder(cover, { fireAt, changeSeq: job.changeSeq }),
+        });
+        deliveries.set(job.userId, list);
+      } catch (error) {
+        // 1 件の文言の組み立ての失敗で、まとまりのほかの通知を落とさない。
+        this.log(
+          `リマインダー ${job.id} を組み立てられませんでした: ${errorText(error)}`,
+        );
       }
     }
+    const push = this.options.push;
+    await this.perUser(
+      [...jobIds.keys()],
+      async (userId) => {
+        const list = deliveries.get(userId);
+        if (push?.enabled && list) await push.deliver(userId, list, now);
+      },
+      async (userId) => {
+        await this.db
+          .update(eventReminderJobs)
+          .set({ sentAt: new Date(now) })
+          .where(inArray(eventReminderJobs.id, jobIds.get(userId) ?? []));
+      },
+    );
     return claimed.length;
   }
 
@@ -328,21 +438,41 @@ export class NotificationDispatcher {
       const rows = await tx
         .select()
         .from(eventNotices)
-        .where(isNull(eventNotices.sentAt))
+        .where(
+          and(
+            isNull(eventNotices.sentAt),
+            or(
+              isNull(eventNotices.claimedAt),
+              lt(eventNotices.claimedAt, new Date(now - CLAIM_LEASE_MS)),
+            ),
+          ),
+        )
         .orderBy(asc(eventNotices.createdAt), asc(eventNotices.id))
         .limit(NOTICE_BATCH)
         .for("update", { skipLocked: true });
       if (rows.length === 0) return [];
+      const exhausted = rows
+        .filter((row) => row.attempts >= MAX_DISPATCH_ATTEMPTS)
+        .map((row) => row.id);
       await tx
         .update(eventNotices)
-        .set({ sentAt: new Date(now) })
+        .set({
+          claimedAt: new Date(now),
+          attempts: sql`${eventNotices.attempts} + 1`,
+        })
         .where(
           inArray(
             eventNotices.id,
             rows.map((row) => row.id),
           ),
         );
-      return rows;
+      if (exhausted.length > 0) {
+        await tx
+          .update(eventNotices)
+          .set({ sentAt: new Date(now), claimedAt: null })
+          .where(inArray(eventNotices.id, exhausted));
+      }
+      return rows.filter((row) => row.attempts < MAX_DISPATCH_ATTEMPTS);
     });
     if (claimed.length === 0) return 0;
 
@@ -364,25 +494,102 @@ export class NotificationDispatcher {
       );
     const calendarById = new Map(calendarRows.map((row) => [row.id, row]));
 
-    const byUser = new Map<string, typeof claimed>();
+    const byUser = new Map<string, NoticeRow[]>();
     for (const row of claimed) {
       const list = byUser.get(row.userId) ?? [];
       list.push(row);
       byUser.set(row.userId, list);
     }
-    for (const [userId, rows] of byUser) {
-      const user = users.get(userId);
-      if (!user) continue;
-      const options = {
-        timeZone: user.timeZone,
-        now,
-        detail: user.settings.detail,
-      };
-      const messages: CalendarPushMessage[] = [];
-      // 招待はカレンダーごとにまとめる。
-      const invites = new Map<string, typeof rows>();
-      for (const row of rows) {
+    /** 実際に通知になった行 (直近 1 分の数に入れる)。ほかは claimedAt を外して済ませる。 */
+    const delivered = new Set<string>();
+    await this.perUser(
+      [...byUser.keys()],
+      async (userId) => {
+        const user = users.get(userId);
+        const rows = byUser.get(userId) ?? [];
+        if (!user) return;
+        const messages = await this.noticeMessages(
+          userId,
+          rows,
+          user,
+          calendarById,
+          now,
+          delivered,
+        );
+        const limited = await this.limit(userId, rows, messages, now);
+        if (limited.length === 0) return;
+        await this.announce(userId, limited);
+        const push = this.options.push;
+        if (push?.enabled) {
+          await push.deliver(
+            userId,
+            limited.map((message) => ({ message })),
+            now,
+          );
+        }
+      },
+      async (userId) => {
+        const rows = byUser.get(userId) ?? [];
+        const sent = rows.filter((row) => delivered.has(row.id));
+        const skipped = rows.filter((row) => !delivered.has(row.id));
+        if (sent.length > 0) {
+          await this.db
+            .update(eventNotices)
+            .set({ sentAt: new Date(now) })
+            .where(
+              inArray(
+                eventNotices.id,
+                sent.map((row) => row.id),
+              ),
+            );
+        }
+        if (skipped.length > 0) {
+          await this.db
+            .update(eventNotices)
+            .set({ sentAt: new Date(now), claimedAt: null })
+            .where(
+              inArray(
+                eventNotices.id,
+                skipped.map((row) => row.id),
+              ),
+            );
+        }
+      },
+    );
+    return claimed.length;
+  }
+
+  /** 利用者 1 人分の行から、送る通知を作る。通知にした行は delivered に入れる。 */
+  private async noticeMessages(
+    userId: string,
+    rows: readonly NoticeRow[],
+    user: UserNoticeSettings,
+    calendarById: Map<
+      string,
+      Pick<
+        typeof calendars.$inferSelect,
+        "id" | "source" | "readOnly" | "providerState"
+      >
+    >,
+    now: number,
+    delivered: Set<string>,
+  ): Promise<CalendarPushMessage[]> {
+    const options = {
+      timeZone: user.timeZone,
+      now,
+      detail: user.settings.detail,
+    };
+    const messages: CalendarPushMessage[] = [];
+    // 招待はカレンダーごとにまとめる。
+    const invites = new Map<string, NoticeRow[]>();
+    for (const row of rows) {
+      try {
+        // 消えたカレンダーの行は送らない (L5)。
+        if (!calendarById.has(row.calendarId)) continue;
         const snapshot = row.snapshot as EventNoticeSnapshot;
+        // 繰り返す予定は次の回の日時と期限を使い、次の回が無ければ送らない (H1)。
+        const occurrence = safeNoticeOccurrence(snapshot, now, user.timeZone);
+        if (!occurrence) continue;
         if (row.kind === "invite") {
           if (!user.settings.invites) continue;
           const list = invites.get(row.calendarId) ?? [];
@@ -394,45 +601,62 @@ export class NotificationDispatcher {
         if (row.kind === "cancel") {
           messages.push({
             kind: "event-cancel",
-            ...cancelText(snapshot, options),
+            ...cancelText(snapshot, options, occurrence.timing),
             tag: updateTag(row.eventId),
             eventId: row.eventId,
-            expiresAt: snapshotEnd(snapshot),
+            ...(occurrence.end !== undefined
+              ? { expiresAt: occurrence.end }
+              : {}),
             calendarId: row.calendarId,
           });
+          delivered.add(row.id);
           continue;
         }
         const previous = await this.previousSnapshot(row);
         if (!previous) continue;
         messages.push({
           kind: "event-update",
-          ...updateText(previous, snapshot, options),
+          ...updateText(previous, snapshot, options, occurrence.timing),
           tag: updateTag(row.eventId),
           eventId: row.eventId,
-          expiresAt: snapshotEnd(snapshot),
+          ...(occurrence.end !== undefined
+            ? { expiresAt: occurrence.end }
+            : {}),
           calendarId: row.calendarId,
         });
+        delivered.add(row.id);
+      } catch (error) {
+        this.log(
+          `予定の通知 ${row.id} を組み立てられませんでした: ${errorText(error)}`,
+        );
       }
-      for (const [calendarId, list] of invites) {
-        if (list.length > MAX_SINGLE_INVITE_NOTIFICATIONS) {
-          messages.push(batchMessage(calendarId, list, options));
-          continue;
-        }
-        const calendar = calendarById.get(calendarId);
-        const canRespond =
-          !!this.options.rsvp &&
-          !!calendar &&
-          !calendar.readOnly &&
-          calendarScheduling(calendar) === "server";
-        for (const row of list) {
+    }
+    for (const [calendarId, list] of invites) {
+      if (list.length > MAX_SINGLE_INVITE_NOTIFICATIONS) {
+        messages.push(batchMessage(calendarId, list, options));
+        for (const row of list) delivered.add(row.id);
+        continue;
+      }
+      const calendar = calendarById.get(calendarId);
+      const canRespond =
+        !!this.options.rsvp &&
+        !!calendar &&
+        !calendar.readOnly &&
+        calendarScheduling(calendar) === "server";
+      for (const row of list) {
+        try {
           const snapshot = row.snapshot as EventNoticeSnapshot;
+          const occurrence = safeNoticeOccurrence(snapshot, now, user.timeZone);
+          if (!occurrence) continue;
           const rsvp = this.options.rsvp;
           messages.push({
             kind: "event-invite",
-            ...inviteText(snapshot, options),
+            ...inviteText(snapshot, options, occurrence.timing),
             tag: inviteTag(row.eventId),
             eventId: row.eventId,
-            expiresAt: snapshotEnd(snapshot),
+            ...(occurrence.end !== undefined
+              ? { expiresAt: occurrence.end }
+              : {}),
             calendarId,
             ...(canRespond && rsvp
               ? {
@@ -448,54 +672,56 @@ export class NotificationDispatcher {
                 }
               : {}),
           });
+          delivered.add(row.id);
+        } catch (error) {
+          this.log(
+            `予定の通知 ${row.id} を組み立てられませんでした: ${errorText(error)}`,
+          );
         }
       }
-      const limited = this.limit(userId, messages, now, options);
-      if (limited.length === 0) continue;
-      await this.announce(userId, limited);
-      const push = this.options.push;
-      if (push?.enabled) {
-        await push.deliver(
-          userId,
-          limited.map((message) => ({ message })),
-          now,
-        );
-      }
     }
-    return claimed.length;
+    return messages;
   }
 
-  /** 1 分に MAX_NOTICES_PER_MINUTE を超える分は、まとめの 1 件にする。 */
-  private limit(
+  /**
+   * 1 分に MAX_NOTICES_PER_MINUTE を超える分は、まとめの 1 件にする (L3)。直近 1 分に送った数は
+   * DB で数える (今回取った行は除く)。まとめの tag は毎回同じなので、溜まらずに置き換わる。
+   */
+  private async limit(
     userId: string,
+    rows: readonly NoticeRow[],
     messages: CalendarPushMessage[],
     now: number,
-    options: { detail: CalendarNotificationSettings["detail"] },
-  ): CalendarPushMessage[] {
-    const recent = (this.recent.get(userId) ?? []).filter(
-      (at) => at > now - 60_000,
-    );
-    const room = Math.max(MAX_NOTICES_PER_MINUTE - recent.length, 0);
-    let result = messages;
-    if (messages.length > room) {
-      const kept = messages.slice(0, Math.max(room - 1, 0));
-      const rest = messages.slice(kept.length);
-      const first = rest.find((message) => message.eventId)?.eventId ?? "-";
-      result = [
-        ...kept,
-        {
-          kind: "event-invites-batch",
-          ...inviteBatchText([], rest.length, options),
-          tag: inviteBatchTag("all", first),
-          eventId: null,
-        },
-      ];
-      // 上限を超えた分も、少なくともまとめの 1 件は出す。
-      if (room === 0) result = result.slice(-1);
-    }
-    for (const _ of result) recent.push(now);
-    this.recent.set(userId, recent);
-    return result;
+  ): Promise<CalendarPushMessage[]> {
+    if (messages.length === 0) return messages;
+    const [row] = await this.db
+      .select({ value: count() })
+      .from(eventNotices)
+      .where(
+        and(
+          eq(eventNotices.userId, userId),
+          isNotNull(eventNotices.sentAt),
+          gt(eventNotices.claimedAt, new Date(now - 60_000)),
+          notInArray(
+            eventNotices.id,
+            rows.map((item) => item.id),
+          ),
+        ),
+      );
+    const recent = Number(row?.value ?? 0);
+    const room = Math.max(MAX_NOTICES_PER_MINUTE - recent, 0);
+    if (messages.length <= room) return messages;
+    const kept = messages.slice(0, Math.max(room - 1, 0));
+    const rest = messages.slice(kept.length);
+    return [
+      ...kept,
+      {
+        kind: "event-invites-batch",
+        ...noticeOverflowText(rest.length),
+        tag: NOTICE_OVERFLOW_TAG,
+        eventId: null,
+      },
+    ];
   }
 
   /** 開いている画面へ (API の EventsHub → SSE)。出欠の合言葉は載せない。 */
@@ -543,8 +769,9 @@ export class NotificationDispatcher {
         and(
           eq(eventNotices.userId, row.userId),
           eq(eventNotices.eventId, row.eventId),
-          ne(eventNotices.id, row.id),
-          lt(eventNotices.createdAt, row.createdAt),
+          // 同じ取り込みで入れた行 (created_at が同じ) は id (uuidv7) の順。created_at は
+          // マイクロ秒まであり JS の Date では比べられないので、DB の中で比べる。
+          sql`(${eventNotices.createdAt}, ${eventNotices.id}) < (select n.created_at, n.id from ${eventNotices} n where n.id = ${row.id})`,
         ),
       )
       .orderBy(desc(eventNotices.createdAt), desc(eventNotices.id))
@@ -570,14 +797,6 @@ function batchMessage(
     eventId: null,
     calendarId,
   };
-}
-
-/** snapshot の予定の終了 (epoch ms)。終日は UTC の日付の 0:00 で近似する。 */
-function snapshotEnd(snapshot: EventNoticeSnapshot): number | undefined {
-  const end = snapshot.allDay
-    ? Date.parse(`${snapshot.endDate}T00:00:00Z`)
-    : Date.parse(snapshot.endAt);
-  return Number.isFinite(end) ? end : undefined;
 }
 
 /** job と回の行から、文言と tag の材料 (PlannedReminder の形) を作る。 */
@@ -628,40 +847,4 @@ function plannedOf(
     startAt: occurrence.startAt.toISOString(),
     endAt: (occurrence.endAt ?? occurrence.startAt).toISOString(),
   };
-}
-
-/** その日の 0:00 (timeZone) の epoch ms。Intl でオフセットを求める (worker は Temporal を直接持たない)。 */
-export function zonedDayStart(date: string, timeZone: string): number {
-  const utc = Date.parse(`${date}T00:00:00Z`);
-  const offset = (at: number) => {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).formatToParts(new Date(at));
-    const get = (type: string) =>
-      Number(parts.find((part) => part.type === type)?.value ?? 0);
-    return (
-      Date.UTC(
-        get("year"),
-        get("month") - 1,
-        get("day"),
-        get("hour"),
-        get("minute"),
-        get("second"),
-      ) - at
-    );
-  };
-  try {
-    let result = utc - offset(utc);
-    result = utc - offset(result);
-    return result;
-  } catch {
-    return utc;
-  }
 }

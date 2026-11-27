@@ -358,6 +358,13 @@
       "when": 1795800360156,
       "tag": "0050_calendar_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1795800871139,
+      "tag": "0051_calendar_notifications_delivery",
+      "breakpoints": true
     }
   ]
 }

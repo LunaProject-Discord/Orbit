@@ -299,6 +299,38 @@ function remindersFitTiming(
 const NEGATIVE_REMINDER_MESSAGE =
   "開始より後のリマインダーは終日の予定だけで使えます。";
 
+/**
+ * 終日の予定を時刻ありに変えるとき、リマインダーを一緒に送らなければ、行に残っている負の分
+ * (終日だけで使える「当日 9:00」など) を外す。残すと開始時刻に鳴り、相手側にも 0 分で書かれる
+ * (レビュー L1)。
+ */
+async function withoutNegativeReminders(
+  tx: Tx,
+  target: EventRow,
+  changes: EventFields,
+): Promise<EventFields> {
+  if (
+    changes.time === undefined ||
+    changes.time.allDay ||
+    !target.allDay ||
+    changes.reminders !== undefined
+  ) {
+    return changes;
+  }
+  const current =
+    (await loadExtras(tx, [target.id])).get(target.id)?.reminders ?? [];
+  if (current.every((item) => item.minutes >= 0)) return changes;
+  return {
+    ...changes,
+    reminders: current
+      .filter((item) => item.minutes >= 0)
+      .map((item) => ({
+        method: item.method as "display" | "email",
+        minutes: item.minutes,
+      })),
+  };
+}
+
 const attendee = z.object({
   email: z
     .string()
@@ -1883,7 +1915,7 @@ export function calendarRoutes({
             calendar,
             info,
             target: row,
-            changes: checked.changes,
+            changes: await withoutNegativeReminders(tx, row, checked.changes),
             changedAt: correctClientTimes(body.changedAt, body.clientNow, now),
             now,
           });
@@ -1971,7 +2003,11 @@ export function calendarRoutes({
             calendar,
             info,
             target: exception,
-            changes: checked.changes,
+            changes: await withoutNegativeReminders(
+              tx,
+              exception,
+              checked.changes,
+            ),
             changedAt: correctClientTimes(body.changedAt, body.clientNow, now),
             now,
           });

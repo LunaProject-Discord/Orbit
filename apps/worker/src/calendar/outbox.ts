@@ -974,6 +974,8 @@ async function applyUpdate(
           (event) => !isDeletePending(guard, calendar.id, event),
         ),
         now: nowOf(deps),
+        // 主催者の変更が競合で入ったら、招待された予定の変更として知らせる (L6)。
+        note: true,
       });
       for (const lost of written.lostLocal) {
         deps.log(
@@ -1346,6 +1348,7 @@ async function failEventOperation(
           (event) => !isDeletePending(guard, calendar.id, event),
         ),
         now: nowOf(deps),
+        note: true,
       });
     } else {
       // 取り直せなかった、または相手側で消えていた。次の同期で全件を突き合わせる。

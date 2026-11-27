@@ -520,6 +520,47 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     ).toBe(200);
   });
 
+  it("終日の予定を時刻だけの変更で時刻ありにすると、負の分のリマインダーを外す (L1)", async () => {
+    const created = await call("POST", "/events", {
+      calendarId,
+      summary: "休み",
+      time: { allDay: true, startDate: "2026-12-22", endDate: "2026-12-23" },
+      useDefaultReminders: false,
+      reminders: [
+        { method: "display", minutes: -540 },
+        { method: "display", minutes: 900 },
+      ],
+    });
+    const id = (created.body.event as Json).id as string;
+    const timedTime = {
+      allDay: false,
+      startAt: "2026-12-22T10:00:00+09:00",
+      endAt: "2026-12-22T11:00:00+09:00",
+      startTimeZone: "Asia/Tokyo",
+    };
+    const changed = await call("PATCH", `/events/${id}`, {
+      changes: { time: timedTime },
+    });
+    expect(changed.status).toBe(200);
+    expect((changed.body.event as Json).reminders).toEqual([
+      { method: "display", minutes: 900 },
+    ]);
+    // 負の分の無い予定は、そのまま残す。
+    const plain = await call("POST", "/events", {
+      calendarId,
+      time: { allDay: true, startDate: "2026-12-24", endDate: "2026-12-25" },
+      useDefaultReminders: false,
+      reminders: [{ method: "display", minutes: 900 }],
+    });
+    const plainId = (plain.body.event as Json).id as string;
+    const kept = await call("PATCH", `/events/${plainId}`, {
+      changes: { time: timedTime },
+    });
+    expect((kept.body.event as Json).reminders).toEqual([
+      { method: "display", minutes: 900 },
+    ]);
+  });
+
   it("項目ごとに変更をまとめ、後から変えた方を残す", async () => {
     const created = await call("POST", "/events", {
       calendarId,

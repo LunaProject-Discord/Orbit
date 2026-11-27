@@ -8,10 +8,11 @@ import {
   readCalendarNotificationSettings,
   readNotificationActions,
 } from "@orbit/core";
-import { type Database, userSettings } from "@orbit/db";
+import { calendars, type Database, userSettings } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { recordChanges } from "../lib/changes.js";
 import {
   calendarNotificationSettingsBody,
   composeFormatSettings,
@@ -69,7 +70,10 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
 
   /**
    * 予定の通知の設定と利用者のタイムゾーンを保存する (段取り 9、設計 6.2・6.3)。
-   * 省いた項目は今の値を残す。保存したら worker に終日の通知の作り直しを頼む。
+   * 省いた項目は今の値を残す。鳴らす時刻に関わる値 (終日の通知、タイムゾーン) が変わったときだけ、
+   * worker に作り直しを頼み (変わらない PUT の連打で作り直しを積ませない。レビュー M8)、
+   * 利用者のカレンダーの変更を記録して changes の位置を進める (端末が新しい設定で予約し直すまで、
+   * 作り直した job を「予約済み」と見なさないため。レビュー M2)。
    */
   app.put(
     "/calendar-notifications",
@@ -90,8 +94,11 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
           .from(userSettings)
           .where(eq(userSettings.userId, userId))
           .for("update");
+        const previous = readCalendarNotificationSettings(
+          current?.calendarNotifications,
+        );
         const calendarNotifications = readCalendarNotificationSettings({
-          ...readCalendarNotificationSettings(current?.calendarNotifications),
+          ...previous,
           ...body.calendarNotifications,
         });
         const timeZone =
@@ -102,12 +109,28 @@ export function settingsRoutes({ db }: Pick<RouteDeps, "db">) {
           .update(userSettings)
           .set({ calendarNotifications, timeZone })
           .where(eq(userSettings.userId, userId));
-        const notification: CalendarNotificationSettingsNotification = {
-          userId,
-        };
-        await tx.execute(
-          sql`select pg_notify(${CHANNEL_CALENDAR_NOTIFICATION_SETTINGS}, ${JSON.stringify(notification)})`,
-        );
+        const timingChanged =
+          timeZone !== (current?.timeZone ?? null) ||
+          JSON.stringify(calendarNotifications.allDay) !==
+            JSON.stringify(previous.allDay);
+        if (timingChanged) {
+          const owned = await tx
+            .select({ id: calendars.id })
+            .from(calendars)
+            .where(eq(calendars.userId, userId));
+          await recordChanges(
+            tx,
+            userId,
+            "calendar",
+            owned.map((row) => row.id),
+          );
+          const notification: CalendarNotificationSettingsNotification = {
+            userId,
+          };
+          await tx.execute(
+            sql`select pg_notify(${CHANNEL_CALENDAR_NOTIFICATION_SETTINGS}, ${JSON.stringify(notification)})`,
+          );
+        }
         return { calendarNotifications, timeZone };
       });
       await announce(db, userId);

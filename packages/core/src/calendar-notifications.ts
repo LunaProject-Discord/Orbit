@@ -47,6 +47,11 @@ export type CalendarPushMessage = {
   recurrenceId?: string | null;
   /** 通知を消してよい時刻 (予定の終了、epoch ms)。 */
   expiresAt?: number;
+  /**
+   * 鳴らす時刻 (epoch ms。リマインダーだけ)。端末が「同じ通知か」を比べるのに使う
+   * (延期で開始だけが動き終了が同じでも、別の通知と分かるように)。古い端末は無視する。
+   */
+  fireAt?: number;
   calendarId?: string;
   /** 出欠のボタン (招待だけ)。Desktop の SSE には付けない。 */
   rsvp?: { url: string; token: string };
@@ -101,6 +106,11 @@ export const updateTag = (eventId: string) => `cal-upd:${eventId}`;
 /** まとめた招待の tag。届くたびに別の通知として出す。 */
 export const inviteBatchTag = (calendarId: string, firstEventId: string) =>
   `cal-inv-batch:${calendarId}:${firstEventId}`;
+/**
+ * 1 分の上限 (MAX_NOTICES_PER_MINUTE) を超えた分をまとめた通知の tag。毎回同じ値にして、
+ * まとめの通知が溜まらず置き換わるようにする。
+ */
+export const NOTICE_OVERFLOW_TAG = "cal-inv-batch:all";
 
 /** 予定の通知の tag か (cal- で始まる)。メールの tag (mail:、mail-batch:) と見分ける。 */
 export function isCalendarTag(tag: string): boolean {
@@ -162,6 +172,7 @@ export function toCalendarFcmData(
     ...(message.expiresAt !== undefined
       ? { expiresAt: String(message.expiresAt) }
       : {}),
+    ...(message.fireAt !== undefined ? { fireAt: String(message.fireAt) } : {}),
     ...(message.calendarId ? { calendarId: message.calendarId } : {}),
     channel: calendarNotificationChannel(message.kind),
     ...(message.rsvp
@@ -320,6 +331,8 @@ export type EventNoticeSnapshot = {
   rrule?: string | null;
   /** 浮動時刻と終日の表示に使うタイムゾーン。 */
   timeZone: string | null;
+  /** 記録したときの自分の出欠 (needs_action、accepted など)。古い行には無い。 */
+  selfStatus?: string | null;
 } & (
   | { allDay: false; startAt: string; endAt: string }
   | { allDay: true; startDate: string; endDate: string }
@@ -359,7 +372,10 @@ function instantMs(value: string): number {
 // 文言 (設計 9 章)
 // ---------------------------------------------------------------------------
 
-/** 制御文字を空白にし、空白を詰め、長さを切る (招待は他人が送り込めるため)。 */
+/**
+ * 制御文字を空白にし、文字の向きを変える文字と幅の無い文字を除き、空白を詰め、長さを切る
+ * (招待は他人が送り込めるため。U+202E などで「招待: 」の後ろの見え方を崩させない)。
+ */
 export function cleanNotificationText(
   text: string | null | undefined,
   max: number,
@@ -367,6 +383,12 @@ export function cleanNotificationText(
   const clean = (text ?? "")
     // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を落とす
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    // 双方向の制御 (LRM・RLM・ALM、U+202A〜202E、U+2066〜2069) と、幅の無い文字 (U+200B〜200D、
+    // U+2060〜2064、BOM)。
+    .replace(
+      /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g,
+      "",
+    )
     .replace(/\s+/g, " ")
     .trim();
   const chars = [...clean];
@@ -498,6 +520,7 @@ export function toReminderMessage(
     eventId: planned.eventId,
     recurrenceId: planned.recurrenceId,
     expiresAt: planned.expiresAt,
+    fireAt: planned.fireAt,
     calendarId: planned.calendarId,
   };
 }
@@ -506,12 +529,14 @@ export function toReminderMessage(
 export function inviteText(
   snapshot: EventNoticeSnapshot,
   options: CalendarTextOptions,
+  /** 文言に出す日時 (繰り返す予定の次の回)。省くと snapshot の日時。 */
+  timing: CalendarTextTiming = snapshot,
 ): NotificationText {
   if (options.detail === "private") return { title: "新しい招待", body: "" };
   const title =
     cleanNotificationText(snapshot.title, MAX_EVENT_TITLE) || UNTITLED;
   const organizer = cleanNotificationText(snapshot.organizer, MAX_EVENT_PERSON);
-  const when = formatEventWhen(snapshot, options);
+  const when = formatEventWhen(timing, options);
   return {
     title: `招待: ${title}`,
     body: organizer ? `${organizer} さんから · ${when}` : when,
@@ -541,16 +566,17 @@ export function inviteBatchText(
   };
 }
 
-/** 変更の文言。日時だけ・場所だけ・両方で本文を変える。 */
+/** 変更の文言。日時だけ・場所だけ・両方で本文を変える。timing は inviteText と同じ。 */
 export function updateText(
   previous: EventNoticeSnapshot,
   next: EventNoticeSnapshot,
   options: CalendarTextOptions,
+  timing: CalendarTextTiming = next,
 ): NotificationText {
   if (options.detail === "private") return { title: "予定の変更", body: "" };
   const title = `変更: ${cleanNotificationText(next.title, MAX_EVENT_TITLE) || UNTITLED}`;
   const changes = eventNoticeChanges(previous, next);
-  const when = formatEventWhen(next, options);
+  const when = formatEventWhen(timing, options);
   const location =
     cleanNotificationText(next.location, MAX_EVENT_LOCATION) || "(なし)";
   if (changes.when && changes.location) {
@@ -561,15 +587,27 @@ export function updateText(
   return { title, body: `日時が ${when} になりました` };
 }
 
-/** 取り消しの文言。 */
+/** 取り消しの文言。timing は inviteText と同じ。 */
 export function cancelText(
   snapshot: EventNoticeSnapshot,
   options: CalendarTextOptions,
+  timing: CalendarTextTiming = snapshot,
 ): NotificationText {
   if (options.detail === "private") return { title: "予定の変更", body: "" };
   return {
     title: `取り消し: ${cleanNotificationText(snapshot.title, MAX_EVENT_TITLE) || UNTITLED}`,
-    body: `${formatEventWhen(snapshot, options)} の予定は取り消されました`,
+    body: `${formatEventWhen(timing, options)} の予定は取り消されました`,
+  };
+}
+
+/**
+ * 1 分の上限を超えた分をまとめた通知の文言。招待だけでなく変更・取り消しも入るので
+ * 「新しい招待」とは書かない。
+ */
+export function noticeOverflowText(count: number): NotificationText {
+  return {
+    title: `予定の通知 ${count} 件`,
+    body: "招待と予定の変更をまとめました",
   };
 }
 

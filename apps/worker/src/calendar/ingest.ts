@@ -495,6 +495,8 @@ export async function mergeRemoteEvents(
 
 export type WriteOutcome = {
   upserted: string[];
+  /** upserted のうち新しく作った行。 */
+  created: string[];
   deleted: string[];
   lostLocal: MergeOutcome["lostLocal"];
   keptLocal: MergeOutcome["keptLocal"];
@@ -515,6 +517,11 @@ export async function writeRemoteEvents(
     guard: PendingEventGuard;
     events: readonly ResolvedRemoteEvent[];
     now: Date;
+    /**
+     * true なら、書いた結果から招待・変更・取り消しも見つける (noteRemoteEvents)。書き戻しの
+     * 競合で相手側の内容を取り込むとき (L6)。取り込みは削除とまとめて自分で呼ぶので false。
+     */
+    note?: boolean;
   },
 ): Promise<WriteOutcome> {
   const merged = await mergeRemoteEvents(tx, options);
@@ -533,6 +540,16 @@ export async function writeRemoteEvents(
     "delete",
     result.deleted,
   );
+  if (options.note) {
+    await noteRemoteEvents(tx, {
+      account: options.account,
+      calendar: options.calendar,
+      upserted,
+      created: result.created,
+      deleted: result.deleted,
+      now: options.now,
+    });
+  }
   for (const lost of merged.lostLocal) {
     await recordEventConflict(tx, {
       userId: options.account.userId,
@@ -547,6 +564,7 @@ export async function writeRemoteEvents(
   }
   return {
     upserted,
+    created: result.created,
     deleted: result.deleted,
     lostLocal: merged.lostLocal,
     keptLocal: merged.keptLocal,
@@ -790,6 +808,7 @@ export async function ingestEventDelta(
       account,
       calendar,
       upserted: written.upserted,
+      created: written.created,
       deleted,
       now,
     });
