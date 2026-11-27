@@ -1,8 +1,20 @@
 import type { OutboxOperation, OutboxTarget } from "@orbit/core";
+import { type Database, outbox } from "@orbit/db";
+import { eq } from "drizzle-orm";
 import type { ImapFlow } from "imapflow";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createTestDatabase,
+  insertAccount,
+  insertUser,
+  type TestDatabase,
+} from "./calendar/testing/test-db.js";
 import { GraphClient } from "./graph-client.js";
-import { buildPendingGuard } from "./outbox.js";
+import {
+  accountsWithPendingOutbox,
+  buildPendingGuard,
+  processOutbox,
+} from "./outbox.js";
 import { applyGraphOperation } from "./outbox-graph.js";
 import { applyImapOperation } from "./outbox-imap.js";
 
@@ -383,5 +395,92 @@ describe("applyGraphOperation", () => {
         payload: { targets: graphTargets, seen: true },
       }),
     ).rejects.toThrow();
+  });
+});
+
+const adminUrl = process.env.DATABASE_URL;
+
+describe.skipIf(!adminUrl)("メールの outbox と予定の書き戻しの切り分け", () => {
+  let test: TestDatabase;
+  let db: Database;
+  let userId: string;
+
+  beforeAll(async () => {
+    test = await createTestDatabase(adminUrl as string, "orbit_mailoutbox");
+    db = test.db;
+    userId = await insertUser(db, "mailoutbox@example.com");
+  });
+
+  afterAll(async () => {
+    await test?.drop();
+  });
+
+  const insertRow = (
+    accountId: string,
+    kind: "set_flags" | "event_update",
+    payload: Record<string, unknown>,
+  ) =>
+    db
+      .insert(outbox)
+      .values({
+        accountId,
+        kind,
+        payload,
+        idempotencyKey: `${kind}:${crypto.randomUUID()}`,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+  it("event_update の行があっても、processOutbox は触らない", async () => {
+    const account = await insertAccount(db, userId);
+    const event = await insertRow(account.id, "event_update", {
+      eventId: crypto.randomUUID(),
+      calendarId: crypto.randomUUID(),
+      fields: ["summary"],
+    });
+    const flags = await insertRow(account.id, "set_flags", {
+      targets: [],
+      seen: true,
+    });
+    const executed: string[] = [];
+    const result = await processOutbox(
+      db,
+      account.id,
+      async (operation) => {
+        executed.push(operation.kind);
+        return { ok: true };
+      },
+      () => {},
+    );
+    expect(result).toEqual({ done: 1, failed: 0 });
+    expect(executed).toEqual(["set_flags"]);
+    const [eventAfter] = await db
+      .select()
+      .from(outbox)
+      .where(eq(outbox.id, event?.id as string));
+    expect(eventAfter?.status).toBe("pending");
+    expect(eventAfter?.attempts).toBe(0);
+    const [flagsAfter] = await db
+      .select()
+      .from(outbox)
+      .where(eq(outbox.id, flags?.id as string));
+    expect(flagsAfter?.status).toBe("done");
+  });
+
+  it("accountsWithPendingOutbox は、メールと予定の書き戻しを分けて数える", async () => {
+    const mail = await insertAccount(db, userId);
+    const calendar = await insertAccount(db, userId);
+    await insertRow(mail.id, "set_flags", { targets: [], seen: true });
+    await insertRow(calendar.id, "event_update", {
+      eventId: crypto.randomUUID(),
+      calendarId: crypto.randomUUID(),
+      fields: ["summary"],
+    });
+    const mailIds = await accountsWithPendingOutbox(db);
+    const calendarIds = await accountsWithPendingOutbox(db, "calendar");
+    expect(mailIds).toContain(mail.id);
+    expect(mailIds).not.toContain(calendar.id);
+    expect(calendarIds).toContain(calendar.id);
+    expect(calendarIds).not.toContain(mail.id);
   });
 });

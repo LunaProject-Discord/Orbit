@@ -16,7 +16,7 @@ import {
   type MicrosoftOAuthConfig,
 } from "@orbit/core";
 import { accounts, type Database } from "@orbit/db";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";
 import { notifyAttachmentReady } from "./attachment-fetch.js";
@@ -55,6 +55,23 @@ function connectionKey(row: typeof accounts.$inferSelect) {
     row.username,
     row.credentialsEncrypted,
   ].join("\n");
+}
+
+/**
+ * メールを同期するアカウント。メールを使わない (mailEnabled=false) アカウントは、
+ * カレンダーだけの同期 (calendar/manager.ts) が扱うので含めない。
+ * auth_required は認証情報が更新されるまで再接続しない。
+ */
+export function mailSyncAccounts(db: Database) {
+  return db
+    .select()
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.mailEnabled, true),
+        inArray(accounts.status, ["active", "error"]),
+      ),
+    );
 }
 
 /**
@@ -218,11 +235,7 @@ export class AccountManager {
 
   private async reconcileOnce() {
     if (this.stopped) return;
-    // auth_required は認証情報が更新されるまで再接続しない。
-    const rows = await this.db
-      .select()
-      .from(accounts)
-      .where(inArray(accounts.status, ["active", "error"]));
+    const rows = await mailSyncAccounts(this.db);
     const wanted = new Map(rows.map((row) => [row.id, row]));
 
     for (const [id, entry] of this.running) {

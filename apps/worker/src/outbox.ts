@@ -1,10 +1,23 @@
 import {
   accountLockKey,
+  EVENT_OUTBOX_KINDS,
   type OutboxOperation,
   type OutboxTarget,
 } from "@orbit/core";
 import { accounts, type Database, mailboxes, outbox } from "@orbit/db";
-import { and, asc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import { dropPendingPlacements } from "./mailbox-store.js";
 
@@ -51,6 +64,8 @@ export async function processOutbox(
         eq(outbox.accountId, accountId),
         // メールの送信は processSends が別に扱う。
         ne(outbox.kind, "send"),
+        // 予定の書き戻しは、カレンダーの同期 (calendar/outbox.ts) が扱う。
+        notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
         inArray(outbox.status, ["pending", "processing"]),
       ),
     )
@@ -161,6 +176,7 @@ export async function processOutbox(
       and(
         eq(outbox.accountId, accountId),
         ne(outbox.kind, "send"),
+        notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
         inArray(outbox.status, ["done", "failed"]),
         lt(outbox.updatedAt, new Date(Date.now() - KEEP_DONE_MS)),
       ),
@@ -168,19 +184,30 @@ export async function processOutbox(
   return { done, failed };
 }
 
-/** 反映待ちの操作があるアカウントの ID。通知の取りこぼしに備えた確認に使う。 */
+/**
+ * 反映待ちの操作があるアカウントの ID。通知の取りこぼしに備えた確認に使う。
+ * scope が mail ならメールの操作 (送信を含む)、calendar なら予定の書き戻し (event_*) だけを数える。
+ */
 export async function accountsWithPendingOutbox(
   db: Database,
+  scope: "mail" | "calendar" = "mail",
 ): Promise<string[]> {
+  const kinds: SQL =
+    scope === "calendar"
+      ? inArray(outbox.kind, [...EVENT_OUTBOX_KINDS])
+      : notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]);
   const rows = await db
     .selectDistinct({ accountId: outbox.accountId })
     .from(outbox)
     // 予約送信ややり直し待ちで、まだ時刻になっていないものは数えない
     // (毎回の確認でそのアカウントの同期を起こさないため)。
     .where(
-      or(
-        eq(outbox.status, "processing"),
-        and(eq(outbox.status, "pending"), lte(outbox.runAfter, new Date())),
+      and(
+        kinds,
+        or(
+          eq(outbox.status, "processing"),
+          and(eq(outbox.status, "pending"), lte(outbox.runAfter, new Date())),
+        ),
       ),
     );
   return rows.map((row) => row.accountId);
