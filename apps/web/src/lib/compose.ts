@@ -1,6 +1,7 @@
 import {
   type Account,
   type Address,
+  type ComposeFormat,
   isReceiveOnly,
   type MessageDetail,
   type OutgoingMail,
@@ -46,6 +47,13 @@ export type ComposeDraft = {
     files: UploadedAttachment[];
   } | null;
   mode: "new" | "reply" | "forward";
+  /**
+   * 書いている形式。text ならテキストだけで書き、本文は text に入る (html は使わない)。
+   * 無ければ書式付き (以前の版で保存した下書き)。
+   */
+  format?: ComposeFormat;
+  /** テキストで書いている本文。format が text のときだけ使う。 */
+  text?: string;
   /** 返信・転送の元になったメッセージ。 */
   sourceMessageId: string | null;
   /**
@@ -437,7 +445,9 @@ export function draftFromOutgoing(mail: OutgoingMail): ComposeDraft {
     cc: field(mail.cc),
     bcc: field(mail.bcc),
     subject: mail.subject,
-    html: mail.html ?? linesToHtml(mail.text),
+    html: mail.html ?? textToHtml(mail.text),
+    // テキストだけで送ったメールは、テキストのまま編集に戻す。
+    ...(mail.html === null ? { format: "text" as const, text: mail.text } : {}),
     attachments: mail.attachments,
     mode: mail.mode,
     sourceMessageId: mail.sourceMessageId,
@@ -535,14 +545,20 @@ function linesOf(parent: Node): string[] {
   return out;
 }
 
-/** HTML をテキストに直す。引用 (blockquote) は行頭に > を付ける。 */
-export function htmlToText(html: string): string {
+/**
+ * HTML をテキストに直す。引用 (blockquote) は行頭に > を付ける。
+ * keepLeadingLines なら、先頭の空行を残す (書き始める場所の空行を、テキストで書くときにも残すため)。
+ */
+export function htmlToText(
+  html: string,
+  options: { keepLeadingLines?: boolean } = {},
+): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  return linesOf(doc.body)
-    .map((line) => line.replace(/ /g, " ").trimEnd())
+  const text = linesOf(doc.body)
+    .map((line) => line.replace(/\u00a0/g, " ").trimEnd())
     .join("\n")
-    .replace(/\n{4,}/g, "\n\n\n")
-    .trim();
+    .replace(/\n{4,}/g, "\n\n\n");
+  return options.keepLeadingLines ? text.trimEnd() : text.trim();
 }
 
 /**
@@ -757,6 +773,9 @@ export function draftFromServer(draft: ServerDraft): ComposeDraft {
     bcc: draft.bcc,
     subject: draft.subject,
     html: draft.html,
+    ...(draft.format === "text"
+      ? { format: "text" as const, text: draft.text ?? htmlToText(draft.html) }
+      : {}),
     attachments: draft.attachments,
     mode: draft.mode,
     sourceMessageId: draft.sourceMessageId,
@@ -768,7 +787,9 @@ export function draftSaveInput(
   draft: ComposeDraft,
   baseRevision: number | null,
 ): SaveDraftInput {
-  const html = sanitizeHtml(draft.html, { rich: true });
+  const text = isTextDraft(draft) ? (draft.text ?? "") : null;
+  const html =
+    text === null ? sanitizeHtml(draft.html, { rich: true }) : textToHtml(text);
   return {
     accountId: draft.accountId,
     to: draft.to,
@@ -776,9 +797,10 @@ export function draftSaveInput(
     bcc: draft.bcc,
     subject: draft.subject,
     html,
-    text: htmlToText(html),
+    text: text ?? htmlToText(html),
     attachmentIds: draft.attachments.map((file) => file.id),
     mode: draft.mode,
+    format: text === null ? "html" : "text",
     sourceMessageId: draft.sourceMessageId,
     baseRevision,
   };
@@ -880,4 +902,135 @@ export function removeUnsavedDraft(id: string): void {
   }
   delete entries[id];
   writeUnsaved(entries);
+}
+
+// ---------------------------------------------------------------------------
+// テキストだけで書く (プレーンテキスト)
+// ---------------------------------------------------------------------------
+
+/** テキストで書いている下書きか。 */
+export function isTextDraft(draft: Pick<ComposeDraft, "format">): boolean {
+  return draft.format === "text";
+}
+
+/**
+ * テキストを HTML にする。行頭の「>」は引用 (blockquote) に戻す (> の数だけ入れ子にする)。
+ * テキストで書いた下書きを、ほかの版の画面や一覧でも読めるように HTML でも持っておくのに使う。
+ */
+export function textToHtml(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").trimEnd().split("\n");
+  let html = "";
+  let depth = 0;
+  for (const raw of lines) {
+    const match = /^((?:> ?)*)(.*)$/.exec(raw);
+    const marks = match?.[1] ?? "";
+    const level = (marks.match(/>/g) ?? []).length;
+    const line = match?.[2] ?? raw;
+    while (depth < level) {
+      html += "<blockquote>";
+      depth++;
+    }
+    while (depth > level) {
+      html += "</blockquote>";
+      depth--;
+    }
+    html += `<div>${line ? escapeHtml(line) : "<br>"}</div>`;
+  }
+  while (depth > 0) {
+    html += "</blockquote>";
+    depth--;
+  }
+  return html;
+}
+
+/** テキストにしたときに失われる書式 (太字、色、リンク、リストなど) があるか。 */
+export function hasFormatting(html: string): boolean {
+  const doc = new DOMParser().parseFromString(
+    sanitizeHtml(html, { rich: true }),
+    "text/html",
+  );
+  const plain = new Set(["DIV", "P", "BR", "BLOCKQUOTE"]);
+  for (const element of doc.body.querySelectorAll("*")) {
+    if (!plain.has(element.tagName)) return true;
+    if (element.tagName !== "BLOCKQUOTE" && element.hasAttribute("style")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 下書きの形式を変える。書式付きからテキストにすると書式は失われる (引用は行頭の > になる)。
+ * テキストから書式付きにすると、行頭の > は引用に戻る。
+ */
+export function draftAsFormat(
+  draft: ComposeDraft,
+  format: ComposeFormat,
+): ComposeDraft {
+  if ((draft.format ?? "html") === format) return draft;
+  if (format === "text") {
+    return {
+      ...draft,
+      format: "text",
+      text: htmlToText(sanitizeHtml(draft.html, { rich: true }), {
+        keepLeadingLines: true,
+      }),
+    };
+  }
+  const { text, ...rest } = draft;
+  return { ...rest, format: "html", html: textToHtml(text ?? "") };
+}
+
+/** 送信に使う本文 (テキストと、書式付きなら HTML)。ブラウザーでのみ動く。 */
+export function draftBody(
+  draft: ComposeDraft,
+  /** 入力欄の今の内容 (書式付きのとき)。無ければ下書きの html。 */
+  editorHtml?: string,
+): { text: string; html: string | null } {
+  if (isTextDraft(draft)) {
+    return { text: (draft.text ?? "").trim(), html: null };
+  }
+  const html = sanitizeHtml(editorHtml ?? draft.html, { rich: true });
+  return { text: htmlToText(html), html };
+}
+
+/**
+ * テキストの本文の署名を入れ替える (差出人や宛先を変えたとき)。
+ * 前の署名がそのまま残っていれば入れ替え、見つからなければ新しい署名を引用の前
+ * (引用が無ければ末尾) に足す。
+ */
+export function replaceTextSignature(
+  text: string,
+  beforeHtml: string | null | undefined,
+  afterHtml: string | null | undefined,
+): string {
+  const toText = (html: string | null | undefined) =>
+    html && htmlHasContent(html)
+      ? htmlToText(sanitizeHtml(html, { rich: true }))
+      : "";
+  const before = toText(beforeHtml);
+  const after = toText(afterHtml);
+  if (before && text.includes(before)) {
+    if (after) return text.replace(before, after);
+    // 署名を外すときは、署名の前の空行も 1 つ減らす。
+    return text.includes(`\n\n${before}`)
+      ? text.replace(`\n\n${before}`, "")
+      : text.replace(before, "");
+  }
+  if (!after) return text;
+  const lines = text.split("\n");
+  const quote = lines.findIndex(
+    (line, index) =>
+      line.startsWith("---------- 転送メッセージ") ||
+      (index > 0 && line.startsWith(">")),
+  );
+  if (quote < 0) return `${text.trimEnd()}\n\n${after}`;
+  // 返信では、引用の前の「日時 差出人:」の行の前に入れる。
+  const at = lines[quote]?.startsWith(">") ? quote - 1 : quote;
+  return [
+    ...lines.slice(0, at),
+    ...after.split("\n"),
+    "",
+    ...lines.slice(at),
+  ].join("\n");
 }

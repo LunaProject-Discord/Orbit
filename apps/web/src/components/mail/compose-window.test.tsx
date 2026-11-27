@@ -11,7 +11,18 @@ type Pending = {
   resolve: (uploaded: UploadedAttachment) => void;
 };
 
-const mocks = vi.hoisted(() => ({ pending: [] as Pending[] }));
+const mocks = vi.hoisted(() => ({
+  pending: [] as Pending[],
+  sent: [] as unknown[],
+}));
+
+vi.mock("@/lib/offline", async (original) => ({
+  ...(await original<typeof import("@/lib/offline")>()),
+  sendMailOrQueue: async (input: unknown) => {
+    mocks.sent.push(input);
+    return "sent";
+  },
+}));
 
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
@@ -235,5 +246,66 @@ describe("ComposeWindow の受信専用のアカウント", () => {
     );
     expect(sendButtons().length).toBeGreaterThan(0);
     expect(sendButtons().every((button) => button.disabled)).toBe(true);
+  });
+});
+
+describe("ComposeWindow のテキストのみで書くモード", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latest: ComposeDraft;
+
+  beforeEach(() => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    mocks.sent.length = 0;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("テキストの入力欄で書き、HTML を付けずに送る", async () => {
+    await act(async () => {
+      root.render(
+        <Harness
+          onDraft={(draft) => {
+            latest = draft;
+          }}
+          initial={() => ({
+            ...newDraft(account.id),
+            to: { list: [{ address: "you@example.test" }], text: "" },
+            format: "text",
+            text: "",
+          })}
+        />,
+      );
+    });
+    expect(container.querySelector('[role="textbox"]')).toBeNull();
+    const textarea = container.querySelector("textarea");
+    if (!textarea) throw new Error("テキストの入力欄が無い");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(textarea, "こんにちは\n> 引用");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(latest.text).toBe("こんにちは\n> 引用");
+    const form = container.querySelector("form");
+    await act(async () => {
+      form?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(mocks.sent).toHaveLength(1);
+    const input = mocks.sent[0] as { text: string; html?: string };
+    expect(input.text).toBe("こんにちは\n> 引用");
+    expect(input.html).toBeUndefined();
   });
 });

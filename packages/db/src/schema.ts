@@ -297,6 +297,9 @@ export const mailAccountStatus = pgEnum("mail_account_status", [
   "disabled",
 ]);
 
+/** メールを書く形式。html は書式付き、text はテキストだけ (プレーンテキスト)。 */
+export type ComposeFormat = "html" | "text";
+
 /** 利用者が登録した外部メールアカウント (Gmail など)。 */
 export const mailAccounts = pgTable(
   "mail_accounts",
@@ -355,6 +358,11 @@ export const mailAccounts = pgTable(
     color: text(),
     /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
     icon: text(),
+    /**
+     * このアカウントから書くメールの形式。html は書式付き、text はテキストだけ。
+     * null なら利用者の既定 (user_settings.compose_format) に従う。
+     */
+    composeFormat: text().$type<ComposeFormat>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -749,6 +757,8 @@ export const drafts = pgTable(
     text: text().notNull().default(""),
     attachments: jsonb().$type<DraftAttachment[]>().notNull().default([]),
     mode: text().$type<"new" | "reply" | "forward">().notNull().default("new"),
+    /** 書いている形式。text なら本文は text 列が正で、html 列はそれを HTML にしたもの。 */
+    format: text().$type<ComposeFormat>().notNull().default("html"),
     /** 返信・転送の元になったメッセージ (messages.id)。消えていてもよいので参照にはしない。 */
     sourceMessageId: uuid(),
     /** 保存のたびに増える番号。端末は、自分が元にした番号と違えば他の端末の変更に気づける。 */
@@ -948,6 +958,8 @@ export const userSettings = pgTable("user_settings", {
    * 端末ごとではなく利用者ごとに決める (アドレスのハッシュが Gravatar に送られるため、標準はオフ)。
    */
   senderIconGravatar: boolean().notNull().default(false),
+  /** メールを書くときの既定の形式。アカウントごとの指定 (mail_accounts.compose_format) が優先。 */
+  composeFormat: text().$type<ComposeFormat>().notNull().default("html"),
   updatedAt: updatedAt(),
 });
 

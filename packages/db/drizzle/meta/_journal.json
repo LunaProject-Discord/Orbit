@@ -274,6 +274,13 @@
       "when": 1795739734758,
       "tag": "0038_sender_icon_gravatar",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1795742339521,
+      "tag": "0039_compose_format",
+      "breakpoints": true
     }
   ]
 }

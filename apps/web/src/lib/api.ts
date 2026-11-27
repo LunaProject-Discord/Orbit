@@ -214,8 +214,16 @@ export type Account = {
   color: string | null;
   /** 画面でアカウントに付けるアイコンの名前。選んでいなければ null (色の点を出す)。 */
   icon: AccountIconName | null;
+  /**
+   * このアカウントから書くメールの形式。null (古いサーバーでは項目なし) なら、
+   * 利用者の既定 (SharedSettings.composeFormat) に従う。
+   */
+  composeFormat?: ComposeFormat | null;
   createdAt: string;
 };
+
+/** メールを書く形式。html は書式付き、text はテキストだけ。 */
+export type ComposeFormat = "html" | "text";
 
 export type ServerSettings = { host: string; port: number; secure: boolean };
 
@@ -568,6 +576,10 @@ export type ServerDraft = {
   snippet: string;
   attachments: UploadedAttachment[];
   mode: "new" | "reply" | "forward";
+  /** 書いている形式。古いサーバーには無い (書式付きとして扱う)。 */
+  format?: ComposeFormat;
+  /** テキストで書いている下書きの本文。format が text のときだけ入る。 */
+  text?: string;
   sourceMessageId: string | null;
   /** 保存のたびに増える番号。 */
   revision: number;
@@ -584,6 +596,7 @@ export type SaveDraftInput = {
   text: string;
   attachmentIds: string[];
   mode: "new" | "reply" | "forward";
+  format: ComposeFormat;
   sourceMessageId: string | null;
   /** この端末が元にした revision。まだサーバーに保存していなければ null。 */
   baseRevision: number | null;
@@ -1161,6 +1174,7 @@ export async function updateAccount(
     popLeaveOnServer?: boolean;
     popDeleteAfterDays?: number | null;
     notifyNewMail?: boolean;
+    composeFormat?: ComposeFormat | null;
   },
 ): Promise<Account> {
   const { account } = await apiJson<{ account: Account }>(
@@ -1531,6 +1545,8 @@ export type SharedSettings = {
   dateFormat: DateStyle | null;
   /** 差出人のアイコンを Gravatar で探す (取得はサーバーが行う)。古いサーバーには無い。 */
   senderIconGravatar?: boolean;
+  /** メールを書くときの既定の形式。古いサーバーには無い (書式付き)。 */
+  composeFormat?: ComposeFormat;
 };
 
 /** どの端末でも同じにする設定を取得する。 */
@@ -1553,6 +1569,14 @@ export async function saveDateFormat(dateFormat: DateStyle): Promise<void> {
   await apiFetch("/v1/settings/date-format", {
     method: "PUT",
     body: dateFormat,
+  });
+}
+
+/** メールを書くときの既定の形式を保存する。 */
+export async function saveComposeFormat(format: ComposeFormat): Promise<void> {
+  await apiFetch("/v1/settings/compose-format", {
+    method: "PUT",
+    body: { format },
   });
 }
 

@@ -124,7 +124,8 @@ export async function draftToMessage(
     bcc: row.bcc.list,
     subject: row.subject.trim(),
     text: row.text,
-    html: row.html.trim() ? row.html : null,
+    // テキストで書いている下書きは、テキストだけのメールとして保存する。
+    html: row.format === "html" && row.html.trim() ? row.html : null,
     attachments,
     messageId: draftMessageId(row.id, account.email),
     date: row.updatedAt.toISOString(),
