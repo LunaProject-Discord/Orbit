@@ -85,10 +85,11 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
   const [appUrl, setAppUrl] = useState<string | null>(null);
   /**
    * カレンダーの権限を求めたのに許可されなかったとき。ログイン (追加) 自体は済んでいるので、
-   * 知らせてから、戻り先へ進んでもらう。
+   * 知らせてから、戻り先へ進んでもらう。disabled は、使っていたカレンダーをサーバーがオフにしたこと。
    */
   const [calendarDenied, setCalendarDenied] = useState<{
     created: boolean;
+    disabled: boolean;
     returnTo: string;
   } | null>(null);
 
@@ -123,9 +124,13 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
     }
     completeOAuthLogin(provider, code, state)
       .then((result) => {
-        if (result.calendarRequested && result.calendarGranted === false) {
+        if (
+          result.calendarDisabled ||
+          (result.calendarRequested && result.calendarGranted === false)
+        ) {
           setCalendarDenied({
             created: !result.reauth,
+            disabled: result.calendarDisabled,
             returnTo: result.returnTo,
           });
           return;
@@ -157,9 +162,11 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
           カレンダーへのアクセスが許可されませんでした
         </h1>
         <p role="alert" className="max-w-md text-muted-foreground text-sm">
-          {calendarDenied.created
-            ? `${name} アカウントは、メールだけで追加しました。`
-            : `${name} へのログインは済みましたが、カレンダーは使わないままです。`}
+          {calendarDenied.disabled
+            ? "カレンダーの権限が外されたので、カレンダーをオフにしました。"
+            : calendarDenied.created
+              ? `${name} アカウントは、メールだけで追加しました。`
+              : `${name} へのログインは済みましたが、カレンダーは使わないままです。`}
           カレンダーを使うには、設定のアカウントで「カレンダーを使う」をオンにし、
           {name} の確認画面でカレンダーへのアクセスを許可してください。
         </p>

@@ -421,7 +421,90 @@ describe.skipIf(!adminUrl)("アカウントのカレンダーの設定", () => {
     expect(result.status).toBe(201);
     expect(result.body).toMatchObject({
       calendarGranted: false,
+      calendarRequested: false,
+      calendarDisabled: false,
       account: { calendarEnabled: false, mailEnabled: true },
     });
   });
+
+  it("一覧の hasCalendarSource は、CalDAV の起点があるかを返す (URL そのものは返さない)", async () => {
+    const withSource = await addAccount({
+      provider: "generic",
+      imapHost: null,
+      mailEnabled: false,
+      calendarEnabled: true,
+      caldavUrl: "https://dav.example.com/",
+    });
+    const mailOnly = await addAccount({ provider: "generic" });
+    const list = await request("GET", "/accounts");
+    const rows = list.body.accounts as Json[];
+    const source = rows.find((value) => value.id === withSource);
+    expect(source).toMatchObject({ hasCalendarSource: true });
+    expect(source).not.toHaveProperty("caldavUrl");
+    expect(rows.find((value) => value.id === mailOnly)).toMatchObject({
+      hasCalendarSource: false,
+    });
+  });
+
+  for (const provider of ["google", "microsoft"] as const) {
+    it(`${provider}: 再ログインでカレンダーの権限を外すと、カレンダーをオフにして calendarDisabled を返す`, async () => {
+      const mailScopes =
+        provider === "google"
+          ? `openid email ${GMAIL_SCOPE}`
+          : MICROSOFT_SCOPES.join(" ");
+      const calendarScopes =
+        provider === "google"
+          ? GOOGLE_CALENDAR_SCOPES
+          : MICROSOFT_CALENDAR_SCOPES;
+      profileEmail = `relogin-${provider}@example.net`;
+
+      const first = await authorize(provider, { calendar: true });
+      tokenScope = `${mailScopes} ${calendarScopes.join(" ")}`;
+      const added = await request("POST", `/accounts/${provider}/complete`, {
+        code: "code",
+        state: first.state,
+      });
+      expect(added.status).toBe(201);
+      expect(added.body).toMatchObject({
+        calendarGranted: true,
+        calendarRequested: true,
+        calendarDisabled: false,
+        account: { calendarEnabled: true, hasCalendarSource: false },
+      });
+      const id = (added.body.account as Json).id as string;
+
+      // カレンダーを使っているので、再ログインでもカレンダーの権限を求める。同意画面で外された。
+      const again = await authorize(provider, { accountId: id });
+      tokenScope = mailScopes;
+      const relogin = await request("POST", `/accounts/${provider}/complete`, {
+        code: "code",
+        state: again.state,
+      });
+      expect(relogin.status).toBe(200);
+      expect(relogin.body).toMatchObject({
+        calendarGranted: false,
+        calendarRequested: true,
+        calendarDisabled: true,
+        account: { id, calendarEnabled: false, calendarConsent: "required" },
+      });
+      const [row] = await db
+        .select({ calendarEnabled: accounts.calendarEnabled })
+        .from(accounts)
+        .where(eq(accounts.id, id));
+      expect(row?.calendarEnabled).toBe(false);
+
+      // もともとオフなら、権限が無くても calendarDisabled にはしない。
+      const third = await authorize(provider, { accountId: id });
+      const plain = await request("POST", `/accounts/${provider}/complete`, {
+        code: "code",
+        state: third.state,
+      });
+      expect(plain.body).toMatchObject({
+        calendarGranted: false,
+        calendarRequested: false,
+        calendarDisabled: false,
+        account: { calendarEnabled: false },
+      });
+    });
+  }
 });

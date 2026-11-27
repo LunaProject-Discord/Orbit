@@ -140,6 +140,38 @@ describe("AccountCalendarSetting", () => {
     );
   });
 
+  it("CalDAV の出どころがあれば、オフになっていてもオンに戻せる", async () => {
+    mocks.consentRequired = false;
+    await render({
+      ...base,
+      provider: "generic",
+      authType: "password",
+      calendarConsent: "not_applicable",
+      hasCalendarSource: true,
+    });
+    expect(calendarSwitch()?.hasAttribute("data-disabled")).toBe(false);
+    expect(document.body.textContent).not.toContain(
+      "Orbit から使えるカレンダーがありません",
+    );
+    await act(async () => {
+      calendarSwitch()?.click();
+    });
+    expect(updated).toHaveBeenLastCalledWith(
+      expect.objectContaining({ calendarEnabled: true }),
+    );
+  });
+
+  it("古いサーバー (hasCalendarSource なし) では、カレンダーを使っているかで推し量る", async () => {
+    await render({
+      ...base,
+      provider: "generic",
+      authType: "password",
+      calendarConsent: "not_applicable",
+      calendarEnabled: true,
+    });
+    expect(calendarSwitch()?.hasAttribute("data-disabled")).toBe(false);
+  });
+
   it("同期に失敗していれば、その理由を出す", async () => {
     await render({
       ...base,

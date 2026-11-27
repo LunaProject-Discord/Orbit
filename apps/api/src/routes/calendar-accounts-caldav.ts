@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { recordChanges } from "../lib/changes.js";
+import { accountColumns, publicAccount } from "./accounts.js";
 
 /**
  * CalDAV のアカウント (iCloud、一般の CalDAV サーバー) の追加と設定。ログインが要る。
@@ -70,44 +71,6 @@ const FAILURE_MESSAGES: Record<Failure, string> = {
     "CalDAV のカレンダーが見つかりませんでした。URL を確かめてください。",
   connection_failed: "サーバーに接続できませんでした。",
 };
-
-/** クライアントへ返す形 (accounts.ts の publicAccount と同じ項目)。認証情報は返さない。 */
-const publicColumns = {
-  id: accounts.id,
-  email: accounts.email,
-  displayName: accounts.displayName,
-  provider: accounts.provider,
-  authType: accounts.authType,
-  protocol: accounts.protocol,
-  imapHost: accounts.imapHost,
-  imapPort: accounts.imapPort,
-  imapSecure: accounts.imapSecure,
-  smtpHost: accounts.smtpHost,
-  smtpPort: accounts.smtpPort,
-  smtpSecure: accounts.smtpSecure,
-  allowLegacyTls: accounts.allowLegacyTls,
-  pushConnections: accounts.pushConnections,
-  notifyNewMail: accounts.notifyNewMail,
-  popLeaveOnServer: accounts.popLeaveOnServer,
-  popDeleteAfterDays: accounts.popDeleteAfterDays,
-  username: accounts.username,
-  status: accounts.status,
-  lastError: accounts.lastError,
-  signatureHtml: accounts.signatureHtml,
-  sortOrder: accounts.sortOrder,
-  color: accounts.color,
-  icon: accounts.icon,
-  composeFormat: accounts.composeFormat,
-  mailEnabled: accounts.mailEnabled,
-  calendarEnabled: accounts.calendarEnabled,
-  calendarError: accounts.calendarError,
-  createdAt: accounts.createdAt,
-};
-
-/** パスワードの CalDAV のアカウントには、OAuth の同意の仕組みが無い。 */
-function publicAccount<T extends object>(row: T) {
-  return { ...row, calendarConsent: "not_applicable" as const };
-}
 
 /** テストで差し替えるもの。 */
 export type CaldavAccountRouteOverrides = {
@@ -196,7 +159,7 @@ export function caldavAccountRoutes(
           caldavUrl: startUrl,
         })
         .where(and(eq(accounts.id, id), eq(accounts.userId, userId)))
-        .returning(publicColumns);
+        .returning(accountColumns);
       if (!row) return null;
       await recordChanges(tx, userId, "account", [id]);
       // 同期ワーカーが、カレンダーの同期を始める。
@@ -327,7 +290,7 @@ export function caldavAccountRoutes(
           ),
         })
         .onConflictDoNothing()
-        .returning(publicColumns);
+        .returning(accountColumns);
       if (!row) return null;
       await recordChanges(tx, user.id, "account", [row.id]);
       // コミット時に同期ワーカーへ届き、カレンダーの同期が始まる。

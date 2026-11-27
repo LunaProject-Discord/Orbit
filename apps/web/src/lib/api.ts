@@ -232,10 +232,27 @@ export type Account = {
    * - not_applicable: 同意の仕組みが無いアカウント (一般の IMAP や POP3 など)。
    */
   calendarConsent?: CalendarConsent;
+  /**
+   * CalDAV のカレンダーの出どころ (起点の URL) があるか。古いサーバーでは項目なし。
+   * CalDAV だけのアカウントを見分けるのに使う (calendarSourceOf)。
+   */
+  hasCalendarSource?: boolean;
   createdAt: string;
 };
 
 export type CalendarConsent = "granted" | "required" | "not_applicable";
+
+/**
+ * CalDAV のカレンダーの出どころがあるか。古いサーバー (hasCalendarSource が無い) では、
+ * 同意の仕組みが無いのにカレンダーを使っていることから推し量る。
+ */
+export function hasCaldavSource(account: Account): boolean {
+  if (account.hasCalendarSource !== undefined) return account.hasCalendarSource;
+  return (
+    account.calendarConsent === "not_applicable" &&
+    account.calendarEnabled === true
+  );
+}
 
 /** メールを書く形式。html は書式付き、text はテキストだけ。 */
 export type ComposeFormat = "html" | "text";
@@ -1063,7 +1080,10 @@ export async function startOAuthLogin(
 
 export type OAuthLoginResult = {
   account: Account;
-  /** ログインのときにカレンダーの権限を求めたか (この端末で始めたログインで分かる範囲)。 */
+  /**
+   * ログインのときにカレンダーの権限を求めたか。サーバーの値を使い、
+   * 古いサーバーでは、この端末で始めたログインで分かる範囲。
+   */
   calendarRequested: boolean;
   /** 追加済みのアカウントのログインし直しとして始めたか。 */
   reauth: boolean;
@@ -1072,6 +1092,11 @@ export type OAuthLoginResult = {
    * 古いサーバーでは null。
    */
   calendarGranted: boolean | null;
+  /**
+   * カレンダーを使っていたのに、ログインし直しでカレンダーの権限が外されたので、
+   * サーバーがカレンダーをオフにした。古いサーバーでは false。
+   */
+  calendarDisabled: boolean;
   /** ログインが済んだあとに開くパス。 */
   returnTo: string;
 };
@@ -1083,18 +1108,22 @@ export async function completeOAuthLogin(
   state: string,
 ): Promise<OAuthLoginResult> {
   const pending = pendingOAuthCalendar();
-  const { account, calendarGranted } = await apiJson<{
-    account: Account;
-    calendarGranted?: boolean;
-  }>(`/v1/accounts/${provider}/complete`, {
-    method: "POST",
-    body: { code, state, ...pendingOAuthName() },
-  });
+  const { account, calendarGranted, calendarRequested, calendarDisabled } =
+    await apiJson<{
+      account: Account;
+      calendarGranted?: boolean;
+      calendarRequested?: boolean;
+      calendarDisabled?: boolean;
+    }>(`/v1/accounts/${provider}/complete`, {
+      method: "POST",
+      body: { code, state, ...pendingOAuthName() },
+    });
   return {
     account,
-    calendarRequested: pending.calendar,
+    calendarRequested: calendarRequested ?? pending.calendar,
     reauth: pending.reauth,
     calendarGranted: calendarGranted ?? null,
+    calendarDisabled: calendarDisabled === true,
     returnTo: pending.returnTo,
   };
 }

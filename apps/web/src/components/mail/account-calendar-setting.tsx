@@ -17,6 +17,7 @@ import {
   type Account,
   ApiError,
   calendarOAuthProviderOf,
+  hasCaldavSource,
   type OAuthProvider,
   startOAuthLogin,
   updateAccountFeatures,
@@ -58,8 +59,10 @@ export function AccountCalendarSetting({
   if (consent === undefined) return null;
   const enabled = account.calendarEnabled === true;
   const provider = calendarOAuthProviderOf(account);
-  // CalDAV で追加したアカウントなど、同意の仕組みが無くてもカレンダーを使っているものは止められる。
-  const unavailable = consent === "not_applicable" && !enabled;
+  // CalDAV で追加したアカウントなど、同意の仕組みが無くてもカレンダーの出どころがあるものは切り替えられる。
+  // オンのままのものも、止められるよう切り替えは出す。
+  const unavailable =
+    consent === "not_applicable" && !enabled && !hasCaldavSource(account);
   const passwordGmail =
     account.provider === "gmail" && account.authType === "password";
 
