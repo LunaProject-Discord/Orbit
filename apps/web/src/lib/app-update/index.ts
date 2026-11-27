@@ -229,9 +229,27 @@ export async function refreshServerInfo(manual = false): Promise<void> {
   if (manual) await desktopBody.check().catch(() => {});
 }
 
-/** デスクトップ版: 取得済みの本体の更新をすぐ入れて再起動する。 */
+/**
+ * デスクトップ版: 本体の更新を入れて再起動する。見つかっただけの更新 (notify) は取得してから入れ、
+ * 入れ終えている (macOS と Linux の auto) ときは再起動だけする。進み具合はイベントで届く。
+ */
 export async function installDesktopUpdateNow(): Promise<void> {
   await desktopBody.installNow();
+}
+
+// --- 設定の「バージョン情報」を開く (トレイの「更新を確認」、更新の知らせの「詳細」) ---
+
+const openListeners = new Set<() => void>();
+
+/** 設定の「バージョン情報」を開くよう求める。 */
+export function openAppUpdateSettings(): void {
+  for (const listener of openListeners) listener();
+}
+
+/** 設定の「バージョン情報」を開くよう求められたら呼ぶ。戻り値の関数で解除する。 */
+export function onOpenAppUpdateSettings(listener: () => void): () => void {
+  openListeners.add(listener);
+  return () => openListeners.delete(listener);
 }
 
 /** 取得済みの画面にすぐ切り替える。 */
@@ -260,6 +278,17 @@ export function startAppUpdates(): () => void {
     });
   // 接続先のサーバーの情報 (更新のしかた、互換性) は、起動してすぐ読む。
   void refreshServerInfo();
+  // デスクトップ版の本体の更新の状態 (確認中、取得中など) は、変わるたびにアプリ側から届く。
+  const stopStatus =
+    bodyPlatform() === "desktop"
+      ? desktopBody.onStatus((status) => {
+          setState({ body: { kind: "desktop", status } });
+        })
+      : () => {};
+  const stopOpen =
+    bodyPlatform() === "desktop"
+      ? desktopBody.onOpen(openAppUpdateSettings)
+      : () => {};
   const first = window.setTimeout(() => {
     void checkForAppUpdate();
   }, FIRST_CHECK_MS);
@@ -269,6 +298,8 @@ export function startAppUpdates(): () => void {
   }, CHECK_INTERVAL_MS);
   return () => {
     started = false;
+    stopStatus();
+    stopOpen();
     window.clearTimeout(first);
     window.clearInterval(interval);
   };

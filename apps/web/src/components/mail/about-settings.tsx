@@ -8,6 +8,7 @@
 import { cn } from "cn";
 import {
   CircleAlertIcon,
+  CircleArrowUpIcon,
   CircleCheckIcon,
   DownloadIcon,
   type LucideIcon,
@@ -27,7 +28,12 @@ import {
   type UpdateStatus,
   useAppUpdate,
 } from "@/lib/app-update";
-import type { ServerInfo } from "@/lib/app-update/body";
+import {
+  type AppUpdateMode,
+  type DesktopBodyStatus,
+  downloadPercent,
+  type ServerInfo,
+} from "@/lib/app-update/body";
 import { BUILD_VERSION, formatBuildVersion } from "@/lib/app-update/manifest";
 import {
   backLogEnabled,
@@ -285,8 +291,127 @@ export function AboutSettings() {
   );
 }
 
+/** アプリ本体の更新の 1 行と、出すボタン。 */
+export type BodyUpdateView = {
+  text: string;
+  tone: "muted" | "ok" | "error";
+  /** 確認・取得・入れ替えの途中 (回る印を出し、ボタンを押せなくする)。 */
+  working: boolean;
+  /** 取得の進み具合 (0〜100)。取得中で、全体の大きさが分かるときだけ。 */
+  progress: number | null;
+  /** 「更新を確認」を出すか。 */
+  canCheck: boolean;
+  /** 入れる・再起動するボタン。 */
+  install: "update-restart" | "install-now" | "restart" | null;
+};
+
+/** デスクトップ版の本体の更新の状態を、画面に出す形にする。 */
+export function bodyUpdateView(
+  status: DesktopBodyStatus,
+  mode: AppUpdateMode | null,
+): BodyUpdateView {
+  const base = {
+    working: false,
+    progress: null,
+    canCheck: true,
+    install: null,
+  } satisfies Partial<BodyUpdateView>;
+  if (!status.configured) {
+    return {
+      ...base,
+      canCheck: false,
+      text: "このビルドでは、アプリ本体の自動更新は無効です。",
+      tone: "muted",
+    };
+  }
+  if (mode === "off") {
+    return {
+      ...base,
+      canCheck: false,
+      text: "接続先のサーバーの設定で、アプリ本体の自動更新は止められています。",
+      tone: "muted",
+    };
+  }
+  const phase = status.phase ?? { kind: "idle" };
+  switch (phase.kind) {
+    case "checking":
+      return {
+        ...base,
+        working: true,
+        text: "確認しています…",
+        tone: "muted",
+      };
+    case "downloading": {
+      const percent = downloadPercent(phase);
+      return {
+        ...base,
+        working: true,
+        progress: percent,
+        text: `v${phase.version} を取得しています…${percent === null ? "" : ` ${percent}%`}`,
+        tone: "muted",
+      };
+    }
+    case "installing":
+      return {
+        ...base,
+        working: true,
+        text: `v${phase.version} を入れています…`,
+        tone: "muted",
+      };
+    case "available":
+      return {
+        ...base,
+        install: "update-restart",
+        text: `新しいバージョン v${phase.version} があります (現在は v${status.version})。`,
+        tone: "ok",
+      };
+  }
+  if (status.pending) {
+    return {
+      ...base,
+      install: "install-now",
+      text: `v${status.pending} を用意しました。アプリを終了するときに入れ替わります。`,
+      tone: "ok",
+    };
+  }
+  if (status.installed) {
+    return {
+      ...base,
+      install: "restart",
+      text: `v${status.installed} を入れました。次に起動したときに切り替わります。`,
+      tone: "ok",
+    };
+  }
+  switch (phase.kind) {
+    case "error":
+      return { ...base, text: phase.message, tone: "error" };
+    case "up-to-date":
+      return {
+        ...base,
+        text: `最新のバージョンです (v${status.version})。`,
+        tone: "ok",
+      };
+    default:
+      return {
+        ...base,
+        text:
+          mode === "auto"
+            ? "接続先のサーバーに新しい版があれば、自動で取得して入れ替えます。"
+            : "接続先のサーバーに新しい版があれば、お知らせします。",
+        tone: "muted",
+      };
+  }
+}
+
+const INSTALL_LABEL = {
+  "update-restart": "更新して再起動",
+  "install-now": "今すぐ更新",
+  restart: "今すぐ再起動",
+} as const;
+
 /**
  * アプリ本体の更新 (lib/app-update/body.ts)。接続先のサーバーが配る版に揃える。
+ * 確認中・取得中・入れ替え待ちなどの状態は、OS のダイアログではなくここに出す。
  * デスクトップ版だけ。スマホアプリの本体はアプリストアで更新するので出さない。
  */
 function BodyUpdateSection({ update }: { update: AppUpdateState }) {
@@ -307,65 +432,8 @@ function BodyUpdateSection({ update }: { update: AppUpdateState }) {
     }
   }
 
-  const mode = server?.updates.appUpdate ?? null;
-  let line: { text: string; tone: "muted" | "ok" };
-  const s = body.status;
-  let action: React.ReactNode = null;
-  if (!s.configured) {
-    line = {
-      text: "このビルドでは、アプリ本体の自動更新は無効です。",
-      tone: "muted",
-    };
-  } else if (mode === "off") {
-    line = {
-      text: "接続先のサーバーの設定で、アプリ本体の自動更新は止められています。",
-      tone: "muted",
-    };
-  } else if (s.pending) {
-    line = {
-      text: `${s.pending} を用意しました。アプリを終了するときに入れ替わります。`,
-      tone: "ok",
-    };
-    action = (
-      <Button
-        size="sm"
-        disabled={busy}
-        onClick={() => void run(installDesktopUpdateNow)}
-      >
-        <DownloadIcon />
-        今すぐ更新
-      </Button>
-    );
-  } else if (s.installed) {
-    line = {
-      text: `${s.installed} を入れました。次に起動したときに切り替わります。`,
-      tone: "ok",
-    };
-  } else {
-    line = {
-      text:
-        mode === "auto"
-          ? "接続先のサーバーに新しい版があれば、自動で取得して入れ替えます。"
-          : "接続先のサーバーに新しい版があれば、お知らせします。",
-      tone: "muted",
-    };
-  }
-  if (s.configured && mode !== "off") {
-    action = (
-      <>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={() => void run(() => refreshServerInfo(true))}
-        >
-          <RefreshCwIcon />
-          更新を確認
-        </Button>
-        {action}
-      </>
-    );
-  }
+  const view = bodyUpdateView(body.status, server?.updates.appUpdate ?? null);
+  const disabled = busy || view.working;
 
   return (
     <section className="flex flex-col gap-3">
@@ -377,12 +445,62 @@ function BodyUpdateSection({ update }: { update: AppUpdateState }) {
       </div>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border px-3 py-2.5">
         <StatusLine
-          tone={line.tone}
-          icon={line.tone === "ok" ? CircleCheckIcon : null}
+          tone={view.tone}
+          icon={
+            view.working
+              ? null
+              : view.install === "update-restart"
+                ? CircleArrowUpIcon
+                : view.tone === "error"
+                  ? CircleAlertIcon
+                  : view.tone === "ok"
+                    ? CircleCheckIcon
+                    : null
+          }
+          spin={view.working}
         >
-          {line.text}
+          {view.text}
+          {view.progress !== null && (
+            <span
+              role="progressbar"
+              aria-label="取得の進み具合"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={view.progress}
+              className="mt-1.5 block h-1 w-48 max-w-full overflow-hidden rounded-full bg-muted"
+            >
+              <span
+                className="block h-full rounded-full bg-primary transition-[width]"
+                style={{ width: `${view.progress}%` }}
+              />
+            </span>
+          )}
         </StatusLine>
-        {action && <div className="flex flex-wrap gap-2">{action}</div>}
+        {(view.canCheck || view.install) && (
+          <div className="flex flex-wrap gap-2">
+            {view.canCheck && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={disabled}
+                onClick={() => void run(() => refreshServerInfo(true))}
+              >
+                <RefreshCwIcon />
+                更新を確認
+              </Button>
+            )}
+            {view.install && (
+              <Button
+                size="sm"
+                disabled={disabled}
+                onClick={() => void run(installDesktopUpdateNow)}
+              >
+                <DownloadIcon />
+                {INSTALL_LABEL[view.install]}
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

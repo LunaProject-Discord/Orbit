@@ -68,7 +68,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
                 current.close_to_tray = keep.is_checked().unwrap_or(!current.close_to_tray);
                 settings::save(app, &current);
             }
-            "update" => updater::check(app.clone(), true),
+            "update" => updater::check_from_tray(app),
             "quit" => quit(app),
             _ => {}
         })
