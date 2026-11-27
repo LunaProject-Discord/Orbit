@@ -15,6 +15,7 @@ import {
   useSheetSwipe,
   useSubSheet,
 } from "@/components/ui/menu-sheet";
+import { popupCollisionPadding } from "@/lib/desktop/title-bar-height";
 
 function DropdownMenu({ actionsRef, ...props }: MenuPrimitive.Root.Props) {
   // スマホ幅のシートを下へ払ったときに、メニュー全体を閉じられるようにする。
@@ -59,7 +60,9 @@ function DropdownMenuContent({
     <MenuPrimitive.Portal>
       {backdrop && <MenuPrimitive.Backdrop className={sheetBackdrop} />}
       <MenuPrimitive.Positioner
-        className={cn("isolate z-50 outline-none", sheetPositioner)}
+        // デスクトップ版のタイトルバー (z-[60]) より手前に出し、タイトルバーには重ねない。
+        className={cn("isolate z-[70] outline-none", sheetPositioner)}
+        collisionPadding={popupCollisionPadding(5)}
         align={align}
         alignOffset={alignOffset}
         side={side}
