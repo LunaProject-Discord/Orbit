@@ -72,11 +72,6 @@ export const users = pgTable("users", {
   image: text(),
   /** 2 段階認証を有効にしているか (Better Auth の twoFactor プラグインが読み書きする)。 */
   twoFactorEnabled: boolean().notNull().default(false),
-  /**
-   * 管理者か。管理者だけが、招待リンクを発行してほかの利用者を増やせる。
-   * Better Auth は読み書きしない (自前の API とコマンドだけが扱う)。
-   */
-  isAdmin: boolean().notNull().default(false),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -91,9 +86,10 @@ export const invitations = pgTable(
     id: id(),
     /** リンクに付ける合言葉の SHA-256 (16 進)。合言葉そのものは保存しない。 */
     tokenHash: text().notNull().unique(),
-    createdBy: uuid()
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    /** 発行した管理者。管理者を消しても、招待は残す。 */
+    createdBy: uuid().references(() => adminUsers.id, {
+      onDelete: "set null",
+    }),
     /** 誰に渡したかの覚え書き。 */
     label: text(),
     /** 指定すると、このメールアドレスでしか登録できない。 */
@@ -215,6 +211,130 @@ export const passkeys = pgTable(
   (t) => [
     index("passkeys_user_idx").on(t.userId),
     uniqueIndex("passkeys_credential_idx").on(t.credentialID),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// 管理者 (一般の利用者とは別のアカウント)
+// ---------------------------------------------------------------------------
+
+/**
+ * サーバーの管理者。一般の利用者 (users) とは別のアカウントで、メールは持たず、
+ * 管理画面 (/admin) にだけログインできる。ログインは名前 (username) とパスワード
+ * (+ 2 段階認証・パスキー) で、SSO は通らない。
+ * admin_* の表は、管理者用の Better Auth (apps/api の admin-auth.ts) が読み書きする。
+ */
+export const adminUsers = pgTable("admin_users", {
+  id: id(),
+  /** ログインに使う名前 (小文字に揃えて保存する)。 */
+  username: text().notNull().unique(),
+  /** 入力されたままの名前 (大文字・小文字を残す)。 */
+  displayUsername: text(),
+  /**
+   * Better Auth が必須とする項目。管理者はメールを持たないので、
+   * 名前から作った届かないアドレス (<名前>@admin.orbit.invalid) を入れる。
+   */
+  email: text().notNull().unique(),
+  /** 表示名。 */
+  name: text().notNull(),
+  emailVerified: boolean().notNull().default(false),
+  image: text(),
+  twoFactorEnabled: boolean().notNull().default(false),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const adminSessions = pgTable(
+  "admin_sessions",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => adminUsers.id, { onDelete: "cascade" }),
+    token: text().notNull().unique(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    ipAddress: text(),
+    userAgent: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("admin_sessions_user_idx").on(t.userId)],
+);
+
+export const adminAuthAccounts = pgTable(
+  "admin_auth_accounts",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => adminUsers.id, { onDelete: "cascade" }),
+    accountId: text().notNull(),
+    providerId: text().notNull(),
+    accessToken: text(),
+    refreshToken: text(),
+    idToken: text(),
+    accessTokenExpiresAt: timestamp({ withTimezone: true }),
+    refreshTokenExpiresAt: timestamp({ withTimezone: true }),
+    scope: text(),
+    password: text(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("admin_auth_accounts_user_idx").on(t.userId)],
+);
+
+export const adminVerifications = pgTable(
+  "admin_verifications",
+  {
+    id: id(),
+    identifier: text().notNull(),
+    value: text().notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("admin_verifications_identifier_idx").on(t.identifier)],
+);
+
+export const adminTwoFactors = pgTable(
+  "admin_two_factors",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => adminUsers.id, { onDelete: "cascade" }),
+    secret: text().notNull(),
+    backupCodes: text().notNull(),
+    verified: boolean().notNull().default(true),
+    failedVerificationCount: integer().notNull().default(0),
+    lockedUntil: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    index("admin_two_factors_user_idx").on(t.userId),
+    index("admin_two_factors_secret_idx").on(t.secret),
+  ],
+);
+
+export const adminPasskeys = pgTable(
+  "admin_passkeys",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => adminUsers.id, { onDelete: "cascade" }),
+    name: text(),
+    publicKey: text().notNull(),
+    credentialID: text("credential_id").notNull(),
+    counter: integer().notNull(),
+    deviceType: text().notNull(),
+    backedUp: boolean().notNull(),
+    transports: text(),
+    aaguid: text(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("admin_passkeys_user_idx").on(t.userId),
+    uniqueIndex("admin_passkeys_credential_idx").on(t.credentialID),
   ],
 );
 

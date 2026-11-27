@@ -1,12 +1,15 @@
 import type { ReactNode } from "react";
-import { OrbitLogo } from "@/components/brand/orbit-logo";
+import { type OrbitBrand, OrbitLogo } from "@/components/brand/orbit-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 /** ログイン前の画面 (ログイン、パスワードの再設定) の共通の枠。 */
 export function AuthShell({
   lead,
   children,
+  brand = "mail",
 }: {
+  /** 上に出すロゴ。管理画面は製品名の付かない Orbit。 */
+  brand?: OrbitBrand;
   /** ロゴの下に出す、画面の説明。 */
   lead: ReactNode;
   children: ReactNode;
@@ -18,7 +21,7 @@ export function AuthShell({
       </div>
       <div className="w-full max-w-sm">
         <h1>
-          <OrbitLogo className="h-11" />
+          <OrbitLogo className="h-11" product={brand} />
         </h1>
         <p className="mt-4 text-muted-foreground text-sm">{lead}</p>
         {children}

@@ -1,8 +1,10 @@
 import { serve } from "@hono/node-server";
 import { createDb } from "@orbit/db";
+import { createAdminAuth } from "./admin-auth.js";
 import { createApp } from "./app.js";
 import { createAuth } from "./auth.js";
 import { loadEnv } from "./env.js";
+import { SetupCode } from "./lib/admin-setup.js";
 import { EventsHub } from "./lib/events-hub.js";
 import { watchSearchIndex } from "./lib/search-index.js";
 import {
@@ -10,6 +12,7 @@ import {
   createGraphMailer,
   createSmtpMailer,
 } from "./lib/system-mail.js";
+import { countAdmins } from "./routes/admin.js";
 
 const env = loadEnv();
 const { db, pool } = createDb(env.databaseUrl);
@@ -46,6 +49,29 @@ const authOptions = {
 const auth = createAuth(authOptions);
 // 招待リンクからの登録にだけ使う。/v1/auth/* には出さないので、外から新規登録はできない。
 const signUpAuth = createAuth({ ...authOptions, allowSignUp: true });
+// 管理者は一般の利用者とは別のアカウント (admin-auth.ts)。作成はコマンドと初回セットアップだけ。
+const adminAuthOptions = {
+  db,
+  secret: env.authSecret,
+  baseURL: env.publicUrl,
+  trustedOrigins: env.allowedOrigins,
+  passkey: env.passkey,
+};
+const adminAuth = createAdminAuth(adminAuthOptions);
+const adminSignUpAuth = createAdminAuth({
+  ...adminAuthOptions,
+  allowSignUp: true,
+});
+// 管理者がまだいなければ、初回セットアップの合言葉をログに出す。
+const setupCode = new SetupCode();
+try {
+  if ((await countAdmins(db)) === 0) setupCode.ensure();
+} catch (error) {
+  console.error(
+    "管理者の人数を確かめられませんでした:",
+    error instanceof Error ? error.message : error,
+  );
+}
 const hub = new EventsHub(env.databaseUrl);
 await hub.start();
 
@@ -53,6 +79,9 @@ const app = createApp({
   db,
   auth,
   signUpAuth,
+  adminAuth,
+  adminSignUpAuth,
+  setupCode,
   hub,
   webOrigin: env.webOrigin,
   mailer,

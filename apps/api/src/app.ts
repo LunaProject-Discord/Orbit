@@ -3,13 +3,15 @@ import {
   CHANNEL_CALENDAR_SYNC,
   CHANNEL_GRAPH_PUSH,
 } from "@orbit/core";
-import { type Database, users } from "@orbit/db";
-import { eq, sql } from "drizzle-orm";
+import type { Database } from "@orbit/db";
+import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import type { AdminAuth } from "./admin-auth.js";
 import type { Auth } from "./auth.js";
 import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
+import type { SetupCode } from "./lib/admin-setup.js";
 import {
   AUTH_STATE_HEADER,
   withAuthStateCookie,
@@ -23,6 +25,7 @@ import {
 import type { SystemMailer } from "./lib/system-mail.js";
 import type { BuildInfo, UpdatePolicy } from "./lib/update-policy.js";
 import { accountRoutes } from "./routes/accounts.js";
+import { adminRoutes } from "./routes/admin.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { caldavAccountRoutes } from "./routes/calendar-accounts-caldav.js";
 import { calendarConflictRoutes } from "./routes/calendar-conflicts.js";
@@ -39,10 +42,7 @@ import { contactRoutes } from "./routes/contacts.js";
 import { draftRoutes } from "./routes/drafts.js";
 import { failureRoutes } from "./routes/failures.js";
 import { focusRoutes } from "./routes/focus.js";
-import {
-  invitationPublicRoutes,
-  invitationRoutes,
-} from "./routes/invitations.js";
+import { invitationPublicRoutes } from "./routes/invitations.js";
 import { mailboxRoutes } from "./routes/mailboxes.js";
 import { messageInviteRoutes } from "./routes/message-invite.js";
 import { messageRoutes } from "./routes/messages.js";
@@ -67,6 +67,12 @@ export type AppOptions = {
   auth: Auth;
   /** 新規登録を受け付ける設定の Better Auth。招待リンクからの登録にだけ使う。 */
   signUpAuth: Auth;
+  /** 管理者用の Better Auth (一般の利用者とは別のアカウント)。 */
+  adminAuth: AdminAuth;
+  /** 管理者を作れる設定の Better Auth。初回セットアップにだけ使う。 */
+  adminSignUpAuth: AdminAuth;
+  /** 初回セットアップの合言葉。 */
+  setupCode: SetupCode;
   hub: EventsHub;
   /** CORS を許可するオリジン (Web、Tauri、Capacitor)。 */
   allowedOrigins: string[];
@@ -94,6 +100,9 @@ export function createApp({
   db,
   auth,
   signUpAuth,
+  adminAuth,
+  adminSignUpAuth,
+  setupCode,
   hub,
   allowedOrigins,
   encryptionKey,
@@ -202,15 +211,15 @@ export function createApp({
   // 招待リンクを開いた人 (まだ利用者ではない) が呼ぶ。リンクの合言葉で確かめる。
   v1.route("/", invitationPublicRoutes({ db, signUpAuth }));
 
+  // 管理画面 (/admin) の API。一般の利用者とは別のアカウント・セッションで、利用者のトークンでは通らない。
+  v1.route(
+    "/admin",
+    adminRoutes({ db, adminAuth, adminSignUpAuth, setupCode, webOrigin }),
+  );
+
   const authed = new Hono<AppEnv>();
   authed.use(requireUser(auth));
-  authed.get("/me", async (c) => {
-    const [row] = await db
-      .select({ isAdmin: users.isAdmin })
-      .from(users)
-      .where(eq(users.id, c.var.user.id));
-    return c.json({ user: { ...c.var.user, isAdmin: row?.isAdmin ?? false } });
-  });
+  authed.get("/me", (c) => c.json({ user: c.var.user }));
   const deps = {
     db,
     encryptionKey,
@@ -241,7 +250,6 @@ export function createApp({
   // 反映されなかった変更 (/calendars/conflicts) は、/calendars/:id より先に登録する。
   authed.route("/calendars/conflicts", calendarConflictRoutes(deps));
   authed.route("/calendars", calendarRoutes(deps));
-  authed.route("/invitations", invitationRoutes({ db, webOrigin }));
   authed.route("/focus", focusRoutes(deps));
   authed.route("/attachments", attachmentRoutes({ db, hub }));
   authed.route("/push", pushRoutes(deps));
