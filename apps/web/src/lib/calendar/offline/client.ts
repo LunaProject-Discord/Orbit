@@ -255,6 +255,12 @@ export class OfflineCalendarClient implements CalendarClient {
   private flushing: Promise<void> | null = null;
   private pulling: Promise<void> | null = null;
   private pullAgain = false;
+  /**
+   * 次の pull を since=0 から取る (段取り 8: 招待の新しい項目を、変わっていない予定にも行き渡らせる)。
+   * 1 回のセッションで 1 回だけ。
+   */
+  private pullFromStart = false;
+  private refetchedForInvites = false;
   private writeChain: Promise<void> = Promise.resolve();
   /**
    * 保存先への書き込みを確かめていない送信待ち (null は削除)。書き込みに失敗したら残し、
@@ -1104,7 +1110,9 @@ export class OfflineCalendarClient implements CalendarClient {
   }
 
   private async pullOnce(): Promise<void> {
-    const result = await pullChanges(this.meta.cursor, {
+    const since = this.pullFromStart ? "0" : this.meta.cursor;
+    this.pullFromStart = false;
+    const result = await pullChanges(since, {
       fetchPage: (since) => this.api.syncCalendars(since),
       apply: (page) => this.applyPage(page),
     });
@@ -1236,6 +1244,25 @@ export class OfflineCalendarClient implements CalendarClient {
     writes.push(...list.map(putCalendar));
     this.calendarsKnown = true;
     await this.commit(writes, { calendars: true, events: [] });
+    this.refetchForInvites(list);
+  }
+
+  /**
+   * 差分同期は変わった行しか返さないので、招待の項目 (organizer.self) が入る前の控えは
+   * そのまま残る。サーバーが新しい (カレンダーに scheduling がある) のに、主催者の印の無い
+   * 予定が控えにあれば、一度だけ since=0 から取り直す (cursor は戻さない。applyPage は
+   * 大きい方の cursor を残す)。古いサーバーでは何もしない。
+   */
+  private refetchForInvites(list: readonly Calendar[]): void {
+    if (this.refetchedForInvites || !this.meta.initialSyncDone) return;
+    if (!list.some((calendar) => calendar.scheduling !== undefined)) return;
+    const stale = [...this.baseEvents.values()].some(
+      (event) => event.organizer !== null && event.organizer.self === undefined,
+    );
+    if (!stale) return;
+    this.refetchedForInvites = true;
+    this.pullFromStart = true;
+    void this.pull();
   }
 
   private async loadRange(range: EventRangeQuery, key: string): Promise<void> {

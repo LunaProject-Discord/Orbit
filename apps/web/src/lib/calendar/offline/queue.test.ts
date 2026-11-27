@@ -98,6 +98,27 @@ describe("enqueueOp (積むときのまとめ)", () => {
     expect(result.queue.map((o) => o.id)).toEqual([other.id, remove.id]);
   });
 
+  it("respond の後の delete は、respond を残して後ろに delete を積む (不参加にして削除)", () => {
+    const update = op({ body: { reminders: [] } });
+    const respond = op({ kind: "respond", body: { status: "declined" } });
+    const remove = op({ kind: "delete" });
+    const result = enqueueOp([update, respond], remove, null);
+    expect(result.queue.map((o) => [o.kind, o.id])).toEqual([
+      ["respond", respond.id],
+      ["delete", remove.id],
+    ]);
+    expect(result.remove).toEqual([update.id]);
+    // 送る順は返事が先。
+    expect(nextSendable(result.queue)?.id).toBe(respond.id);
+  });
+
+  it("未送信の create の後の respond と delete は、どれも送らない", () => {
+    const create = op({ kind: "create", body: { id: "e1" } });
+    const respond = op({ kind: "respond", body: { status: "declined" } });
+    const result = enqueueOp([create, respond], op({ kind: "delete" }), null);
+    expect(result.queue).toEqual([]);
+  });
+
   it("送っている最中の create の後の delete は、積む", () => {
     const create = op({ kind: "create", body: { id: "e1" } });
     const remove = op({ kind: "delete" });
@@ -221,6 +242,28 @@ describe("sendOp (結果の分け方)", () => {
       op({ kind: "occurrence_update", recurrenceId: "r", body: {} }),
     );
     expect(result).toEqual({ type: "error", code: "invalid" });
+  });
+
+  it.each([
+    "not_attendee",
+    "organizer",
+    "cancelled",
+  ])("respond の 409 %s は error として残す", async (code) => {
+    const result = await sendOp(
+      failing(new ApiError(409, code, { error: code })),
+      op({ kind: "respond", body: { status: "accepted" } }),
+    );
+    expect(result).toEqual({ type: "error", code });
+  });
+
+  it("respond の 404 は、ルートの無い古いサーバー (コード無し) と予定が消えた場合を分ける", async () => {
+    const respond = op({ kind: "respond", body: { status: "accepted" } });
+    expect(
+      await sendOp(failing(new ApiError(404, null, null)), respond),
+    ).toEqual({ type: "error", code: "unsupported" });
+    expect(
+      await sendOp(failing(new ApiError(404, "not_found", null)), respond),
+    ).toEqual({ type: "error", code: "deleted_elsewhere" });
   });
 
   it("送信待ちの時刻 (操作した時刻) と送る瞬間の時刻を渡す", async () => {

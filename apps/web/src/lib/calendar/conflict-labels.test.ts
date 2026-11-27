@@ -8,6 +8,7 @@ import {
   conflictSummary,
   conflictWhen,
   displayFields,
+  errorReasonLabel,
   fieldListLabel,
   fieldValueLabel,
   pendingState,
@@ -307,5 +308,16 @@ describe("日時と同期の表示", () => {
     expect(
       calendarSyncStatus({ online: true, pending: 0, loaded: true }).label,
     ).toBe("同期済み");
+  });
+});
+
+describe("出欠と招待の断りの理由", () => {
+  it.each([
+    ["not_attendee", "この予定に招待されていません"],
+    ["organizer", "自分が主催する予定には返事できません"],
+    ["cancelled", "この予定は取り消されています"],
+    ["no_scheduling", "このカレンダーからは招待を送れません"],
+  ])("%s", (code, label) => {
+    expect(errorReasonLabel(code)).toBe(label);
   });
 });

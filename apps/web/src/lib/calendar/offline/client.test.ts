@@ -505,4 +505,85 @@ describe("OfflineCalendarClient", () => {
     expect(server.calls).not.toContain("conflicts");
     expect(client.conflicts()).toEqual([]);
   });
+
+  it("不参加にして削除: オフラインでも返事と削除を順に預かり、返事を先に送る", async () => {
+    const server = new FakeCalendarServer();
+    const invited = event({
+      id: E1,
+      organizer: { email: "boss@example.com", self: false },
+      attendees: [
+        {
+          email: "me@example.com",
+          name: null,
+          role: "required",
+          status: "needs_action",
+          self: true,
+        },
+      ],
+    });
+    server.addEvent(invited);
+    const { client } = await setup(server);
+    await activate(client);
+    server.online = false;
+    client.respond(E1, "declined");
+    client.deleteEvent(E1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.queue().map((op) => op.kind)).toEqual(["respond", "delete"]);
+    server.online = true;
+    server.calls.length = 0;
+    await client.flush();
+    expect(server.calls.filter((call) => call.endsWith(E1))).toEqual([
+      `respond ${E1}`,
+      `delete ${E1}`,
+    ]);
+    expect(client.queue()).toEqual([]);
+  });
+
+  it("新しいサーバーで、主催者の印の無い古い控えは一度だけ since=0 から取り直す", async () => {
+    const store = persistentStore();
+    const server = new FakeCalendarServer();
+    server.addEvent(event({ id: E1, organizer: { email: "me@example.com" } }));
+    const first = await setup(server, store);
+    await activate(first.client);
+    first.client.close();
+
+    // サーバーが新しくなった: 応答に scheduling と organizer.self が入る (行は変わらない)。
+    const current = server.calendars.get(CALENDAR_ID);
+    if (current) {
+      server.calendars.set(CALENDAR_ID, { ...current, scheduling: "server" });
+    }
+    const old = server.events.get(E1);
+    if (old) {
+      server.events.set(E1, {
+        ...old,
+        organizer: { email: "me@example.com", self: true },
+      });
+    }
+    server.calls.length = 0;
+    const second = await setup(server, store);
+    await activate(second.client);
+    await vi.advanceTimersByTimeAsync(0);
+    await second.client.pull();
+    expect(server.calls).toContain("sync 0");
+    expect(
+      second.client.range(RANGE)?.events.find((e) => e.id === E1)?.organizer,
+    ).toEqual({ email: "me@example.com", self: true });
+    // 印が揃ったら、もう取り直さない。
+    server.calls.length = 0;
+    await second.client.refreshCalendars();
+    await second.client.pull();
+    expect(server.calls).not.toContain("sync 0");
+    second.client.close();
+  });
+
+  it("古いサーバー (scheduling が無い) では取り直さない", async () => {
+    const server = new FakeCalendarServer();
+    server.addEvent(event({ id: E1, organizer: { email: "me@example.com" } }));
+    const { client } = await setup(server);
+    await activate(client);
+    server.calls.length = 0;
+    await client.refreshCalendars();
+    await client.pull();
+    expect(server.calls).not.toContain("sync 0");
+  });
 });

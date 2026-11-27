@@ -154,10 +154,13 @@ export function enqueueOp(
         drop(pendingSame.map((other) => other.id));
         break;
       }
-      // 送る前の変更は意味が無くなるので捨て、削除だけを残す。
+      // 送る前の変更は意味が無くなるので捨て、削除だけを残す。出欠の返事は捨てない
+      // (「不参加で返事をして削除」で、主催者へ返事を届けるため。返事が先に送られる)。
       drop(
         pendingSame
-          .filter((other) => other.kind !== "delete")
+          .filter(
+            (other) => other.kind !== "delete" && other.kind !== "respond",
+          )
           .map((other) => other.id),
       );
       if (!next.some((other) => other.kind === "delete" && sameEvent(other)))

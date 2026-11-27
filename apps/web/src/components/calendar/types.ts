@@ -10,6 +10,8 @@ export type DisplayItem = {
   color: string;
   /** 自分が招待されていて、まだ返事をしていない。 */
   pending: boolean;
+  /** 自分が招待されていて、不参加と返事をした (題名を薄くする)。 */
+  declined?: boolean;
   /** 繰り返しの予定の回。 */
   repeating: boolean;
   /** 書き込めないカレンダーの予定。 */

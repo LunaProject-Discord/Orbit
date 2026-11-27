@@ -218,6 +218,16 @@ export function errorReasonLabel(code: string | null): string {
       return "ほかの端末で削除されていました";
     case "not_found":
       return "予定が見つかりませんでした";
+    case "not_attendee":
+      return "この予定に招待されていません";
+    case "organizer":
+      return "自分が主催する予定には返事できません";
+    case "cancelled":
+      return "この予定は取り消されています";
+    case "not_organizer":
+      return "主催者でない予定は、通知と「予定あり / 空き」だけ変えられます";
+    case "no_scheduling":
+      return "このカレンダーからは招待を送れません";
     default:
       return code.startsWith("http_")
         ? `サーバーの応答 ${code.slice(5)}`
