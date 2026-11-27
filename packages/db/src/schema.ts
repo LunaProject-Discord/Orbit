@@ -338,6 +338,12 @@ export const accounts = pgTable(
     mailEnabled: boolean().notNull().default(true),
     /** このアカウントでカレンダーを使う。 */
     calendarEnabled: boolean().notNull().default(false),
+    /** OAuth で許可されたスコープ (空白区切り)。null は不明 (記録する前に追加したアカウント)。 */
+    oauthScopes: text(),
+    /** カレンダーの同期のアカウント単位の失敗 (認証、スコープ不足、設定なし)。無ければ null。 */
+    calendarError: text(),
+    /** 一般の CalDAV サーバーの起点の URL。iCloud や CalDAV を使わないアカウントは null。 */
+    caldavUrl: text(),
     /**
      * 受信トレイ以外のフォルダの変化をすぐ受け取るために足す IMAP 接続の本数の上限 (0〜8)。
      * 0 なら足さない。null は自動 (サービスに合わせた数)。IMAP のアカウントでだけ使う。
@@ -686,6 +692,10 @@ export const outboxKind = pgEnum("outbox_kind", [
   "mailbox_create",
   "mailbox_rename",
   "mailbox_delete",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "event_respond",
 ]);
 
 export const outboxStatus = pgEnum("outbox_status", [
@@ -714,6 +724,11 @@ export const outbox = pgTable(
     attempts: integer().notNull().default(0),
     lastError: text(),
     runAfter: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /**
+     * 一時的な失敗が最初に起きた時刻 (予定の書き戻し event_* で使う)。ここからの経過時間で
+     * 打ち切る。失敗していなければ null。
+     */
+    firstFailedAt: timestamp({ withTimezone: true }),
     /**
      * 予約送信で利用者が指定した日時 (send のみ)。予約でなければ null。
      * 予約の間は runAfter も同じ日時になる。「今すぐ送信」にすると null に戻す。
@@ -1090,12 +1105,20 @@ export const calendars = pgTable(
     syncToken: text(),
     /** CalDAV の getctag や ICS の ETag / Last-Modified。変わっていなければ取得を省く。 */
     etag: text(),
+    /** 最後に同期が最後まで成功した時刻。失敗では進めない (書き戻しの gone の決まりの基準)。 */
     lastSyncedAt: timestamp({ withTimezone: true }),
+    /** 最後に同期を試みた時刻 (成功も失敗も)。失敗したカレンダーの次の確認の時期に使う。 */
+    syncAttemptedAt: timestamp({ withTimezone: true }),
     lastError: text(),
     /** 変更通知 (Google の watch、Graph の subscription) の ID と期限。 */
     pushChannelId: text(),
     pushExpiresAt: timestamp({ withTimezone: true }),
     defaultReminders: jsonb().$type<CalendarReminder[]>(),
+    /**
+     * プロバイダが自由に使う欄 (Google の watch の resourceId、CalDAV が sync-collection に
+     * 対応しているか、など)。
+     */
+    providerState: jsonb().$type<Record<string, unknown>>(),
     /** 繰り返しの回を event_occurrences に展開済みの範囲の終わり (この日の前日まで)。 */
     expandedUntil: date({ mode: "string" }),
     createdAt: createdAt(),
@@ -1181,6 +1204,13 @@ export const events = pgTable(
      * 後から変更した方を残すために使う。
      */
     fieldUpdatedAt: jsonb().$type<Record<string, string>>(),
+    /**
+     * 相手側で消えたのを取り込みが見たが、書き戻し待ちなので消すのを見送った予定に付ける。
+     * 値は、その前に相手側にあると確かめていた時刻 (直前に成功した同期の時刻)。
+     * 相手側の削除はこの時刻より後に起きた。書き戻しの gone の決まりで、ローカルの変更と比べる。
+     * 相手側の内容を書き込むと null に戻る。
+     */
+    remoteDeletedAfter: timestamp({ withTimezone: true }),
     raw: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

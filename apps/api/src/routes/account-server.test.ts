@@ -13,6 +13,7 @@ import {
   mailboxes,
   messageMailboxes,
   messages,
+  outbox,
   users,
 } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
@@ -353,6 +354,40 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     expect(
       await db.select().from(mailboxes).where(eq(mailboxes.accountId, id)),
     ).toHaveLength(0);
+  });
+
+  it("指摘 7: 受信方式を変えても、予定の書き戻し (event_*) は消さない", async () => {
+    const id = await addAccount(userId, "switch-calendar@old.example");
+    await db.insert(outbox).values([
+      {
+        accountId: id,
+        kind: "move",
+        payload: {},
+        idempotencyKey: `move:${randomUUID()}`,
+      },
+      {
+        accountId: id,
+        kind: "event_update",
+        payload: {
+          eventId: randomUUID(),
+          calendarId: randomUUID(),
+          fields: ["summary"],
+        },
+        idempotencyKey: `event_update:${randomUUID()}`,
+      },
+    ]);
+    const response = await request("PUT", `/accounts/${id}/server`, {
+      ...body,
+      incomingProtocol: "pop3",
+      imap: { host: "pop.new.example", port: 995, secure: true },
+      pop: { leaveOnServer: false, deleteAfterDays: 7 },
+    });
+    expect(response.status).toBe(200);
+    const left = await db
+      .select({ kind: outbox.kind })
+      .from(outbox)
+      .where(eq(outbox.accountId, id));
+    expect(left.map((row) => row.kind)).toEqual(["event_update"]);
   });
 
   it("送信にログインできなければ保存しない", async () => {

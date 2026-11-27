@@ -7,6 +7,7 @@ import {
   createGoogleAuthorizeUrl,
   createMicrosoftAuthorizeUrl,
   decryptCredentials,
+  EVENT_OUTBOX_KINDS,
   encryptCredentials,
   exchangeGoogleCode,
   exchangeMicrosoftCode,
@@ -14,6 +15,8 @@ import {
   fetchMicrosoftProfile,
   GoogleOAuthError,
   hasGmailScope,
+  hasGoogleCalendarScope,
+  hasMicrosoftCalendarScope,
   MAIL_PROVIDER_PRESETS,
   MicrosoftOAuthError,
   openGoogleState,
@@ -29,7 +32,7 @@ import {
   outbox,
   popMessages,
 } from "@orbit/db";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
@@ -94,6 +97,11 @@ const microsoftAuthorizeBody = z.object({
   app: z.boolean().optional(),
   /** 新しく追加するアカウントのメールアドレス。ログイン画面に入れておく。 */
   email: z.email().max(320).optional(),
+  /**
+   * カレンダーの権限も求める。省くと、再ログインではアカウントの calendarEnabled に従い
+   * (使っている権限を失わないように)、新しく追加するときは求めない。
+   */
+  calendar: z.boolean().optional(),
 });
 
 /**
@@ -188,6 +196,13 @@ const updateAccountBody = z
     popDeleteAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
     /** このアカウントから書くメールの形式。null なら利用者の既定に従う。 */
     composeFormat: z.enum(["html", "text"]).nullable().optional(),
+    /** このアカウントでメールを使う。 */
+    mailEnabled: z.boolean().optional(),
+    /**
+     * このアカウントでカレンダーを使う。Gmail と Microsoft Graph でカレンダーの権限が無ければ
+     * 409 consent_required (authorize に calendar: true を付けてログインし直してもらう)。
+     */
+    calendarEnabled: z.boolean().optional(),
   })
   .refine((body) => Object.values(body).some((value) => value !== undefined));
 
@@ -223,8 +238,55 @@ const publicColumns = {
   color: accounts.color,
   icon: accounts.icon,
   composeFormat: accounts.composeFormat,
+  mailEnabled: accounts.mailEnabled,
+  calendarEnabled: accounts.calendarEnabled,
+  calendarError: accounts.calendarError,
   createdAt: accounts.createdAt,
 };
+
+/** 読み出す列。publicColumns に、calendarConsent を導くための列を足したもの。 */
+const accountColumns = { ...publicColumns, oauthScopes: accounts.oauthScopes };
+type AccountColumns = {
+  [K in keyof typeof accountColumns]: (typeof accounts.$inferSelect)[K];
+};
+
+/**
+ * カレンダーを使うための同意の状態。
+ * - granted: OAuth でカレンダーの権限を許可済み。
+ * - required: Gmail と Microsoft Graph で、カレンダーの権限が無い。ログインし直して許可してもらう
+ *   (Gmail のアプリ パスワードのアカウントは、Google でのログインへの切り替えが要る)。
+ * - not_applicable: 同意の仕組みが無いアカウント (CalDAV のパスワードなど)。
+ */
+export type CalendarConsent = "granted" | "required" | "not_applicable";
+
+export function calendarConsentOf(
+  row: Pick<
+    typeof accounts.$inferSelect,
+    "provider" | "authType" | "protocol" | "oauthScopes"
+  >,
+): CalendarConsent {
+  if (row.protocol === "graph") {
+    return row.oauthScopes && hasMicrosoftCalendarScope(row.oauthScopes)
+      ? "granted"
+      : "required";
+  }
+  if (row.provider === "gmail") {
+    return row.authType === "oauth2" &&
+      row.oauthScopes &&
+      hasGoogleCalendarScope(row.oauthScopes)
+      ? "granted"
+      : "required";
+  }
+  return "not_applicable";
+}
+
+/** クライアントへ返す形にする。許可されたスコープそのものは返さない。 */
+function publicAccount({ oauthScopes, ...row }: AccountColumns) {
+  return {
+    ...row,
+    calendarConsent: calendarConsentOf({ ...row, oauthScopes }),
+  };
+}
 
 type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
 
@@ -234,9 +296,16 @@ type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
  * 消したものは変更履歴に載せ、端末からも消えるようにする。
  */
 async function resetMailData(tx: Tx, userId: string, accountId: string) {
+  // 予定の書き戻し (event_*) はメールのデータではないので残す。
   await tx
     .delete(outbox)
-    .where(and(eq(outbox.accountId, accountId), ne(outbox.kind, "send")));
+    .where(
+      and(
+        eq(outbox.accountId, accountId),
+        ne(outbox.kind, "send"),
+        notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
+      ),
+    );
   await tx.delete(popMessages).where(eq(popMessages.accountId, accountId));
   const removedMessages = await tx
     .delete(messages)
@@ -273,6 +342,8 @@ export type AccountRouteOverrides = {
   verifyImap?: typeof defaultVerifyImap;
   verifyPop3?: typeof defaultVerifyPop3;
   verifySmtp?: typeof defaultVerifySmtp;
+  /** OAuth のトークンの引き換えとプロフィールの取得。 */
+  fetchImpl?: typeof fetch;
 };
 
 export function accountRoutes(
@@ -291,6 +362,7 @@ export function accountRoutes(
   const app = new Hono<AppEnv>();
   const verifyImap = overrides.verifyImap ?? defaultVerifyImap;
   const verifyPop3 = overrides.verifyPop3 ?? defaultVerifyPop3;
+  const fetchImpl = overrides.fetchImpl ?? fetch;
 
   /** 受信のサーバー (IMAP または POP3) へ、実際にログインできるかを確かめる。 */
   function verifyIncoming(
@@ -367,12 +439,12 @@ export function accountRoutes(
 
   app.get("/", async (c) => {
     const rows = await db
-      .select(publicColumns)
+      .select(accountColumns)
       .from(accounts)
       .where(eq(accounts.userId, c.var.user.id))
       // 並び替えたアカウントをその順に、まだ並び替えていないものは追加した順に後ろへ。
       .orderBy(asc(accounts.sortOrder), asc(accounts.createdAt));
-    return c.json({ accounts: rows });
+    return c.json({ accounts: rows.map(publicAccount) });
   });
 
   /** サイドバーでのアカウントの並び順を保存する。ほかの端末にも同じ順で表示される。 */
@@ -533,7 +605,7 @@ export function accountRoutes(
           ),
         })
         .onConflictDoNothing()
-        .returning(publicColumns);
+        .returning(accountColumns);
       if (!row) return null;
       await tx.insert(changes).values({
         userId: user.id,
@@ -548,7 +620,7 @@ export function accountRoutes(
     if (!account) {
       return c.json({ error: "account_exists" }, 409);
     }
-    return c.json({ account }, 201);
+    return c.json({ account: publicAccount(account) }, 201);
   });
 
   // Microsoft アカウント (Exchange Online、Outlook.com) の追加。
@@ -563,12 +635,16 @@ export function accountRoutes(
       if (!microsoft) {
         return c.json({ error: "microsoft_not_configured" }, 503);
       }
-      const { accountId, app: fromApp, email } = c.req.valid("json");
+      const { accountId, app: fromApp, email, calendar } = c.req.valid("json");
       const user = c.var.user;
       let loginHint: string | undefined = email;
+      let withCalendar = calendar === true;
       if (accountId) {
         const [row] = await db
-          .select({ email: accounts.email })
+          .select({
+            email: accounts.email,
+            calendarEnabled: accounts.calendarEnabled,
+          })
           .from(accounts)
           .where(
             and(
@@ -581,6 +657,7 @@ export function accountRoutes(
           return c.json({ error: "not_found" }, 404);
         }
         loginHint = row.email;
+        withCalendar = calendar ?? row.calendarEnabled;
       }
       const url = createMicrosoftAuthorizeUrl({
         config: microsoft.config,
@@ -588,6 +665,7 @@ export function accountRoutes(
         userId: user.id,
         encryptionKey,
         loginHint,
+        calendar: withCalendar,
       });
       return c.json({ url: markAppState(url, fromApp) });
     },
@@ -612,18 +690,24 @@ export function accountRoutes(
       }
 
       let refreshToken: string;
+      let scope: string;
       let profile: Awaited<ReturnType<typeof fetchMicrosoftProfile>>;
       try {
-        const tokens = await exchangeMicrosoftCode(microsoft.config, {
-          code: body.code,
-          verifier: opened.verifier,
-          redirectUri: microsoft.redirectUri,
-        });
+        const tokens = await exchangeMicrosoftCode(
+          microsoft.config,
+          {
+            code: body.code,
+            verifier: opened.verifier,
+            redirectUri: microsoft.redirectUri,
+          },
+          fetchImpl,
+        );
         if (!tokens.refreshToken) {
           return c.json({ error: "no_refresh_token" }, 422);
         }
         refreshToken = tokens.refreshToken;
-        profile = await fetchMicrosoftProfile(tokens.accessToken);
+        scope = tokens.scope;
+        profile = await fetchMicrosoftProfile(tokens.accessToken, fetchImpl);
       } catch (error) {
         const detail = error instanceof Error ? error.message : "";
         // 接続に失敗した場合は、cause に DNS、タイムアウト、TLS などの理由が入っている。
@@ -645,6 +729,15 @@ export function accountRoutes(
         encryptionKey,
         user.id,
       );
+      // 同意画面でカレンダーの権限を外されたら、メールだけで追加する (calendarGranted: false)。
+      const calendarGranted = hasMicrosoftCalendarScope(scope);
+      const oauth = {
+        credentialsEncrypted,
+        oauthScopes: scope || null,
+        ...(opened.calendar && calendarGranted
+          ? { calendarEnabled: true }
+          : {}),
+      };
       const result = await db.transaction(async (tx) => {
         const sameAddress = await tx
           .select({ id: accounts.id, protocol: accounts.protocol })
@@ -666,12 +759,18 @@ export function accountRoutes(
         const [row] = existing
           ? await tx
               .update(accounts)
-              .set({ credentialsEncrypted, status: "active", lastError: null })
+              .set({
+                ...oauth,
+                status: "active",
+                lastError: null,
+                calendarError: null,
+              })
               .where(eq(accounts.id, existing.id))
-              .returning(publicColumns)
+              .returning(accountColumns)
           : await tx
               .insert(accounts)
               .values({
+                ...oauth,
                 userId: user.id,
                 email: profile.email,
                 displayName: body.displayName || profile.displayName,
@@ -679,10 +778,9 @@ export function accountRoutes(
                 authType: "oauth2",
                 protocol: "graph",
                 username: profile.email,
-                credentialsEncrypted,
               })
               .onConflictDoNothing()
-              .returning(publicColumns);
+              .returning(accountColumns);
         if (!row) return null;
         await tx.insert(changes).values({
           userId: user.id,
@@ -696,7 +794,13 @@ export function accountRoutes(
       if (!result) {
         return c.json({ error: "account_exists" }, 409);
       }
-      return c.json({ account: result.account }, result.created ? 201 : 200);
+      return c.json(
+        {
+          account: publicAccount(result.account),
+          calendarGranted,
+        },
+        result.created ? 201 : 200,
+      );
     },
   );
 
@@ -709,12 +813,16 @@ export function accountRoutes(
       if (!google) {
         return c.json({ error: "google_not_configured" }, 503);
       }
-      const { accountId, app: fromApp, email } = c.req.valid("json");
+      const { accountId, app: fromApp, email, calendar } = c.req.valid("json");
       const user = c.var.user;
       let loginHint: string | undefined = email;
+      let withCalendar = calendar === true;
       if (accountId) {
         const [row] = await db
-          .select({ email: accounts.email })
+          .select({
+            email: accounts.email,
+            calendarEnabled: accounts.calendarEnabled,
+          })
           .from(accounts)
           .where(
             and(
@@ -727,6 +835,8 @@ export function accountRoutes(
           return c.json({ error: "not_found" }, 404);
         }
         loginHint = row.email;
+        // Google は求めた権限だけのトークンを返すので、使っている権限も求め直す。
+        withCalendar = calendar ?? row.calendarEnabled;
       }
       const url = createGoogleAuthorizeUrl({
         config: google.config,
@@ -734,6 +844,7 @@ export function accountRoutes(
         userId: user.id,
         encryptionKey,
         loginHint,
+        calendar: withCalendar,
       });
       return c.json({ url: markAppState(url, fromApp) });
     },
@@ -759,13 +870,18 @@ export function accountRoutes(
 
       const preset = MAIL_PROVIDER_PRESETS.gmail;
       let refreshToken: string;
+      let scope: string;
       let email: string;
       try {
-        const tokens = await exchangeGoogleCode(google.config, {
-          code: body.code,
-          verifier: opened.verifier,
-          redirectUri: google.redirectUri,
-        });
+        const tokens = await exchangeGoogleCode(
+          google.config,
+          {
+            code: body.code,
+            verifier: opened.verifier,
+            redirectUri: google.redirectUri,
+          },
+          fetchImpl,
+        );
         // 同意画面では権限を個別に外せる。メールの権限が無ければ同期できない。
         if (!hasGmailScope(tokens.scope)) {
           return c.json({ error: "scope_missing" }, 422);
@@ -774,7 +890,8 @@ export function accountRoutes(
           return c.json({ error: "no_refresh_token" }, 422);
         }
         refreshToken = tokens.refreshToken;
-        email = await fetchGoogleEmail(tokens.accessToken);
+        scope = tokens.scope;
+        email = await fetchGoogleEmail(tokens.accessToken, fetchImpl);
         // Google Workspace では管理者が IMAP を止めていることがある。保存する前に確かめる。
         const verified = await verifyImap({
           ...preset.imap,
@@ -822,7 +939,12 @@ export function accountRoutes(
           encryptionKey,
           user.id,
         ),
+        oauthScopes: scope || null,
       };
+      // 同意画面でカレンダーの権限だけ外された場合は、メールだけで追加する (calendarGranted: false)。
+      const calendarGranted = hasGoogleCalendarScope(scope);
+      const calendarSettings =
+        opened.calendar && calendarGranted ? { calendarEnabled: true } : {};
       const result = await db.transaction(async (tx) => {
         const sameAddress = await tx
           .select({ id: accounts.id, provider: accounts.provider })
@@ -844,20 +966,27 @@ export function accountRoutes(
         const [row] = existing
           ? await tx
               .update(accounts)
-              .set({ ...settings, status: "active", lastError: null })
+              .set({
+                ...settings,
+                ...calendarSettings,
+                status: "active",
+                lastError: null,
+                calendarError: null,
+              })
               .where(eq(accounts.id, existing.id))
-              .returning(publicColumns)
+              .returning(accountColumns)
           : await tx
               .insert(accounts)
               .values({
                 ...settings,
+                ...calendarSettings,
                 userId: user.id,
                 email,
                 displayName: body.displayName || null,
                 provider: "gmail",
               })
               .onConflictDoNothing()
-              .returning(publicColumns);
+              .returning(accountColumns);
         if (!row) return null;
         await tx.insert(changes).values({
           userId: user.id,
@@ -871,11 +1000,20 @@ export function accountRoutes(
       if (!result) {
         return c.json({ error: "account_exists" }, 409);
       }
-      return c.json({ account: result.account }, result.created ? 201 : 200);
+      return c.json(
+        {
+          account: publicAccount(result.account),
+          calendarGranted,
+        },
+        result.created ? 201 : 200,
+      );
     },
   );
 
-  /** アカウントの設定 (署名、表示名、色) を変える。指定した項目だけを変え、同期には影響しない。 */
+  /**
+   * アカウントの設定 (署名、表示名、色など) を変える。指定した項目だけを変える。
+   * メールとカレンダーの切り替え (mailEnabled / calendarEnabled) は、同期ワーカーに知らせる。
+   */
   app.patch(
     "/:id",
     zValidator("param", idParam),
@@ -885,9 +1023,59 @@ export function accountRoutes(
       const body = c.req.valid("json");
       const user = c.var.user;
       const account = await db.transaction(async (tx) => {
+        // メールとカレンダーの切り替え。いまの値と、カレンダーの権限を確かめる。
+        let flagsChanged = false;
+        if (
+          body.mailEnabled !== undefined ||
+          body.calendarEnabled !== undefined
+        ) {
+          const [current] = await tx
+            .select({
+              provider: accounts.provider,
+              authType: accounts.authType,
+              protocol: accounts.protocol,
+              oauthScopes: accounts.oauthScopes,
+              imapHost: accounts.imapHost,
+              mailEnabled: accounts.mailEnabled,
+              calendarEnabled: accounts.calendarEnabled,
+            })
+            .from(accounts)
+            .where(and(eq(accounts.id, id), eq(accounts.userId, user.id)))
+            .for("update");
+          if (!current) return null;
+          if (
+            body.calendarEnabled === true &&
+            calendarConsentOf(current) === "required"
+          ) {
+            return "consent_required" as const;
+          }
+          // メールの接続先が無いアカウント (CalDAV だけで追加したもの) は、メールを使えない。
+          if (
+            body.mailEnabled === true &&
+            current.protocol !== "graph" &&
+            current.imapHost === null
+          ) {
+            return "mail_unavailable" as const;
+          }
+          flagsChanged =
+            (body.mailEnabled !== undefined &&
+              body.mailEnabled !== current.mailEnabled) ||
+            (body.calendarEnabled !== undefined &&
+              body.calendarEnabled !== current.calendarEnabled);
+        }
         const [row] = await tx
           .update(accounts)
           .set({
+            ...(body.mailEnabled !== undefined
+              ? { mailEnabled: body.mailEnabled }
+              : {}),
+            ...(body.calendarEnabled !== undefined
+              ? {
+                  calendarEnabled: body.calendarEnabled,
+                  // 止めたら、カレンダーの同期の失敗の表示も消す。
+                  ...(body.calendarEnabled ? {} : { calendarError: null }),
+                }
+              : {}),
             ...(body.signatureHtml !== undefined
               ? { signatureHtml: body.signatureHtml?.trim() || null }
               : {}),
@@ -933,15 +1121,16 @@ export function accountRoutes(
                 : undefined,
             ),
           )
-          .returning(publicColumns);
+          .returning(accountColumns);
         if (!row) return null;
         if (
+          flagsChanged ||
           body.allowLegacyTls !== undefined ||
           body.pushConnections !== undefined ||
           body.popLeaveOnServer !== undefined ||
           body.popDeleteAfterDays !== undefined
         ) {
-          // 同期ワーカーが、新しい設定でつなぎ直す。
+          // 同期ワーカーが、新しい設定でつなぎ直す (メールとカレンダーの同期の起動と停止も)。
           await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${id})`);
         }
         // ほかの端末にも、新しい設定が届くようにする。
@@ -968,7 +1157,10 @@ export function accountRoutes(
       if (!account) {
         return c.json({ error: "not_found" }, 404);
       }
-      return c.json({ account });
+      if (account === "consent_required" || account === "mail_unavailable") {
+        return c.json({ error: account }, 409);
+      }
+      return c.json({ account: publicAccount(account) });
     },
   );
 
@@ -1124,7 +1316,7 @@ export function accountRoutes(
               ne(accounts.protocol, "graph"),
             ),
           )
-          .returning(publicColumns);
+          .returning(accountColumns);
         if (!row) return null;
         if (settings.protocolChanged) {
           // 受信の方式を変えた。フォルダもメールの ID も方式ごとに違うので、
@@ -1139,7 +1331,7 @@ export function accountRoutes(
       if (!account) {
         return c.json({ error: "not_found" }, 404);
       }
-      return c.json({ account });
+      return c.json({ account: publicAccount(account) });
     },
   );
 

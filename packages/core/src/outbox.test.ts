@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mailboxNameError } from "./outbox.js";
+import {
+  accountLockKey,
+  calendarLockKey,
+  EVENT_OUTBOX_KINDS,
+  mailboxNameError,
+} from "./outbox.js";
 
 describe("mailboxNameError", () => {
   it("普通の名前は通す (日本語、空白を含む名前も)", () => {
@@ -25,5 +30,21 @@ describe("mailboxNameError", () => {
   it("長すぎる名前は通さない", () => {
     expect(mailboxNameError("あ".repeat(100), "/")).toBeNull();
     expect(mailboxNameError("あ".repeat(101), "/")).toBe("too_long");
+  });
+});
+
+describe("カレンダーの書き戻し", () => {
+  it("カレンダーのロックは、メールのロックと別のキーにする", () => {
+    expect(calendarLockKey("a1")).toBe("calendar-account:a1");
+    expect(calendarLockKey("a1")).not.toBe(accountLockKey("a1"));
+  });
+
+  it("操作の種類は event_ で始まる 4 つ", () => {
+    expect(EVENT_OUTBOX_KINDS).toEqual([
+      "event_create",
+      "event_update",
+      "event_delete",
+      "event_respond",
+    ]);
   });
 });
