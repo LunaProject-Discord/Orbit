@@ -18,14 +18,18 @@ import {
   messages,
   users,
 } from "@orbit/db";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Hono } from "hono";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEnv } from "../context.js";
 import type { EventsHub } from "../lib/events-hub.js";
-import { MAX_INVITE_BYTES, messageInviteRoutes } from "./message-invite.js";
+import {
+  MAX_INVITE_BYTES,
+  MAX_INVITE_LINES,
+  messageInviteRoutes,
+} from "./message-invite.js";
 
 const adminUrl = process.env.DATABASE_URL;
 
@@ -229,7 +233,12 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
   };
 
   const insertEvent = async (
-    values: { calendarId?: string; owner?: string; sequence?: number } = {},
+    values: {
+      calendarId?: string;
+      owner?: string;
+      sequence?: number;
+      selfEmail?: string;
+    } = {},
     self = true,
   ) => {
     const [row] = await db
@@ -247,7 +256,7 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
       .returning({ id: events.id });
     const id = row?.id as string;
     await db.insert(eventAttendees).values([
-      { eventId: id, email: "owner@gmail.com", self },
+      { eventId: id, email: values.selfEmail ?? "owner@gmail.com", self },
       { eventId: id, email: "suzuki@example.com" },
     ]);
     return id;
@@ -302,7 +311,10 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
   });
 
   it("同じ予定が複数あれば、メールと同じアカウントのカレンダーを選ぶ", async () => {
-    const secondAccount = await insertEvent({ calendarId: secondCalendarId });
+    const secondAccount = await insertEvent({
+      calendarId: secondCalendarId,
+      selfEmail: "owner2@gmail.com",
+    });
     const sameAccount = await insertEvent({ calendarId });
     const messageId = await insertMessage({ content: ics("REQUEST") });
     expect(((await call(messageId)).body.invite as Json).eventId).toBe(
@@ -315,6 +327,28 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
     expect(((await call(fromSecond)).body.invite as Json).eventId).toBe(
       secondAccount,
     );
+  });
+
+  it("共有カレンダーで self の行がほかの人 (カレンダーの持ち主) なら拾わない", async () => {
+    // Google の共有カレンダー: self はそのカレンダーの持ち主 (同僚) を指す。
+    await insertEvent({ selfEmail: "colleague@example.com" });
+    const messageId = await insertMessage({ content: ics("REQUEST") });
+    expect(((await call(messageId)).body.invite as Json).eventId).toBeNull();
+    // primary のカレンダーなら self の行をそのまま自分とみなす。
+    await db
+      .update(calendars)
+      .set({ providerState: { primary: true, accessRole: "owner" } })
+      .where(eq(calendars.id, calendarId));
+    try {
+      expect(
+        ((await call(messageId)).body.invite as Json).eventId,
+      ).not.toBeNull();
+    } finally {
+      await db
+        .update(calendars)
+        .set({ providerState: null })
+        .where(eq(calendars.id, calendarId));
+    }
   });
 
   it("ほかの利用者の同じ UID の予定は拾わない", async () => {
@@ -376,6 +410,37 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
       status: 200,
       body: { invite: null },
     });
+  });
+
+  it("60,000 行の悪意のある招待 (閉じない BEGIN、行の多い予定) はすぐに invite: null", async () => {
+    const unclosed = [
+      "BEGIN:VCALENDAR",
+      "METHOD:REQUEST",
+      ...Array.from({ length: 60_000 }, () => "BEGIN:VEVENT"),
+      "END:VCALENDAR",
+    ].join("\r\n");
+    const filler = Array.from({ length: 60_000 }, (_, index) => `X:${index}`);
+    for (const content of [unclosed, ics("REQUEST", filler)]) {
+      // 1 MB の上限には掛からない大きさ (行数で断る)。
+      expect(Buffer.byteLength(content)).toBeLessThan(MAX_INVITE_BYTES);
+      const messageId = await insertMessage({ content });
+      const started = performance.now();
+      const result = await call(messageId);
+      const elapsed = performance.now() - started;
+      expect(result).toEqual({ status: 200, body: { invite: null } });
+      // DB と添付の読み込みを含めた時間。前は 30 秒以上掛かった。
+      expect(elapsed).toBeLessThan(1000);
+    }
+  });
+
+  it("MAX_INVITE_LINES までの行数なら読む", async () => {
+    const extra = Array.from(
+      { length: MAX_INVITE_LINES - 20 },
+      (_, index) => `X-FILL:${index}`,
+    );
+    const messageId = await insertMessage({ content: ics("REQUEST", extra) });
+    const { body } = await call(messageId);
+    expect((body.invite as Json).uid).toBe(UID);
   });
 
   it("ほかの利用者のメールは 404", async () => {

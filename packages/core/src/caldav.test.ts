@@ -161,7 +161,36 @@ describe("CaldavClient", () => {
       ).toBe(false);
     });
 
-    it("コレクションで失敗したらホームを試し、どれも失敗なら false", async () => {
+    it("どれも一時的に失敗したら null (調べられなかった)。4xx が混じっても一時的な失敗があれば null", async () => {
+      const network = clientWith(() => {
+        throw new Error("ECONNRESET");
+      });
+      expect(
+        await network.supportsAutoSchedule([
+          "https://dav.example.com/home/cal/",
+          "https://dav.example.com/home/",
+        ]),
+      ).toBeNull();
+      for (const status of [500, 503, 408, 429]) {
+        const busy = clientWith(() => new Response(null, { status }));
+        expect(
+          await busy.supportsAutoSchedule(["https://dav.example.com/cal/"]),
+        ).toBeNull();
+      }
+      const mixed = clientWith((url) =>
+        url.endsWith("/cal/")
+          ? new Response(null, { status: 405 })
+          : new Response(null, { status: 503 }),
+      );
+      expect(
+        await mixed.supportsAutoSchedule([
+          "https://dav.example.com/home/cal/",
+          "https://dav.example.com/home/",
+        ]),
+      ).toBeNull();
+    });
+
+    it("コレクションで失敗したらホームを試し、どれも 4xx なら false", async () => {
       const seen: string[] = [];
       const fallback = clientWith((url) => {
         if (url.endsWith("/cal/")) throw new Error("ECONNRESET");

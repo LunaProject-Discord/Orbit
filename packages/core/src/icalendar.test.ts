@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ICalendarError, parseICalendar } from "./icalendar.js";
+import {
+  ICalendarError,
+  MAX_COMPONENT_DEPTH,
+  parseICalendar,
+} from "./icalendar.js";
 
 const options = { defaultTimeZone: "Asia/Tokyo" };
 
@@ -259,5 +263,195 @@ describe("parseICalendar", () => {
     expect(() => parseICalendar("<html></html>", options)).toThrow(
       ICalendarError,
     );
+  });
+});
+
+describe("parseICalendar (悪意のある入力)", () => {
+  const LINES = 60_000;
+  /** 1 回目は JIT の暖機で遅いことがあるので、2 回測って速い方を見る。 */
+  function timed(run: () => void): number {
+    let best = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 2; round++) {
+      const started = performance.now();
+      try {
+        run();
+      } catch (error) {
+        if (!(error instanceof ICalendarError)) throw error;
+      }
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  }
+
+  function filler(count: number, line: (index: number) => string): string[] {
+    return Array.from({ length: count }, (_, index) => line(index));
+  }
+
+  it("閉じない BEGIN:VEVENT を 60,000 行並べても 100ms 以下で投げる", () => {
+    const input = crlf([
+      "BEGIN:VCALENDAR",
+      ...filler(LINES / 2, () => "BEGIN:VEVENT"),
+      ...filler(LINES / 2 - 2, (index) => `SUMMARY:${index}`),
+      "END:VCALENDAR",
+    ]);
+    expect(input.length).toBeGreaterThan(500_000);
+    expect(() => parseICalendar(input, options)).toThrow(ICalendarError);
+    expect(timed(() => parseICalendar(input, options))).toBeLessThan(100);
+  });
+
+  it("閉じない BEGIN:VEVENT を 3 段で止めても、続く 60,000 行を 100ms 以下で読む", () => {
+    const input = crlf([
+      "BEGIN:VCALENDAR",
+      "BEGIN:VEVENT",
+      "BEGIN:VEVENT",
+      "BEGIN:VEVENT",
+      "UID:x",
+      "DTSTART:20261201T000000Z",
+      ...filler(LINES, (index) => `X-FILL:${index}`),
+      "END:VCALENDAR",
+    ]);
+    expect(timed(() => parseICalendar(input, options))).toBeLessThan(100);
+  });
+
+  it("入れ子は MAX_COMPONENT_DEPTH まで読み、超えたら投げる", () => {
+    expect(MAX_COMPONENT_DEPTH).toBe(4);
+    const ok = crlf([
+      "BEGIN:VCALENDAR",
+      "BEGIN:VEVENT",
+      "UID:d",
+      "DTSTART:20261201T000000Z",
+      "BEGIN:VALARM",
+      "BEGIN:X-INNER",
+      "END:X-INNER",
+      "TRIGGER:-PT10M",
+      "END:VALARM",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ]);
+    const event = parseICalendar(ok, options).events[0];
+    expect(event?.reminders).toEqual([{ method: "display", minutes: 10 }]);
+    // VALARM と中身の行も VEVENT の raw に入る。
+    expect(event?.raw).toContain("BEGIN:X-INNER");
+    expect(event?.raw.startsWith("BEGIN:VEVENT")).toBe(true);
+    expect(event?.raw.endsWith("END:VEVENT")).toBe(true);
+    const deep = ok.replace(
+      "BEGIN:X-INNER\r\nEND:X-INNER",
+      "BEGIN:X-INNER\r\nBEGIN:X-DEEPER\r\nEND:X-DEEPER\r\nEND:X-INNER",
+    );
+    expect(() => parseICalendar(deep, options)).toThrow(ICalendarError);
+  });
+
+  it("raw は VEVENT ごとの行だけ (ほかの予定の行を含まない)", () => {
+    const calendar = parseICalendar(
+      crlf([
+        "BEGIN:VCALENDAR",
+        "BEGIN:VEVENT",
+        "UID:a",
+        "DTSTART:20261201T000000Z",
+        "END:VEVENT",
+        "BEGIN:VEVENT",
+        "UID:b",
+        "DTSTART:20261202T000000Z",
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ]),
+      options,
+    );
+    expect(calendar.events.map((event) => event.raw)).toEqual([
+      "BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20261201T000000Z\r\nEND:VEVENT",
+      "BEGIN:VEVENT\r\nUID:b\r\nDTSTART:20261202T000000Z\r\nEND:VEVENT",
+    ]);
+  });
+
+  it.each([
+    [
+      "同じ UID の予定を並べる",
+      () =>
+        filler(LINES / 4, () =>
+          [
+            "BEGIN:VEVENT",
+            "UID:same",
+            "DTSTART:20261201T000000Z",
+            "END:VEVENT",
+          ].join("\r\n"),
+        ),
+    ],
+    [
+      "違う UID の予定を並べる",
+      () =>
+        filler(LINES / 4, (index) =>
+          [
+            "BEGIN:VEVENT",
+            `UID:u${index}`,
+            "DTSTART:20261201T000000Z",
+            "END:VEVENT",
+          ].join("\r\n"),
+        ),
+    ],
+    [
+      "1 つの予定に ATTENDEE を並べる",
+      () => [
+        "BEGIN:VEVENT",
+        "UID:a",
+        "DTSTART:20261201T000000Z",
+        ...filler(LINES, (index) => `ATTENDEE:mailto:p${index}@example.com`),
+        "END:VEVENT",
+      ],
+    ],
+    [
+      "1 行を 60,000 回折り返す",
+      () => [
+        "BEGIN:VEVENT",
+        "UID:a",
+        "DTSTART:20261201T000000Z",
+        "DESCRIPTION:x",
+        ...filler(LINES, () => " xxxxxxxxxxxx"),
+        "END:VEVENT",
+      ],
+    ],
+  ])("%s 60,000 行", (_, body) => {
+    const input = crlf(["BEGIN:VCALENDAR", ...body(), "END:VCALENDAR"]);
+    // 行数の上限なしでも行数に比例する時間で読み切る (入れ子×行数だった前は 30 秒以上)。
+    // 並列のテストで揺れるので、ここは余裕を見て 250ms。
+    expect(
+      timed(() => parseICalendar(input, { ...options, maxEvents: 100 })),
+    ).toBeLessThan(250);
+    // 招待のルートと同じく行数の上限を付ければ、読む前に投げる。
+    const limited = { ...options, maxEvents: 100, maxLines: 10_000 };
+    expect(() => parseICalendar(input, limited)).toThrow(ICalendarError);
+    expect(timed(() => parseICalendar(input, limited))).toBeLessThan(100);
+  });
+
+  it("maxEvents は同じ UID の重なりも数える", () => {
+    const input = crlf([
+      "BEGIN:VCALENDAR",
+      ...["SUMMARY:1", "SUMMARY:2", "SUMMARY:3"].flatMap((summary) => [
+        "BEGIN:VEVENT",
+        "UID:same",
+        "DTSTART:20261201T000000Z",
+        summary,
+        "END:VEVENT",
+      ]),
+      "END:VCALENDAR",
+    ]);
+    const calendar = parseICalendar(input, { ...options, maxEvents: 2 });
+    expect(calendar.events.map((event) => event.summary)).toEqual(["2"]);
+  });
+
+  it("maxLines を超えたら投げる", () => {
+    const input = crlf([
+      "BEGIN:VCALENDAR",
+      "BEGIN:VEVENT",
+      "UID:a",
+      "DTSTART:20261201T000000Z",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ]);
+    expect(() => parseICalendar(input, { ...options, maxLines: 5 })).toThrow(
+      ICalendarError,
+    );
+    expect(
+      parseICalendar(input, { ...options, maxLines: 6 }).events,
+    ).toHaveLength(1);
   });
 });
