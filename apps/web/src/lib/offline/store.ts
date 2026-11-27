@@ -23,7 +23,24 @@ export const TABLES = [
   "outbox",
 ] as const;
 
-export type Table = (typeof TABLES)[number];
+/**
+ * カレンダーの表。メールとは別のデータベース (calendar-offline-<利用者 ID>) に置く
+ * (同じデータベースに足すと版を上げることになり、古いタブのメールの保存先まで閉じてしまうため)。
+ */
+export const CALENDAR_TABLES = [
+  /** 同期の位置 (cursor) などの 1 件ずつの値。キーは名前。 */
+  "calMeta",
+  /** サーバーのカレンダーの控え。キーはカレンダーの ID。 */
+  "calCalendars",
+  /** サーバーの予定の控え (原本と例外)。キーは予定の ID。 */
+  "calEvents",
+  /** 送信待ちの操作。キーは操作の ID。 */
+  "calQueue",
+  /** 端末で分かった競合の控え。キーは通知の ID。 */
+  "calNotices",
+] as const;
+
+export type Table = (typeof TABLES)[number] | (typeof CALENDAR_TABLES)[number];
 
 export type WriteOp =
   | { type: "put"; table: Table; key: string; value: unknown }
@@ -101,13 +118,20 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
 export class IndexedDbStore implements LocalStore {
   readonly persistent = true;
 
-  private constructor(private readonly db: IDBDatabase) {}
+  private constructor(
+    private readonly db: IDBDatabase,
+    private readonly tables: readonly Table[],
+  ) {}
 
-  static open(name: string): Promise<IndexedDbStore> {
+  /** 保存先を開く。tables はそのデータベースに置く表 (既定はメールの表)。 */
+  static open(
+    name: string,
+    tables: readonly Table[] = TABLES,
+  ): Promise<IndexedDbStore> {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(name, 1);
       req.onupgradeneeded = () => {
-        for (const table of TABLES) {
+        for (const table of tables) {
           if (!req.result.objectStoreNames.contains(table)) {
             req.result.createObjectStore(table);
           }
@@ -117,7 +141,7 @@ export class IndexedDbStore implements LocalStore {
         const db = req.result;
         // ほかのタブが消そうとしたら (ログアウト)、こちらは閉じて譲る。
         db.onversionchange = () => db.close();
-        resolve(new IndexedDbStore(db));
+        resolve(new IndexedDbStore(db, tables));
       };
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error("blocked"));
@@ -171,11 +195,11 @@ export class IndexedDbStore implements LocalStore {
 
   clear(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const tx = this.db.transaction([...TABLES], "readwrite");
+      const tx = this.db.transaction([...this.tables], "readwrite");
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
-      for (const table of TABLES) tx.objectStore(table).clear();
+      for (const table of this.tables) tx.objectStore(table).clear();
     });
   }
 

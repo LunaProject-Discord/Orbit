@@ -20,6 +20,7 @@ import {
   refreshDueSubscriptions,
   SUBSCRIPTION_BATCH,
 } from "./calendar-subscriptions.js";
+import { buildChangesIndex } from "./changes-index.js";
 import {
   combineSenders,
   DevicePushSender,
@@ -91,6 +92,10 @@ if (!webPush) {
 let stopping = false;
 void buildSearchIndex(pool, { stopped: () => stopping }).catch((error) => {
   console.error("検索の索引を作れませんでした。", error);
+});
+// 変更履歴 (changes) の削除の部分索引も、表を止めないよう裏で作る (あれば確かめるだけ)。
+void buildChangesIndex(pool, { stopped: () => stopping }).catch((error) => {
+  console.error("変更履歴の索引を作れませんでした。", error);
 });
 
 // 既読や移動などの操作とメールの送信 (送信待ちキュー) は、各アカウントの同期が処理する。

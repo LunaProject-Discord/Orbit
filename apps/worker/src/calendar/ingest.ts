@@ -25,6 +25,7 @@ import {
 } from "@orbit/db";
 import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "../changes.js";
+import { lostValues, recordEventConflict } from "./conflicts.js";
 import type {
   AccountRow,
   CalendarProvider,
@@ -316,11 +317,21 @@ export function withLocalFields<T extends RemoteEvent>(
   return next;
 }
 
+export type LostLocal = {
+  eventId: string;
+  fields: EventFieldName[];
+  lost: Record<string, unknown>;
+  title: string | null;
+};
+
 export type MergeOutcome = {
   /** upsertCalendarEvents に渡す入力。 */
   inputs: RemoteEventInput[];
-  /** 未送信のローカルの変更が、相手側の新しい変更に負けて失われた項目。 */
-  lostLocal: { eventId: string; fields: EventFieldName[] }[];
+  /**
+   * 未送信のローカルの変更が、相手側の新しい変更に負けて失われた項目。lost は上書きする前の
+   * 行の値 (API の変更の形)、title は上書きする前の題名。
+   */
+  lostLocal: LostLocal[];
   /** ローカルの値を残した項目 (events.id ごと)。書き戻しの競合の解決に使う。 */
   keptLocal: Map<string, EventFieldName[]>;
 };
@@ -424,7 +435,12 @@ export async function mergeRemoteEvents(
       outcome.keptLocal.set(row.id, merge.keepLocal);
     }
     if (merge.lostLocal.length > 0) {
-      outcome.lostLocal.push({ eventId: row.id, fields: merge.lostLocal });
+      outcome.lostLocal.push({
+        eventId: row.id,
+        fields: merge.lostLocal,
+        lost: lostValues(row, merge.lostLocal),
+        title: row.summary,
+      });
     }
   }
   return outcome;
@@ -440,6 +456,8 @@ export type WriteOutcome = {
 /**
  * 届いた予定をマージして DB に書き、変更履歴に記録する。書き戻しの結果や、競合のときに
  * 取り直した内容の書き込みに使う。ロックと guard は呼び出し側が取る。
+ * 未送信のローカルの変更が負けた項目は、反映されなかった変更 (field_lost) として記録する
+ * (取り込みと、書き戻しの 412 の統合のどちらもここを通る)。
  */
 export async function writeRemoteEvents(
   tx: Tx,
@@ -468,6 +486,18 @@ export async function writeRemoteEvents(
     "delete",
     result.deleted,
   );
+  for (const lost of merged.lostLocal) {
+    await recordEventConflict(tx, {
+      userId: options.account.userId,
+      calendarId: options.calendar.id,
+      eventId: lost.eventId,
+      kind: "field_lost",
+      fields: lost.fields,
+      lost: lost.lost,
+      title: lost.title,
+      reason: "相手側で後から変更された内容になりました。",
+    });
+  }
   return {
     upserted,
     deleted: result.deleted,

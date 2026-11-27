@@ -3,6 +3,7 @@ import {
   EVENT_OUTBOX_KINDS,
   type EventCreatePayload,
   type EventDeletePayload,
+  type EventFieldName,
   type EventOutboxRef,
   type EventRespondPayload,
   type EventUpdatePayload,
@@ -18,11 +19,19 @@ import {
 import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "../changes.js";
 import {
+  type EventConflictInput,
+  eventSnapshot,
+  lostValues,
+  pruneEventConflicts,
+  recordEventConflict,
+} from "./conflicts.js";
+import {
   isDeletePending,
   loadPendingEventGuard,
   lockCalendarAccount,
   type ResolvedRemoteEvent,
   resolveRemoteUids,
+  type WriteOutcome,
   writeRemoteEvents,
 } from "./ingest.js";
 import {
@@ -192,6 +201,8 @@ export async function processEventOutbox(
         lt(outbox.updatedAt, new Date(Date.now() - KEEP_DONE_MS)),
       ),
     );
+  // 反映されなかった変更の記録も、同じ時機に古いものを消す。
+  await pruneEventConflicts(db, account.userId, nowOf(deps));
   return { done, failed, retryAt };
 }
 
@@ -389,6 +400,7 @@ async function absorbDuplicateUid(
  * 削除の payload の target に相手側の remoteId と etag を書き込んで、削除がそれを使えるようにする。
  * rename は、相手側が UID を付け替えたときの元の uid (行の uid を先に書き換えて、
  * 同じ行に remoteId が付くようにする)。新しい uid の行が既にあれば、先にこちらへ寄せる。
+ * onWritten は、書き込んだ後に同じトランザクションで呼ぶ (競合の記録など)。
  */
 async function applyWriteResult(
   deps: EventOutboxDeps,
@@ -397,6 +409,7 @@ async function applyWriteResult(
   remote: readonly ResolvedRemoteEvent[],
   target: { eventId: string; recurrenceId: string | null } | null,
   rename?: { fromUid: string },
+  onWritten?: (tx: Tx, written: WriteOutcome) => Promise<void>,
 ) {
   await deps.db.transaction(async (tx) => {
     let guard = await loadPendingEventGuard(tx, deps.account.id, [outboxId]);
@@ -466,7 +479,7 @@ async function applyWriteResult(
         );
     }
     const current = guard;
-    await writeRemoteEvents(tx, {
+    const written = await writeRemoteEvents(tx, {
       account: deps.account,
       calendar,
       provider: deps.provider,
@@ -477,14 +490,16 @@ async function applyWriteResult(
       ),
       now: nowOf(deps),
     });
+    await onWritten?.(tx, written);
   });
 }
 
-/** 行を消し (例外も含む)、変更履歴に記録する。 */
+/** 行を消し (例外も含む)、変更履歴に記録する。conflict があれば同じトランザクションで記録する。 */
 async function deleteLocal(
   deps: EventOutboxDeps,
   calendar: CalendarRow,
   remoteId: string,
+  conflict?: EventConflictInput,
 ) {
   await deps.db.transaction(async (tx) => {
     await lockCalendarAccount(tx, deps.account.id);
@@ -492,6 +507,7 @@ async function deleteLocal(
       remoteId,
     ]);
     await recordChanges(tx, deps.account.userId, "event", "delete", deleted);
+    if (conflict) await recordEventConflict(tx, conflict);
   });
 }
 
@@ -750,7 +766,21 @@ async function resolveGone(
   deps.log(
     `予定 ${snapshot.event.id} は相手側で消えていたので、こちらでも消します`,
   );
-  await deleteLocal(deps, calendar, ref.remoteId);
+  const lostFields = fields.filter((field): field is EventFieldName =>
+    (EVENT_FIELD_NAMES as readonly string[]).includes(field),
+  );
+  await deleteLocal(deps, calendar, ref.remoteId, {
+    userId: deps.account.userId,
+    calendarId: calendar.id,
+    eventId: snapshot.event.id,
+    kind: "remote_deleted",
+    fields: lostFields,
+    lost: lostValues(snapshot.event, lostFields),
+    snapshot: eventSnapshot(snapshot.event),
+    title: snapshot.event.summary,
+    reason:
+      "相手側で削除されていて、こちらの変更の方が古かったので削除しました。",
+  });
   return { ok: true };
 }
 
@@ -787,7 +817,36 @@ async function applyDelete(
       deps.log(
         `予定 ${payload.target.eventId} は、消したあとに相手側で変更されていたので、消さずに戻します`,
       );
-      await applyWriteResult(deps, calendar, row.id, latest, null);
+      await applyWriteResult(
+        deps,
+        calendar,
+        row.id,
+        latest,
+        null,
+        undefined,
+        async (tx) => {
+          // 戻した行 (新しい events.id) を指す。「やはり削除」はこの ID を消す。
+          const [restored] = await tx
+            .select({ id: events.id })
+            .from(events)
+            .where(
+              and(
+                eq(events.calendarId, calendar.id),
+                eq(events.uid, remote.uid),
+                sql`${events.recurrenceId} is not distinct from ${remote.recurrenceId}`,
+              ),
+            );
+          await recordEventConflict(tx, {
+            userId: deps.account.userId,
+            calendarId: calendar.id,
+            eventId: restored?.id ?? payload.target.eventId,
+            kind: "delete_cancelled",
+            title: remote.summary,
+            reason:
+              "削除した後に相手側で変更されていたので、削除を取りやめました。",
+          });
+        },
+      );
       return { ok: true };
     }
     ref.etag = remote.etag;
@@ -867,12 +926,17 @@ async function failEventOperation(
   let latest: ResolvedRemoteEvent[] | null | undefined;
   // まだ相手側に無い回の例外。戻す先が無いので行を消す。
   let unsentException: string | null = null;
+  // 巻き戻す前の予定 (反映されなかった変更の記録に使う)。
+  const before =
+    calendar && payload.eventId
+      ? await loadSnapshot(deps, calendar.id, payload.eventId)
+      : null;
   if (calendar && row.kind !== "event_create") {
     let ref: RemoteEventRef | null = null;
     if (row.kind === "event_delete") {
       ref = refFromOutbox((row.payload as EventDeletePayload).target);
     } else if (payload.eventId) {
-      const snapshot = await loadSnapshot(deps, calendar.id, payload.eventId);
+      const snapshot = before;
       ref = snapshot ? refOf(snapshot) : null;
       if (
         snapshot &&
@@ -893,6 +957,10 @@ async function failEventOperation(
       latest = null;
     }
   }
+
+  const conflict = calendar
+    ? failureConflict(deps, calendar, row, reason, before, latest)
+    : null;
 
   await deps.db.transaction(async (tx) => {
     await lockCalendarAccount(tx, deps.account.id);
@@ -954,8 +1022,96 @@ async function failEventOperation(
         .set({ syncToken: null })
         .where(eq(calendars.id, calendar.id));
     }
+    if (conflict) {
+      if (row.kind === "event_delete") {
+        // 削除の失敗で相手側の内容から戻した予定は、新しい events.id になる。それを指す。
+        const target = (row.payload as EventDeletePayload).target;
+        const [restored] = await tx
+          .select({ id: events.id })
+          .from(events)
+          .where(
+            and(
+              eq(events.calendarId, calendar.id),
+              eq(events.uid, target.uid),
+              sql`${events.recurrenceId} is not distinct from ${target.recurrenceId}`,
+            ),
+          );
+        if (restored) conflict.eventId = restored.id;
+      }
+      await recordEventConflict(tx, conflict);
+    }
     await recordChanges(tx, deps.account.userId, "calendar", "upsert", [
       calendar.id,
     ]);
   });
+}
+
+/**
+ * 確定した失敗の記録 (event_conflicts) を作る。before は巻き戻す前の予定、latest は戻す先の
+ * 相手側の内容。
+ * - event_create: create_failed (行は残る。「もう一度試す」は POST /v1/calendars/conflicts/:id/retry)。
+ * - event_update: write_failed。fields は書き戻し待ちだった項目、lost はその値。
+ *   まだ相手側に無い回の例外は行ごと消すので、snapshot にも控える (parentId と recurrenceId 付き)。
+ * - event_respond: write_failed。fields は attendees。
+ * - event_delete: write_failed。fields は空 (削除の失敗。予定は相手側の内容で戻る)。
+ */
+function failureConflict(
+  deps: EventOutboxDeps,
+  calendar: CalendarRow,
+  row: OutboxRow,
+  reason: string,
+  before: Snapshot | null,
+  latest: readonly ResolvedRemoteEvent[] | null | undefined,
+): EventConflictInput | null {
+  const base = {
+    userId: deps.account.userId,
+    calendarId: calendar.id,
+    reason,
+  };
+  switch (row.kind) {
+    case "event_create": {
+      if (!before) return null;
+      return {
+        ...base,
+        eventId: before.event.id,
+        kind: "create_failed",
+        title: before.event.summary,
+      };
+    }
+    case "event_update":
+    case "event_respond": {
+      if (!before) return null;
+      const event = before.event;
+      const fields: EventFieldName[] =
+        row.kind === "event_respond"
+          ? ["attendees"]
+          : [...((row.payload as EventUpdatePayload).fields ?? [])];
+      const unsent = event.remoteId === null && event.recurrenceId !== null;
+      return {
+        ...base,
+        eventId: event.id,
+        kind: "write_failed",
+        fields,
+        lost: lostValues(event, fields),
+        snapshot: unsent ? eventSnapshot(event) : null,
+        title: event.summary,
+      };
+    }
+    case "event_delete": {
+      const target = (row.payload as EventDeletePayload).target;
+      if (!target) return null;
+      const remote =
+        latest && target.remoteId !== null
+          ? findRemote(latest, { ...target, remoteId: target.remoteId })
+          : null;
+      return {
+        ...base,
+        eventId: target.eventId,
+        kind: "write_failed",
+        title: remote?.summary ?? null,
+      };
+    }
+    default:
+      return null;
+  }
 }

@@ -2,7 +2,14 @@
  * 予定の取り込み (ingestEventDelta) を、偽のプロバイダと実際の PostgreSQL で確かめる。
  * DATABASE_URL が無い環境では実行しない。
  */
-import { calendars, changes, type Database, events, outbox } from "@orbit/db";
+import {
+  calendars,
+  changes,
+  type Database,
+  eventConflicts,
+  events,
+  outbox,
+} from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AccountRow, CalendarRow } from "./provider.js";
@@ -240,7 +247,29 @@ describe.skipIf(!adminUrl)("予定の取り込み", () => {
     const [latest] = await rows();
     expect(latest?.summary).toBe("新しい相手側の題");
     expect(results.flatMap((result) => result.lostLocal)).toEqual([
-      { eventId: row.id, fields: ["summary"] },
+      {
+        eventId: row.id,
+        fields: ["summary"],
+        lost: { summary: "ローカルの題" },
+        title: "ローカルの題",
+      },
+    ]);
+    // 反映されなかった変更 (field_lost) として、負けた値を記録する。
+    const conflicts = await db
+      .select()
+      .from(eventConflicts)
+      .where(eq(eventConflicts.eventId, row.id));
+    expect(conflicts).toEqual([
+      expect.objectContaining({
+        userId,
+        calendarId: calendar.id,
+        kind: "field_lost",
+        fields: ["summary"],
+        lost: { summary: "ローカルの題" },
+        snapshot: null,
+        title: "ローカルの題",
+        resolvedAt: null,
+      }),
     ]);
   });
 

@@ -42,7 +42,7 @@ RUN test -n "$NEXT_PUBLIC_API_URL" || (echo "NEXT_PUBLIC_API_URL を --build-arg
 # 無ければ一覧を作らない (アプリは同梱の画面を使い続ける)。
 RUN --mount=type=secret,id=app_update_signing_key,required=false \
     APP_UPDATE_SIGNING_KEY="$(cat /run/secrets/app_update_signing_key 2>/dev/null || true)" \
-    pnpm --filter @orbit/web build
+    pnpm --filter @orbit/web... build
 
 FROM manifests AS server
 # 動いているサーバーの版 (deploy/deploy.sh が git のタグから決めて渡す)。/v1/server-info で返す。

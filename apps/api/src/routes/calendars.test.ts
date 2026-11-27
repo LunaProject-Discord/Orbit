@@ -14,6 +14,7 @@ import {
   calendars,
   createDb,
   type Database,
+  eventConflicts,
   events,
   outbox,
   users,
@@ -321,6 +322,23 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     expect((await call("POST", "/events", body)).status).toBe(201);
     expect((await call("POST", "/events", body)).status).toBe(201);
     const days = await range("2026-12-10", "2026-12-11");
+    expect(days.occurrences.filter((o) => o.eventId === id)).toHaveLength(1);
+  });
+
+  it("同じ ID の作成が同時に届いても、どちらも 201 で行は 1 つ (指摘 7)", async () => {
+    const id = randomUUID();
+    const body = {
+      id,
+      calendarId,
+      summary: "同時",
+      time: { allDay: true, startDate: "2026-12-12", endDate: "2026-12-13" },
+    };
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => call("POST", "/events", body)),
+    );
+    expect(results.map((r) => r.status)).toEqual([201, 201, 201, 201]);
+    expect(new Set(results.map((r) => r.body.event.id))).toEqual(new Set([id]));
+    const days = await range("2026-12-12", "2026-12-13");
     expect(days.occurrences.filter((o) => o.eventId === id)).toHaveLength(1);
   });
 
@@ -1038,6 +1056,270 @@ describe.skipIf(!adminUrl)("予定の API", () => {
         "2027-01-25T01:00:00Z",
         "2027-01-18T01:00:00Z",
       ]);
+    });
+  });
+  describe("オフラインと競合 (clientNow、changedAt、deletedAt)", () => {
+    let offlineCalendarId: string;
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    const MIN = 60_000;
+    const allDay = {
+      allDay: true,
+      startDate: "2027-02-01",
+      endDate: "2027-02-02",
+    };
+    const create = async (extra: Json = {}) => {
+      const created = await call("POST", "/events", {
+        calendarId: offlineCalendarId,
+        summary: "オフライン",
+        time: allDay,
+        changedAt: ago(120 * MIN),
+        ...extra,
+      });
+      expect(created.status).toBe(201);
+      return created.body.event as EventJson & {
+        fieldUpdatedAt: Record<string, string>;
+      };
+    };
+
+    beforeAll(async () => {
+      const created = await call("POST", "", { name: "オフライン" });
+      offlineCalendarId = (created.body.calendar as Json).id as string;
+    });
+
+    it("オフラインで作って変えた予定を後から順に送っても、変更が rejected にならない", async () => {
+      const id = randomUUID();
+      const madeAt = ago(60 * MIN);
+      const event = await create({ id, changedAt: madeAt, clientNow: ago(0) });
+      // 作った時刻が全項目の変更時刻になる (届いた時刻ではない)。
+      expect(event.fieldUpdatedAt.summary).toBe(new Date(madeAt).toISOString());
+      expect(event.fieldUpdatedAt.time).toBe(new Date(madeAt).toISOString());
+      const patched = await call("PATCH", `/events/${id}`, {
+        changes: { summary: "あとで変えた題" },
+        changedAt: { summary: ago(55 * MIN) },
+        clientNow: ago(0),
+      });
+      expect(patched.status).toBe(200);
+      expect(patched.body.rejected).toEqual([]);
+      expect(patched.body.event).toMatchObject({ summary: "あとで変えた題" });
+    });
+
+    it("同じ PATCH を 2 回送っても rejected が空 (補正で時刻が古くなった場合も)", async () => {
+      const event = await create();
+      const body = {
+        changes: {
+          summary: "再送",
+          attendees: [{ email: "Bob@Example.com", name: "Bob" }],
+          reminders: [{ method: "display", minutes: 5 }],
+        },
+        changedAt: {
+          summary: ago(MIN),
+          attendees: ago(MIN),
+          reminders: ago(MIN),
+        },
+        clientNow: ago(0),
+      };
+      const first = await call("PATCH", `/events/${event.id}`, body);
+      expect(first.body.rejected).toEqual([]);
+      const again = await call("PATCH", `/events/${event.id}`, body);
+      expect(again.body.rejected).toEqual([]);
+      // 2 回目は端末の時計が 20 秒進んで見える (補正で 20 秒古くなり、時刻では負ける)。
+      const shifted = await call("PATCH", `/events/${event.id}`, {
+        ...body,
+        clientNow: new Date(Date.now() + 20_000).toISOString(),
+      });
+      expect(shifted.body.rejected).toEqual([]);
+      expect(shifted.body.event).toMatchObject({ summary: "再送" });
+      expect((shifted.body.event as Json).fieldUpdatedAt).toEqual(
+        (first.body.event as Json).fieldUpdatedAt,
+      );
+      // 値が違えば、いままでどおり rejected。
+      const other = await call("PATCH", `/events/${event.id}`, {
+        changes: { summary: "別の値" },
+        changedAt: { summary: ago(2 * MIN) },
+      });
+      expect(other.body.rejected).toEqual(["summary"]);
+    });
+
+    it("時計が 1 時間遅い端末の新しい変更が勝ち、1 時間進んだ端末の古い変更が負ける", async () => {
+      const event = await create();
+      // 時計の合った端末 A が 5 分前に変えた。
+      await call("PATCH", `/events/${event.id}`, {
+        changes: { summary: "A" },
+        changedAt: { summary: ago(5 * MIN) },
+        clientNow: ago(0),
+      });
+      // 時計が 1 時間遅い端末 B が 1 分前に変えた (端末の時計では 1 時間 1 分前)。
+      const slow = await call("PATCH", `/events/${event.id}`, {
+        changes: { summary: "B" },
+        changedAt: { summary: ago(61 * MIN) },
+        clientNow: ago(60 * MIN),
+      });
+      expect(slow.body.rejected).toEqual([]);
+      expect(slow.body.event).toMatchObject({ summary: "B" });
+      // 時計が 1 時間進んだ端末 C が 10 分前に変えていた (端末の時計では 50 分後)。
+      const fast = await call("PATCH", `/events/${event.id}`, {
+        changes: { summary: "C" },
+        changedAt: { summary: ago(-50 * MIN) },
+        clientNow: ago(-60 * MIN),
+      });
+      expect(fast.body.rejected).toEqual(["summary"]);
+      expect(fast.body.event).toMatchObject({ summary: "B" });
+    });
+
+    it("削除の後に変更があれば消さずに changed_since。削除が後なら消え、その後の PATCH は 404、POST の再送は 410", async () => {
+      const id = randomUUID();
+      const body = {
+        id,
+        calendarId: offlineCalendarId,
+        summary: "消す予定",
+        time: allDay,
+        changedAt: ago(30 * MIN),
+      };
+      expect((await call("POST", "/events", body)).status).toBe(201);
+      await call("PATCH", `/events/${id}`, {
+        changes: { location: "ほかの端末の変更" },
+        changedAt: { location: ago(MIN) },
+      });
+      // 端末 B は、ほかの端末の変更より前にオフラインで消していた。
+      const cancelled = await call("DELETE", `/events/${id}`, {
+        deletedAt: ago(5 * MIN),
+        clientNow: ago(0),
+      });
+      expect(cancelled.status).toBe(409);
+      expect(cancelled.body).toMatchObject({
+        error: "changed_since",
+        event: { id, location: "ほかの端末の変更" },
+      });
+      expect((await call("GET", `/events/${id}`)).status).toBe(200);
+      // 削除が後なら消える。
+      expect(
+        (await call("DELETE", `/events/${id}`, { deletedAt: ago(0) })).status,
+      ).toBe(204);
+      expect(
+        (
+          await call("PATCH", `/events/${id}`, {
+            changes: { summary: "x" },
+          })
+        ).status,
+      ).toBe(404);
+      // 消えた予定の POST の再送では作り直さない。
+      const resent = await call("POST", "/events", body);
+      expect(resent.status).toBe(410);
+      expect(resent.body).toEqual({ error: "gone" });
+      expect((await call("GET", `/events/${id}`)).status).toBe(404);
+      // 本文の無い DELETE と、読めない本文。
+      const plain = await create();
+      expect(
+        (
+          await app.request(`/calendars/events/${plain.id}`, {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: "{",
+          })
+        ).status,
+      ).toBe(400);
+      expect((await call("DELETE", `/events/${plain.id}`)).status).toBe(204);
+    });
+
+    it("回の削除の時刻が原本の繰り返しの時刻になり、その後の規則の変更が通る。新しい例外への古い変更も通る", async () => {
+      const master = await create({
+        time: {
+          allDay: false,
+          startAt: "2027-03-01T10:00:00+09:00",
+          endAt: "2027-03-01T11:00:00+09:00",
+          startTimeZone: "Asia/Tokyo",
+        },
+        recurrence: { rrule: "FREQ=WEEKLY;BYDAY=MO" },
+        changedAt: ago(60 * MIN),
+      });
+      const deletedAt = ago(30 * MIN);
+      expect(
+        (
+          await call(
+            "DELETE",
+            `/events/${master.id}/occurrences/2027-03-08T01:00:00Z`,
+            { changedAt: deletedAt, clientNow: ago(0) },
+          )
+        ).status,
+      ).toBe(204);
+      const after = (await call("GET", `/events/${master.id}`)).body
+        .event as Json & { fieldUpdatedAt: Record<string, string> };
+      expect(after.fieldUpdatedAt.recurrence).toBe(
+        new Date(deletedAt).toISOString(),
+      );
+      expect(after.exdates).toEqual(["2027-03-08T01:00:00Z"]);
+      const rule = await call("PATCH", `/events/${master.id}`, {
+        changes: {
+          recurrence: {
+            rrule: "FREQ=WEEKLY;BYDAY=MO;COUNT=10",
+            exdates: ["2027-03-08T01:00:00Z"],
+          },
+        },
+        changedAt: { recurrence: ago(10 * MIN) },
+      });
+      expect(rule.body.rejected).toEqual([]);
+
+      // 原本の題が後から変わっていても、その前に行ったこの回の変更は通る。
+      await call("PATCH", `/events/${master.id}`, {
+        changes: { summary: "原本の新しい題" },
+        changedAt: { summary: ago(MIN) },
+      });
+      const occurrence = await call(
+        "PATCH",
+        `/events/${master.id}/occurrences/2027-03-15T01:00:00Z`,
+        {
+          changes: { summary: "この回だけ" },
+          changedAt: { summary: ago(20 * MIN) },
+        },
+      );
+      expect(occurrence.status).toBe(200);
+      expect(occurrence.body.rejected).toEqual([]);
+      expect(occurrence.body.event).toMatchObject({ summary: "この回だけ" });
+
+      // その回が消した後に変わっていれば、回の削除は changed_since。
+      const late = await call(
+        "DELETE",
+        `/events/${master.id}/occurrences/2027-03-15T01:00:00Z`,
+        { changedAt: ago(40 * MIN) },
+      );
+      expect(late.status).toBe(409);
+      expect(late.body).toMatchObject({
+        error: "changed_since",
+        event: { summary: "この回だけ" },
+      });
+    });
+
+    it("差分同期に、反映されなかった変更の件数と最新の時刻が載る", async () => {
+      const empty = await call("GET", "/sync?since=0&limit=1");
+      expect(empty.body).toMatchObject({ openConflicts: 0, conflictsAt: null });
+      const [owner] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, "owner@example.com"));
+      const createdAt = new Date("2026-11-20T00:00:00.000Z");
+      await db.insert(eventConflicts).values([
+        {
+          userId: owner?.id as string,
+          calendarId: offlineCalendarId,
+          eventId: randomUUID(),
+          kind: "field_lost",
+          createdAt,
+        },
+        {
+          userId: owner?.id as string,
+          calendarId: offlineCalendarId,
+          eventId: randomUUID(),
+          kind: "write_failed",
+          createdAt: new Date("2026-11-21T00:00:00.000Z"),
+          resolvedAt: new Date(),
+        },
+      ]);
+      const listed = await call("GET", "/sync?since=0&limit=1");
+      expect(listed.body).toMatchObject({
+        openConflicts: 1,
+        conflictsAt: createdAt.toISOString(),
+      });
+      await db.delete(eventConflicts);
     });
   });
 });

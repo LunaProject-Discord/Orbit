@@ -5,6 +5,7 @@ import {
   type EventFieldName,
   type EventFieldSource,
   eventFieldValues,
+  fieldValuesToChanges,
   mergeEventFields,
 } from "./event-merge.js";
 
@@ -382,5 +383,64 @@ describe("mergeEventFields", () => {
     });
     expect(result.takeRemote).toEqual(["summary"]);
     expect(result.lostLocal).toEqual(["summary"]);
+  });
+});
+
+describe("fieldValuesToChanges", () => {
+  it("指定した項目を API の変更の形にする (参加者の出欠は外す)", () => {
+    const result = fieldValuesToChanges(
+      values({
+        summary: "",
+        reminders: [{ method: "display", minutes: 10 }],
+        attendees: [
+          {
+            email: "Bob@Example.com",
+            name: "Bob",
+            role: "required",
+            status: "accepted",
+          },
+        ],
+        rrule: "RRULE:FREQ=WEEKLY;BYDAY=MO",
+      }),
+      [
+        "summary",
+        "time",
+        "recurrence",
+        "reminders",
+        "useDefaultReminders",
+        "attendees",
+      ],
+    );
+    expect(result).toEqual({
+      summary: null,
+      time: {
+        allDay: false,
+        startAt: "2026-12-01T01:00:00.000Z",
+        endAt: "2026-12-01T02:00:00.000Z",
+        startTimeZone: "Asia/Tokyo",
+        endTimeZone: "Asia/Tokyo",
+      },
+      recurrence: { rrule: "FREQ=WEEKLY;BYDAY=MO", rdates: [], exdates: [] },
+      reminders: [{ method: "display", minutes: 10 }],
+      useDefaultReminders: false,
+      attendees: [{ email: "bob@example.com", name: "Bob", role: "required" }],
+    });
+  });
+  it("終日の時刻と、項目を省いたときの全項目", () => {
+    const result = fieldValuesToChanges(
+      values({
+        allDay: true,
+        startAt: null,
+        endAt: null,
+        startDate: "2026-12-01",
+        endDate: null,
+      }),
+    );
+    expect(Object.keys(result).sort()).toEqual([...EVENT_FIELD_NAMES].sort());
+    expect(result.time).toEqual({
+      allDay: true,
+      startDate: "2026-12-01",
+      endDate: "2026-12-02",
+    });
   });
 });
