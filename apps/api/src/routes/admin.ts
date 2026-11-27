@@ -22,6 +22,7 @@ import {
   type AdminAuth,
   adminPlaceholderEmail,
 } from "../admin-auth.js";
+import { withoutCookies } from "../context.js";
 import type { SetupCode } from "../lib/admin-setup.js";
 import { withAuthStateCookie, withAuthStateHeader } from "../lib/auth-state.js";
 import { invitationRoutes } from "./invitations.js";
@@ -55,7 +56,7 @@ const setupBody = z.object({
 export function requireAdmin(adminAuth: AdminAuth) {
   return createMiddleware<AdminEnv>(async (c, next) => {
     const session = await adminAuth.api.getSession({
-      headers: c.req.raw.headers,
+      headers: withoutCookies(c.req.raw.headers),
     });
     if (!session) return c.json({ error: "unauthorized" }, 401);
     const user = session.user as typeof session.user & { username?: string };
@@ -183,10 +184,13 @@ export function adminRoutes({
         setupCode.clear();
         return c.json({ error: "already_set_up" }, 409);
       }
-      if (setupCode.limited())
-        return c.json({ error: "too_many_attempts" }, 429);
       setupCode.ensure();
+      // 先に照合する。正しい合言葉なら、ほかの人の間違いが続いていても通す
+      // (でたらめを送り続けて、運用者のセットアップを止められないように)。
       if (!setupCode.check(body.code)) {
+        if (setupCode.limited()) {
+          return c.json({ error: "too_many_attempts" }, 429);
+        }
         return c.json({ error: "invalid_code" }, 403);
       }
       const result = await createAdmin(db, adminSignUpAuth, body);

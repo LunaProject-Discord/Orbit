@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSetupCode, SetupCode } from "./admin-setup.js";
+import {
+  normalizeSetupCode,
+  SETUP_CODE_TTL_MS,
+  SetupCode,
+} from "./admin-setup.js";
 
 /** log に渡された合言葉を控える SetupCode (時刻は差し替えられる)。 */
 function make() {
@@ -72,6 +76,21 @@ describe("SetupCode", () => {
     code.ensure();
     expect(logged).toHaveLength(2);
     expect(logged[1]).not.toBe(logged[0]);
+  });
+
+  it("合言葉は 30 分で切れ、次の ensure で作り直す", () => {
+    const { code, logged, clock } = make();
+    code.ensure();
+    const first = logged[0] as string;
+    clock.now += SETUP_CODE_TTL_MS - 1;
+    expect(code.check(first)).toBe(true);
+    clock.now += 1;
+    expect(code.check(first)).toBe(false);
+    expect(code.active).toBe(false);
+    code.ensure();
+    expect(logged).toHaveLength(2);
+    expect(logged[1]).not.toBe(first);
+    expect(code.check(logged[1] as string)).toBe(true);
   });
 
   it("1 分に 10 回間違えると limited になり、1 分後に戻る", () => {

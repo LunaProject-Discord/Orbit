@@ -106,7 +106,8 @@ export function createAdminAuth({
       cookiePrefix: "orbit-admin",
     },
     // 管理者のログインは、一般の利用者 (7 日) より短くする。使い続けている間は延びる。
-    session: { expiresIn: 60 * 60 * 12, updateAge: 60 * 60 },
+    // パスキーの登録など、大事な操作はログインから 10 分以内に限る (トークンを盗まれても後から足されにくく)。
+    session: { expiresIn: 60 * 60 * 12, updateAge: 60 * 60, freshAge: 60 * 10 },
     emailAndPassword: {
       enabled: true,
       disableSignUp: !allowSignUp,

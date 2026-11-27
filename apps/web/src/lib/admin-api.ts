@@ -31,6 +31,12 @@ function setAdminToken(token: string | null) {
   }
 }
 
+/** この端末の管理者のログイン情報を消す (接続先サーバーを替えたとき)。サーバーには知らせない。 */
+export function forgetAdminSession() {
+  setAdminToken(null);
+  authState.clear();
+}
+
 type UnauthorizedListener = () => void;
 const unauthorizedListeners = new Set<UnauthorizedListener>();
 

@@ -2,10 +2,10 @@
  * サーバーの管理者 (管理画面 /admin にログインするアカウント) を扱う。
  * 管理者は一般の利用者とは別のアカウントで、メールは持たない。
  *
- *   pnpm admin:create <名前> <表示名>                 管理者を作る
- *   pnpm admin:password <名前> [--reset-two-factor]   パスワードを付け直す (復旧用)
- *   pnpm admin:list                                   管理者の一覧
- *   pnpm admin:delete <名前>                          管理者を消す
+ *   pnpm admin create <名前> <表示名>                 管理者を作る
+ *   pnpm admin password <名前> [--reset-two-factor]   パスワードを付け直す (復旧用。パスキーも消す)
+ *   pnpm admin list                                   管理者の一覧
+ *   pnpm admin delete <名前>                          管理者を消す
  *
  * 本番 (Docker) では `docker compose run --rm api node apps/api/dist/cli/admin.js create <名前> <表示名>`。
  * パスワードは環境変数 ADMIN_PASSWORD か、標準入力の 1 行目から読む
@@ -14,6 +14,7 @@
 import { createInterface } from "node:readline/promises";
 import {
   adminAuthAccounts,
+  adminPasskeys,
   adminSessions,
   adminTwoFactors,
   adminUsers,
@@ -103,7 +104,7 @@ async function setPassword() {
   const auth = createAdminAuth(authOptions);
   const hash = await (await auth.$context).password.hash(password);
   const resetTwoFactor = flags.has("--reset-two-factor");
-  await db.transaction(async (tx) => {
+  const removedPasskeys = await db.transaction(async (tx) => {
     const updated = await tx
       .update(adminAuthAccounts)
       .set({ password: hash })
@@ -140,11 +141,22 @@ async function setPassword() {
         );
     }
     await tx.delete(adminSessions).where(eq(adminSessions.userId, admin.id));
+    // 乗っ取られたときの復旧で使うので、パスキーも消す (盗んだトークンで登録されたものが残らないように)。
+    const passkeys = await tx
+      .delete(adminPasskeys)
+      .where(eq(adminPasskeys.userId, admin.id))
+      .returning({ id: adminPasskeys.id });
+    return passkeys.length;
   });
   console.log(
     `${admin.username} のパスワードを変更しました。すべての端末がログアウトになります。`,
   );
   if (resetTwoFactor) console.log("2 段階認証を解除しました。");
+  if (removedPasskeys > 0) {
+    console.log(
+      `パスキーを ${removedPasskeys} 件削除しました。必要なら、ログインし直してから登録し直してください。`,
+    );
+  }
 }
 
 async function list() {

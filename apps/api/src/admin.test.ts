@@ -251,6 +251,21 @@ describe.skipIf(!adminUrl)("管理者アカウントの API", () => {
       expect(await adminCount()).toBe(0);
     });
 
+    it("間違いが続くと 429 になる (次のテストで、正しい合言葉はそれでも通ることを確かめる)", async () => {
+      let last = 0;
+      for (let i = 0; i < 11; i++) {
+        last = (
+          await json(
+            "POST",
+            "/v1/admin/setup",
+            setupBody({ code: "BBBBB-BBBBB-BBBBB-BBBBB" }),
+          )
+        ).status;
+      }
+      expect(last).toBe(429);
+      expect(await adminCount()).toBe(0);
+    });
+
     it("同時に 2 回送っても、管理者は 1 人しかできない", async () => {
       const [first, second] = await Promise.all([
         json("POST", "/v1/admin/setup", setupBody()),
@@ -290,6 +305,13 @@ describe.skipIf(!adminUrl)("管理者アカウントの API", () => {
       expect(me.status).toBe(200);
       const body = (await me.json()) as { admin: { username: string } };
       expect(body.admin.username).toBe("root");
+    });
+
+    it("セッションは Cookie では受け付けない (Authorization: Bearer だけ)", async () => {
+      const response = await json("GET", "/v1/admin/me", undefined, {
+        cookie: `orbit-admin.session_token=${token}`,
+      });
+      expect(response.status).toBe(401);
     });
 
     it("名前は大文字小文字を区別せず、パスワード違いは失敗する", async () => {

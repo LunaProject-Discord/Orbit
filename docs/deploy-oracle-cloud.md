@@ -144,7 +144,8 @@ docker compose run --rm api node apps/api/dist/cli/create-user.js you@example.co
 
 作ったら `/admin` でログインし、「ログインとセキュリティ」で 2 段階認証かパスキーを設定してください。
 
-管理者のパスワードを忘れたとき、認証アプリを失ったときは、サーバー上で付け直します。
+管理者のパスワードを忘れたとき、認証アプリを失ったとき、乗っ取りが疑われるときは、サーバー上で付け直します
+(すべての端末がログアウトになり、登録したパスキーも消えます)。
 
 ```sh
 docker compose run --rm api node apps/api/dist/cli/admin.js password admin --reset-two-factor

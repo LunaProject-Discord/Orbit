@@ -95,7 +95,7 @@ cd deploy && docker compose up -d --build
 - サーバーの管理者は、一般の利用者とは別のアカウントです (メールは使えず、管理画面 `/admin` にだけログインします)。
   名前とパスワード (+ 2 段階認証・パスキー) でログインし、セッションは 12 時間です。
   最初の管理者は `pnpm admin create <名前> <表示名>` か、管理者が 1 人もいないときに開ける `/admin/setup`
-  (API のログに出る合言葉が必要) で作ります。仕組みは `apps/api/src/admin-auth.ts` と `apps/api/src/routes/admin.ts`。
+  (API のログに出る合言葉が必要。30 分ごとに作り直す) で作ります。仕組みは `apps/api/src/admin-auth.ts` と `apps/api/src/routes/admin.ts`。
 - クライアントはログインで得たセッショントークンを `Authorization: Bearer` で送ります
   (Web / Tauri / Capacitor で同じ方式を使うため、Cookie には依存しません)。
 - 1 人の利用者が複数のメールアカウントを追加できます。アカウントの追加画面で、次の 4 つから選びます。
@@ -582,7 +582,7 @@ HTML の文字参照 (`&#12354;` など) も文字に戻してから探します
 | `pnpm --filter @orbit/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
 | `pnpm user:create <メール> <表示名>` | ログイン用の利用者を作成 |
 | `pnpm admin create <名前> <表示名>` | 管理画面 (`/admin`) の管理者を作成 (一般の利用者とは別のアカウント) |
-| `pnpm admin password <名前> [--reset-two-factor]` | 管理者のパスワードを付け直す (復旧用) |
+| `pnpm admin password <名前> [--reset-two-factor]` | 管理者のパスワードを付け直す (復旧用。全端末のログアウトとパスキーの削除も行う) |
 | `pnpm admin list` / `pnpm admin delete <名前>` | 管理者の一覧 / 削除 |
 | `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
 

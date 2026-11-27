@@ -159,7 +159,7 @@ function messageOf(error: unknown): string | null {
       case "mail_disabled":
         return "このサーバーはメールを送信できないため、変更できません。";
       case "SESSION_NOT_FRESH":
-        return "安全のため、ログインしてから 1 日以上経った端末では登録できません。一度ログアウトし、ログインし直してからお試しください。";
+        return "安全のため、ログインしてから時間が経った端末では登録できません。一度ログアウトし、ログインし直してからお試しください。";
       case "SESSION_EXPIRED":
       case "UNAUTHORIZED":
         return "ログインの有効期限が切れました。ログインし直してください。";
