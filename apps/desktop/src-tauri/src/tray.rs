@@ -41,7 +41,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let update = MenuItem::with_id(app, "update", "更新を確認…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Orbit Mail を終了", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Orbit を終了", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[

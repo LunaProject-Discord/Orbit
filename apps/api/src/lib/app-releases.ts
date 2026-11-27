@@ -7,7 +7,7 @@
  *     1.2.0/
  *       SHA256SUMS            ファイルの SHA-256 (リリースのワークフローが作る)
  *       latest.json           デスクトップ版の更新の一覧 (Tauri の updater の静的な形。url はファイル名だけ)
- *       Orbit-Mail_1.2.0_x64-setup.exe など
+ *       Orbit_1.2.0_x64-setup.exe など
  * 配るのはデスクトップ版だけ。スマホアプリの本体はストアで更新する。
  */
 import { readFile } from "node:fs/promises";

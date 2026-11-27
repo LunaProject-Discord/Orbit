@@ -1,6 +1,6 @@
 # デスクトップ版
 
-Orbit Mail のデスクトップ版 (`apps/desktop`、Windows / macOS / Linux) のビルド、入れ方、更新、署名の手順です。
+Orbit のデスクトップ版 (`apps/desktop`、Windows / macOS / Linux) のビルド、入れ方、更新、署名の手順です。
 
 ## しくみ
 
@@ -9,11 +9,52 @@ Orbit Mail のデスクトップ版 (`apps/desktop`、Windows / macOS / Linux) �
 - ログインの状態は、アプリのデータ (WebView の保存領域) に残ります。アプリを終了しても、次に開いたときはログインしたままです。
 - アプリの ID は `jp.lunaproject.orbit` です。デスクトップ版は、メール・カレンダー・連絡先を 1 つのアプリにまとめる方針です (スマホは `jp.lunaproject.orbit.mail` のように、機能ごとに別のアプリにします)。2026-11-23 までにビルドしたもの (`jp.lunaproject.orbit.mail`) とはデータの保存場所が変わるので、入れ替えたあとはログインし直してください。ログインの戻り先の URL (`jp.lunaproject.orbit.mail://`) は Android のメールアプリと共通のままです。
 
+### Orbit という 1 つのアプリ
+
+- デスクトップ版は **Orbit** という名前の 1 つのアプリです (v0.2.0 までは「Orbit Mail」という名前でした)。Orbit Mail・Orbit Calendar・Orbit Contacts は、同じアプリを `--app=mail` などの引数付きで起動するショートカットです。すでに起動しているときは、そのアプリのウィンドウを前に出します (`src-tauri/src/launch.rs`)。
+- いまあるのは Orbit Mail だけです。カレンダーと連絡先は、アプリにできてからショートカットを足します (アイコンは `icons/apps/` に用意済み)。足す場所は、Windows が `src-tauri/windows/orbit.nsh` の `ORBIT_APPS`、Linux が `src-tauri/linux/orbit.desktop` の `Actions`、アプリ側が `launch.rs` の `open_app` です。
+- OS ごとの見え方:
+
+  | OS | 見え方 |
+  | --- | --- |
+  | Windows | スタートメニューとデスクトップに「Orbit Mail」。「アプリと機能」には「Orbit」が 1 つ |
+  | macOS | 「Orbit.app」が 1 つ。メールなどの切り替えはアプリの中で行う (macOS には引数付きのショートカットの決まった形が無いため) |
+  | Linux | メニューに「Orbit」。右クリック (アクション) に「Orbit Mail」 |
+
+- アプリ本体のアイコンは Orbit 共通のもの、メールのウィンドウ (タスクバー) とショートカットはメールのアイコンです。アイコンとインストーラーの画像は `node apps/desktop/scripts/generate-assets.mjs` で `assets/brand/svg/` から作り直せます (Playwright の Chromium と ImageMagick が必要)。
+
+### 名前を Orbit Mail から Orbit に変えたときに保っていること
+
+自動更新で入れ替わる既存のアプリが壊れないよう、次は変えていません。
+
+- アプリの ID (`jp.lunaproject.orbit`): データの保存場所が同じなので、ログインと設定はそのまま残ります。
+- 実行ファイルの名前 (`orbit-desktop`)、ログインの戻り先の URL (`jp.lunaproject.orbit.mail://`)、自動更新の問い合わせ先。
+- MSI の upgradeCode (旧名から計算した値を `tauri.conf.json` に固定)。MSI 版は名前が変わっても上書きで入れ替わります。
+
+OS ごとの入れ替わり方:
+
+- **Windows (setup.exe)**: 新しいインストーラーが「Orbit Mail」の登録を見つけると、その版のアンインストーラーを静かに動かして取り除き (データは消さない)、`%LOCALAPPDATA%\Orbit` に入れ直して、ショートカットを作り直します。自動更新 (`/P /UPDATE`) のときも同じです。タスクバーにピン留めしていた「Orbit Mail」は外れるので、留め直してください。
+- **macOS**: 自動更新は、今ある場所のアプリをそのまま中身ごと入れ替えます。そのため Finder 上の名前は「Orbit Mail.app」のまま残り、Dock やメニューの名前は「Orbit」になります。名前もそろえたいときは、`/Applications/Orbit Mail.app` を「Orbit.app」に名前を変えるか、新しい dmg から入れ直してください (データは残ります)。
+- **Linux**: パッケージ名が `orbit-mail` から `orbit` に変わります。`orbit` は `orbit-mail` を置き換える (deb は Conflicts / Replaces、rpm は Obsoletes) ので、更新で古いほうは自動で外れます。AppImage はファイルの中身だけが入れ替わります。
+
+### Windows のインストーラー
+
+ウィザード (次へ・次へ…) は出しません。setup.exe を開くと、ロゴと進み具合だけの小さな画面が出て、ユーザーのフォルダー (`%LOCALAPPDATA%\Orbit`、管理者の権限は不要) に入り、終わると Orbit Mail が起動します。
+
+- 最初に入れたときは、スタートメニューとデスクトップに Orbit Mail のショートカットを作ります。自動更新では作り直しません (消したショートカットが戻らないように)。
+- 画面の文字は Windows の表示言語に合わせて日本語か英語です。
+- アンインストールは「アプリと機能」から行います。確認の画面が 1 つ出て、「このパソコンに保存したデータ (ログイン状態・設定・キャッシュ) も削除する」を選べます (メールはサーバーに残ります)。
+- コマンドから使うときの引数は Tauri の NSIS と同じです (`/S` 画面なし、`/P` 進み具合だけ、`/NS` ショートカットを作らない、`/UPDATE` 更新)。
+- 中身は Tauri の標準のテンプレートを元にした `src-tauri/windows/installer.nsi` と、Orbit の部品 `src-tauri/windows/orbit.nsh` です。`@tauri-apps/cli` を上げるときは、標準のテンプレート (tauri-bundler の `src/bundle/windows/nsis/installer.nsi`) の変更を見比べて取り込みます。
+- GitHub Actions の Windows のビルドでは、v0.2.0 (Orbit Mail) を入れてから自動更新と同じ引数で新しい版を入れ、置き換わること、新しく入れたときに起動すること、アンインストールで消えることを確かめます (`scripts/check-windows-installer.ps1`)。画面の様子は成果物 `windows-installer-screens` に残ります。
+- MSI (`*.msi`) は、会社などで一括配布する用に残しています (画面は WiX の標準のまま)。普段は setup.exe を使ってください。
+
 | 場所 | 中身 |
 | --- | --- |
 | `apps/desktop/src-tauri/tauri.conf.json` | アプリの ID、名前、ウィンドウ、インストーラーの設定 (`tauri.macos.conf.json` は macOS だけの上書き) |
 | `apps/desktop/src-tauri/src/` | OS との橋渡し (ウィンドウ、通知領域、未読数、通知、外部リンク、自動更新) |
-| `apps/desktop/src-tauri/icons/` | アプリのアイコン (`assets/brand/` から作ったもの) |
+| `apps/desktop/src-tauri/icons/` | アプリのアイコン (`assets/brand/` から作ったもの。`apps/` はアプリごとのアイコン) |
+| `apps/desktop/src-tauri/windows/`、`linux/` | Windows のインストーラー、Linux のメニューの項目 |
 | `apps/desktop/scripts/ci-config.mjs` | GitHub Actions でのビルドに重ねる設定 (署名、自動更新) を作る |
 | `apps/web/src/lib/desktop/`、`apps/web/src/components/desktop/` | アプリの中でだけ動く画面側の処理 (タイトルバーなど) |
 | `.github/workflows/desktop.yml` | GitHub Actions でのビルド |
@@ -51,9 +92,9 @@ Orbit Mail のデスクトップ版 (`apps/desktop`、Windows / macOS / Linux) �
 
 | Artifacts | 中身 | 入れ方 |
 | --- | --- | --- |
-| `orbit-mail-windows` | `*-setup.exe` (NSIS)、`*.msi` | どちらか一方を実行する。迷ったら `*-setup.exe` |
-| `orbit-mail-macos` | `*.dmg` (Apple シリコンと Intel の両対応) | 開いて、アプリを「アプリケーション」へドラッグする |
-| `orbit-mail-linux` | `*.deb`、`*.rpm`、`*.AppImage` | ディストリビューションに合うものを入れる |
+| `orbit-windows` | `*-setup.exe` (NSIS)、`*.msi` | `*-setup.exe` を開く (MSI は一括配布用) |
+| `orbit-macos` | `*.dmg` (Apple シリコンと Intel の両対応) | 開いて、アプリを「アプリケーション」へドラッグする |
+| `orbit-linux` | `*.deb`、`*.rpm`、`*.AppImage` | ディストリビューションに合うものを入れる |
 
 `apps/desktop` を変えたプルリクエストと `main` への push でも自動でビルドされます。Web の画面だけを変えたときは自動では作り直さないので、最新の画面を入れたいときは Run workflow を使ってください。
 
@@ -62,7 +103,7 @@ Orbit Mail のデスクトップ版 (`apps/desktop`、Windows / macOS / Linux) �
 署名の証明書を用意するまでは (下の「5. 署名」)、OS が警告を出します。自分でビルドしたものであれば、次の操作で開けます。
 
 - **Windows**: 「Windows によって PC が保護されました」と出たら、**詳細情報 → 実行** を押す。
-- **macOS**: 最初に開くと「開発元を確認できない」などと出て止まります。**システム設定 → プライバシーとセキュリティ** の下のほうにある **このまま開く** を押すか、ターミナルで `xattr -dr com.apple.quarantine "/Applications/Orbit Mail.app"` を実行する。
+- **macOS**: 最初に開くと「開発元を確認できない」などと出て止まります。**システム設定 → プライバシーとセキュリティ** の下のほうにある **このまま開く** を押すか、ターミナルで `xattr -dr com.apple.quarantine "/Applications/Orbit.app"` を実行する。
 
 ### 新しい版に入れ替える (自動更新を有効にするまで)
 

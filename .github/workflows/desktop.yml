@@ -46,21 +46,21 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            artifact: orbit-mail-windows
+            artifact: orbit-windows
             platform: windows
             args: ""
             rust-targets: ""
           # Apple シリコンと Intel の両方で動く 1 つのアプリにする。
           - name: macOS
             os: macos-latest
-            artifact: orbit-mail-macos
+            artifact: orbit-macos
             platform: macos
             args: --target universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
           # 古めの Ubuntu でビルドしておくと、新しいディストリビューションでも動く。
           - name: Linux
             os: ubuntu-22.04
-            artifact: orbit-mail-linux
+            artifact: orbit-linux
             platform: linux
             args: ""
             rust-targets: ""
@@ -174,6 +174,25 @@ jobs:
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }} --config "${{ runner.temp }}/tauri.ci.conf.json"
+
+      # インストーラーを実際に入れて確かめる (旧名 Orbit Mail からの自動更新、新規、アンインストール)。
+      # 画面の様子は成果物 windows-installer-screens に残す。リリースのビルドでは行わない。
+      - name: インストーラーを確かめる (Windows)
+        if: runner.os == 'Windows' && env.RELEASE_VERSION == ''
+        shell: pwsh
+        run: |
+          $legacy = Join-Path $env:RUNNER_TEMP "Orbit-Mail_0.2.0_x64-setup.exe"
+          Invoke-WebRequest -Uri "${{ github.server_url }}/${{ github.repository }}/releases/download/v0.2.0/Orbit-Mail_0.2.0_x64-setup.exe" -OutFile $legacy
+          $setup = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          ./apps/desktop/scripts/check-windows-installer.ps1 -Setup $setup.FullName -Legacy $legacy -Out (Join-Path $env:RUNNER_TEMP "installer-screens")
+
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'Windows' && env.RELEASE_VERSION == ''
+        with:
+          name: windows-installer-screens
+          path: ${{ runner.temp }}/installer-screens/*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: リリース用にファイルを集める
         if: env.RELEASE_VERSION != ''

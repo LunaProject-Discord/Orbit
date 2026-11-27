@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "icons/apps/orbit-mail.ico": "icons/orbit-mail.ico",
+      "icons/apps/orbit-calendar.ico": "icons/orbit-calendar.ico",
+      "icons/apps/orbit-contacts.ico": "icons/orbit-contacts.ico"
+    }
+  }
+}

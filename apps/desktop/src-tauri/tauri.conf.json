@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Orbit Mail",
+  "productName": "Orbit",
   "version": "../package.json",
   "identifier": "jp.lunaproject.orbit",
   "build": {
@@ -39,7 +39,7 @@
     "active": true,
     "targets": "all",
     "category": "Productivity",
-    "shortDescription": "複数の端末でリアルタイムに同期するメールアプリ",
+    "shortDescription": "メール・カレンダー・連絡先を、複数の端末でリアルタイムに同期する Orbit のデスクトップ版",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -52,10 +52,31 @@
         "type": "downloadBootstrapper"
       },
       "nsis": {
-        "languages": ["Japanese", "English"]
+        "template": "windows/installer.nsi",
+        "installerHooks": "windows/orbit.nsh",
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": ["Japanese", "English"],
+        "displayLanguageSelector": false
       },
       "wix": {
-        "language": "ja-JP"
+        "language": "ja-JP",
+        "upgradeCode": "6815fd62-db8e-5d18-a07e-da487b7c2411"
+      }
+    },
+    "publisher": "Luna Project",
+    "copyright": "© Luna Project",
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/orbit.desktop",
+        "provides": ["orbit-mail"],
+        "conflicts": ["orbit-mail"],
+        "replaces": ["orbit-mail"]
+      },
+      "rpm": {
+        "desktopTemplate": "linux/orbit.desktop",
+        "provides": ["orbit-mail"],
+        "obsoletes": ["orbit-mail"]
       }
     }
   }

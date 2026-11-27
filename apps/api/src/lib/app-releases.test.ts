@@ -88,7 +88,7 @@ describe("配布するリリースの読み込み", () => {
       version: "1.2.0",
       platforms: {
         "windows-x86_64-nsis": {
-          url: "Orbit-Mail_1.2.0_x64-setup.exe",
+          url: "Orbit_1.2.0_x64-setup.exe",
           signature: "sig",
         },
       },
@@ -97,7 +97,7 @@ describe("配布するリリースの読み込み", () => {
       version: "1.2.0",
       platforms: {
         "windows-x86_64-nsis": {
-          url: "https://orbit.example.com/app-update/releases/1.2.0/Orbit-Mail_1.2.0_x64-setup.exe",
+          url: "https://orbit.example.com/app-update/releases/1.2.0/Orbit_1.2.0_x64-setup.exe",
           signature: "sig",
         },
       },

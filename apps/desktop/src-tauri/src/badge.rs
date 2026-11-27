@@ -46,9 +46,9 @@ fn overlay_dot() -> Image<'static> {
 
 pub fn tooltip(count: u32) -> String {
     if count == 0 {
-        "Orbit Mail".to_owned()
+        "Orbit".to_owned()
     } else {
-        format!("Orbit Mail (未読 {count} 件)")
+        format!("Orbit (未読メール {count} 件)")
     }
 }
 
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn tooltip_shows_the_unread_count() {
-        assert_eq!(tooltip(0), "Orbit Mail");
-        assert_eq!(tooltip(3), "Orbit Mail (未読 3 件)");
+        assert_eq!(tooltip(0), "Orbit");
+        assert_eq!(tooltip(3), "Orbit (未読メール 3 件)");
     }
 }
