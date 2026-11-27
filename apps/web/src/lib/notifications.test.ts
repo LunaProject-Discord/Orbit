@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  calendarEnabledFrom,
+  calendarNotificationData,
   decodeBase64Url,
   enabledFrom,
   inboxUnreadCount,
+  parseCalendarEvent,
   parseMailEvent,
   parseNotificationAction,
+  rsvpActions,
+  toDesktopCalendarNotification,
   unreadTitle,
 } from "@/lib/notifications";
 
@@ -97,5 +102,67 @@ describe("parseNotificationAction", () => {
     ]) {
       expect(parseNotificationAction(payload)).toBeNull();
     }
+  });
+});
+
+describe("予定の通知 (段取り 9)", () => {
+  const ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+  const invite = {
+    kind: "event-invite",
+    title: "招待: 定例会議",
+    body: "山田 太郎 さんから",
+    tag: `cal-inv:${ID}`,
+    eventId: ID,
+    rsvp: {
+      url: "https://api.example/v1/notification-actions/event",
+      token: "t",
+    },
+  } as const;
+
+  it("端末の設定は、メールの通知が有効なときだけ効く (未設定はメールと同じ)", () => {
+    expect(calendarEnabledFrom(null, true)).toBe(true);
+    expect(calendarEnabledFrom("off", true)).toBe(false);
+    expect(calendarEnabledFrom("on", false)).toBe(false);
+    expect(calendarEnabledFrom(null, false)).toBe(false);
+  });
+
+  it("SSE の calendar イベントから、形の正しい通知だけを取り出す", () => {
+    expect(
+      parseCalendarEvent(
+        JSON.stringify({
+          notifications: [
+            invite,
+            { ...invite, kind: "mail" },
+            { ...invite, title: 1 },
+            { ...invite, kind: "event-invites-batch", eventId: null },
+          ],
+        }),
+      ).map((item) => item.kind),
+    ).toEqual(["event-invite", "event-invites-batch"]);
+    expect(parseCalendarEvent("x")).toEqual([]);
+  });
+
+  it("通知の data と Desktop の形", () => {
+    expect(calendarNotificationData(invite)).toEqual({
+      kind: "event-invite",
+      eventId: ID,
+      recurrenceId: null,
+      action: invite.rsvp,
+    });
+    expect(toDesktopCalendarNotification(invite, true)).toEqual({
+      kind: "event-invite",
+      title: "招待: 定例会議",
+      body: "山田 太郎 さんから",
+      tag: `cal-inv:${ID}`,
+      eventId: ID,
+      recurrenceId: null,
+      expiresAt: null,
+      rsvp: true,
+    });
+    expect(rsvpActions(2).map((b) => b.action)).toEqual([
+      "accepted",
+      "declined",
+    ]);
+    expect(rsvpActions(3)).toHaveLength(3);
   });
 });

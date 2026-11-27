@@ -453,6 +453,24 @@ export class OfflineCalendarClient implements CalendarClient {
     return this.calendarList;
   }
 
+  /**
+   * 予定のリマインダーを端末に予約するための、控えの全部 (送信待ちを重ねたもの。段取り 9 の
+   * ReminderAgent が読む)。初回の同期が終わるまでは null。cursor は控えの同期位置 (changes.seq)。
+   */
+  reminderSnapshot(): {
+    calendars: Calendar[];
+    events: CalendarEvent[];
+    cursor: string;
+  } | null {
+    if (!this.meta.initialSyncDone) return null;
+    const view = this.view();
+    return {
+      calendars: [...view.calendars.values()],
+      events: [...view.events.values()],
+      cursor: this.meta.cursor,
+    };
+  }
+
   range(range: EventRangeQuery): EventRange | null {
     const key = rangeKey(range);
     const cached = this.rangeCache.get(key);
