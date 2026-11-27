@@ -3,7 +3,7 @@ import {
   type OutboxOperation,
   type OutboxTarget,
 } from "@orbit/core";
-import { type Database, mailAccounts, mailboxes, outbox } from "@orbit/db";
+import { accounts, type Database, mailboxes, outbox } from "@orbit/db";
 import { and, asc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import { dropPendingPlacements } from "./mailbox-store.js";
@@ -122,9 +122,9 @@ export async function processOutbox(
       }
       // 失敗したことを端末へ知らせる (画面に通知を出し、やり直せるようにする)。
       const [account] = await tx
-        .select({ userId: mailAccounts.userId })
-        .from(mailAccounts)
-        .where(eq(mailAccounts.id, accountId));
+        .select({ userId: accounts.userId })
+        .from(accounts)
+        .where(eq(accounts.id, accountId));
       if (account && row.kind === "move") {
         // 移動先に先に置いた所在を外す (移動元は上の突き合わせで戻る)。
         const destination = (

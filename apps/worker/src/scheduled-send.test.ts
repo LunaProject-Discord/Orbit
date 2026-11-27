@@ -5,13 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { OutgoingMessage, SendPayload } from "@orbit/core";
-import {
-  createDb,
-  type Database,
-  mailAccounts,
-  outbox,
-  users,
-} from "@orbit/db";
+import { accounts, createDb, type Database, outbox, users } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
@@ -26,7 +20,7 @@ describe.skipIf(!adminUrl)("予約送信", () => {
   let admin: pg.Client;
   let pool: pg.Pool;
   let db: Database;
-  let account: typeof mailAccounts.$inferSelect;
+  let account: typeof accounts.$inferSelect;
 
   beforeAll(async () => {
     admin = new pg.Client({ connectionString: adminUrl });
@@ -51,7 +45,7 @@ describe.skipIf(!adminUrl)("予約送信", () => {
       .values({ email: "schedule@example.com", name: "schedule" })
       .returning({ id: users.id });
     const [created] = await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId: user?.id as string,
         email: "me@example.com",
@@ -66,7 +60,7 @@ describe.skipIf(!adminUrl)("予約送信", () => {
         status: "disabled",
       })
       .returning();
-    account = created as typeof mailAccounts.$inferSelect;
+    account = created as typeof accounts.$inferSelect;
   });
 
   afterAll(async () => {

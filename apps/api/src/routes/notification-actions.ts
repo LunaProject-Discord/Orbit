@@ -8,7 +8,7 @@ import {
   type NotificationActionId,
   verifyNotificationAction,
 } from "@orbit/core";
-import { type Database, mailAccounts, messages } from "@orbit/db";
+import { accounts, type Database, messages } from "@orbit/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -84,9 +84,9 @@ export function notificationActionRoutes({
   /** 合言葉を確かめ、メールの持ち主を返す。無いメールは "not_found"、合わなければ null。 */
   async function ownerOf(messageId: string, token: string) {
     const [owner] = await db
-      .select({ userId: mailAccounts.userId })
+      .select({ userId: accounts.userId })
       .from(messages)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+      .innerJoin(accounts, eq(accounts.id, messages.accountId))
       .where(eq(messages.id, messageId));
     if (!owner) return "not_found" as const;
     return verifyNotificationAction(

@@ -5,9 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  accounts,
   createDb,
   type Database,
-  mailAccounts,
   messageSearch,
   messages,
   users,
@@ -56,7 +56,7 @@ describe.skipIf(!adminUrl)("検索の索引を裏で作る", () => {
       .values({ email: "search@example.com", name: "search" })
       .returning({ id: users.id });
     const [account] = await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId: user?.id as string,
         email: "me@example.com",
@@ -66,7 +66,7 @@ describe.skipIf(!adminUrl)("検索の索引を裏で作る", () => {
         credentialsEncrypted: "x",
         status: "disabled",
       })
-      .returning({ id: mailAccounts.id });
+      .returning({ id: accounts.id });
     await db.insert(messages).values(
       Array.from({ length: 25 }, (_, index) => ({
         accountId: account?.id as string,

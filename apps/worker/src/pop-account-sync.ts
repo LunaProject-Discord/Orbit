@@ -7,9 +7,9 @@ import {
   type Pop3Settings,
 } from "@orbit/core";
 import {
+  type accounts,
+  accounts as accountsTable,
   type Database,
-  type mailAccounts,
-  mailAccounts as mailAccountsTable,
   messageSources,
 } from "@orbit/db";
 import { eq } from "drizzle-orm";
@@ -51,7 +51,7 @@ const MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
  */
 const IMPORT_BATCH = 100;
 
-type AccountRow = typeof mailAccounts.$inferSelect;
+type AccountRow = typeof accounts.$inferSelect;
 type Status = AccountRow["status"];
 
 /** 画面に出すエラーの説明。DB のエラーは SQL や値を含むので、利用者には見せない。 */
@@ -371,10 +371,10 @@ export class PopAccountSync {
     try {
       await this.db.transaction(async (tx) => {
         const [row] = await tx
-          .update(mailAccountsTable)
+          .update(accountsTable)
           .set({ status, lastError })
-          .where(eq(mailAccountsTable.id, this.account.id))
-          .returning({ id: mailAccountsTable.id });
+          .where(eq(accountsTable.id, this.account.id))
+          .returning({ id: accountsTable.id });
         if (row) {
           await recordChanges(tx, this.account.userId, "account", "upsert", [
             row.id,

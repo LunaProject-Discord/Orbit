@@ -6,9 +6,9 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  accounts,
   createDb,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -61,7 +61,7 @@ describe.skipIf(!adminUrl)("移動中の所在", () => {
       .values({ email: "pending@example.com", name: "pending" })
       .returning({ id: users.id });
     const [created] = await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId: user?.id as string,
         email: "me@example.com",
@@ -74,7 +74,7 @@ describe.skipIf(!adminUrl)("移動中の所在", () => {
         credentialsEncrypted: "x",
         status: "disabled",
       })
-      .returning({ id: mailAccounts.id });
+      .returning({ id: accounts.id });
     account = { id: created?.id as string, userId: user?.id as string };
     const boxes = await db
       .insert(mailboxes)

@@ -8,9 +8,9 @@ import {
   type SetFlagsPayload,
 } from "@orbit/core";
 import {
+  accounts,
   changes,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -124,10 +124,10 @@ export async function listFailedOperations(
       updatedAt: outbox.updatedAt,
     })
     .from(outbox)
-    .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
+    .innerJoin(accounts, eq(accounts.id, outbox.accountId))
     .where(
       and(
-        eq(mailAccounts.userId, userId),
+        eq(accounts.userId, userId),
         eq(outbox.status, "failed"),
         inArray(outbox.kind, FAILURE_KINDS),
       ),
@@ -155,8 +155,8 @@ async function loadFailed(tx: Tx, userId: string, id: string) {
   const [owned] = await tx
     .select({ accountId: outbox.accountId })
     .from(outbox)
-    .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
-    .where(and(eq(outbox.id, id), eq(mailAccounts.userId, userId)));
+    .innerJoin(accounts, eq(accounts.id, outbox.accountId))
+    .where(and(eq(outbox.id, id), eq(accounts.userId, userId)));
   if (!owned) return null;
   // 同期ワーカーの書き込みと順番に実行する。
   await tx.execute(

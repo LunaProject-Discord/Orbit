@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 /**
- * メールアカウントの認証情報。暗号化して mail_accounts.credentials_encrypted に保存する。
+ * メールアカウントの認証情報。暗号化して accounts.credentials_encrypted に保存する。
  * OAuth2 ではリフレッシュトークンだけを保存し、アクセストークンは都度取得する。
  */
 export type MailCredentials =

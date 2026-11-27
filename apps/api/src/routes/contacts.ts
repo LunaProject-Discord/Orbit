@@ -56,7 +56,7 @@ export function contactRoutes({ db }: Pick<RouteDeps, "db">) {
       score: number;
     }>(sql`
       with acc as (
-        select id, lower(email) as email from mail_accounts where user_id = ${userId}
+        select id, lower(email) as email from accounts where user_id = ${userId}
       ),
       m as (
         select

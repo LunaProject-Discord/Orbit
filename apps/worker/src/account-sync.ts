@@ -6,7 +6,7 @@ import {
   GoogleOAuthError,
   legacyTlsOptions,
 } from "@orbit/core";
-import { type Database, mailAccounts, mailboxes } from "@orbit/db";
+import { accounts, type Database, mailboxes } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import { ImapFlow } from "imapflow";
 import {
@@ -99,7 +99,7 @@ function describeError(
   return error.message;
 }
 
-type AccountRow = typeof mailAccounts.$inferSelect;
+type AccountRow = typeof accounts.$inferSelect;
 type Status = AccountRow["status"];
 
 /**
@@ -503,10 +503,10 @@ export class AccountSync {
     try {
       await this.db.transaction(async (tx) => {
         const [row] = await tx
-          .update(mailAccounts)
+          .update(accounts)
           .set({ status, lastError })
-          .where(eq(mailAccounts.id, this.account.id))
-          .returning({ id: mailAccounts.id });
+          .where(eq(accounts.id, this.account.id))
+          .returning({ id: accounts.id });
         if (row) {
           await recordChanges(tx, this.account.userId, "account", "upsert", [
             row.id,

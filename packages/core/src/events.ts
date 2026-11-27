@@ -4,7 +4,7 @@
  * - ワーカー → API: 利用者のデータに変更があった (SSE で端末へ伝える)
  * - API → ワーカー: 送信待ちキューに操作が積まれた (payload はアカウントの ID)
  */
-export const CHANNEL_ACCOUNTS = "mail_accounts_changed";
+export const CHANNEL_ACCOUNTS = "accounts_changed";
 export const CHANNEL_CHANGES = "mail_changes";
 export const CHANNEL_OUTBOX = "mail_outbox";
 

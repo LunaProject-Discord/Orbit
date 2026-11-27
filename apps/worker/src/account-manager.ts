@@ -15,7 +15,7 @@ import {
   MAX_BODY_FETCH_IDS,
   type MicrosoftOAuthConfig,
 } from "@orbit/core";
-import { type Database, mailAccounts } from "@orbit/db";
+import { accounts, type Database } from "@orbit/db";
 import { inArray } from "drizzle-orm";
 import pg from "pg";
 import { AccountSync } from "./account-sync.js";
@@ -39,7 +39,7 @@ function parsePayload<T extends { accountId: string }>(
 }
 
 /** 接続に関わる設定をまとめた値。これが変わったら接続し直す。 */
-function connectionKey(row: typeof mailAccounts.$inferSelect) {
+function connectionKey(row: typeof accounts.$inferSelect) {
   return [
     row.protocol,
     row.imapHost,
@@ -221,8 +221,8 @@ export class AccountManager {
     // auth_required は認証情報が更新されるまで再接続しない。
     const rows = await this.db
       .select()
-      .from(mailAccounts)
-      .where(inArray(mailAccounts.status, ["active", "error"]));
+      .from(accounts)
+      .where(inArray(accounts.status, ["active", "error"]));
     const wanted = new Map(rows.map((row) => [row.id, row]));
 
     for (const [id, entry] of this.running) {

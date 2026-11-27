@@ -9,7 +9,7 @@ import {
   resolveMailboxRoles,
 } from "@orbit/core";
 import {
-  mailAccounts,
+  accounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -80,10 +80,10 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
         unreadCount: sql<number>`(count(*) filter (where ${messages.seen} = false))::int`,
       })
       .from(mailboxes)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+      .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
       .leftJoin(messageMailboxes, eq(messageMailboxes.mailboxId, mailboxes.id))
       .leftJoin(messages, eq(messages.id, messageMailboxes.messageId))
-      .where(eq(mailAccounts.userId, c.var.user.id))
+      .where(eq(accounts.userId, c.var.user.id))
       .groupBy(mailboxes.id)
       .orderBy(asc(mailboxes.accountId), asc(mailboxes.name));
     return c.json({ mailboxes: rows });
@@ -100,12 +100,9 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
       const owned = await tx
         .select({ id: mailboxes.id })
         .from(mailboxes)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+        .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
         .where(
-          and(
-            eq(mailAccounts.userId, user.id),
-            inArray(mailboxes.id, mailboxIds),
-          ),
+          and(eq(accounts.userId, user.id), inArray(mailboxes.id, mailboxIds)),
         );
       if (owned.length !== mailboxIds.length) return false;
       for (const [index, id] of mailboxIds.entries()) {
@@ -135,11 +132,11 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
         delimiter: mailboxes.delimiter,
         specialUse: mailboxes.specialUse,
         detectedSpecialUse: mailboxes.detectedSpecialUse,
-        protocol: mailAccounts.protocol,
+        protocol: accounts.protocol,
       })
       .from(mailboxes)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
-      .where(and(eq(mailboxes.id, id), eq(mailAccounts.userId, userId)));
+      .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
+      .where(and(eq(mailboxes.id, id), eq(accounts.userId, userId)));
     return row ?? null;
   };
 
@@ -168,13 +165,10 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
     const body = c.req.valid("json");
     const user = c.var.user;
     const [account] = await db
-      .select({ id: mailAccounts.id, protocol: mailAccounts.protocol })
-      .from(mailAccounts)
+      .select({ id: accounts.id, protocol: accounts.protocol })
+      .from(accounts)
       .where(
-        and(
-          eq(mailAccounts.id, body.accountId),
-          eq(mailAccounts.userId, user.id),
-        ),
+        and(eq(accounts.id, body.accountId), eq(accounts.userId, user.id)),
       );
     if (!account) {
       return c.json({ error: "not_found" }, 404);
@@ -333,8 +327,8 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
         const [target] = await tx
           .select({ accountId: mailboxes.accountId })
           .from(mailboxes)
-          .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
-          .where(and(eq(mailboxes.id, id), eq(mailAccounts.userId, user.id)));
+          .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
+          .where(and(eq(mailboxes.id, id), eq(accounts.userId, user.id)));
         if (!target) return "not_found" as const;
         // 同期ワーカーのフォルダ一覧の反映と、順番に実行する。
         const rows = await tx
@@ -421,12 +415,9 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
       const owned = await tx
         .select({ id: mailboxes.id })
         .from(mailboxes)
-        .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
+        .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
         .where(
-          and(
-            eq(mailAccounts.userId, user.id),
-            inArray(mailboxes.id, mailboxIds),
-          ),
+          and(eq(accounts.userId, user.id), inArray(mailboxes.id, mailboxIds)),
         );
       const ids = owned.map((row) => row.id);
       if (ids.length === 0) return;
@@ -449,8 +440,8 @@ export function mailboxRoutes({ db }: Pick<RouteDeps, "db">) {
     const [mailbox] = await db
       .select({ id: mailboxes.id })
       .from(mailboxes)
-      .innerJoin(mailAccounts, eq(mailAccounts.id, mailboxes.accountId))
-      .where(and(eq(mailboxes.id, id), eq(mailAccounts.userId, user.id)));
+      .innerJoin(accounts, eq(accounts.id, mailboxes.accountId))
+      .where(and(eq(mailboxes.id, id), eq(accounts.userId, user.id)));
     if (!mailbox) {
       return c.json({ error: "not_found" }, 404);
     }

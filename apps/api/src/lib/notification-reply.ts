@@ -6,8 +6,8 @@ import {
   type SendPayload,
 } from "@orbit/core";
 import {
+  accounts,
   type Database,
-  mailAccounts,
   messages,
   outbox,
   signatureRules,
@@ -93,16 +93,16 @@ export async function queueNotificationReply(
       receivedAt: messages.receivedAt,
       messageIdHeader: messages.messageIdHeader,
       references: messages.references,
-      email: mailAccounts.email,
-      displayName: mailAccounts.displayName,
-      signatureHtml: mailAccounts.signatureHtml,
-      protocol: mailAccounts.protocol,
-      smtpHost: mailAccounts.smtpHost,
-      composeFormat: mailAccounts.composeFormat,
+      email: accounts.email,
+      displayName: accounts.displayName,
+      signatureHtml: accounts.signatureHtml,
+      protocol: accounts.protocol,
+      smtpHost: accounts.smtpHost,
+      composeFormat: accounts.composeFormat,
     })
     .from(messages)
-    .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
-    .where(and(eq(messages.id, messageId), eq(mailAccounts.userId, userId)));
+    .innerJoin(accounts, eq(accounts.id, messages.accountId))
+    .where(and(eq(messages.id, messageId), eq(accounts.userId, userId)));
   if (!source) return { ok: false, error: "not_found" };
   // 受信専用のアカウント (送信サーバーが無い) からは送れない。
   if (source.protocol !== "graph" && source.smtpHost === null) {
@@ -110,9 +110,9 @@ export async function queueNotificationReply(
   }
 
   const own = await db
-    .select({ email: mailAccounts.email })
-    .from(mailAccounts)
-    .where(eq(mailAccounts.userId, userId));
+    .select({ email: accounts.email })
+    .from(accounts)
+    .where(eq(accounts.userId, userId));
   const rules = await db
     .select({
       kind: signatureRules.kind,

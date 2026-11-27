@@ -7,9 +7,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { decryptCredentials, encryptCredentials } from "@orbit/core";
 import {
+  accounts,
   createDb,
   type Database,
-  mailAccounts,
   mailboxes,
   messageMailboxes,
   messages,
@@ -57,10 +57,10 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
   const addAccount = async (
     owner: string,
     email: string,
-    overrides: Partial<typeof mailAccounts.$inferInsert> = {},
+    overrides: Partial<typeof accounts.$inferInsert> = {},
   ) => {
     const [row] = await db
-      .insert(mailAccounts)
+      .insert(accounts)
       .values({
         userId: owner,
         email,
@@ -82,7 +82,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
         lastError: "ログインできません",
         ...overrides,
       })
-      .returning({ id: mailAccounts.id });
+      .returning({ id: accounts.id });
     if (!row) throw new Error("アカウントを作れませんでした。");
     return row.id;
   };
@@ -227,10 +227,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
       username: "me@new.example",
       password: "old-password",
     });
-    const [row] = await db
-      .select()
-      .from(mailAccounts)
-      .where(eq(mailAccounts.id, id));
+    const [row] = await db.select().from(accounts).where(eq(accounts.id, id));
     expect(row?.imapHost).toBe("imap.old.example");
   });
 
@@ -343,10 +340,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     });
     expect(response.status).toBe(200);
     expect(seen.pop3[0]).toMatchObject({ host: "pop.new.example" });
-    const [row] = await db
-      .select()
-      .from(mailAccounts)
-      .where(eq(mailAccounts.id, id));
+    const [row] = await db.select().from(accounts).where(eq(accounts.id, id));
     expect(row).toMatchObject({
       protocol: "pop3",
       popLeaveOnServer: false,
@@ -374,10 +368,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
       imap: { ok: true },
       smtp: { ok: false, reason: "auth_failed" },
     });
-    const [row] = await db
-      .select()
-      .from(mailAccounts)
-      .where(eq(mailAccounts.id, id));
+    const [row] = await db.select().from(accounts).where(eq(accounts.id, id));
     expect(row?.smtpHost).toBe("smtp.old.example");
   });
 
@@ -403,10 +394,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
       lastError: null,
     });
     expect(account).not.toHaveProperty("credentialsEncrypted");
-    const [row] = await db
-      .select()
-      .from(mailAccounts)
-      .where(eq(mailAccounts.id, id));
+    const [row] = await db.select().from(accounts).where(eq(accounts.id, id));
     expect(
       decryptCredentials(
         row?.credentialsEncrypted as string,
@@ -450,8 +438,8 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     });
     const [row] = await db
       .select()
-      .from(mailAccounts)
-      .where(eq(mailAccounts.id, oauthAccountId));
+      .from(accounts)
+      .where(eq(accounts.id, oauthAccountId));
     expect(
       decryptCredentials(
         row?.credentialsEncrypted as string,

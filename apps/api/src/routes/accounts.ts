@@ -21,8 +21,8 @@ import {
   providerOfImapHost,
 } from "@orbit/core";
 import {
+  accounts,
   changes,
-  mailAccounts,
   mailboxes,
   messages,
   outbox,
@@ -198,32 +198,32 @@ const orderBody = z.object({
 
 /** クライアントへ返す形。認証情報は暗号文であっても返さない。 */
 const publicColumns = {
-  id: mailAccounts.id,
-  email: mailAccounts.email,
-  displayName: mailAccounts.displayName,
-  provider: mailAccounts.provider,
-  authType: mailAccounts.authType,
-  protocol: mailAccounts.protocol,
-  imapHost: mailAccounts.imapHost,
-  imapPort: mailAccounts.imapPort,
-  imapSecure: mailAccounts.imapSecure,
-  smtpHost: mailAccounts.smtpHost,
-  smtpPort: mailAccounts.smtpPort,
-  smtpSecure: mailAccounts.smtpSecure,
-  allowLegacyTls: mailAccounts.allowLegacyTls,
-  pushConnections: mailAccounts.pushConnections,
-  notifyNewMail: mailAccounts.notifyNewMail,
-  popLeaveOnServer: mailAccounts.popLeaveOnServer,
-  popDeleteAfterDays: mailAccounts.popDeleteAfterDays,
-  username: mailAccounts.username,
-  status: mailAccounts.status,
-  lastError: mailAccounts.lastError,
-  signatureHtml: mailAccounts.signatureHtml,
-  sortOrder: mailAccounts.sortOrder,
-  color: mailAccounts.color,
-  icon: mailAccounts.icon,
-  composeFormat: mailAccounts.composeFormat,
-  createdAt: mailAccounts.createdAt,
+  id: accounts.id,
+  email: accounts.email,
+  displayName: accounts.displayName,
+  provider: accounts.provider,
+  authType: accounts.authType,
+  protocol: accounts.protocol,
+  imapHost: accounts.imapHost,
+  imapPort: accounts.imapPort,
+  imapSecure: accounts.imapSecure,
+  smtpHost: accounts.smtpHost,
+  smtpPort: accounts.smtpPort,
+  smtpSecure: accounts.smtpSecure,
+  allowLegacyTls: accounts.allowLegacyTls,
+  pushConnections: accounts.pushConnections,
+  notifyNewMail: accounts.notifyNewMail,
+  popLeaveOnServer: accounts.popLeaveOnServer,
+  popDeleteAfterDays: accounts.popDeleteAfterDays,
+  username: accounts.username,
+  status: accounts.status,
+  lastError: accounts.lastError,
+  signatureHtml: accounts.signatureHtml,
+  sortOrder: accounts.sortOrder,
+  color: accounts.color,
+  icon: accounts.icon,
+  composeFormat: accounts.composeFormat,
+  createdAt: accounts.createdAt,
 };
 
 type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
@@ -368,10 +368,10 @@ export function accountRoutes(
   app.get("/", async (c) => {
     const rows = await db
       .select(publicColumns)
-      .from(mailAccounts)
-      .where(eq(mailAccounts.userId, c.var.user.id))
+      .from(accounts)
+      .where(eq(accounts.userId, c.var.user.id))
       // 並び替えたアカウントをその順に、まだ並び替えていないものは追加した順に後ろへ。
-      .orderBy(asc(mailAccounts.sortOrder), asc(mailAccounts.createdAt));
+      .orderBy(asc(accounts.sortOrder), asc(accounts.createdAt));
     return c.json({ accounts: rows });
   });
 
@@ -381,20 +381,17 @@ export function accountRoutes(
     const user = c.var.user;
     const saved = await db.transaction(async (tx) => {
       const owned = await tx
-        .select({ id: mailAccounts.id })
-        .from(mailAccounts)
+        .select({ id: accounts.id })
+        .from(accounts)
         .where(
-          and(
-            eq(mailAccounts.userId, user.id),
-            inArray(mailAccounts.id, accountIds),
-          ),
+          and(eq(accounts.userId, user.id), inArray(accounts.id, accountIds)),
         );
       if (owned.length !== accountIds.length) return false;
       for (const [index, id] of accountIds.entries()) {
         await tx
-          .update(mailAccounts)
+          .update(accounts)
           .set({ sortOrder: index })
-          .where(eq(mailAccounts.id, id));
+          .where(eq(accounts.id, id));
       }
       await recordChanges(tx, user.id, "account", accountIds);
       return true;
@@ -457,14 +454,14 @@ export function accountRoutes(
     // 同じアドレスでも、受信サーバーかユーザー名が違えば別のアカウントとして扱う
     // (ドコモメールの IMAP と、同じアドレスのメッセージR/S の POP3 など)。
     const [existing] = await db
-      .select({ id: mailAccounts.id })
-      .from(mailAccounts)
+      .select({ id: accounts.id })
+      .from(accounts)
       .where(
         and(
-          eq(mailAccounts.userId, user.id),
-          eq(mailAccounts.email, body.email),
-          sql`lower(${mailAccounts.imapHost}) = ${body.imap.host.toLowerCase()}`,
-          eq(mailAccounts.username, body.username),
+          eq(accounts.userId, user.id),
+          eq(accounts.email, body.email),
+          sql`lower(${accounts.imapHost}) = ${body.imap.host.toLowerCase()}`,
+          eq(accounts.username, body.username),
         ),
       );
     if (existing) {
@@ -505,7 +502,7 @@ export function accountRoutes(
 
     const account = await db.transaction(async (tx) => {
       const [row] = await tx
-        .insert(mailAccounts)
+        .insert(accounts)
         .values({
           userId: user.id,
           email: body.email,
@@ -571,13 +568,13 @@ export function accountRoutes(
       let loginHint: string | undefined = email;
       if (accountId) {
         const [row] = await db
-          .select({ email: mailAccounts.email })
-          .from(mailAccounts)
+          .select({ email: accounts.email })
+          .from(accounts)
           .where(
             and(
-              eq(mailAccounts.id, accountId),
-              eq(mailAccounts.userId, user.id),
-              eq(mailAccounts.protocol, "graph"),
+              eq(accounts.id, accountId),
+              eq(accounts.userId, user.id),
+              eq(accounts.protocol, "graph"),
             ),
           );
         if (!row) {
@@ -650,13 +647,13 @@ export function accountRoutes(
       );
       const result = await db.transaction(async (tx) => {
         const sameAddress = await tx
-          .select({ id: mailAccounts.id, protocol: mailAccounts.protocol })
-          .from(mailAccounts)
+          .select({ id: accounts.id, protocol: accounts.protocol })
+          .from(accounts)
           .where(
             and(
-              eq(mailAccounts.userId, user.id),
+              eq(accounts.userId, user.id),
               // Microsoft のアドレスは大文字と小文字を区別しない。
-              sql`lower(${mailAccounts.email}) = ${profile.email.toLowerCase()}`,
+              sql`lower(${accounts.email}) = ${profile.email.toLowerCase()}`,
             ),
           );
         // 同じアドレスのアカウントが複数あれば、Microsoft Graph のものを選ぶ。
@@ -668,12 +665,12 @@ export function accountRoutes(
         // 追加済みの Microsoft アカウントなら再ログイン。認証情報を入れ替えて同期を再開する。
         const [row] = existing
           ? await tx
-              .update(mailAccounts)
+              .update(accounts)
               .set({ credentialsEncrypted, status: "active", lastError: null })
-              .where(eq(mailAccounts.id, existing.id))
+              .where(eq(accounts.id, existing.id))
               .returning(publicColumns)
           : await tx
-              .insert(mailAccounts)
+              .insert(accounts)
               .values({
                 userId: user.id,
                 email: profile.email,
@@ -717,13 +714,13 @@ export function accountRoutes(
       let loginHint: string | undefined = email;
       if (accountId) {
         const [row] = await db
-          .select({ email: mailAccounts.email })
-          .from(mailAccounts)
+          .select({ email: accounts.email })
+          .from(accounts)
           .where(
             and(
-              eq(mailAccounts.id, accountId),
-              eq(mailAccounts.userId, user.id),
-              eq(mailAccounts.provider, "gmail"),
+              eq(accounts.id, accountId),
+              eq(accounts.userId, user.id),
+              eq(accounts.provider, "gmail"),
             ),
           );
         if (!row) {
@@ -828,12 +825,12 @@ export function accountRoutes(
       };
       const result = await db.transaction(async (tx) => {
         const sameAddress = await tx
-          .select({ id: mailAccounts.id, provider: mailAccounts.provider })
-          .from(mailAccounts)
+          .select({ id: accounts.id, provider: accounts.provider })
+          .from(accounts)
           .where(
             and(
-              eq(mailAccounts.userId, user.id),
-              sql`lower(${mailAccounts.email}) = ${email.toLowerCase()}`,
+              eq(accounts.userId, user.id),
+              sql`lower(${accounts.email}) = ${email.toLowerCase()}`,
             ),
           );
         // 同じアドレスのアカウントが複数あれば、Gmail のものを選ぶ。
@@ -846,12 +843,12 @@ export function accountRoutes(
         // 認証情報を入れ替えて同期を再開する。
         const [row] = existing
           ? await tx
-              .update(mailAccounts)
+              .update(accounts)
               .set({ ...settings, status: "active", lastError: null })
-              .where(eq(mailAccounts.id, existing.id))
+              .where(eq(accounts.id, existing.id))
               .returning(publicColumns)
           : await tx
-              .insert(mailAccounts)
+              .insert(accounts)
               .values({
                 ...settings,
                 userId: user.id,
@@ -889,7 +886,7 @@ export function accountRoutes(
       const user = c.var.user;
       const account = await db.transaction(async (tx) => {
         const [row] = await tx
-          .update(mailAccounts)
+          .update(accounts)
           .set({
             ...(body.signatureHtml !== undefined
               ? { signatureHtml: body.signatureHtml?.trim() || null }
@@ -920,19 +917,19 @@ export function accountRoutes(
           })
           .where(
             and(
-              eq(mailAccounts.id, id),
-              eq(mailAccounts.userId, user.id),
+              eq(accounts.id, id),
+              eq(accounts.userId, user.id),
               // TLS の設定は IMAP / POP3 でつなぐアカウントに、接続の本数の設定は
               // IMAP のアカウントに、サーバーに残す設定は POP3 のアカウントにしか無い。
               body.pushConnections !== undefined
-                ? eq(mailAccounts.protocol, "imap")
+                ? eq(accounts.protocol, "imap")
                 : undefined,
               body.allowLegacyTls !== undefined
-                ? ne(mailAccounts.protocol, "graph")
+                ? ne(accounts.protocol, "graph")
                 : undefined,
               body.popLeaveOnServer !== undefined ||
                 body.popDeleteAfterDays !== undefined
-                ? eq(mailAccounts.protocol, "pop3")
+                ? eq(accounts.protocol, "pop3")
                 : undefined,
             ),
           )
@@ -983,14 +980,14 @@ export function accountRoutes(
   ) {
     const [account] = await db
       .select({
-        protocol: mailAccounts.protocol,
-        authType: mailAccounts.authType,
-        provider: mailAccounts.provider,
-        allowLegacyTls: mailAccounts.allowLegacyTls,
-        credentialsEncrypted: mailAccounts.credentialsEncrypted,
+        protocol: accounts.protocol,
+        authType: accounts.authType,
+        provider: accounts.provider,
+        allowLegacyTls: accounts.allowLegacyTls,
+        credentialsEncrypted: accounts.credentialsEncrypted,
       })
-      .from(mailAccounts)
-      .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, userId)));
+      .from(accounts)
+      .where(and(eq(accounts.id, id), eq(accounts.userId, userId)));
     if (!account) return { error: "not_found" as const };
     // Microsoft Graph でつなぐアカウントは IMAP / SMTP を使わない (ログインし直しだけ)。
     if (account.protocol === "graph") {
@@ -1090,7 +1087,7 @@ export function accountRoutes(
       }
       const account = await db.transaction(async (tx) => {
         const [row] = await tx
-          .update(mailAccounts)
+          .update(accounts)
           .set({
             protocol: settings.incomingProtocol,
             ...(settings.incomingProtocol === "pop3" && settings.pop
@@ -1122,9 +1119,9 @@ export function accountRoutes(
           })
           .where(
             and(
-              eq(mailAccounts.id, id),
-              eq(mailAccounts.userId, user.id),
-              ne(mailAccounts.protocol, "graph"),
+              eq(accounts.id, id),
+              eq(accounts.userId, user.id),
+              ne(accounts.protocol, "graph"),
             ),
           )
           .returning(publicColumns);
@@ -1151,9 +1148,9 @@ export function accountRoutes(
     const user = c.var.user;
     const deleted = await db.transaction(async (tx) => {
       const [row] = await tx
-        .delete(mailAccounts)
-        .where(and(eq(mailAccounts.id, id), eq(mailAccounts.userId, user.id)))
-        .returning({ id: mailAccounts.id });
+        .delete(accounts)
+        .where(and(eq(accounts.id, id), eq(accounts.userId, user.id)))
+        .returning({ id: accounts.id });
       if (!row) return false;
       await tx.insert(changes).values({
         userId: user.id,
@@ -1174,11 +1171,9 @@ export function accountRoutes(
   app.post("/:id/sync", zValidator("param", idParam), async (c) => {
     const { id } = c.req.valid("param");
     const [account] = await db
-      .select({ id: mailAccounts.id })
-      .from(mailAccounts)
-      .where(
-        and(eq(mailAccounts.id, id), eq(mailAccounts.userId, c.var.user.id)),
-      );
+      .select({ id: accounts.id })
+      .from(accounts)
+      .where(and(eq(accounts.id, id), eq(accounts.userId, c.var.user.id)));
     if (!account) {
       return c.json({ error: "not_found" }, 404);
     }
@@ -1205,10 +1200,8 @@ export function accountRoutes(
         lastSyncedAt: mailboxes.lastSyncedAt,
       })
       .from(mailboxes)
-      .innerJoin(mailAccounts, eq(mailboxes.accountId, mailAccounts.id))
-      .where(
-        and(eq(mailAccounts.id, id), eq(mailAccounts.userId, c.var.user.id)),
-      )
+      .innerJoin(accounts, eq(mailboxes.accountId, accounts.id))
+      .where(and(eq(accounts.id, id), eq(accounts.userId, c.var.user.id)))
       .orderBy(asc(mailboxes.path));
     return c.json({ mailboxes: rows });
   });

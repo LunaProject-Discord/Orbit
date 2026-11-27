@@ -5,7 +5,7 @@ import {
   MAX_ATTACHMENT_COUNT,
   readAttachmentMeta,
 } from "@orbit/core";
-import { type DraftAttachment, drafts, mailAccounts, outbox } from "@orbit/db";
+import { accounts, type DraftAttachment, drafts, outbox } from "@orbit/db";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -108,13 +108,10 @@ export function draftRoutes({ db }: Pick<RouteDeps, "db">) {
       const user = c.var.user;
 
       const [account] = await db
-        .select({ id: mailAccounts.id })
-        .from(mailAccounts)
+        .select({ id: accounts.id })
+        .from(accounts)
         .where(
-          and(
-            eq(mailAccounts.id, body.accountId),
-            eq(mailAccounts.userId, user.id),
-          ),
+          and(eq(accounts.id, body.accountId), eq(accounts.userId, user.id)),
         );
       if (!account) {
         return c.json({ error: "account_not_found" }, 404);
@@ -158,10 +155,10 @@ export function draftRoutes({ db }: Pick<RouteDeps, "db">) {
           const [sent] = await tx
             .select({ id: outbox.id })
             .from(outbox)
-            .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
+            .innerJoin(accounts, eq(accounts.id, outbox.accountId))
             .where(
               and(
-                eq(mailAccounts.userId, user.id),
+                eq(accounts.userId, user.id),
                 eq(outbox.kind, "send"),
                 eq(outbox.idempotencyKey, id),
               ),

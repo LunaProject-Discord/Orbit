@@ -5,7 +5,7 @@ import {
   attachmentKey,
   CHANNEL_ATTACHMENT_FETCH,
 } from "@orbit/core";
-import { attachments, type Database, mailAccounts, messages } from "@orbit/db";
+import { accounts, attachments, type Database, messages } from "@orbit/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { EventsHub } from "./events-hub.js";
 
@@ -46,12 +46,12 @@ export async function ensureReceivedAttachment(
     })
     .from(attachments)
     .innerJoin(messages, eq(messages.id, attachments.messageId))
-    .innerJoin(mailAccounts, eq(mailAccounts.id, messages.accountId))
+    .innerJoin(accounts, eq(accounts.id, messages.accountId))
     .where(
       and(
         eq(attachments.id, attachmentId),
         eq(attachments.messageId, messageId),
-        eq(mailAccounts.userId, userId),
+        eq(accounts.userId, userId),
       ),
     );
   if (!row) return { ok: false, error: "not_found" };
