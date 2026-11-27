@@ -213,6 +213,10 @@ export type GraphEvent = {
   recurrence?: GraphPatternedRecurrence | null;
   cancelledOccurrences?: string[] | null;
   organizer?: GraphEmail | null;
+  /** 自分が主催者か (アカウントのカレンダーの予定で返る)。 */
+  isOrganizer?: boolean;
+  /** 自分の出欠 (none / organizer / accepted / tentativelyAccepted / declined / notResponded)。 */
+  responseStatus?: { response?: string } | null;
   attendees?: (GraphEmail & {
     type?: string;
     status?: { response?: string };
@@ -648,8 +652,13 @@ export function rruleToGraphRecurrence(
 // ---------------------------------------------------------------------------
 
 /** Graph の予定 1 件を読んだもの。worker の RemoteEvent と同じ形 (uid は例外で null)。 */
-export type MicrosoftParsedEvent = Omit<ParsedEvent, "uid" | "attendees"> & {
+export type MicrosoftParsedEvent = Omit<
+  ParsedEvent,
+  "uid" | "attendees" | "organizer"
+> & {
   uid: string | null;
+  /** self は isOrganizer (Graph が返したときだけ入れる)。 */
+  organizer: { email: string; name?: string; self?: boolean } | null;
   remoteId: string;
   etag: string | null;
   parentRemoteId: string | null;
@@ -773,6 +782,17 @@ export function parseGraphEvent(
         : {}),
     });
   }
+  // 推測: 参加者側の控えでは、参加者の一覧の自分の行が none のままのことがある。
+  // そのときは予定の responseStatus (自分の出欠) で補う。
+  const ownResponse =
+    ATTENDEE_STATUS[event.responseStatus?.response ?? "none"] ?? "needs_action";
+  if (ownResponse !== "needs_action") {
+    for (const attendee of attendees) {
+      if (attendee.self && attendee.status === "needs_action") {
+        attendee.status = ownResponse;
+      }
+    }
+  }
   const organizerEmail = event.organizer?.emailAddress?.address?.trim();
 
   return {
@@ -811,6 +831,9 @@ export function parseGraphEvent(
           email: organizerEmail,
           ...(event.organizer?.emailAddress?.name
             ? { name: event.organizer.emailAddress.name }
+            : {}),
+          ...(typeof event.isOrganizer === "boolean"
+            ? { self: event.isOrganizer }
             : {}),
         }
       : null,

@@ -904,6 +904,47 @@ describe("Microsoft への書き戻し", () => {
     expect(post?.url).toContain(`/me/events/${stored.id}/tentativelyAccept`);
     expect(post?.body).toEqual({ comment: "たぶん", sendResponse: true });
   });
+
+  it("isOrganizer を主催者の印にし、一覧の自分の行が none なら responseStatus で補う", async () => {
+    const { graph, provider, ctx, calendar } = setup();
+    const self = ctx.account.email;
+    const stored = graph.put("cal-1", {
+      subject: "招待",
+      start: { dateTime: "2026-12-01T01:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-12-01T02:00:00.0000000", timeZone: "UTC" },
+      isOrganizer: false,
+      organizer: { emailAddress: { address: "boss@example.com" } },
+      attendees: [
+        {
+          emailAddress: { address: self },
+          type: "required",
+          status: { response: "none" },
+        },
+      ],
+    });
+    const result = await provider.respond(
+      ctx,
+      calendar,
+      {
+        remoteId: stored.id,
+        etag: null,
+        uid: "u",
+        recurrenceId: null,
+        parentRemoteId: null,
+      },
+      { status: "accepted", comment: null },
+    );
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.events[0]?.organizer).toMatchObject({
+      email: "boss@example.com",
+      self: false,
+    });
+    // 偽の Graph は返事で responseStatus だけを変える (一覧の自分の行は none のまま)。
+    expect(
+      result.events[0]?.attendees.find((attendee) => attendee.self)?.status,
+    ).toBe("accepted");
+  });
 });
 
 describe("Microsoft の変更通知", () => {
