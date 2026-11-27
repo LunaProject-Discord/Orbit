@@ -513,6 +513,8 @@ export type CalendarConflict = {
   resolvedAt: string | null;
   /** 回の変更なら、その回 (サーバーが返すときだけ)。 */
   recurrenceId?: string | null;
+  /** invite_failed で「もう一度送る」ができるか (新しいサーバーだけ)。 */
+  resendable?: boolean;
 };
 
 /** 未解決の競合 (新しい順)。 */

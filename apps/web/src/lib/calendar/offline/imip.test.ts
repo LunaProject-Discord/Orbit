@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
+import { conflictReason } from "@/lib/calendar/conflict-labels";
 import {
   inviteFailureOf,
   OfflineCalendarClient,
 } from "@/lib/calendar/offline/client";
 import {
   CALENDAR_ID,
+  event,
   FakeCalendarServer,
   persistentStore,
 } from "@/lib/calendar/offline/test-support";
@@ -73,6 +76,47 @@ describe("invite_failed", () => {
     ];
     const client = await open(server);
     expect(client.conflicts()[0]?.actions).toEqual(["dismiss"]);
+  });
+
+  it("サーバーが送り直せないとした記録 (resendable: false) も「閉じる」だけ", async () => {
+    const server = new FakeCalendarServer();
+    server.conflicts = [
+      {
+        ...failure({ method: "REQUEST", to: ["b@example.com"] }),
+        resendable: false,
+      },
+    ];
+    const client = await open(server);
+    expect(client.conflicts()[0]?.actions).toEqual(["dismiss"]);
+  });
+
+  it("送信数の上限 (409 invite_limit) で断られた変更は、理由付きの反映されなかった変更になる", async () => {
+    const server = new FakeCalendarServer();
+    server.addEvent(event({ id: E1 }));
+    const real = server.api();
+    const client = await OfflineCalendarClient.open({
+      userId: "u1",
+      store: persistentStore(),
+      api: {
+        ...real,
+        updateEvent: async () => {
+          throw new ApiError(409, "invite_limit", null);
+        },
+      },
+      retryMs: 1000,
+    });
+    client.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    await client.pull();
+    client.updateEvent(E1, { summary: "変更" });
+    await client.flush();
+    const [item] = client.conflicts();
+    expect(item).toMatchObject({ kind: "failed", reason: "invite_limit" });
+    expect(item?.actions).toEqual(["retry", "dismiss"]);
+    expect(item && conflictReason(item)).toBe(
+      "招待メールの送信数が上限に達しました。しばらくしてからもう一度保存してください",
+    );
+    expect(client.queue()[0]?.state).toBe("error");
   });
 
   it("形の違う lost は読める項目だけ拾う", () => {

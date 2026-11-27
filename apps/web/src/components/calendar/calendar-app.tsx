@@ -650,9 +650,11 @@ export function CalendarApp({ user }: { user: User }) {
       setSenderError(
         error instanceof ApiError && error.code === "receive_only"
           ? "このアカウントは受信専用のため、送信元にできません。"
-          : error instanceof NetworkError
-            ? "接続していないので保存できません。"
-            : "保存できませんでした。もう一度お試しください。",
+          : error instanceof ApiError && error.code === "imip_unsupported"
+            ? "このカレンダーでは送信元を選べません。"
+            : error instanceof NetworkError
+              ? "接続していないので保存できません。"
+              : "保存できませんでした。もう一度お試しください。",
       );
     } finally {
       setSenderBusy(false);

@@ -221,8 +221,12 @@ function inviteConflictItem(conflict: CalendarConflict): ConflictItem {
     snapshot: snapshotEvent(conflict),
     reason: conflict.reason,
     createdAt: conflict.createdAt,
-    // 一部の宛先だけ送れなかったときは、送り直さない (届いた人に 2 通目が行く)。
-    actions: invite?.partial ? ["dismiss"] : ["resend", "dismiss"],
+    // 一部の宛先だけ送れなかったとき・サーバーが送り直せないとしたときは、送り直さない
+    // (届いた人に 2 通目が行く)。resendable の無い記録は lost の印だけで決める。
+    actions:
+      invite?.partial || conflict.resendable === false
+        ? ["dismiss"]
+        : ["resend", "dismiss"],
     opId: null,
     invite,
   };
