@@ -7,11 +7,13 @@ import {
   type EventOutboxRef,
   type EventRespondPayload,
   type EventUpdatePayload,
+  type ImipPlan,
 } from "@orbit/core";
 import {
   calendars,
   type Database,
   deleteCalendarEventsByRemoteId,
+  enqueueImip,
   events,
   findCalendarEvents,
   outbox,
@@ -24,6 +26,7 @@ import {
   lostValues,
   pruneEventConflicts,
   recordEventConflict,
+  recordInviteFailure,
 } from "./conflicts.js";
 import {
   isDeletePending,
@@ -62,7 +65,15 @@ const KEEP_DONE_MS = 7 * 24 * 60 * 60_000;
 export const MAX_CONFLICT_RETRIES = 3;
 
 type OutboxRow = typeof outbox.$inferSelect;
-type OperationResult = { ok: true } | { ok: false; reason: string };
+/**
+ * 1 行の反映の結果。imip は、相手側への書き込み (または相手側で既に消えていた削除) が済み、
+ * payload の招待メールの計画を送ってよいこと (imip-design 6.1)。何も書かずに終えたとき
+ * (予定が消えていた、相手側の変更に負けた、削除を取りやめた) は付けない。
+ */
+type OperationResult =
+  | { ok: true; imip?: true }
+  | { ok: false; reason: string };
+const WRITTEN: OperationResult = { ok: true, imip: true };
 
 export type EventOutboxDeps = {
   db: Database;
@@ -180,10 +191,15 @@ export async function processEventOutbox(
       result = { ok: false, reason };
     }
     if (result.ok) {
-      await db
-        .update(outbox)
-        .set({ status: "done", lastError: null })
-        .where(eq(outbox.id, row.id));
+      const plan = (row.payload as { imip?: ImipPlan | null }).imip ?? null;
+      await db.transaction(async (tx) => {
+        await tx
+          .update(outbox)
+          .set({ status: "done", lastError: null })
+          .where(eq(outbox.id, row.id));
+        // 書き戻しが成功した後でだけ、招待メールを積む (巻き戻した変更の招待は出さない)。
+        if (plan && result.imip) await enqueuePlannedImip(tx, deps, row, plan);
+      });
       done++;
       continue;
     }
@@ -204,6 +220,97 @@ export async function processEventOutbox(
   // 反映されなかった変更の記録も、同じ時機に古いものを消す。
   await pruneEventConflicts(db, account.userId, nowOf(deps));
   return { done, failed, retryAt };
+}
+
+/**
+ * 書き戻しが済んだ event_* の行の、招待メールの計画 (payload.imip) を imip_send にして積む
+ * (imip-design 6.1。同じトランザクションで行を done にする)。本文は書き戻した後の行から作るので、
+ * SEQUENCE は相手側に書いた値になる。冪等キーは元の行のキーから作るので、行の再実行でも増えない。
+ * 送信元が使えない・From と主催者が違う・上限を超えたときは送らず、invite_failed を残す
+ * (scheduling が mail でなくなったとき (not_mail) はサーバーが送るので何も残さない)。
+ */
+async function enqueuePlannedImip(
+  tx: Tx,
+  deps: EventOutboxDeps,
+  row: OutboxRow,
+  plan: ImipPlan,
+) {
+  const payload = row.payload as {
+    calendarId: string;
+    eventId?: string;
+    target?: EventOutboxRef;
+  };
+  const eventId =
+    row.kind === "event_delete"
+      ? (payload.target?.eventId ?? "")
+      : (payload.eventId ?? payload.target?.eventId ?? "");
+  const [calendar] = await tx
+    .select()
+    .from(calendars)
+    .where(
+      and(
+        eq(calendars.id, payload.calendarId),
+        eq(calendars.accountId, deps.account.id),
+      ),
+    );
+  if (!calendar || !eventId) return;
+  const [current] = await tx
+    .select({ uid: events.uid })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.calendarId, calendar.id)));
+  const rows = current
+    ? await findCalendarEvents(tx, calendar.id, {
+        remoteIds: [],
+        uids: [current.uid],
+      })
+    : [];
+  const result = await enqueueImip(tx, plan, rows, {
+    userId: deps.account.userId,
+    calendarId: calendar.id,
+    eventId,
+    baseKey: row.idempotencyKey,
+    defaultTimeZone: calendar.timeZone ?? "UTC",
+    sourceOutboxId: row.id,
+    now: nowOf(deps),
+  });
+  if (result.incomplete > 0) {
+    deps.log(
+      `予定 ${eventId} の招待メールのうち ${result.incomplete} 通は、予定の行が無いため作れませんでした`,
+    );
+  }
+  const reason =
+    result.skipped === "sender_unavailable"
+      ? "送信元のメールアカウントが無いか、送信できません。"
+      : result.skipped === "sender_mismatch"
+        ? "送信元のアドレスが予定の主催者 (返事では自分の参加者のアドレス) と違います。"
+        : result.skipped === "limit"
+          ? "招待メールの送信数が上限に達しました。"
+          : null;
+  if (!reason) return;
+  deps.log(`予定 ${eventId} の招待メールを積みませんでした: ${reason}`);
+  const title = rows.find((item) => item.id === eventId)?.summary ?? null;
+  for (const message of plan.messages) {
+    await recordInviteFailure(
+      tx,
+      deps.account.userId,
+      null,
+      {
+        imip: {
+          method: message.method,
+          reason: message.reason,
+          userId: deps.account.userId,
+          calendarId: calendar.id,
+          eventId,
+          uid: current?.uid ?? "",
+          recurrenceId: message.recurrenceId ?? null,
+          sequence: 0,
+          title,
+        },
+        message: { to: message.to },
+      },
+      reason,
+    );
+  }
 }
 
 /** プロバイダから届いた予定に uid を補う。補えなかった例外はログに残して捨てる。 */
@@ -541,7 +648,7 @@ async function applyCreate(
   const snapshot = await loadSnapshot(deps, calendar.id, payload.eventId);
   if (!snapshot) return { ok: true };
   // 前回の実行で作成まで済んでいた (結果の書き込みの後に止まった)。
-  if (snapshot.event.remoteId !== null) return { ok: true };
+  if (snapshot.event.remoteId !== null) return WRITTEN;
   // 結果の書き込みの前に止まっていたら、相手側には既にある。プロバイダは events.id から
   // 決まる ID で冪等に作り、既にあれば ok (または conflict と remoteId) を返す約束。
   const result = await deps.provider.createEvent(deps.ctx, calendar, {
@@ -595,7 +702,7 @@ async function finishWrite(
       },
       { fromUid: snapshot.event.uid },
     );
-    return { ok: true };
+    return WRITTEN;
   }
   switch (result.status) {
     case "rejected":
@@ -688,7 +795,7 @@ async function applyUpdate(
           recurrenceId: snapshot.event.recurrenceId,
         },
       );
-      return { ok: true };
+      return WRITTEN;
     }
     if (result.status === "rejected") {
       return { ok: false, reason: result.reason };
@@ -796,7 +903,8 @@ async function applyDelete(
   if (!ref) return { ok: true };
   for (let attempt = 1; ; attempt++) {
     const result = await deps.provider.deleteEvent(deps.ctx, calendar, ref);
-    if (result.status === "ok" || result.status === "gone") return { ok: true };
+    // 相手側で既に消えていても (gone)、参加者にはまだ取り消しを知らせていない。
+    if (result.status === "ok" || result.status === "gone") return WRITTEN;
     if (result.status === "rejected")
       return { ok: false, reason: result.reason };
     if (attempt >= MAX_CONFLICT_RETRIES) {
@@ -807,9 +915,9 @@ async function applyDelete(
     }
     // 相手側が先に変わっていた。削除と変更は後から行った方を採る。
     const latest = await fetchRemote(deps, calendar, ref);
-    if (!latest) return { ok: true };
+    if (!latest) return WRITTEN;
     const remote = findRemote(latest, ref);
-    if (!remote) return { ok: true };
+    if (!remote) return WRITTEN;
     const remoteAt = remote.remoteUpdatedAt
       ? Date.parse(remote.remoteUpdatedAt)
       : Number.NaN;
@@ -891,7 +999,7 @@ async function applyRespond(
           recurrenceId: snapshot.event.recurrenceId,
         },
       );
-      return { ok: true };
+      return WRITTEN;
     }
     if (result.status === "rejected")
       return { ok: false, reason: result.reason };
@@ -948,7 +1056,7 @@ async function respondWithoutRow(
             );
         });
       }
-      return { ok: true };
+      return WRITTEN;
     }
     if (result.status === "gone") return { ok: true };
     if (result.status === "rejected")

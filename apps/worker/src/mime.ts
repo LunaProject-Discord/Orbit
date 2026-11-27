@@ -23,6 +23,8 @@ export function htmlDocument(body: string): string {
  * Bcc の宛先をヘッダーから読む Microsoft Graph 用)。SMTP で送る分には残さない。
  * 書式付きの本文があれば、テキストと HTML の両方を入れる (multipart/alternative)。
  * HTML を表示しないメールソフトでは、テキストのほうが表示される。
+ * 招待メール (calendar 付き) は、nodemailer の icalEvent で text/calendar; method=… の
+ * alternative と invite.ics の添付 (application/ics) の両方に同じ iCalendar を入れる (imip-design 5.2)。
  */
 export function buildMime(
   message: OutgoingMessage,
@@ -47,6 +49,15 @@ export function buildMime(
     ...(message.inReplyTo ? { inReplyTo: message.inReplyTo } : {}),
     ...(message.references.length > 0
       ? { references: message.references }
+      : {}),
+    ...(message.calendar
+      ? {
+          icalEvent: {
+            method: message.calendar.method,
+            content: message.calendar.content,
+            filename: "invite.ics",
+          },
+        }
       : {}),
   }).compile();
   node.keepBcc = options.keepBcc;
