@@ -21,16 +21,19 @@ export function SenderAvatar({
   address,
   check,
   enabled = true,
+  contact = false,
   className,
 }: {
   address: Address | undefined;
   check: SenderCheck | null | undefined;
   /** false なら画像を探さず、頭文字だけを出す。 */
   enabled?: boolean;
+  /** 差出人でない相手 (宛先、宛先の候補)。証明書で確かめた BIMI のロゴと Gravatar だけを使う。 */
+  contact?: boolean;
   /** 大きさと文字の大きさ (size-9 text-sm など)。 */
   className?: string;
 }) {
-  const icon = useSenderIcon(address?.address, check, enabled);
+  const icon = useSenderIcon(address?.address, check, enabled, contact);
   const [failed, setFailed] = useState<string | null>(null);
   const shown = icon && icon.url !== failed ? icon : null;
   return (

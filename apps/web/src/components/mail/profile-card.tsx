@@ -58,8 +58,9 @@ export function ProfileName({
 }: {
   address: Address;
   /**
-   * 差出人の確認結果 (差出人のときだけ)。アイコンに BIMI のロゴやサイトのアイコンを使ってよいかに使う。
-   * 宛先など確認結果の無い相手は、Gravatar (設定でオンのとき) だけを使う。
+   * 差出人の確認結果 (差出人のときだけ渡す。まだ無ければ null)。アイコンにサイトのアイコンを
+   * 使ってよいかなどに使う。渡さなければ宛先などの相手として、証明書で確かめた BIMI のロゴと
+   * Gravatar だけを使う。
    */
   check?: SenderCheck | null;
   /** 「名前 <アドレス>」の形で出す。false なら名前だけ (無ければアドレス)。 */
@@ -104,6 +105,7 @@ export function ProfileName({
         <SenderAvatar
           address={address}
           check={check}
+          contact={check === undefined}
           // 開いたときだけ探す (名前を並べただけでは取りに行かない)。
           enabled={senderIconInProfile && open}
           className="size-11 text-base"
@@ -222,7 +224,7 @@ export function ProfileNames({
   ...actions
 }: {
   addresses: Address[];
-  /** 差出人の確認結果。先頭の相手 (差出人) にだけ使う。 */
+  /** 差出人の確認結果。差出人の並びのときだけ渡し、先頭の相手にだけ使う。 */
   check?: SenderCheck | null;
   full?: boolean;
   separator?: string;
@@ -235,7 +237,7 @@ export function ProfileNames({
           {index > 0 && separator}
           <ProfileName
             address={address}
-            check={index === 0 ? check : null}
+            check={index === 0 ? check : undefined}
             full={full}
             {...actions}
           />
