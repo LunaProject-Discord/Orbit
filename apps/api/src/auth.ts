@@ -11,6 +11,7 @@ import {
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, twoFactor } from "better-auth/plugins";
+import { ssoSignIn } from "./lib/sso-sign-in.js";
 import type { SystemMailer } from "./lib/system-mail.js";
 
 /** アプリの名前。認証アプリに出る発行者名と、パスキーの保存先に出る名前になる。 */
@@ -151,6 +152,8 @@ export function createAuth({
         rpName: APP_NAME,
         origin: passkeyOptions.origins,
       }),
+      // IdP (SSO) でのログインの最後の段。サーバーの中からだけ呼ぶ (routes/sso.ts)。
+      ssoSignIn(),
     ],
   });
 }

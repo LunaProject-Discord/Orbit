@@ -32,3 +32,4 @@ export * from "./pop3.js";
 export * from "./recurrence.js";
 export * from "./reminders.js";
 export * from "./sender-auth.js";
+export * from "./sso-oauth.js";

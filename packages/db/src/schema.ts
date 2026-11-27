@@ -146,7 +146,14 @@ export const authAccounts = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("auth_accounts_user_idx").on(t.userId)],
+  (t) => [
+    index("auth_accounts_user_idx").on(t.userId),
+    // 1 つの IdP のアカウントは、1 人の利用者にしか結び付けない。
+    uniqueIndex("auth_accounts_provider_account_idx").on(
+      t.providerId,
+      t.accountId,
+    ),
+  ],
 );
 
 export const verifications = pgTable(
@@ -337,6 +344,56 @@ export const adminPasskeys = pgTable(
     uniqueIndex("admin_passkeys_credential_idx").on(t.credentialID),
   ],
 );
+
+/** IdP のトークン エンドポイントへのクライアントの認証方法。 */
+export const ssoTokenAuthMethod = pgEnum("sso_token_auth_method", [
+  "client_secret_basic",
+  "client_secret_post",
+]);
+
+/**
+ * Orbit のログインに使える外部の IdP (OAuth2 / OpenID Connect)。管理者が管理画面で登録する。
+ * 利用者と IdP のアカウントの結び付きは auth_accounts (provider_id = "sso:<この ID>"、
+ * account_id = IdP の利用者 ID) に入れる。
+ */
+export const ssoProviders = pgTable("sso_providers", {
+  id: id(),
+  /** ログイン画面のボタンに出す名前。 */
+  name: text().notNull(),
+  clientId: text().notNull(),
+  /** クライアント シークレット。CREDENTIALS_ENCRYPTION_KEY で暗号化して保存する。 */
+  clientSecretEncrypted: text().notNull(),
+  /** OpenID Connect の設定の URL (…/.well-known/openid-configuration)。null なら下の 3 つを使う。 */
+  discoveryUrl: text(),
+  authorizationUrl: text(),
+  tokenUrl: text(),
+  userInfoUrl: text(),
+  /** 求める権限 (空白区切り)。 */
+  scopes: text().notNull(),
+  /** プロフィールの、利用者 ID・メールアドレス・名前が入っている項目の名前。 */
+  subjectClaim: text().notNull().default("sub"),
+  emailClaim: text().notNull().default("email"),
+  nameClaim: text().notNull().default("name"),
+  tokenAuthMethod: ssoTokenAuthMethod()
+    .notNull()
+    .default("client_secret_basic"),
+  /** PKCE を使う (対応していない IdP のときだけ false)。 */
+  usePkce: boolean().notNull().default(true),
+  /** 初めてログインした人の Orbit のアカウントを自動で作る。 */
+  allowSignUp: boolean().notNull().default(false),
+  /** 自動で作ってよいメールアドレスのドメイン (小文字)。空なら制限しない。 */
+  allowedDomains: text().array().notNull().default(sql`'{}'::text[]`),
+  /** IdP が返すメールアドレスを信頼し、同じアドレスの利用者に自動で結び付ける。 */
+  trustEmail: boolean().notNull().default(false),
+  /** この IdP でのログインでは、Orbit の 2 段階認証を求めない。 */
+  skipTwoFactor: boolean().notNull().default(false),
+  /** 自動で作った利用者に、初回ログイン後にメールアカウントの追加を案内する。 */
+  suggestMailAccount: boolean().notNull().default(false),
+  /** false ならログイン画面に出さず、ログインもできない (設定は残す)。 */
+  enabled: boolean().notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
 
 export const devicePlatform = pgEnum("device_platform", [
   "web",

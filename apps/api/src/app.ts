@@ -22,6 +22,7 @@ import {
   createSenderIconService,
   defaultIconDeps,
 } from "./lib/sender-icons.js";
+import { createSsoClientResolver } from "./lib/sso-providers.js";
 import type { SystemMailer } from "./lib/system-mail.js";
 import type { BuildInfo, UpdatePolicy } from "./lib/update-policy.js";
 import { accountRoutes } from "./routes/accounts.js";
@@ -51,13 +52,17 @@ import { pushRoutes } from "./routes/push.js";
 import { searchRoutes } from "./routes/search.js";
 import { authFeatureRoutes, securityRoutes } from "./routes/security.js";
 import { sendRoutes } from "./routes/send.js";
-import { senderIconRoutes } from "./routes/sender-icons.js";
+import {
+  ICON_REFRESH_HEADER,
+  senderIconRoutes,
+} from "./routes/sender-icons.js";
 import { serverInfoRoutes } from "./routes/server-info.js";
 import {
   senderIconGravatarAllowed,
   settingsRoutes,
 } from "./routes/settings.js";
 import { signatureRoutes } from "./routes/signatures.js";
+import { ssoRoutes } from "./routes/sso.js";
 import { syncRoutes } from "./routes/sync.js";
 import { unifiedRoutes } from "./routes/unified.js";
 import { webhookRoutes } from "./routes/webhooks.js";
@@ -130,6 +135,7 @@ export function createApp({
         "Authorization",
         "X-Filename",
         AUTH_STATE_HEADER,
+        ICON_REFRESH_HEADER,
       ],
       // ログイン時に Better Auth が返すセッショントークンと、2 段階認証・パスキーの
       // 途中の値 (lib/auth-state.ts) をブラウザから読めるようにする。
@@ -162,11 +168,20 @@ export function createApp({
   // ログイン、ログアウト、セッション取得は Better Auth が処理する。
   // メールアドレスの変更は、パスワードを確かめる /v1/security/email からだけ受け付ける。
   v1.all("/auth/change-email", (c) => c.json({ error: "not_found" }, 404));
+  // IdP (SSO) でのログイン。Better Auth の受け口 (/auth/*) より先に登録する。
+  const ssoClients = createSsoClientResolver({
+    encryptionKey,
+    allowHttp: allowPrivateMailHosts,
+  });
+  v1.route(
+    "/auth/sso",
+    ssoRoutes({ db, auth, encryptionKey, webOrigin, clients: ssoClients }),
+  );
   // Better Auth が Cookie で持つ途中の値は、X-Auth-State ヘッダーで受け渡す。
   v1.on(["GET", "POST"], "/auth/*", async (c) =>
     withAuthStateHeader(await auth.handler(withAuthStateCookie(c.req.raw))),
   );
-  v1.route("/", authFeatureRoutes({ mailEnabled: mailer !== null }));
+  v1.route("/", authFeatureRoutes({ db, mailEnabled: mailer !== null }));
 
   // Microsoft Graph から直接呼ばれる。ログインの代わりに、通知に付く合言葉で確かめる。
   v1.route(
@@ -214,7 +229,16 @@ export function createApp({
   // 管理画面 (/admin) の API。一般の利用者とは別のアカウント・セッションで、利用者のトークンでは通らない。
   v1.route(
     "/admin",
-    adminRoutes({ db, adminAuth, adminSignUpAuth, setupCode, webOrigin }),
+    adminRoutes({
+      db,
+      adminAuth,
+      adminSignUpAuth,
+      setupCode,
+      webOrigin,
+      encryptionKey,
+      allowHttp: allowPrivateMailHosts,
+      ssoClients,
+    }),
   );
 
   const authed = new Hono<AppEnv>();

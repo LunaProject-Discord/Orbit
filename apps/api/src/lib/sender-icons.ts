@@ -42,11 +42,18 @@ type LookupOptions = {
   foundTtl?: number;
   /** 取得に失敗したとき、前に取れていた画像を使い続けるか (標準は使う)。 */
   keepOnError?: boolean;
+  /** 利用者が更新した。REFRESH_MIN_AGE_MS より古ければ、期限内でも取り直す。 */
+  refresh?: boolean;
 };
 /** 見つからなかったことを覚えておく期間。 */
 const MISSING_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 /** 通信の失敗などで分からなかったときに、取り直すまでの期間。 */
 const ERROR_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * 利用者が更新したとき (refresh) に、期限内でも取り直す古さ。これより新しいものは取り直さない
+ * (更新を続けて押されても、相手のサーバーへ何度も問い合わせないため)。
+ */
+export const REFRESH_MIN_AGE_MS = 60 * 60 * 1000;
 
 /** BIMI の証明書 (PEM、中にロゴを含む) の大きさの上限。 */
 const MAX_MARK_CERTIFICATE_BYTES = 256 * 1024;
@@ -625,8 +632,15 @@ export async function fetchFavicon(
 // ---------------------------------------------------------------------------
 
 export type SenderIconService = {
-  /** 差出人のアドレスについて、sources の順に探し、最初に見つかったものを返す。 */
-  find(address: string, sources: IconSource[]): Promise<FoundIcon | null>;
+  /**
+   * 差出人のアドレスについて、sources の順に探し、最初に見つかったものを返す。
+   * refresh は利用者が更新したときで、覚えているものが REFRESH_MIN_AGE_MS より古ければ取り直す。
+   */
+  find(
+    address: string,
+    sources: IconSource[],
+    options?: { refresh?: boolean },
+  ): Promise<FoundIcon | null>;
 };
 
 export function createSenderIconService(
@@ -645,7 +659,14 @@ export function createSenderIconService(
       .select()
       .from(senderIcons)
       .where(eq(senderIcons.key, key));
-    if (cached && cached.expiresAt.getTime() > now()) {
+    const fresh =
+      cached &&
+      cached.expiresAt.getTime() > now() &&
+      !(
+        options.refresh &&
+        now() - cached.fetchedAt.getTime() >= REFRESH_MIN_AGE_MS
+      );
+    if (cached && fresh) {
       return cached.contentType && cached.data
         ? { contentType: cached.contentType, data: cached.data }
         : null;
@@ -667,7 +688,7 @@ export function createSenderIconService(
     ) {
       await db
         .update(senderIcons)
-        .set({ expiresAt: new Date(now() + ttl) })
+        .set({ fetchedAt: new Date(now()), expiresAt: new Date(now() + ttl) })
         .where(eq(senderIcons.key, key));
       return { contentType: cached.contentType, data: cached.data };
     }
@@ -707,7 +728,7 @@ export function createSenderIconService(
   };
 
   return {
-    async find(address, sources) {
+    async find(address, sources, { refresh = false } = {}) {
       const domain = addressDomain(address);
       if (!domain) return null;
       for (const source of sources) {
@@ -718,18 +739,22 @@ export function createSenderIconService(
           image = await cachedLookup(
             `bimi-mark:${domain}`,
             () => fetchBimi(deps, domain),
-            { foundTtl: BIMI_FOUND_TTL_MS, keepOnError: false },
+            { foundTtl: BIMI_FOUND_TTL_MS, keepOnError: false, refresh },
           );
         } else if (source === "gravatar") {
           const hash = gravatarHash(address);
-          image = await cachedLookup(`gravatar:${hash}`, () =>
-            fetchGravatar(deps, hash),
+          image = await cachedLookup(
+            `gravatar:${hash}`,
+            () => fetchGravatar(deps, hash),
+            { refresh },
           );
         } else if (source === "favicon") {
           if (isPersonalMailDomain(domain)) continue;
           const org = organizationalDomain(domain);
-          image = await cachedLookup(`favicon:${org}`, () =>
-            fetchFavicon(deps, org),
+          image = await cachedLookup(
+            `favicon:${org}`,
+            () => fetchFavicon(deps, org),
+            { refresh },
           );
         }
         if (image) return { ...image, source };

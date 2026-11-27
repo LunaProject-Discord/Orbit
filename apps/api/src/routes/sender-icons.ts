@@ -14,6 +14,12 @@ const iconQuery = z.object({
   sources: z.string().max(64).default(""),
 });
 
+/**
+ * 利用者が更新したときに端末が付ける見出し (値は 1)。サーバーが覚えているものも、古ければ取り直す。
+ * URL を変えないのは、取り直した結果でブラウザーの控え (同じ URL) を置き換えるため。
+ */
+export const ICON_REFRESH_HEADER = "X-Icon-Refresh";
+
 /** 端末も 1 日は覚えておく (見つからなかった応答も同じ)。 */
 const CACHE_CONTROL = "private, max-age=86400";
 
@@ -35,6 +41,7 @@ export function senderIconRoutes({
 
   app.get("/", zValidator("query", iconQuery), async (c) => {
     const { address, sources } = c.req.valid("query");
+    const refresh = c.req.header(ICON_REFRESH_HEADER) === "1";
     let wanted = [
       ...new Set(
         sources
@@ -50,7 +57,10 @@ export function senderIconRoutes({
     }
     let image: Awaited<ReturnType<SenderIconService["find"]>> = null;
     try {
-      image = wanted.length > 0 ? await icons.find(address, wanted) : null;
+      image =
+        wanted.length > 0
+          ? await icons.find(address, wanted, { refresh })
+          : null;
     } catch (error) {
       console.error("差出人のアイコンを取得できませんでした", error);
       return c.body(null, 204, { "cache-control": "no-store" });

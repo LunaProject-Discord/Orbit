@@ -355,15 +355,22 @@
     {
       "idx": 50,
       "version": "7",
-      "when": 1795800360156,
-      "tag": "0050_calendar_notifications",
+      "when": 1795799920863,
+      "tag": "0050_sso_providers",
       "breakpoints": true
     },
     {
       "idx": 51,
       "version": "7",
-      "when": 1795800871139,
-      "tag": "0051_calendar_notifications_delivery",
+      "when": 1795800999554,
+      "tag": "0051_admin_vouched_emails",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1795802389151,
+      "tag": "0052_calendar_notifications",
       "breakpoints": true
     }
   ]
