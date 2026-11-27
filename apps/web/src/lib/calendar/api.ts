@@ -180,6 +180,27 @@ export async function subscribeCalendar(input: {
   return ((await response.json()) as { calendar: Calendar }).calendar;
 }
 
+/**
+ * iCloud か一般の CalDAV のアカウントを足す (カレンダーだけのアカウント)。サーバーが接続を確かめてから作る。
+ * iCloud で同じ Apple ID のメールのアカウントがあれば、そのアカウントでカレンダーをオンにする (merged)。
+ * 失敗すると ApiError (body.message に理由)。カレンダーは同期ワーカーが取り込んでから現れる。
+ */
+export async function createCaldavAccount(
+  input:
+    | { provider: "icloud"; appleId: string; password: string }
+    | { provider: "generic"; url: string; username: string; password: string },
+): Promise<{ accountId: string; merged: boolean }> {
+  const response = await apiFetch("/v1/accounts/caldav", {
+    method: "POST",
+    body: input,
+  });
+  const body = (await response.json()) as {
+    account: { id: string };
+    merged: boolean;
+  };
+  return { accountId: body.account.id, merged: body.merged };
+}
+
 /** 購読を今すぐ取得し直す。 */
 export async function refreshCalendar(id: string): Promise<Calendar> {
   const response = await apiFetch(`/v1/calendars/${id}/refresh`, {

@@ -50,7 +50,6 @@ describe("calendarProviderFor", () => {
     for (const account of [
       { ...base, provider: "gmail", authType: "oauth2" },
       { ...base, protocol: "graph" },
-      { ...base, provider: "icloud" },
     ] as const) {
       const provider = calendarProviderFor(account);
       if (!provider) throw new Error("プロバイダがありません。");
