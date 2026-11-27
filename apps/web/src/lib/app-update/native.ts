@@ -5,7 +5,7 @@
  * ブラウザーでは使わない (Web 版はサービスワーカーが新しい版を取得する)。
  */
 
-import { isDesktopApp } from "@/lib/desktop/app";
+import { isDesktopApp, listenDesktop } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
 import type { ManifestFile } from "./manifest";
 
@@ -22,6 +22,22 @@ export type NativeUpdateInfo = {
   pending: string | null;
 };
 
+/** 画面の取得の進み具合。done と total は、一覧のファイルの大きさの合計 (バイト)。 */
+export type DownloadProgress = { version: string; done: number; total: number };
+
+/** アプリ側が取得の進み具合を送るイベント (web_bundle.rs、AppUpdatePlugin.java と合わせる)。 */
+export const DOWNLOAD_PROGRESS_EVENT = "app-update://progress";
+
+function isProgress(value: unknown): value is DownloadProgress {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.version === "string" &&
+    typeof v.done === "number" &&
+    typeof v.total === "number"
+  );
+}
+
 export type NativeUpdater = {
   platform: "desktop" | "android";
   info(): Promise<NativeUpdateInfo>;
@@ -33,6 +49,11 @@ export type NativeUpdater = {
     baseUrl: string;
     files: ManifestFile[];
   }): Promise<void>;
+  /**
+   * 取得の進み具合 (バイト数) を受け取る。戻り値の関数で解除する。
+   * 古いアプリは送らないので、届かないこともある。
+   */
+  onProgress(listener: (progress: DownloadProgress) => void): () => void;
   /** いまの画面が問題なく起動したことを伝える (伝えないまま終わると、次は前の版に戻す)。 */
   ready(): Promise<void>;
   /** 取得済みの版にすぐ切り替える (デスクトップ版は再起動、スマホアプリは画面を読み込み直す)。 */
@@ -87,6 +108,10 @@ const desktopUpdater: NativeUpdater = {
   info: async () => normalizeInfo(await desktop("app_update_info")),
   fetchManifest: (url) => desktop<string>("app_update_fetch_manifest", { url }),
   download: (options) => desktop("app_update_download", options),
+  onProgress: (listener) =>
+    listenDesktop<unknown>(DOWNLOAD_PROGRESS_EVENT, (payload) => {
+      if (isProgress(payload)) listener(payload);
+    }),
   ready: () => desktop("app_update_ready"),
   apply: () => desktop("app_update_apply"),
 };
@@ -101,6 +126,10 @@ type AppUpdatePlugin = {
   }): Promise<void>;
   ready(): Promise<void>;
   apply(): Promise<void>;
+  addListener(
+    event: "progress",
+    listener: (progress: unknown) => void,
+  ): Promise<{ remove(): Promise<void> }>;
 };
 
 // Capacitor のプラグインは Proxy なので、Promise の結果として直接返さずオブジェクトに包む (lib/native/app.ts と同じ)。
@@ -118,6 +147,27 @@ const androidUpdater: NativeUpdater = {
   fetchManifest: async (url) =>
     (await (await loadPlugin()).AppUpdate.fetchManifest({ url })).text,
   download: async (options) => (await loadPlugin()).AppUpdate.download(options),
+  onProgress: (listener) => {
+    let cancelled = false;
+    let remove: (() => void) | null = null;
+    void loadPlugin()
+      .then(({ AppUpdate }) =>
+        AppUpdate.addListener("progress", (payload) => {
+          if (isProgress(payload)) listener(payload);
+        }),
+      )
+      .then((handle) => {
+        if (cancelled) void handle.remove();
+        else remove = () => void handle.remove();
+      })
+      .catch(() => {
+        // 受け取れなければ、進み具合のバーを出さないだけ。
+      });
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
+  },
   ready: async () => (await loadPlugin()).AppUpdate.ready(),
   apply: async () => (await loadPlugin()).AppUpdate.apply(),
 };

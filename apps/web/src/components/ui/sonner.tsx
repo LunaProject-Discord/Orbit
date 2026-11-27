@@ -39,6 +39,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          // sonner の既定 (356px) では、ボタンの付いた知らせの文が何行にも折り返すので広げる。
+          // 狭い画面では、左右に 16px ずつ空けた幅に収める。
+          "--width": "min(480px, calc(100vw - 32px))",
         } as React.CSSProperties
       }
       toastOptions={{
