@@ -2,6 +2,7 @@
 
 import {
   DownloadIcon,
+  ExternalLinkIcon,
   FileArchiveIcon,
   FileAudioIcon,
   FileIcon,
@@ -15,6 +16,8 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Hint } from "@/components/hint";
+import { PdfPreview } from "@/components/mail/pdf-preview";
+import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,10 +34,14 @@ import {
   attachmentKind,
   type Preview,
   previewOf,
+  safeMimeType,
 } from "@/lib/attachments";
 import { saveFileDesktop } from "@/lib/desktop/app";
 import { formatSize } from "@/lib/format";
+import { isNativeApp } from "@/lib/native/app";
+import { openFileNative, saveFileNative } from "@/lib/native/files";
 import { fetchAttachment } from "@/lib/offline";
+import { type PdfPreviewMethod, pdfPreviewMethod } from "@/lib/pdf-preview";
 import { cn } from "@/lib/utils";
 
 const KIND_STYLE: Record<AttachmentKind, { icon: ReactNode; tone: string }> = {
@@ -63,12 +70,16 @@ const KIND_STYLE: Record<AttachmentKind, { icon: ReactNode; tone: string }> = {
 const nameOf = (file: Attachment) => file.filename || "(名前なし)";
 
 /**
- * ファイルとして保存する。中身は差出人が自由に決められるので、種類は付けずに渡し、
- * ブラウザーがこのアプリのページとして開くことのないようにする。
+ * ファイルとして保存する。デスクトップ版 → スマホアプリ → ブラウザーの方法の順に試す。
+ * アプリでは保存先を選ぶ画面を出して保存する。頼めなければ (古いアプリ) ブラウザーと同じ方法で。
+ * ブラウザーには、中身は差出人が自由に決められるので種類は付けずに渡し、
+ * このアプリのページとして開くことのないようにする。
+ * スマホアプリの保存に失敗したときは例外を投げる (呼び出し側が知らせる)。
  */
-async function saveBlob(blob: Blob, filename: string) {
-  // デスクトップ版では、保存先を選ぶ画面を出して保存する。頼めなければ (古いアプリ) ブラウザーと同じ方法で。
+async function saveBlob(blob: Blob, filename: string, mimeType: string) {
   if ((await saveFileDesktop(blob, filename)) !== null) return;
+  // Android の WebView は <a download> を保存できないので、アプリ側に渡す。
+  if ((await saveFileNative(blob, filename, mimeType)) !== null) return;
   const url = URL.createObjectURL(
     new Blob([blob], { type: "application/octet-stream" }),
   );
@@ -85,9 +96,18 @@ async function saveBlob(blob: Blob, filename: string) {
 type Opened = {
   file: Attachment;
   preview: Preview;
-  /** 取得できたら入る。text は文字、それ以外は blob の URL。 */
-  content: { url: string } | { text: string } | null;
+  /** 取得できたら入る。text は文字、それ以外は blob とその URL。 */
+  content: { url: string; blob: Blob } | { text: string } | null;
 };
+
+/** いまの環境での PDF の表示方法 (lib/pdf-preview.ts)。 */
+function currentPdfMethod(): PdfPreviewMethod {
+  return pdfPreviewMethod({
+    pdfViewerEnabled:
+      typeof navigator === "undefined" ? undefined : navigator.pdfViewerEnabled,
+    nativeApp: isNativeApp(),
+  });
+}
 
 type Props = {
   messageId: string;
@@ -164,9 +184,65 @@ export function MessageAttachments({
     }
   }
 
+  /** 取得した実体をアプリ側へ渡している間も、取得中と同じく印を出して押せなくする。 */
+  async function whileBusy(file: Attachment, task: () => Promise<void>) {
+    const { signal } = abort.current;
+    setBusy((current) => new Set(current).add(file.id));
+    try {
+      await task();
+    } finally {
+      if (!signal.aborted) {
+        setBusy((current) => {
+          const next = new Set(current);
+          next.delete(file.id);
+          return next;
+        });
+      }
+    }
+  }
+
   async function save(file: Attachment) {
     const blob = await load(file);
-    if (blob) void saveBlob(blob, file.filename || "attachment");
+    if (!blob) return;
+    await whileBusy(file, async () => {
+      try {
+        await saveBlob(blob, file.filename || "attachment", safeMimeType(file));
+      } catch {
+        showNotice(`「${nameOf(file)}」を保存できませんでした。`);
+      }
+    });
+  }
+
+  /**
+   * スマホアプリで、対応するほかのアプリ (PDF ビューアーなど) で開く。
+   * 古いアプリで頼めなければ fallback (保存など) を行う。
+   */
+  async function openExternally(file: Attachment, fallback?: () => void) {
+    const blob = await load(file);
+    if (!blob) return;
+    await whileBusy(file, async () => {
+      try {
+        const opened = await openFileNative(
+          blob,
+          file.filename || "attachment",
+          safeMimeType(file),
+        );
+        if (opened === false) {
+          showNotice(
+            `「${nameOf(file)}」を開けるアプリが見つかりませんでした。保存してからお試しください。`,
+          );
+        } else if (opened === null) {
+          if (fallback) fallback();
+          else {
+            showNotice(
+              "アプリを最新の版に更新すると、別のアプリで開けるようになります。",
+            );
+          }
+        }
+      } catch {
+        showNotice(`「${nameOf(file)}」を別のアプリで開けませんでした。`);
+      }
+    });
   }
 
   async function saveAll() {
@@ -176,7 +252,10 @@ export function MessageAttachments({
   async function open(file: Attachment) {
     const preview = previewOf(file);
     if (!preview) {
-      await save(file);
+      // スマホアプリでは、画面の中で表示できないファイルは、対応するほかのアプリで開く
+      // (スマホで添付を押したときのふつうの動き)。保存は隣のボタンで行う。
+      if (isNativeApp()) await openExternally(file, () => void save(file));
+      else await save(file);
       return;
     }
     setOpened({ file, preview, content: null });
@@ -186,6 +265,7 @@ export function MessageAttachments({
       : preview.kind === "text"
         ? { text: await blob.text() }
         : {
+            blob,
             url: URL.createObjectURL(
               new Blob([blob], {
                 type: preview.kind === "pdf" ? "application/pdf" : preview.type,
@@ -204,6 +284,8 @@ export function MessageAttachments({
 
   if (files.length === 0) return null;
   const total = files.reduce((sum, file) => sum + file.size, 0);
+  /** スマホアプリでは、プレビューできないファイルのカードは「別のアプリで開く」になる。 */
+  const nativeApp = isNativeApp();
 
   return (
     <section
@@ -262,7 +344,11 @@ export function MessageAttachments({
                   >
                     {nameOf(file)}
                     <span className="sr-only">
-                      {previewable ? " をプレビュー" : " を保存"}
+                      {previewable
+                        ? " をプレビュー"
+                        : nativeApp
+                          ? " を別のアプリで開く"
+                          : " を保存"}
                     </span>
                   </button>
                 </Hint>
@@ -276,9 +362,10 @@ export function MessageAttachments({
                   variant="ghost"
                   size="icon-sm"
                   aria-label={`${nameOf(file)} を保存`}
-                  // プレビューできないファイルはカード自体が保存のボタンなので、重複させない。
-                  aria-hidden={previewable ? undefined : true}
-                  tabIndex={previewable ? undefined : -1}
+                  // プレビューできないファイルはカード自体が保存のボタンなので、重複させない
+                  // (スマホアプリではカードが「別のアプリで開く」なので、保存はこのボタンで行う)。
+                  aria-hidden={previewable || nativeApp ? undefined : true}
+                  tabIndex={previewable || nativeApp ? undefined : -1}
                   disabled={loading}
                   onClick={() => void save(file)}
                   className="relative"
@@ -303,21 +390,40 @@ export function MessageAttachments({
         }}
       >
         {opened && (
-          <DialogContent className="flex h-[min(90dvh,56rem)] w-[min(96vw,72rem)] max-w-none flex-col gap-3 sm:max-w-none">
+          <DialogContent
+            // スマホ幅では、画面いっぱいに広げて中身 (PDF など) を少しでも大きく見せる。
+            className="flex h-[min(90dvh,56rem)] w-[min(96vw,72rem)] max-w-none flex-col gap-3 max-sm:h-dvh max-sm:w-full max-sm:rounded-none max-sm:px-3 max-sm:pt-[max(0.75rem,env(safe-area-inset-top))] max-sm:pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:max-w-none"
+          >
             <DialogHeader className="pr-10">
               <DialogTitle className="truncate leading-normal">
                 {nameOf(opened.file)}
               </DialogTitle>
-              <DialogDescription className="flex items-center gap-2">
+              <DialogDescription className="flex flex-wrap items-center gap-2">
                 {formatSize(opened.file.size)}
                 <Button
                   variant="outline"
                   size="xs"
+                  disabled={busy.has(opened.file.id)}
                   onClick={() => void save(opened.file)}
                 >
                   <DownloadIcon />
                   保存
                 </Button>
+                {nativeApp && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    disabled={busy.has(opened.file.id)}
+                    onClick={() => void openExternally(opened.file)}
+                  >
+                    {busy.has(opened.file.id) ? (
+                      <Spinner />
+                    ) : (
+                      <ExternalLinkIcon />
+                    )}
+                    別のアプリで開く
+                  </Button>
+                )}
               </DialogDescription>
             </DialogHeader>
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md border bg-muted/30">
@@ -330,6 +436,12 @@ export function MessageAttachments({
                 <pre className="size-full overflow-auto whitespace-pre-wrap break-words p-4 text-sm">
                   {opened.content.text}
                 </pre>
+              ) : opened.preview.kind === "pdf" &&
+                currentPdfMethod() === "pdfjs" ? (
+                <PdfPreview
+                  blob={opened.content.blob}
+                  title={nameOf(opened.file)}
+                />
               ) : opened.preview.kind === "pdf" ? (
                 <iframe
                   title={nameOf(opened.file)}

@@ -129,6 +129,57 @@ export function previewOf(
   return null;
 }
 
+/**
+ * ファイルを端末へ渡すとき (保存、別のアプリで開く) に付ける種類。拡張子から選び、
+ * 拡張子で決まらなければ、メールに書かれた種類が下の一覧にあるときだけ使う。
+ * メールに書かれた種類は差出人が自由に決められるので、そのままは信用しない
+ * (HTML や Android のアプリのパッケージとして扱われると困る)。分からなければ application/octet-stream。
+ */
+const SAFE_TYPES_BY_EXTENSION: Record<string, string> = {
+  ...PREVIEW_IMAGE_TYPES,
+  heic: "image/heic",
+  heif: "image/heif",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  log: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  json: "application/json",
+  ics: "text/calendar",
+  eml: "message/rfc822",
+  rtf: "application/rtf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  zip: "application/zip",
+  gz: "application/gzip",
+  "7z": "application/x-7z-compressed",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+};
+
+const SAFE_TYPES = new Set(Object.values(SAFE_TYPES_BY_EXTENSION));
+
+export const FALLBACK_MIME_TYPE = "application/octet-stream";
+
+export function safeMimeType(file: FileInfo): string {
+  const byExtension = SAFE_TYPES_BY_EXTENSION[extensionOf(file.filename)];
+  if (byExtension) return byExtension;
+  const type = baseType(file);
+  if (type === "image/jpg") return "image/jpeg";
+  return SAFE_TYPES.has(type) ? type : FALLBACK_MIME_TYPE;
+}
+
 /** Content-ID の前後の <> を取り除く (IMAP は <> 付き、Microsoft Graph は無しで返す)。 */
 export function normalizeContentId(value: string): string {
   return value.trim().replace(/^</, "").replace(/>$/, "");
