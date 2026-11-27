@@ -4,7 +4,7 @@
   "private": true,
   "description": "Orbit Mail のスマホアプリ (Capacitor)。apps/web の静的出力をアプリに同梱する。",
   "scripts": {
-    "build:web": "pnpm --filter @orbit/web build",
+    "build:web": "pnpm --filter @orbit/web... build",
     "sync": "cap sync android",
     "android:prepare": "pnpm build:web && cap sync android",
     "android:open": "cap open android",

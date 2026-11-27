@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm --filter @orbit/web dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "pnpm --filter @orbit/web build",
+    "beforeBuildCommand": "pnpm --filter @orbit/web... build",
     "frontendDist": "../../web/out"
   },
   "app": {

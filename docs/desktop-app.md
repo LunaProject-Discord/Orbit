@@ -134,7 +134,7 @@ pnpm --filter @orbit/desktop desktop:build
 
 PowerShell で接続先を渡すときは、先に `$env:NEXT_PUBLIC_API_URL = "https://orbit.example.com"` を実行します。
 
-Rust 側のテストは `apps/desktop/src-tauri` で `cargo test` です (先に `pnpm --filter @orbit/web build` で `apps/web/out` を作っておくか、空の `apps/web/out` フォルダーを作っておきます)。
+Rust 側のテストは `apps/desktop/src-tauri` で `cargo test` です (先に `pnpm --filter @orbit/web... build` で `apps/web/out` を作っておくか、空の `apps/web/out` フォルダーを作っておきます)。
 
 ## 3. 版を付けて出す
 
