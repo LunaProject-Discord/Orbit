@@ -48,8 +48,7 @@ describe("calendarProviderFor", () => {
     const ctx = makeProviderContext();
     const calendar = makeCalendarRow();
     for (const account of [
-      // Google (gmail かつ oauth2) は実装済みなので外した (google/google.test.ts で確かめる)。
-      { ...base, protocol: "graph" },
+      // Google と Microsoft は実装済みなので外した (google/・microsoft/ のテストで確かめる)。
       { ...base, provider: "icloud" },
     ] as const) {
       const provider = calendarProviderFor(account);

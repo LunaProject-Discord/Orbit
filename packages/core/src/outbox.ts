@@ -252,4 +252,5 @@ export type EventOutboxOperation =
 export const CALENDAR_WRITEBACK_SOURCES: readonly string[] = [
   // 例: "google",
   "google",
+  "microsoft",
 ];
