@@ -11,6 +11,11 @@ export type CalendarGroup = {
   /** アカウントのカレンダーの同期に失敗した理由 (calendarError)。無ければ null。 */
   error: string | null;
   calendars: Calendar[];
+  /**
+   * 見出しの左に出すアカウントの印 (メールのサイドバーと同じ AccountMark)。アカウントの
+   * まとまりでなければ null (種類ごとのアイコンを出す)。
+   */
+  mark?: { account: Account; accounts: readonly Account[] } | null;
 };
 
 const PROVIDER_LABEL: Record<Calendar["source"], string> = {
@@ -66,11 +71,16 @@ export function groupCalendars(
     groups.push({
       key: account.id,
       name: account.displayName || account.email,
-      sub: [account.email, source ? PROVIDER_LABEL[source] : ""]
+      // 名前が無い (アドレスを名前に出す) ときは、アドレスを 2 度出さない。
+      sub: [
+        account.displayName ? account.email : "",
+        source ? PROVIDER_LABEL[source] : "",
+      ]
         .filter(Boolean)
         .join(" · "),
       error,
       calendars: sortCalendars(list ?? []),
+      mark: { account, accounts },
     });
   }
   // アカウントの一覧に無い (読み込み前など) カレンダー。

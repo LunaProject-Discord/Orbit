@@ -1053,7 +1053,7 @@ export function CalendarApp({ user }: { user: User }) {
           />
           <aside
             className={cn(
-              "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-[312px] max-w-[85vw] border-r transition-transform",
+              "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-72 max-w-[85vw] border-r transition-transform",
               sidebarOpen ? "translate-x-0" : "invisible -translate-x-full",
             )}
           >
@@ -1062,7 +1062,7 @@ export function CalendarApp({ user }: { user: User }) {
         </>
       )}
       {showSidebar && (
-        <aside className="w-[312px] shrink-0 border-r">{sidebar}</aside>
+        <aside className="w-64 shrink-0 border-r">{sidebar}</aside>
       )}
       <main className="relative flex min-w-0 flex-1 flex-col">
         <span
