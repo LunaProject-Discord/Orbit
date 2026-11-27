@@ -109,6 +109,11 @@ export type EventDelta = {
   events: RemoteEvent[];
   /** 相手側で消えた予定の remoteId。 */
   deletedRemoteIds: string[];
+  /**
+   * 相手側にあるが、このページでは行にできなかった予定の remoteId (CalDAV の読めない iCalendar など)。
+   * 全件 (full) のとき、土台はこれを「出てきた」ものとして扱い、既存の行を消さない。省略できる。
+   */
+  keptRemoteIds?: string[];
   /** まだ続きがある。次の呼び出しに cursor.pageCursor として渡す (保存しない)。 */
   nextPageCursor: string | null;
   /** 最後のページでだけ返す。calendars.syncToken に保存する。 */

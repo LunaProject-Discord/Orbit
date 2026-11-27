@@ -298,7 +298,7 @@ function CaldavFields({
       {service === "generic" && (
         <Input
           autoFocus
-          type="url"
+          type="text"
           inputMode="url"
           aria-label="サーバーの URL"
           placeholder="サーバーの URL (例: https://dav.example.com/)"
