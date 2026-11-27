@@ -304,6 +304,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@orbit/core':
+        specifier: workspace:*
+        version: link:../core
       drizzle-orm:
         specifier: ^0.45.4
         version: 0.45.4(@types/pg@8.23.1)(kysely@0.29.9)(pg@8.23.1)

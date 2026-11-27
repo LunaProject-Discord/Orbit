@@ -296,6 +296,14 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
         startTimeZone: null,
         endTimeZone: null,
       },
+      // 8b: Google のカレンダーにある予定は、サービスが更新する (メールからは書かない)。
+      dtstamp: null,
+      sender: { email: "", matches: false, auth: "pending" },
+      action: "none",
+      actionState: "blocked",
+      blocked: "server_calendar",
+      confirmReason: null,
+      calendars: [],
     });
     // メモ (DESCRIPTION) は返さない。
     expect(JSON.stringify(body)).not.toContain("メモは返さない");

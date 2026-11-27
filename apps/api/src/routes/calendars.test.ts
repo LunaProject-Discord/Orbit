@@ -8,15 +8,18 @@ import {
   type CalendarSyncNotification,
   CHANNEL_CALENDAR_SYNC,
   HOLIDAYS_VERSION,
+  type ImipPlan,
 } from "@orbit/core";
 import {
   accounts,
   calendars,
   createDb,
   type Database,
+  type EventWithExtras,
   eventAttendees,
   eventConflicts,
   events,
+  type ImipEnqueueContext,
   outbox,
   users,
 } from "@orbit/db";
@@ -2115,6 +2118,950 @@ describe.skipIf(!adminUrl)("予定の API", () => {
         time: { allDay: true, startDate: "2027-03-06", endDate: "2027-03-07" },
       });
       expect((plain.body.event as Json).organizer).toBeNull();
+    });
+  });
+
+  describe("招待メール (段取り 8b)", () => {
+    let mailerId: string;
+    /** 送信できる (SMTP あり)。サイドバーの 2 番目。 */
+    let sendId: string;
+    /** 受信専用。サイドバーの先頭。 */
+    let receiveId: string;
+    /** カレンダーだけの CalDAV アカウント。 */
+    let davId: string;
+    let localId: string;
+    let caldavMailId: string;
+    let caldavUnknownId: string;
+    let icsId: string;
+    let mailApp: Hono<AppEnv>;
+    type ImipCall = {
+      plan: ImipPlan;
+      rows: EventWithExtras[];
+      context: ImipEnqueueContext;
+    };
+    const imipCalls: ImipCall[] = [];
+    const send = (method: string, path: string, body?: unknown) =>
+      call(method, path, body, mailApp);
+    const time = (day: string) => ({
+      allDay: false,
+      startAt: `2027-04-${day}T10:00:00+09:00`,
+      endAt: `2027-04-${day}T11:00:00+09:00`,
+      startTimeZone: "Asia/Tokyo",
+    });
+    const people = (...emails: string[]) =>
+      emails.map((email) => ({ email, name: null }));
+    /** 計画の [METHOD, reason, 宛先] (宛先はアドレス順)。 */
+    const messagesOf = (plan: ImipPlan) =>
+      plan.messages.map((message) => [
+        message.method,
+        message.reason,
+        message.to.map((to) => to.address).sort(),
+      ]);
+    /** 予定の参加者の [アドレス, 出欠, repliedAt] (アドレス順)。 */
+    const attendeeStatus = (body: Json) =>
+      ((body.event as Json).attendees as Json[])
+        .map((item) => [item.email, item.status, item.repliedAt])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    const createInvite = async (
+      calendarId: string,
+      attendees: string[],
+      extra: Json = {},
+    ) => {
+      const created = await send("POST", "/events", {
+        calendarId,
+        summary: "企画会議",
+        time: time("05"),
+        attendees: people(...attendees),
+        ...extra,
+      });
+      expect(created.status).toBe(201);
+      return created.body.event as EventJson;
+    };
+    /** boss@example.com が主催し、address が招待された予定を Orbit 内のカレンダーに入れる。 */
+    const seedInvitation = async (address: string) => {
+      const id = randomUUID();
+      await db.insert(events).values({
+        id,
+        userId: mailerId,
+        calendarId: localId,
+        uid: `${id}@remote.example.com`,
+        summary: "招待された会議",
+        startAt: new Date("2027-04-10T01:00:00Z"),
+        endAt: new Date("2027-04-10T02:00:00Z"),
+        startTimeZone: "Asia/Tokyo",
+        organizer: { email: "boss@example.com", self: false },
+        fieldUpdatedAt: {},
+      });
+      await db.insert(eventAttendees).values([
+        { eventId: id, email: "boss@example.com", status: "accepted" },
+        { eventId: id, email: address, self: true },
+      ]);
+      return id;
+    };
+
+    beforeAll(async () => {
+      const [user] = await db
+        .insert(users)
+        .values({ email: "mailer@example.com", name: "mailer" })
+        .returning({ id: users.id });
+      mailerId = user?.id as string;
+      const insertAccount = async (
+        values: Partial<typeof accounts.$inferInsert>,
+      ) => {
+        const [row] = await db
+          .insert(accounts)
+          .values({
+            userId: mailerId,
+            email: "x@example.com",
+            provider: "generic",
+            authType: "password",
+            username: "x@example.com",
+            credentialsEncrypted: "x",
+            ...values,
+          })
+          .returning({ id: accounts.id });
+        return row?.id as string;
+      };
+      receiveId = await insertAccount({
+        email: "recv@example.com",
+        username: "recv@example.com",
+        sortOrder: 0,
+      });
+      sendId = await insertAccount({
+        email: "me@example.com",
+        username: "me@example.com",
+        displayName: "わたし",
+        smtpHost: "smtp.example.com",
+        sortOrder: 1,
+      });
+      davId = await insertAccount({
+        email: "me@dav.example.com",
+        username: "me@dav.example.com",
+        mailEnabled: false,
+        calendarEnabled: true,
+        sortOrder: 2,
+      });
+      const insertCalendar = async (
+        values: Partial<typeof calendars.$inferInsert>,
+      ) => {
+        const [row] = await db
+          .insert(calendars)
+          .values({
+            userId: mailerId,
+            name: "カレンダー",
+            source: "local",
+            timeZone: "Asia/Tokyo",
+            ...values,
+          })
+          .returning({ id: calendars.id });
+        return row?.id as string;
+      };
+      localId = await insertCalendar({ source: "local" });
+      caldavMailId = await insertCalendar({
+        source: "caldav",
+        accountId: davId,
+        remoteId: "https://dav.example.com/mail/",
+        providerState: { autoSchedule: false },
+      });
+      caldavUnknownId = await insertCalendar({
+        source: "caldav",
+        accountId: davId,
+        remoteId: "https://dav.example.com/unknown/",
+        providerState: {},
+      });
+      icsId = await insertCalendar({
+        source: "ics",
+        readOnly: true,
+        url: "https://example.com/feed.ics",
+      });
+      mailApp = new Hono<AppEnv>();
+      mailApp.use(async (c, next) => {
+        c.set("user", {
+          id: mailerId,
+          email: "mailer@example.com",
+          name: "mailer",
+        });
+        await next();
+      });
+      mailApp.route(
+        "/calendars",
+        calendarRoutes({
+          db,
+          writebackSources: ["caldav"],
+          // enqueueImip の中身 (imip_send の行) は送信の担当が確かめる。ここでは呼び方を見る。
+          enqueueImip: async (_tx, plan, rows, context) => {
+            imipCalls.push({ plan, rows: [...rows], context });
+            return {
+              enqueued: plan.messages.length,
+              skipped: null,
+              incomplete: 0,
+              incompleteMessages: [],
+            };
+          },
+        }),
+      );
+    });
+
+    beforeEach(async () => {
+      imipCalls.length = 0;
+      await db.delete(outbox).where(eq(outbox.accountId, davId));
+      await db.delete(outbox).where(eq(outbox.accountId, sendId));
+      await db
+        .delete(eventConflicts)
+        .where(eq(eventConflicts.userId, mailerId));
+    });
+
+    it("カレンダーの応答に scheduling・imipSender・schedulingBlocked が入る", async () => {
+      const list = await send("GET", "");
+      const byId = new Map(
+        (list.body.calendars as Json[]).map((row) => [row.id, row]),
+      );
+      const sender = { accountId: sendId, email: "me@example.com" };
+      expect(byId.get(localId)).toMatchObject({
+        scheduling: "mail",
+        imipAccountId: null,
+        imipSender: sender,
+        schedulingBlocked: null,
+      });
+      // カレンダーだけの CalDAV アカウントは候補に数えず、送信できるアカウントを使う。
+      expect(byId.get(caldavMailId)).toMatchObject({
+        scheduling: "mail",
+        imipSender: sender,
+        schedulingBlocked: null,
+      });
+      expect(byId.get(caldavUnknownId)).toMatchObject({
+        scheduling: "none",
+        schedulingBlocked: "unknown_server",
+      });
+      expect(byId.get(icsId)).toMatchObject({
+        scheduling: "none",
+        imipSender: null,
+        schedulingBlocked: null,
+      });
+    });
+
+    it("PATCH の imipAccountId: 受信専用は 400、ほかの利用者のアカウントは 404、購読は 400", async () => {
+      expect(
+        await send("PATCH", `/${localId}`, { imipAccountId: receiveId }),
+      ).toMatchObject({ status: 400, body: { error: "receive_only" } });
+      const [foreign] = await db
+        .select({ id: accounts.id })
+        .from(accounts)
+        .where(eq(accounts.email, "invitee@gmail.com"));
+      expect(
+        (await send("PATCH", `/${localId}`, { imipAccountId: foreign?.id }))
+          .status,
+      ).toBe(404);
+      expect(
+        await send("PATCH", `/${icsId}`, { imipAccountId: sendId }),
+      ).toMatchObject({ status: 400, body: { error: "imip_unsupported" } });
+      const chosen = await send("PATCH", `/${caldavMailId}`, {
+        imipAccountId: sendId,
+      });
+      expect(chosen.status).toBe(200);
+      expect(chosen.body.calendar).toMatchObject({
+        imipAccountId: sendId,
+        imipSender: { accountId: sendId },
+        scheduling: "mail",
+      });
+      // 選んだアカウントが受信専用になったら、ほかへ進まず none (receive_only)。
+      await db
+        .update(accounts)
+        .set({ smtpHost: null })
+        .where(eq(accounts.id, sendId));
+      try {
+        const list = await send("GET", "");
+        const rows = list.body.calendars as Json[];
+        expect(rows.find((row) => row.id === caldavMailId)).toMatchObject({
+          scheduling: "none",
+          imipSender: null,
+          schedulingBlocked: "receive_only",
+        });
+        // 選んでいないカレンダーは、送信できるアカウントが無いので no_sender。
+        expect(rows.find((row) => row.id === localId)).toMatchObject({
+          scheduling: "none",
+          schedulingBlocked: "no_sender",
+        });
+      } finally {
+        await db
+          .update(accounts)
+          .set({ smtpHost: "smtp.example.com" })
+          .where(eq(accounts.id, sendId));
+      }
+      expect(
+        (await send("PATCH", `/${caldavMailId}`, { imipAccountId: null })).body
+          .calendar,
+      ).toMatchObject({ imipAccountId: null, scheduling: "mail" });
+    });
+
+    it("Orbit 内のカレンダー: 参加者付きの作成で送信元を主催者にし、REQUEST をその場で積む。再送では積まない", async () => {
+      const id = randomUUID();
+      const event = await createInvite(
+        localId,
+        ["alice@example.com", "bob@example.com", "me@example.com"],
+        { id },
+      );
+      expect(event.organizer).toEqual({
+        email: "me@example.com",
+        name: "わたし",
+        self: true,
+      });
+      expect(imipCalls).toHaveLength(1);
+      const [first] = imipCalls;
+      // 主催者自身のアドレスには送らない。
+      expect(messagesOf(first?.plan as ImipPlan)).toEqual([
+        ["REQUEST", "create", ["alice@example.com", "bob@example.com"]],
+      ]);
+      expect(first?.plan.senderAccountId).toBe(sendId);
+      expect(first?.context).toEqual({
+        userId: mailerId,
+        calendarId: localId,
+        eventId: id,
+        baseKey: `event_create:${id}`,
+        defaultTimeZone: "Asia/Tokyo",
+      });
+      expect(first?.rows.map((row) => row.id)).toEqual([id]);
+      expect(first?.rows[0]?.attendees).toHaveLength(3);
+      // 同じ ID の再送は作り直さず、積まない。
+      expect(
+        (
+          await send("POST", "/events", {
+            id,
+            calendarId: localId,
+            summary: "企画会議",
+            time: time("05"),
+            attendees: people("alice@example.com"),
+          })
+        ).status,
+      ).toBe(201);
+      expect(imipCalls).toHaveLength(1);
+      // 参加者の無い予定には主催者を入れず、送らない。
+      const plain = await send("POST", "/events", {
+        calendarId: localId,
+        summary: "ひとり",
+        time: time("06"),
+      });
+      expect((plain.body.event as Json).organizer).toBeNull();
+      expect(imipCalls).toHaveLength(1);
+    });
+
+    it("CalDAV (mail): 計画を event_create の payload に載せ、その場では積まない", async () => {
+      const event = await createInvite(caldavMailId, ["alice@example.com"]);
+      expect(event.organizer).toMatchObject({
+        email: "me@example.com",
+        self: true,
+      });
+      expect(imipCalls).toEqual([]);
+      const rows = await db
+        .select()
+        .from(outbox)
+        .where(eq(outbox.accountId, davId));
+      expect(rows.map((row) => row.kind)).toEqual(["event_create"]);
+      const plan = (rows[0]?.payload as { imip?: ImipPlan }).imip;
+      expect(plan?.senderAccountId).toBe(sendId);
+      expect(messagesOf(plan as ImipPlan)).toEqual([
+        ["REQUEST", "create", ["alice@example.com"]],
+      ]);
+      // 調べが付いていない CalDAV には参加者を付けられない (8a のまま)。
+      expect(
+        await send("POST", "/events", {
+          calendarId: caldavUnknownId,
+          time: time("05"),
+          attendees: people("alice@example.com"),
+        }),
+      ).toMatchObject({ status: 409, body: { error: "no_scheduling" } });
+    });
+
+    it("変更: 時刻は全員に REQUEST して出欠を戻す。題名も REQUEST、通知だけは送らない。足した人と外した人", async () => {
+      const event = await createInvite(localId, [
+        "alice@example.com",
+        "bob@example.com",
+      ]);
+      imipCalls.length = 0;
+      // alice が返事をしていた (メールの REPLY を反映した状態)。
+      await db
+        .update(eventAttendees)
+        .set({
+          status: "accepted",
+          repliedAt: new Date("2026-11-20T00:00:00Z"),
+          replySequence: 0,
+        })
+        .where(
+          and(
+            eq(eventAttendees.eventId, event.id),
+            eq(eventAttendees.email, "alice@example.com"),
+          ),
+        );
+      const moved = await send("PATCH", `/events/${event.id}`, {
+        changes: { time: time("07") },
+      });
+      expect(moved.status).toBe(200);
+      expect(attendeeStatus(moved.body)).toEqual([
+        ["alice@example.com", "needs_action", null],
+        ["bob@example.com", "needs_action", null],
+      ]);
+      expect(imipCalls.map((item) => messagesOf(item.plan))).toEqual([
+        [["REQUEST", "update", ["alice@example.com", "bob@example.com"]]],
+      ]);
+      expect(imipCalls[0]?.context.baseKey).toMatch(
+        new RegExp(`^event_update:${event.id}:time:`),
+      );
+
+      imipCalls.length = 0;
+      await send("PATCH", `/events/${event.id}`, {
+        changes: { summary: "企画会議 (改)" },
+      });
+      await send("PATCH", `/events/${event.id}`, {
+        changes: {
+          reminders: [{ method: "display", minutes: 5 }],
+          useDefaultReminders: false,
+        },
+      });
+      expect(imipCalls.map((item) => messagesOf(item.plan))).toEqual([
+        [["REQUEST", "update", ["alice@example.com", "bob@example.com"]]],
+      ]);
+
+      imipCalls.length = 0;
+      await db
+        .update(eventAttendees)
+        .set({ repliedAt: new Date("2026-11-21T00:00:00Z"), replySequence: 1 })
+        .where(
+          and(
+            eq(eventAttendees.eventId, event.id),
+            eq(eventAttendees.email, "bob@example.com"),
+          ),
+        );
+      const changed = await send("PATCH", `/events/${event.id}`, {
+        changes: { attendees: people("bob@example.com", "carol@example.com") },
+      });
+      expect(changed.status).toBe(200);
+      expect(imipCalls.map((item) => messagesOf(item.plan))).toEqual([
+        [
+          ["REQUEST", "add", ["carol@example.com"]],
+          ["CANCEL", "remove", ["alice@example.com"]],
+        ],
+      ]);
+      // 残った参加者の最後に反映した返事は引き継ぐ。
+      expect(attendeeStatus(changed.body)).toEqual([
+        ["bob@example.com", "needs_action", "2026-11-21T00:00:00.000Z"],
+        ["carol@example.com", "needs_action", null],
+      ]);
+    });
+
+    it("削除と回の削除: 主催者は CANCEL (本文を先に作る)。招待された予定の削除では送らない", async () => {
+      const event = await createInvite(localId, ["alice@example.com"]);
+      imipCalls.length = 0;
+      expect((await send("DELETE", `/events/${event.id}`)).status).toBe(204);
+      expect(imipCalls).toHaveLength(1);
+      const [deleted] = imipCalls;
+      expect(messagesOf(deleted?.plan as ImipPlan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+      ]);
+      expect(deleted?.plan.messages[0]?.content).toContain("METHOD:CANCEL");
+      expect(deleted?.context).toMatchObject({
+        eventId: event.id,
+        baseKey: `event_delete:${event.id}`,
+      });
+
+      // 繰り返しの 1 回を消すと、その回の CANCEL。
+      const weekly = await createInvite(localId, ["alice@example.com"], {
+        recurrence: { rrule: "FREQ=WEEKLY;COUNT=4" },
+      });
+      imipCalls.length = 0;
+      expect(
+        (
+          await send(
+            "DELETE",
+            `/events/${weekly.id}/occurrences/2027-04-12T01:00:00Z`,
+          )
+        ).status,
+      ).toBe(204);
+      expect(imipCalls).toHaveLength(1);
+      expect(imipCalls[0]?.plan.messages).toMatchObject([
+        {
+          method: "CANCEL",
+          scope: "occurrence",
+          reason: "delete",
+          recurrenceId: "2027-04-12T01:00:00Z",
+        },
+      ]);
+      expect(imipCalls[0]?.plan.messages[0]?.content).toContain(
+        "RECURRENCE-ID",
+      );
+
+      // 招待された予定 (自分は参加者) を消しても送らない。
+      const invited = await seedInvitation("me@example.com");
+      imipCalls.length = 0;
+      expect((await send("DELETE", `/events/${invited}`)).status).toBe(204);
+      expect(imipCalls).toEqual([]);
+    });
+
+    it("出欠: 自分の ATTENDEE のアドレスのアカウントから REPLY。アカウントが無ければ notifyBlocked", async () => {
+      const id = await seedInvitation("me@example.com");
+      const respondedAt = new Date(Date.now() - 60_000).toISOString();
+      const replied = await send("POST", `/events/${id}/respond`, {
+        status: "accepted",
+        comment: "伺います",
+        respondedAt,
+      });
+      expect(replied.status).toBe(200);
+      expect(replied.body).toMatchObject({
+        applied: true,
+        notifiesOrganizer: true,
+        notify: "mail",
+        notifyBlocked: null,
+      });
+      expect(imipCalls).toHaveLength(1);
+      expect(imipCalls[0]?.plan).toMatchObject({
+        senderAccountId: sendId,
+        messages: [
+          {
+            method: "REPLY",
+            reason: "respond",
+            to: [{ address: "boss@example.com" }],
+            attendees: ["me@example.com"],
+          },
+        ],
+      });
+      expect(imipCalls[0]?.context.baseKey).toBe(
+        `event_respond:${id}:accepted:${respondedAt}`,
+      );
+      // 同じ返事の再送では積まない。
+      const again = await send("POST", `/events/${id}/respond`, {
+        status: "accepted",
+        respondedAt,
+      });
+      expect(again.body).toMatchObject({ applied: false, notify: "mail" });
+      expect(imipCalls).toHaveLength(1);
+
+      // 自分の ATTENDEE が送信できないアドレス (受信専用のアカウント) なら送らない。
+      const other = await seedInvitation("recv@example.com");
+      const blocked = await send("POST", `/events/${other}/respond`, {
+        status: "declined",
+        respondedAt,
+      });
+      expect(blocked.body).toMatchObject({
+        applied: true,
+        notifiesOrganizer: false,
+        notify: "none",
+        notifyBlocked: "no_sender",
+      });
+      expect(imipCalls).toHaveLength(1);
+    });
+
+    it("送信数の上限を超える変更は 409 invite_limit で、予定も保存しない", async () => {
+      await db.insert(outbox).values({
+        accountId: sendId,
+        kind: "imip_send",
+        payload: {
+          message: {
+            to: Array.from({ length: 199 }, (_, index) => ({
+              address: `p${index}@example.com`,
+            })),
+          },
+          imip: { method: "REQUEST" },
+        },
+        idempotencyKey: `imip:limit:${randomUUID()}`,
+        status: "done",
+      });
+      // 1 時間に 200 件まで。あと 1 件 (199 + 1) は通り、2 件 (199 + 2) は断る
+      // (enqueueImip は差し替えてあるので、通した分は outbox に増えない)。
+      await createInvite(localId, ["one@example.com"]);
+      const id = randomUUID();
+      const refused = await send("POST", "/events", {
+        id,
+        calendarId: localId,
+        time: time("08"),
+        attendees: people("two@example.com", "three@example.com"),
+      });
+      expect(refused).toMatchObject({
+        status: 409,
+        body: { error: "invite_limit" },
+      });
+      expect(await db.select().from(events).where(eq(events.id, id))).toEqual(
+        [],
+      );
+      // 返事 (REPLY) は上限に数えない。
+      const invited = await seedInvitation("me@example.com");
+      expect(
+        (
+          await send("POST", `/events/${invited}/respond`, {
+            status: "tentative",
+            respondedAt: new Date().toISOString(),
+          })
+        ).body,
+      ).toMatchObject({ applied: true, notify: "mail" });
+    });
+
+    it("CalDAV (mail) の変更と削除は event_update / event_delete の payload に計画を載せる", async () => {
+      const event = await createInvite(caldavMailId, ["alice@example.com"]);
+      // 作成の書き戻しが済んだ状態にする。
+      await db
+        .update(events)
+        .set({ remoteId: `https://dav.example.com/mail/${event.id}.ics` })
+        .where(eq(events.id, event.id));
+      await db.delete(outbox).where(eq(outbox.accountId, davId));
+      await send("PATCH", `/events/${event.id}`, {
+        changes: { location: "第二会議室" },
+      });
+      const queued = async () =>
+        (
+          await db
+            .select()
+            .from(outbox)
+            .where(eq(outbox.accountId, davId))
+            .orderBy(asc(outbox.createdAt), asc(outbox.id))
+        ).map((row) => [
+          row.kind,
+          messagesOf((row.payload as { imip: ImipPlan }).imip),
+        ]);
+      expect(await queued()).toEqual([
+        ["event_update", [["REQUEST", "update", ["alice@example.com"]]]],
+      ]);
+      // 削除はまだ書き戻していない変更を取り消し、CANCEL を event_delete に載せる。
+      expect((await send("DELETE", `/events/${event.id}`)).status).toBe(204);
+      expect(await queued()).toEqual([
+        ["event_delete", [["CANCEL", "delete", ["alice@example.com"]]]],
+      ]);
+      expect(imipCalls).toEqual([]);
+    });
+
+    it("M3: CalDAV で参加者を外した直後に消すと、外した人にも取り消しを送る", async () => {
+      const event = await createInvite(caldavMailId, [
+        "alice@example.com",
+        "carol@example.com",
+      ]);
+      await db
+        .update(events)
+        .set({ remoteId: `https://dav.example.com/mail/${event.id}.ics` })
+        .where(eq(events.id, event.id));
+      await db.delete(outbox).where(eq(outbox.accountId, davId));
+      await send("PATCH", `/events/${event.id}`, {
+        changes: { attendees: people("alice@example.com") },
+      });
+      expect((await send("DELETE", `/events/${event.id}`)).status).toBe(204);
+      const [row] = await db
+        .select()
+        .from(outbox)
+        .where(eq(outbox.accountId, davId));
+      expect(row?.kind).toBe("event_delete");
+      const plan = (row?.payload as { imip: ImipPlan }).imip;
+      expect(messagesOf(plan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+        ["CANCEL", "remove", ["carol@example.com"]],
+      ]);
+      // 本文は消す前に作ってある (行が消えるため)。
+      expect(plan.messages[1]?.content).toContain("METHOD:CANCEL");
+    });
+
+    it("M5: 改行や制御文字を含む rrule・会議 URL・回の ID は断る", async () => {
+      const base = {
+        calendarId: localId,
+        summary: "定例",
+        time: time("05"),
+      };
+      for (const recurrence of [
+        { rrule: "FREQ=DAILY\r\nATTENDEE:mailto:victim@example.net" },
+        { rrule: "FREQ=DAILY;X=\u0007" },
+        { rrule: "FREQ=WEEKLY", exdates: ["2027-04-12Tgarbage"] },
+        { rrule: "FREQ=WEEKLY", exdates: ["2027-02-30"] },
+      ]) {
+        expect(
+          (await send("POST", "/events", { ...base, recurrence })).status,
+        ).toBe(400);
+      }
+      expect(
+        (
+          await send("POST", "/events", {
+            ...base,
+            conferenceUrl: "https://meet.example.com/a\r\nATTACH:https://x",
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await send("POST", "/events", {
+            ...base,
+            recurrence: {
+              rrule: "RRULE:FREQ=WEEKLY;BYDAY=MO,-1FR;UNTIL=20271231T000000Z",
+              exdates: ["2027-04-12T01:00:00Z", "2027-04-19T10:00:00+09:00"],
+            },
+            conferenceUrl: "https://meet.example.com/abc?x=1",
+          })
+        ).status,
+      ).toBe(201);
+    });
+
+    it("L2: 取り消しにすると SEQUENCE を上げ、戻すとまた上げて全員に REQUEST", async () => {
+      const event = await createInvite(localId, ["alice@example.com"]);
+      imipCalls.length = 0;
+      const cancelled = await send("PATCH", `/events/${event.id}`, {
+        changes: { status: "cancelled" },
+      });
+      expect(cancelled.status).toBe(200);
+      const [afterCancel] = await db
+        .select({ sequence: events.sequence })
+        .from(events)
+        .where(eq(events.id, event.id));
+      expect(afterCancel?.sequence).toBe(1);
+      expect(messagesOf(imipCalls[0]?.plan as ImipPlan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+      ]);
+      await send("PATCH", `/events/${event.id}`, {
+        changes: { status: "confirmed" },
+      });
+      const [restored] = await db
+        .select({ sequence: events.sequence })
+        .from(events)
+        .where(eq(events.id, event.id));
+      expect(restored?.sequence).toBe(2);
+      expect(messagesOf(imipCalls[1]?.plan as ImipPlan)).toEqual([
+        ["REQUEST", "update", ["alice@example.com"]],
+      ]);
+    });
+
+    it("L5: 1 回で 200 件を超える宛先は invite_too_many (待っても通らない)", async () => {
+      const many = Array.from(
+        { length: 201 },
+        (_, index) => `guest${index}@example.com`,
+      );
+      const created = await send("POST", "/events", {
+        calendarId: localId,
+        summary: "全体会",
+        time: time("05"),
+        attendees: people(...many),
+      });
+      expect(created.status).toBe(409);
+      expect(created.body).toEqual({ error: "invite_too_many" });
+    });
+
+    it("M9: Orbit 内のカレンダーを消すと、主催している予定の取り消しを積んでから消す", async () => {
+      const [calendar] = await db
+        .insert(calendars)
+        .values({
+          userId: mailerId,
+          name: "消すカレンダー",
+          source: "local",
+          timeZone: "Asia/Tokyo",
+        })
+        .returning({ id: calendars.id });
+      const event = await createInvite(calendar?.id as string, [
+        "alice@example.com",
+      ]);
+      imipCalls.length = 0;
+      expect((await send("DELETE", `/${calendar?.id}`)).status).toBe(204);
+      expect(imipCalls).toHaveLength(1);
+      expect(messagesOf(imipCalls[0]?.plan as ImipPlan)).toEqual([
+        ["CANCEL", "delete", ["alice@example.com"]],
+      ]);
+      expect(imipCalls[0]?.context.eventId).toBe(event.id);
+    });
+
+    it("回の変更: その回だけの REQUEST (例外の行を本文に使う)。通知だけなら送らない", async () => {
+      const weekly = await createInvite(localId, ["alice@example.com"], {
+        recurrence: { rrule: "FREQ=WEEKLY;COUNT=4" },
+      });
+      imipCalls.length = 0;
+      const path = `/events/${weekly.id}/occurrences/2027-04-19T01:00:00Z`;
+      await send("PATCH", path, {
+        changes: {
+          reminders: [{ method: "display", minutes: 30 }],
+          useDefaultReminders: false,
+        },
+      });
+      expect(imipCalls).toEqual([]);
+      const moved = await send("PATCH", path, {
+        changes: {
+          time: {
+            allDay: false,
+            startAt: "2027-04-19T15:00:00+09:00",
+            endAt: "2027-04-19T16:00:00+09:00",
+            startTimeZone: "Asia/Tokyo",
+          },
+        },
+      });
+      expect(moved.status).toBe(200);
+      const exceptionId = (moved.body.event as Json).id;
+      expect(imipCalls).toHaveLength(1);
+      expect(imipCalls[0]?.plan.messages).toMatchObject([
+        {
+          method: "REQUEST",
+          scope: "occurrence",
+          reason: "update",
+          recurrenceId: "2027-04-19T01:00:00Z",
+        },
+      ]);
+      // 例外の行と、RECURRENCE-ID の形をそろえるための原本 (L8)。
+      expect(imipCalls[0]?.rows.map((row) => row.id)).toEqual([
+        exceptionId,
+        weekly.id,
+      ]);
+      expect(imipCalls[0]?.context.eventId).toBe(exceptionId);
+    });
+
+    it("本物の enqueueImip: Orbit 内のカレンダーの作成と返事で imip_send が積まれ、再送では増えない", async () => {
+      const realApp = new Hono<AppEnv>();
+      realApp.use(async (c, next) => {
+        c.set("user", {
+          id: mailerId,
+          email: "mailer@example.com",
+          name: "mailer",
+        });
+        await next();
+      });
+      realApp.route("/calendars", calendarRoutes({ db }));
+      const id = randomUUID();
+      const body = {
+        id,
+        calendarId: localId,
+        summary: "本物の招待",
+        time: time("13"),
+        attendees: people("alice@example.com"),
+      };
+      expect((await call("POST", "/events", body, realApp)).status).toBe(201);
+      expect((await call("POST", "/events", body, realApp)).status).toBe(201);
+      const invited = await seedInvitation("me@example.com");
+      const respondedAt = new Date().toISOString();
+      expect(
+        (
+          await call(
+            "POST",
+            `/events/${invited}/respond`,
+            { status: "accepted", respondedAt },
+            realApp,
+          )
+        ).body,
+      ).toMatchObject({ applied: true, notify: "mail" });
+      const rows = await db
+        .select()
+        .from(outbox)
+        .where(eq(outbox.accountId, sendId))
+        .orderBy(asc(outbox.createdAt), asc(outbox.id));
+      expect(
+        rows.map((row) => {
+          const payload = row.payload as {
+            message: { to: { address: string }[]; calendar?: unknown };
+            imip: { method: string; eventId: string };
+          };
+          return [
+            row.kind,
+            row.idempotencyKey,
+            payload.imip.method,
+            payload.message.to.map((to) => to.address),
+          ];
+        }),
+      ).toEqual([
+        [
+          "imip_send",
+          `imip:event_create:${id}:REQUEST:0`,
+          "REQUEST",
+          ["alice@example.com"],
+        ],
+        [
+          "imip_send",
+          `imip:event_respond:${invited}:accepted:${respondedAt}:REPLY:0`,
+          "REPLY",
+          ["boss@example.com"],
+        ],
+      ]);
+      expect(
+        await db
+          .select()
+          .from(eventConflicts)
+          .where(eq(eventConflicts.userId, mailerId)),
+      ).toEqual([]);
+    });
+
+    it("enqueueImip が積まなかった (送信元の不一致など) メールは invite_failed に残し、変更は保存する", async () => {
+      const skippingApp = new Hono<AppEnv>();
+      skippingApp.use(async (c, next) => {
+        c.set("user", {
+          id: mailerId,
+          email: "mailer@example.com",
+          name: "mailer",
+        });
+        await next();
+      });
+      skippingApp.route(
+        "/calendars",
+        calendarRoutes({
+          db,
+          enqueueImip: async () => ({
+            enqueued: 0,
+            skipped: "sender_mismatch",
+            incomplete: 0,
+          }),
+        }),
+      );
+      const created = await call(
+        "POST",
+        "/events",
+        {
+          calendarId: localId,
+          summary: "届かない招待",
+          time: time("14"),
+          attendees: people("alice@example.com"),
+        },
+        skippingApp,
+      );
+      expect(created.status).toBe(201);
+      expect(
+        await db
+          .select()
+          .from(eventConflicts)
+          .where(eq(eventConflicts.userId, mailerId)),
+      ).toMatchObject([
+        {
+          kind: "invite_failed",
+          eventId: (created.body.event as Json).id,
+          title: "届かない招待",
+          lost: {
+            outboxId: null,
+            method: "REQUEST",
+            to: ["alice@example.com"],
+          },
+        },
+      ]);
+    });
+
+    it("主催者のアドレスから送れなくなった予定の変更は保存し、invite_failed を記録する", async () => {
+      const id = randomUUID();
+      await db.insert(events).values({
+        id,
+        userId: mailerId,
+        calendarId: localId,
+        uid: `${id}@orbit`,
+        summary: "前のアドレスの会議",
+        startAt: new Date("2027-04-09T01:00:00Z"),
+        endAt: new Date("2027-04-09T02:00:00Z"),
+        startTimeZone: "Asia/Tokyo",
+        organizer: { email: "old@example.com", self: true },
+      });
+      await db
+        .insert(eventAttendees)
+        .values({ eventId: id, email: "alice@example.com" });
+      const changed = await send("PATCH", `/events/${id}`, {
+        changes: { summary: "変えた" },
+      });
+      expect(changed.status).toBe(200);
+      expect((changed.body.event as Json).summary).toBe("変えた");
+      expect(imipCalls).toEqual([]);
+      const recorded = await db
+        .select()
+        .from(eventConflicts)
+        .where(eq(eventConflicts.userId, mailerId));
+      expect(recorded).toMatchObject([
+        {
+          kind: "invite_failed",
+          eventId: id,
+          title: "変えた",
+          lost: {
+            outboxId: null,
+            method: "REQUEST",
+            to: ["alice@example.com"],
+          },
+        },
+      ]);
     });
   });
 });

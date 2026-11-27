@@ -27,6 +27,7 @@ import {
 } from "@/components/calendar/conflict-list";
 import { EventDetail } from "@/components/calendar/event-detail";
 import { EventEditor } from "@/components/calendar/event-editor";
+import { ImipSenderDialog } from "@/components/calendar/imip-sender-dialog";
 import { MobileMonth } from "@/components/calendar/mobile-month";
 import { MonthGrid } from "@/components/calendar/month-grid";
 import type { RsvpChoice } from "@/components/calendar/rsvp-buttons";
@@ -63,6 +64,7 @@ import {
   type EventFields,
   refreshCalendar,
   subscribeCalendar,
+  updateCalendar,
 } from "@/lib/calendar/api";
 import {
   calendarSyncStatus,
@@ -189,6 +191,10 @@ export function CalendarApp({ user }: { user: User }) {
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<Calendar | null>(null);
+  /** 「招待メールの送信元」を開いているカレンダー。 */
+  const [senderCalendar, setSenderCalendar] = useState<Calendar | null>(null);
+  const [senderBusy, setSenderBusy] = useState(false);
+  const [senderError, setSenderError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CalendarEvent[] | null>(null);
@@ -517,7 +523,7 @@ export function CalendarApp({ user }: { user: User }) {
     if (
       role === "organizer" &&
       !item.repeating &&
-      calendarScheduling(calendar) === "server" &&
+      calendarScheduling(calendar) !== "none" &&
       item.event.attendees.some((attendee) => !attendee.self)
     ) {
       setConfirmDelete({ item, mode: "organizer" });
@@ -626,6 +632,35 @@ export function CalendarApp({ user }: { user: User }) {
     }
   };
 
+  const openSenderSetting = (calendar: Calendar) => {
+    setSidebarOpen(false);
+    setSenderError(null);
+    setSenderCalendar(calendar);
+  };
+  const saveSender = async (accountId: string | null) => {
+    const target = senderCalendar;
+    if (!target) return;
+    setSenderBusy(true);
+    setSenderError(null);
+    try {
+      await updateCalendar(target.id, { imipAccountId: accountId });
+      setSenderCalendar(null);
+      pullNow();
+    } catch (error) {
+      setSenderError(
+        error instanceof ApiError && error.code === "receive_only"
+          ? "このアカウントは受信専用のため、送信元にできません。"
+          : error instanceof ApiError && error.code === "imip_unsupported"
+            ? "このカレンダーでは送信元を選べません。"
+            : error instanceof NetworkError
+              ? "接続していないので保存できません。"
+              : "保存できませんでした。もう一度お試しください。",
+      );
+    } finally {
+      setSenderBusy(false);
+    }
+  };
+
   const refreshSubscription = async (calendar: Calendar) => {
     try {
       const next = await refreshCalendar(calendar.id);
@@ -703,7 +738,11 @@ export function CalendarApp({ user }: { user: User }) {
         error instanceof NetworkError ||
           error instanceof OfflineUnavailableError
           ? "接続していないので、いまは操作できません。接続してからもう一度お試しください。"
-          : "操作できませんでした。もう一度お試しください。",
+          : error instanceof ApiError && error.code === "not_resendable"
+            ? "このメールはもう送り直せません (予定が変わったか、送る相手が変わっています)。閉じてください。"
+            : error instanceof ApiError && error.code === "invite_limit"
+              ? "招待メールの送信数が上限に達しました。しばらくしてからもう一度お試しください。"
+              : "操作できませんでした。もう一度お試しください。",
       );
     } finally {
       setConflictBusy(null);
@@ -853,6 +892,7 @@ export function CalendarApp({ user }: { user: User }) {
       }}
       onRefreshCalendar={(calendar) => void refreshSubscription(calendar)}
       onRemoveCalendar={(calendar) => setRemoving(calendar)}
+      onChooseSender={openSenderSetting}
       onOpenSettings={() => navigateApp("/settings")}
       onToggleSidebar={wide ? toggleSidebar : null}
       onNavigate={() => setSidebarOpen(false)}
@@ -1130,6 +1170,9 @@ export function CalendarApp({ user }: { user: User }) {
         existing={Boolean(editor?.item)}
         role={editor?.item ? inviteRole(editor.item.event) : "organizer"}
         online={online}
+        organizer={editor?.item?.event.organizer ?? null}
+        accounts={accounts}
+        onChooseSender={online ? openSenderSetting : null}
         calendars={
           editor?.item
             ? // 予定を別のカレンダーへ移すのは、まだできない。
@@ -1172,6 +1215,15 @@ export function CalendarApp({ user }: { user: User }) {
         onAction={(item, action) => void resolveConflict(item, action)}
         onClose={() => setConflictsOpen(false)}
       />
+      <ImipSenderDialog
+        calendar={senderCalendar}
+        accounts={accounts}
+        busy={senderBusy}
+        error={senderError}
+        onSave={(accountId) => void saveSender(accountId)}
+        onOpenSettings={() => navigateApp("/settings")}
+        onClose={() => setSenderCalendar(null)}
+      />
       <AddCalendarDialog
         open={addOpen}
         busy={addBusy}
@@ -1199,7 +1251,9 @@ export function CalendarApp({ user }: { user: User }) {
                   : confirmDelete.item.repeating
                     ? "すべての回に不参加で返事をして、カレンダーから削除します。"
                     : "不参加で返事をして、カレンダーから削除します。"
-                : "参加者に取り消しの連絡が届きます。"}
+                : confirmDelete
+                  ? cancelNote(calendarOf(confirmDelete.item.event.calendarId))
+                  : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1302,12 +1356,19 @@ function scopeNote(
   if (
     scope.action !== "delete" ||
     inviteRole(event) !== "organizer" ||
-    calendarScheduling(calendar) !== "server" ||
+    calendarScheduling(calendar) === "none" ||
     !event.attendees.some((attendee) => !attendee.self)
   ) {
     return null;
   }
-  return "参加者に取り消しの連絡が届きます。";
+  return cancelNote(calendar);
+}
+
+/** 参加者のいる自分の予定を消すときの注記 (Orbit が送るならメール、サービスなら連絡)。 */
+function cancelNote(calendar: Calendar | undefined): string {
+  return calendarScheduling(calendar) === "mail"
+    ? "参加者に取り消しのメールを送ります。"
+    : "参加者に取り消しの連絡が届きます。";
 }
 
 /** 書き込めなかった理由。 */

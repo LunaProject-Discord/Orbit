@@ -7,13 +7,17 @@ import {
   type EventOutboxRef,
   type EventRespondPayload,
   type EventUpdatePayload,
+  type ImipPlan,
+  type ImipPlanMessage,
 } from "@orbit/core";
 import {
   calendars,
   type Database,
   deleteCalendarEventsByRemoteId,
+  enqueueImip,
   events,
   findCalendarEvents,
+  narrowImipPlan,
   outbox,
 } from "@orbit/db";
 import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
@@ -24,6 +28,7 @@ import {
   lostValues,
   pruneEventConflicts,
   recordEventConflict,
+  recordInviteFailure,
 } from "./conflicts.js";
 import {
   isDeletePending,
@@ -62,7 +67,23 @@ const KEEP_DONE_MS = 7 * 24 * 60 * 60_000;
 export const MAX_CONFLICT_RETRIES = 3;
 
 type OutboxRow = typeof outbox.$inferSelect;
-type OperationResult = { ok: true } | { ok: false; reason: string };
+/**
+ * 1 行の反映の結果。imip は、相手側への書き込み (または相手側で既に消えていた削除) が済み、
+ * payload の招待メールの計画を送ってよいこと (imip-design 6.1)。何も書かずに終えたとき
+ * (予定が消えていた、相手側の変更に負けた、削除を取りやめた) は付けない。
+ */
+type OperationResult =
+  | {
+      ok: true;
+      imip?: true;
+      /**
+       * 変更 (event_update) で、相手側に実際に書いた項目 (競合のマージで負けた項目を除く)。
+       * 招待メールの計画を、書いた項目に絞るのに使う (imip レビュー M1)。
+       */
+      fields?: readonly string[];
+    }
+  | { ok: false; reason: string };
+const WRITTEN: OperationResult = { ok: true, imip: true };
 
 export type EventOutboxDeps = {
   db: Database;
@@ -180,10 +201,34 @@ export async function processEventOutbox(
       result = { ok: false, reason };
     }
     if (result.ok) {
-      await db
-        .update(outbox)
-        .set({ status: "done", lastError: null })
-        .where(eq(outbox.id, row.id));
+      const plan = (row.payload as { imip?: ImipPlan | null }).imip ?? null;
+      await db.transaction(async (tx) => {
+        await tx
+          .update(outbox)
+          .set({ status: "done", lastError: null })
+          .where(eq(outbox.id, row.id));
+        // 書き戻しが成功した後でだけ、招待メールを積む (巻き戻した変更の招待は出さない)。
+        // 積む処理が投げても書き戻しの行は done にし、招待は invite_failed に残す
+        // (行が processing のまま毎周回やり直しになり、後続の書き戻しが止まらないように。L7)。
+        if (plan && result.imip) {
+          try {
+            await tx.transaction((savepoint) =>
+              enqueuePlannedImip(savepoint, deps, row, plan, result.fields),
+            );
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : String(error);
+            deps.log(`招待メールを積めませんでした: ${reason}`);
+            await recordPlanFailure(
+              tx,
+              deps,
+              row,
+              plan.messages,
+              "招待メールの本文を作れませんでした。",
+            );
+          }
+        }
+      });
       done++;
       continue;
     }
@@ -204,6 +249,212 @@ export async function processEventOutbox(
   // 反映されなかった変更の記録も、同じ時機に古いものを消す。
   await pruneEventConflicts(db, account.userId, nowOf(deps));
   return { done, failed, retryAt };
+}
+
+/** 書き戻しの行の、予定の ID とカレンダーの ID。 */
+function outboxEventOf(row: OutboxRow): {
+  calendarId: string;
+  eventId: string;
+} {
+  const payload = row.payload as {
+    calendarId: string;
+    eventId?: string;
+    target?: EventOutboxRef;
+  };
+  const eventId =
+    row.kind === "event_delete"
+      ? (payload.target?.eventId ?? "")
+      : (payload.eventId ?? payload.target?.eventId ?? "");
+  return { calendarId: payload.calendarId, eventId };
+}
+
+/**
+ * 招待メールを積まなかったメッセージを invite_failed に残す (outboxId は null。もう一度送るは出ない)。
+ * カレンダーが消えていれば残せない。
+ */
+async function recordPlanFailure(
+  tx: Tx,
+  deps: EventOutboxDeps,
+  row: OutboxRow,
+  messages: readonly ImipPlanMessage[],
+  reason: string,
+) {
+  if (messages.length === 0) return;
+  const { calendarId, eventId } = outboxEventOf(row);
+  if (!calendarId || !eventId) return;
+  const [current] = await tx
+    .select({ uid: events.uid, summary: events.summary })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.calendarId, calendarId)));
+  for (const message of messages) {
+    await recordInviteFailure(
+      tx,
+      deps.account.userId,
+      null,
+      {
+        imip: {
+          method: message.method,
+          reason: message.reason,
+          userId: deps.account.userId,
+          calendarId,
+          eventId,
+          uid: current?.uid ?? "",
+          recurrenceId: message.recurrenceId ?? null,
+          sequence: 0,
+          title: current?.summary ?? null,
+        },
+        message: { to: message.to },
+      },
+      reason,
+    );
+  }
+}
+
+/**
+ * 同じ予定に、まだ書き戻していない後ろの変更 (event_update) があれば、本文を行から作る
+ * メッセージをその行へ持ち越す (imip レビュー M2)。DB の行には後ろの変更も入っているので、
+ * いま作ると、後ろの変更が確定して失敗して巻き戻されたときに、その内容が招待に載って出てしまう。
+ * 持ち越したメッセージは、後ろの行の書き戻しが成功したときにその時点の行から作って積む。
+ * 戻り値は、いま積むメッセージ (本文を計画の時点で作ってあるもの、返事、持ち越せなかったもの)。
+ */
+async function carryToLaterWrite(
+  tx: Tx,
+  deps: EventOutboxDeps,
+  row: OutboxRow,
+  plan: ImipPlan,
+  eventId: string,
+): Promise<ImipPlan> {
+  const deferrable = plan.messages.filter(
+    (message) => message.method !== "REPLY" && message.content === undefined,
+  );
+  if (deferrable.length === 0) return plan;
+  const [later] = await tx
+    .select({ id: outbox.id, payload: outbox.payload })
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.accountId, deps.account.id),
+        eq(outbox.kind, "event_update"),
+        eq(outbox.status, "pending"),
+        ne(outbox.id, row.id),
+        sql`${outbox.payload}->>'eventId' = ${eventId}`,
+        sql`(${outbox.createdAt}, ${outbox.id}) > (${row.createdAt.toISOString()}::timestamptz, ${row.id}::uuid)`,
+      ),
+    )
+    .orderBy(asc(outbox.createdAt), asc(outbox.id))
+    .limit(1)
+    .for("update");
+  if (!later) return plan;
+  const laterPayload = later.payload as Record<string, unknown> & {
+    imip?: ImipPlan | null;
+  };
+  const laterPlan = laterPayload.imip ?? null;
+  // 送信元が違う計画とはまとめない (いま送る)。
+  if (laterPlan && laterPlan.senderAccountId !== plan.senderAccountId) {
+    return plan;
+  }
+  const merged: ImipPlan = {
+    senderAccountId: plan.senderAccountId,
+    stamp: laterPlan?.stamp ?? plan.stamp,
+    messages: [
+      ...deferrable.map((message) => ({ ...message, carried: true as const })),
+      ...(laterPlan?.messages ?? []),
+    ],
+  };
+  await tx
+    .update(outbox)
+    .set({ payload: { ...laterPayload, imip: merged } })
+    .where(eq(outbox.id, later.id));
+  deps.log(
+    `予定 ${eventId} の招待メール ${deferrable.length} 通は、後ろの変更の書き戻しの後に送ります`,
+  );
+  return {
+    ...plan,
+    messages: plan.messages.filter((message) => !deferrable.includes(message)),
+  };
+}
+
+/**
+ * 書き戻しが済んだ event_* の行の、招待メールの計画 (payload.imip) を imip_send にして積む
+ * (imip-design 6.1。同じトランザクションで行を done にする)。本文は書き戻した後の行から作るので、
+ * SEQUENCE は相手側に書いた値になる。冪等キーは元の行のキーから作るので、行の再実行でも増えない。
+ * - 変更は、相手側に実際に書いた項目と、書いた後の参加者に計画を絞る (M1。narrowImipPlan)。
+ * - 同じ予定に後ろの変更が残っていれば、行から作るメッセージはそちらへ持ち越す (M2)。
+ * 送信元が使えない・From と主催者が違う・上限を超えた・本文を作れなかったときは送らず、
+ * invite_failed を残す (scheduling が mail でなくなったとき (not_mail) はサーバーが送るので
+ * 何も残さない)。
+ */
+async function enqueuePlannedImip(
+  tx: Tx,
+  deps: EventOutboxDeps,
+  row: OutboxRow,
+  written: ImipPlan,
+  writtenFields: readonly string[] | undefined,
+) {
+  const { calendarId, eventId } = outboxEventOf(row);
+  const [calendar] = await tx
+    .select()
+    .from(calendars)
+    .where(
+      and(
+        eq(calendars.id, calendarId),
+        eq(calendars.accountId, deps.account.id),
+      ),
+    );
+  if (!calendar || !eventId) return;
+  const [current] = await tx
+    .select({ uid: events.uid })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.calendarId, calendar.id)));
+  const rows = current
+    ? await findCalendarEvents(tx, calendar.id, {
+        remoteIds: [],
+        uids: [current.uid],
+      })
+    : [];
+  let plan = narrowImipPlan(
+    written,
+    row.kind === "event_update" ? (writtenFields ?? null) : null,
+    rows,
+    eventId,
+  );
+  if (row.kind === "event_update" || row.kind === "event_create") {
+    plan = await carryToLaterWrite(tx, deps, row, plan, eventId);
+  }
+  if (plan.messages.length === 0) return;
+  const result = await enqueueImip(tx, plan, rows, {
+    userId: deps.account.userId,
+    calendarId: calendar.id,
+    eventId,
+    baseKey: row.idempotencyKey,
+    defaultTimeZone: calendar.timeZone ?? "UTC",
+    sourceOutboxId: row.id,
+    now: nowOf(deps),
+  });
+  if (result.incompleteMessages.length > 0) {
+    // 予定の行が無い・本文を作れない。黙って捨てずに記録する (M4)。
+    deps.log(
+      `予定 ${eventId} の招待メールのうち ${result.incomplete} 通は、本文を作れませんでした`,
+    );
+    await recordPlanFailure(
+      tx,
+      deps,
+      row,
+      result.incompleteMessages,
+      "招待メールの本文を作れませんでした (予定が見つかりません)。",
+    );
+  }
+  const reason =
+    result.skipped === "sender_unavailable"
+      ? "送信元のメールアカウントが無いか、送信できません。"
+      : result.skipped === "sender_mismatch"
+        ? "送信元のアドレスが予定の主催者 (返事では自分の参加者のアドレス) と違います。"
+        : result.skipped === "limit"
+          ? "招待メールの送信数が上限に達しました。"
+          : null;
+  if (!reason) return;
+  deps.log(`予定 ${eventId} の招待メールを積みませんでした: ${reason}`);
+  await recordPlanFailure(tx, deps, row, plan.messages, reason);
 }
 
 /** プロバイダから届いた予定に uid を補う。補えなかった例外はログに残して捨てる。 */
@@ -541,7 +792,7 @@ async function applyCreate(
   const snapshot = await loadSnapshot(deps, calendar.id, payload.eventId);
   if (!snapshot) return { ok: true };
   // 前回の実行で作成まで済んでいた (結果の書き込みの後に止まった)。
-  if (snapshot.event.remoteId !== null) return { ok: true };
+  if (snapshot.event.remoteId !== null) return WRITTEN;
   // 結果の書き込みの前に止まっていたら、相手側には既にある。プロバイダは events.id から
   // 決まる ID で冪等に作り、既にあれば ok (または conflict と remoteId) を返す約束。
   const result = await deps.provider.createEvent(deps.ctx, calendar, {
@@ -595,7 +846,7 @@ async function finishWrite(
       },
       { fromUid: snapshot.event.uid },
     );
-    return { ok: true };
+    return WRITTEN;
   }
   switch (result.status) {
     case "rejected":
@@ -688,7 +939,7 @@ async function applyUpdate(
           recurrenceId: snapshot.event.recurrenceId,
         },
       );
-      return { ok: true };
+      return { ok: true, imip: true, fields };
     }
     if (result.status === "rejected") {
       return { ok: false, reason: result.reason };
@@ -796,7 +1047,8 @@ async function applyDelete(
   if (!ref) return { ok: true };
   for (let attempt = 1; ; attempt++) {
     const result = await deps.provider.deleteEvent(deps.ctx, calendar, ref);
-    if (result.status === "ok" || result.status === "gone") return { ok: true };
+    // 相手側で既に消えていても (gone)、参加者にはまだ取り消しを知らせていない。
+    if (result.status === "ok" || result.status === "gone") return WRITTEN;
     if (result.status === "rejected")
       return { ok: false, reason: result.reason };
     if (attempt >= MAX_CONFLICT_RETRIES) {
@@ -807,9 +1059,9 @@ async function applyDelete(
     }
     // 相手側が先に変わっていた。削除と変更は後から行った方を採る。
     const latest = await fetchRemote(deps, calendar, ref);
-    if (!latest) return { ok: true };
+    if (!latest) return WRITTEN;
     const remote = findRemote(latest, ref);
-    if (!remote) return { ok: true };
+    if (!remote) return WRITTEN;
     const remoteAt = remote.remoteUpdatedAt
       ? Date.parse(remote.remoteUpdatedAt)
       : Number.NaN;
@@ -891,7 +1143,7 @@ async function applyRespond(
           recurrenceId: snapshot.event.recurrenceId,
         },
       );
-      return { ok: true };
+      return WRITTEN;
     }
     if (result.status === "rejected")
       return { ok: false, reason: result.reason };
@@ -948,7 +1200,7 @@ async function respondWithoutRow(
             );
         });
       }
-      return { ok: true };
+      return WRITTEN;
     }
     if (result.status === "gone") return { ok: true };
     if (result.status === "rejected")
@@ -1029,6 +1281,18 @@ async function failEventOperation(
       .set({ status: "failed", lastError: reason })
       .where(eq(outbox.id, row.id));
     if (!calendar) return;
+    // 前の書き戻しから持ち越した招待メール (M2)。前の変更は相手側に書けているが、この行の
+    // 巻き戻しの後の内容で送り直すことはせず (送らない側に倒す)、送らなかったことを残す。
+    const carried = (
+      (row.payload as { imip?: ImipPlan | null }).imip?.messages ?? []
+    ).filter((message) => message.carried);
+    await recordPlanFailure(
+      tx,
+      deps,
+      row,
+      carried,
+      "後の変更を反映できなかったため、前の変更の招待メールを送りませんでした。",
+    );
     if (row.kind === "event_respond" && !before) {
       // 返事の後に消した予定。戻す行が無いので、記録だけ残す (同期の位置は消さない)。
       if (conflict) await recordEventConflict(tx, conflict);

@@ -221,8 +221,26 @@ async function replaceExtras(
       .insert(eventReminders)
       .values(input.reminders.map((value) => ({ eventId, ...value })));
   }
+  // 最後に反映した返事 (replied_at / reply_sequence) は、同じアドレスの参加者が残るなら引き継ぐ
+  // (相手側の内容には無く、古い返事を捨てる判定に使うため)。
+  const before = await tx
+    .select({
+      email: eventAttendees.email,
+      repliedAt: eventAttendees.repliedAt,
+      replySequence: eventAttendees.replySequence,
+    })
+    .from(eventAttendees)
+    .where(eq(eventAttendees.eventId, eventId));
+  const replies = new Map(
+    before.map((row) => [row.email.trim().toLowerCase(), row]),
+  );
   await tx.delete(eventAttendees).where(eq(eventAttendees.eventId, eventId));
-  const attendees = attendeeValues(eventId, input);
+  const attendees = attendeeValues(eventId, input).map((value) => {
+    const old = replies.get(value.email.trim().toLowerCase());
+    return old
+      ? { ...value, repliedAt: old.repliedAt, replySequence: old.replySequence }
+      : value;
+  });
   if (attendees.length > 0) await tx.insert(eventAttendees).values(attendees);
 }
 

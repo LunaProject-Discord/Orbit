@@ -708,6 +708,8 @@ export const outboxKind = pgEnum("outbox_kind", [
   "event_update",
   "event_delete",
   "event_respond",
+  /** Orbit が送る招待メール (iMIP)。送信元のメールアカウントに積み、processSends が送る。 */
+  "imip_send",
 ]);
 
 export const outboxStatus = pgEnum("outbox_status", [
@@ -1131,6 +1133,13 @@ export const calendars = pgTable(
      * 対応しているか、など)。
      */
     providerState: jsonb().$type<Record<string, unknown>>(),
+    /**
+     * 招待メール (iMIP) の送信元に利用者が選んだメールアカウント。null は自動で決める
+     * (apps/api/src/lib/imip-sender.ts)。アカウントを消すと null に戻る。
+     */
+    imipAccountId: uuid().references(() => accounts.id, {
+      onDelete: "set null",
+    }),
     /** 繰り返しの回を event_occurrences に展開済みの範囲の終わり (この日の前日まで)。 */
     expandedUntil: date({ mode: "string" }),
     createdAt: createdAt(),
@@ -1226,6 +1235,8 @@ export const events = pgTable(
      * 相手側の内容を書き込むと null に戻る。
      */
     remoteDeletedAfter: timestamp({ withTimezone: true }),
+    /** メールから取り込んだ・更新した招待 (REQUEST) の DTSTAMP。次の更新との新旧の比較に使う。 */
+    inviteStamp: timestamp({ withTimezone: true }),
     raw: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1272,6 +1283,10 @@ export const eventAttendees = pgTable(
     /** 利用者自身 (このアカウントのアドレス) なら true。出欠ボタンの対象。 */
     self: boolean().notNull().default(false),
     comment: text(),
+    /** 最後に反映した返事 (REPLY) の DTSTAMP。これより古い返事は捨てる。 */
+    repliedAt: timestamp({ withTimezone: true }),
+    /** 最後に反映した返事の SEQUENCE。 */
+    replySequence: integer(),
   },
   (t) => [
     uniqueIndex("event_attendees_event_email_idx").on(
@@ -1369,6 +1384,8 @@ export const eventConflictKind = pgEnum("event_conflict_kind", [
   "remote_deleted",
   /** 削除しようとしたが、相手側の変更の方が新しかったので取りやめた。 */
   "delete_cancelled",
+  /** 招待メール (iMIP) を送れなかった。lost に { outboxId, method, to } を入れる。 */
+  "invite_failed",
 ]);
 
 /**

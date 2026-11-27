@@ -1,5 +1,6 @@
 import { accounts, calendars, type Database } from "@orbit/db";
 import { eq, inArray } from "drizzle-orm";
+import { loadSenderAccounts, pickImipSender } from "./imip-sender.js";
 
 /**
  * カレンダーの「自分」の判定 (calendars.ts と message-invite.ts で使う)。
@@ -37,10 +38,16 @@ export function ownsCalendar(
 
 /** カレンダーごとの、自分のアドレスと、自分のカレンダーか。 */
 export type CalendarIdentity = {
-  /** アカウントの自分のアドレス。アカウントの無いカレンダーは undefined。 */
+  /**
+   * 自分のアドレス: カレンダーのアカウントのアドレスと、招待メールの送信元のアドレス
+   * (Orbit 内と CalDAV のカレンダー。imip-design 4.4)。どちらも無ければ undefined。
+   */
   addresses: ReadonlySet<string> | undefined;
   owned: boolean;
 };
+
+/** 招待メールの送信元を「自分」に数えるカレンダー (Orbit が招待を送りうるもの)。 */
+const SENDER_SOURCES = new Set(["local", "caldav"]);
 
 export async function calendarIdentities(
   db: Executor,
@@ -51,7 +58,10 @@ export async function calendarIdentities(
   const rows = await db
     .select({
       calendarId: calendars.id,
+      userId: calendars.userId,
+      source: calendars.source,
       accountId: calendars.accountId,
+      imipAccountId: calendars.imipAccountId,
       providerState: calendars.providerState,
       email: accounts.email,
       username: accounts.username,
@@ -59,12 +69,32 @@ export async function calendarIdentities(
     .from(calendars)
     .leftJoin(accounts, eq(accounts.id, calendars.accountId))
     .where(inArray(calendars.id, [...new Set(calendarIds)]));
+  const senderAccounts = new Map(
+    await Promise.all(
+      [
+        ...new Set(
+          rows
+            .filter((row) => SENDER_SOURCES.has(row.source))
+            .map((row) => row.userId),
+        ),
+      ].map(
+        async (userId) =>
+          [userId, await loadSenderAccounts(db, userId)] as const,
+      ),
+    ),
+  );
   for (const row of rows) {
+    const addresses =
+      row.email !== null && row.username !== null
+        ? ownAddresses({ email: row.email, username: row.username })
+        : new Set<string>();
+    const list = senderAccounts.get(row.userId);
+    if (list && SENDER_SOURCES.has(row.source)) {
+      const { sender } = pickImipSender(list, row);
+      if (sender) addresses.add(sender.email.trim().toLowerCase());
+    }
     map.set(row.calendarId, {
-      addresses:
-        row.email !== null && row.username !== null
-          ? ownAddresses({ email: row.email, username: row.username })
-          : undefined,
+      addresses: addresses.size > 0 ? addresses : undefined,
       owned: ownsCalendar(row),
     });
   }

@@ -1,5 +1,10 @@
+import { SENDER_CHECK_VERSION } from "@orbit/core";
 import { describe, expect, it } from "vitest";
-import { listInfoFromGraph, parseListHeaders } from "./message-headers.js";
+import {
+  authTrustOf,
+  listInfoFromGraph,
+  parseListHeaders,
+} from "./message-headers.js";
 
 describe("parseListHeaders", () => {
   it("List-Id の山かっこの中と、配信停止の URL を取り出す", () => {
@@ -12,7 +17,7 @@ describe("parseListHeaders", () => {
         "",
       ].join("\r\n"),
     );
-    expect(parseListHeaders(headers, [])).toMatchObject({
+    expect(parseListHeaders(headers, [], null)).toMatchObject({
       listId: "news.example.com",
       listUnsubscribe: [
         "mailto:unsubscribe@example.com?subject=stop",
@@ -22,12 +27,12 @@ describe("parseListHeaders", () => {
   });
 
   it("ヘッダーが無ければ空にする", () => {
-    expect(parseListHeaders(undefined, [])).toMatchObject({
+    expect(parseListHeaders(undefined, [], null)).toMatchObject({
       listId: null,
       listUnsubscribe: [],
     });
     expect(
-      parseListHeaders(Buffer.from("References: <a@b>\r\n"), []),
+      parseListHeaders(Buffer.from("References: <a@b>\r\n"), [], null),
     ).toMatchObject({
       listId: null,
       listUnsubscribe: [],
@@ -36,10 +41,11 @@ describe("parseListHeaders", () => {
 
   it("山かっこの無い List-Id は、空白が無いときだけ使う", () => {
     expect(
-      parseListHeaders(Buffer.from("List-ID: list.example.com\r\n"), []).listId,
+      parseListHeaders(Buffer.from("List-ID: list.example.com\r\n"), [], null)
+        .listId,
     ).toBe("list.example.com");
     expect(
-      parseListHeaders(Buffer.from("List-Id: Just a description\r\n"), [])
+      parseListHeaders(Buffer.from("List-Id: Just a description\r\n"), [], null)
         .listId,
     ).toBeNull();
   });
@@ -48,7 +54,7 @@ describe("parseListHeaders", () => {
     const headers = Buffer.from(
       "List-Unsubscribe: <javascript:alert(1)>, <http://example.com/u>, <not a url>, <https://example.com/ok>\r\n",
     );
-    expect(parseListHeaders(headers, []).listUnsubscribe).toEqual([
+    expect(parseListHeaders(headers, [], null).listUnsubscribe).toEqual([
       "https://example.com/ok",
     ]);
   });
@@ -57,7 +63,7 @@ describe("parseListHeaders", () => {
     const headers = Buffer.from(
       "List-Unsubscribe: <https://example.com/unsubscribe?token=abc\r\n def>\r\n",
     );
-    expect(parseListHeaders(headers, []).listUnsubscribe).toEqual([
+    expect(parseListHeaders(headers, [], null).listUnsubscribe).toEqual([
       "https://example.com/unsubscribe?token=abcdef",
     ]);
   });
@@ -73,12 +79,13 @@ describe("listInfoFromGraph", () => {
           { name: "list-unsubscribe", value: "<https://example.com/u>" },
         ],
         [],
+        null,
       ),
     ).toMatchObject({
       listId: "team.example.com",
       listUnsubscribe: ["https://example.com/u"],
     });
-    expect(listInfoFromGraph(null, [])).toMatchObject({
+    expect(listInfoFromGraph(null, [], null)).toMatchObject({
       listId: null,
       listUnsubscribe: [],
     });
@@ -87,8 +94,13 @@ describe("listInfoFromGraph", () => {
 
 describe("認証結果", () => {
   const from = [{ name: "Example", address: "news@example.com" }];
+  const gmail = authTrustOf({ provider: "gmail", imapHost: "imap.gmail.com" });
+  const generic = authTrustOf({
+    provider: "generic",
+    imapHost: "imap.example.net",
+  });
 
-  it("いちばん上の Authentication-Results を読む", () => {
+  it("Gmail のアカウントでは、いちばん上の mx.google.com の Authentication-Results を読む", () => {
     const headers = Buffer.from(
       [
         "Authentication-Results: mx.google.com;",
@@ -99,7 +111,7 @@ describe("認証結果", () => {
         "",
       ].join("\r\n"),
     );
-    const info = parseListHeaders(headers, from);
+    const info = parseListHeaders(headers, from, gmail);
     expect(info.authResults).toEqual({
       authservId: "mx.google.com",
       spf: { result: "pass", domain: "mail.example.com" },
@@ -111,19 +123,82 @@ describe("認証結果", () => {
       verified: true,
       warnings: [],
       claimed: null,
+      version: SENDER_CHECK_VERSION,
     });
+  });
+
+  it("受信サーバーが付けない一般のサーバーでは、差出人が書いた偽のヘッダーを使わない (レビュー指摘 1)", () => {
+    const headers = Buffer.from(
+      [
+        "Received: from evil by mx.small.example",
+        "Authentication-Results: mx.small.example; dkim=pass header.d=example.com; dmarc=pass header.from=example.com",
+        "From: news@example.com",
+        "",
+      ].join("\r\n"),
+    );
+    // 受信ホスト (imap.example.net) と組織のドメインが違う名前は信頼しない。
+    const other = parseListHeaders(headers, from, generic);
+    expect(other.authResults).toBeNull();
+    expect(other.senderCheck.verified).toBe(false);
+    // header.from の無い pass も、どの From に対しても確認済みにしない。
+    const bare = parseListHeaders(
+      Buffer.from("Authentication-Results: mx.example.net; dmarc=pass\r\n"),
+      from,
+      generic,
+    );
+    expect(bare.senderCheck.verified).toBe(false);
+  });
+
+  it("受信ホストと同じ組織の判定サーバーなら使う", () => {
+    const info = parseListHeaders(
+      Buffer.from(
+        "Authentication-Results: mx.example.net; dmarc=pass header.from=example.com\r\n",
+      ),
+      from,
+      generic,
+    );
+    expect(info.senderCheck.verified).toBe(true);
+  });
+
+  it("iCloud の方式ごとのヘッダーをまとめ、失敗を拾う (レビュー指摘 3)", () => {
+    const headers = Buffer.from(
+      [
+        "Authentication-Results: bimi.icloud.com; bimi=skipped reason=insufficient dmarc",
+        "Authentication-Results: dmarc.icloud.com; dmarc=fail header.from=example.com",
+        "Authentication-Results: dkim-verifier.icloud.com; dkim=none",
+        "Authentication-Results: spf.icloud.com; spf=fail smtp.mailfrom=example.com",
+        "",
+      ].join("\r\n"),
+    );
+    const info = parseListHeaders(
+      headers,
+      from,
+      authTrustOf({ provider: "icloud", imapHost: "imap.mail.me.com" }),
+    );
+    expect(info.senderCheck.warnings).toEqual(["dmarc_fail"]);
+  });
+
+  it("アカウントの種類が分からなければ、どのヘッダーも信頼しない", () => {
+    const info = parseListHeaders(
+      Buffer.from(
+        "Authentication-Results: mx.google.com; dmarc=pass header.from=example.com\r\n",
+      ),
+      from,
+      authTrustOf({}),
+    );
+    expect(info.authResults).toBeNull();
   });
 
   it("ARC-Authentication-Results は使わない", () => {
     const headers = Buffer.from(
-      "ARC-Authentication-Results: i=1; mx.example; dmarc=pass header.from=example.com\r\n",
+      "ARC-Authentication-Results: i=1; mx.google.com; dmarc=pass header.from=example.com\r\n",
     );
-    const info = parseListHeaders(headers, from);
+    const info = parseListHeaders(headers, from, gmail);
     expect(info.authResults).toBeNull();
     expect(info.senderCheck.verified).toBe(false);
   });
 
-  it("Graph のヘッダーからも読む", () => {
+  it("Graph のヘッダーからも読む (名前を省いた Microsoft の形)", () => {
     const info = listInfoFromGraph(
       [
         {
@@ -133,6 +208,7 @@ describe("認証結果", () => {
         },
       ],
       from,
+      authTrustOf({ provider: "microsoft", imapHost: null }),
     );
     expect(info.authResults?.dmarc).toEqual({
       result: "fail",

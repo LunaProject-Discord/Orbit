@@ -10,7 +10,16 @@ import { and, eq, inArray, isNotNull, lt, notInArray } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import type { ListedMailbox } from "./mailbox-list.js";
 
-export type SyncAccount = { id: string; userId: string };
+/**
+ * 同期するアカウント。provider と imapHost は、送信元の認証結果のうち信頼するヘッダーを
+ * 決めるのに使う (無ければ、どのヘッダーも信頼しない)。同期の本体はアカウントの行をそのまま渡す。
+ */
+export type SyncAccount = {
+  id: string;
+  userId: string;
+  provider?: "gmail" | "microsoft" | "icloud" | "generic";
+  imapHost?: string | null;
+};
 
 /**
  * フォルダからメッセージの所在を外し、どのフォルダにも無くなったメッセージを消す。

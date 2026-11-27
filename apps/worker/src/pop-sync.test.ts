@@ -5,6 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { SENDER_CHECK_VERSION } from "@orbit/core";
 import {
   accounts,
   attachments,
@@ -516,5 +517,42 @@ describe.skipIf(!adminUrl)("POP3 の受信", () => {
     // 表示名「ドコモ」は別のドメインなので名前の注意も付くが、DMARC の合格は読めている。
     expect(byId.get(seen?.id as string)).toMatchObject({ verified: true });
     expect(byId.get(unseen?.id as string)).toBeNull();
+  });
+
+  it("古い決まりで作った確認結果 (版が無い) も、見られたときに取り直す。受信ホストと違う組織の判定は使わない", async () => {
+    const forged =
+      "Authentication-Results: mx.forged.example; dmarc=pass header.from=example.jp\r\n";
+    const { factory } = fakeClient([
+      { uidl: "old-1", raw: forged + mail(1).raw },
+    ]);
+    await receivePop(db, account, inbox, factory({} as never), {
+      stopped,
+      log,
+    });
+    const [row] = await inboxMessages();
+    // 取り込み時点で、信頼しない名前のヘッダーは使っていない。
+    const [stored] = await db
+      .select({ senderCheck: messages.senderCheck })
+      .from(messages)
+      .where(eq(messages.id, row?.id as string));
+    expect(stored?.senderCheck).toMatchObject({ verified: false });
+    // 照合を入れる前に保存した結果 (版なし、偽のヘッダーで verified) の状態にする。
+    await db
+      .update(messages)
+      .set({ senderCheck: { verified: true, warnings: [], claimed: null } })
+      .where(eq(messages.id, row?.id as string));
+    await fillPopSenderChecks(db, account, [row?.id as string]);
+    const [after] = await db
+      .select({
+        senderCheck: messages.senderCheck,
+        authResults: messages.authResults,
+      })
+      .from(messages)
+      .where(eq(messages.id, row?.id as string));
+    expect(after?.senderCheck).toMatchObject({
+      verified: false,
+      version: SENDER_CHECK_VERSION,
+    });
+    expect(after?.authResults).toBeNull();
   });
 });

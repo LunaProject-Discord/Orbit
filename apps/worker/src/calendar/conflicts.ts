@@ -2,8 +2,15 @@ import {
   type EventFieldName,
   eventFieldValues,
   fieldValuesToChanges,
+  type ImipSendPayload,
+  type OutgoingMessage,
 } from "@orbit/core";
-import { type Database, type EventWithExtras, eventConflicts } from "@orbit/db";
+import {
+  calendars,
+  type Database,
+  type EventWithExtras,
+  eventConflicts,
+} from "@orbit/db";
 import { and, eq, lt } from "drizzle-orm";
 import { recordChanges, type Tx } from "../changes.js";
 
@@ -88,4 +95,52 @@ export async function pruneEventConflicts(
         ),
       ),
     );
+}
+
+/** 招待メールの失敗の文言の頭 (imip-design 6.5、12.4)。 */
+export function imipFailurePrefix(imip: ImipSendPayload["imip"]): string {
+  if (imip.method === "REPLY") return "出欠の返事を主催者へ送れませんでした";
+  if (imip.method === "CANCEL") return "取り消しのメールを送れませんでした";
+  return "招待メールを送れませんでした";
+}
+
+/**
+ * 招待メールの失敗の記録 (event_conflicts の invite_failed)。lost は
+ * { outboxId, method, to, partial? }。partial は一部の宛先だけ拒否された (もう一度送るは出さない)。
+ * カレンダーが消えていれば記録しない (記録はカレンダーに属する)。
+ */
+export async function recordInviteFailure(
+  tx: Tx,
+  userId: string,
+  outboxId: string | null,
+  payload: Pick<ImipSendPayload, "imip"> & {
+    message: Pick<OutgoingMessage, "to">;
+  },
+  reason: string,
+  options: { partial?: boolean } = {},
+) {
+  const [calendar] = await tx
+    .select({ id: calendars.id })
+    .from(calendars)
+    .where(
+      and(
+        eq(calendars.id, payload.imip.calendarId),
+        eq(calendars.userId, userId),
+      ),
+    );
+  if (!calendar) return;
+  await recordEventConflict(tx, {
+    userId,
+    calendarId: calendar.id,
+    eventId: payload.imip.eventId,
+    kind: "invite_failed",
+    lost: {
+      outboxId,
+      method: payload.imip.method,
+      to: payload.message.to.map((entry) => entry.address),
+      ...(options.partial ? { partial: true } : {}),
+    },
+    title: payload.imip.title,
+    reason: `${imipFailurePrefix(payload.imip)}: ${reason}`,
+  });
 }

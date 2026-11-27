@@ -30,6 +30,7 @@ import {
   type SyncAccount,
 } from "./mailbox-store.js";
 import {
+  authTrustOf,
   FETCH_HEADERS,
   headersPending,
   LIST_HEADERS,
@@ -216,7 +217,11 @@ export async function fetchHeaders(
       // サーバーから消えていた場合は、空のまま取り込み済みにする (次の同期でメッセージごと消える)。
       const message = fetched.get(Number(row.uid));
       const sender = toAddresses(message?.envelope?.sender);
-      const list = parseListHeaders(message?.headers, row.from);
+      const list = parseListHeaders(
+        message?.headers,
+        row.from,
+        authTrustOf(account),
+      );
       await tx
         .update(messages)
         .set({ sender, ...list, headersFetchedAt: new Date() })
@@ -697,7 +702,11 @@ export async function insertMessages(
           bcc: toAddresses(envelope.bcc),
           replyTo: toAddresses(envelope.replyTo),
           sender: toAddresses(envelope.sender),
-          ...parseListHeaders(message.headers, toAddresses(envelope.from)),
+          ...parseListHeaders(
+            message.headers,
+            toAddresses(envelope.from),
+            authTrustOf(account),
+          ),
           headersFetchedAt: new Date(),
           sentAt,
           receivedAt,

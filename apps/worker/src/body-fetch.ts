@@ -1,4 +1,4 @@
-import type { BodyFetchPriority } from "@orbit/core";
+import { type BodyFetchPriority, isCurrentSenderCheck } from "@orbit/core";
 import { type Database, messages } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import type { ImapFlow } from "imapflow";
@@ -17,7 +17,11 @@ import {
 } from "./graph-sync.js";
 import type { SyncAccount } from "./mailbox-store.js";
 import { readBody } from "./mailbox-sync.js";
-import { LIST_HEADERS, parseListHeaders } from "./message-headers.js";
+import {
+  authTrustOf,
+  LIST_HEADERS,
+  parseListHeaders,
+} from "./message-headers.js";
 import { analyzeStructure, makeSnippet, toAddresses } from "./message-parse.js";
 
 /** 本文、または送信元の確認結果をまだ取得していないメッセージ。 */
@@ -63,7 +67,8 @@ export async function loadBodyTarget(
   if (!row) return null;
   const { bodyFetchedAt, senderCheck, ...target } = row;
   const bodyPending = bodyFetchedAt === null;
-  const senderCheckPending = senderCheck === null;
+  // 古い決まり (信頼する判定サーバーとの照合の前) で作った結果も取り直す。
+  const senderCheckPending = !isCurrentSenderCheck(senderCheck);
   if (!bodyPending && !senderCheckPending) return null;
   return {
     ...target,
@@ -165,11 +170,12 @@ export function imapBodyFetcher(
 export function graphBodyFetcher(
   db: Database,
   client: GraphClient,
+  account: SyncAccount,
   signal?: AbortSignal,
 ): BodyFetcher {
   return async (target) => {
     if (!target.providerMessageId) return false;
-    await fetchGraphBody(db, client, target, signal);
+    await fetchGraphBody(db, client, target, authTrustOf(account), signal);
     return true;
   };
 }
@@ -177,6 +183,7 @@ export function graphBodyFetcher(
 /** IMAP から 1 通の認証結果などのヘッダーを取得する。withClient は、同期用とは別の接続で作業を実行する。 */
 export function imapHeaderFetcher(
   db: Database,
+  account: SyncAccount,
   withClient: <T>(task: (client: ImapFlow) => Promise<T>) => Promise<T>,
 ): HeaderFetcher {
   return async (target) => {
@@ -196,7 +203,7 @@ export function imapHeaderFetcher(
       .update(messages)
       .set({
         sender: toAddresses(message.envelope?.sender),
-        ...parseListHeaders(message.headers, target.from),
+        ...parseListHeaders(message.headers, target.from, authTrustOf(account)),
         headersFetchedAt: new Date(),
       })
       .where(eq(messages.id, target.messageId));
@@ -208,11 +215,18 @@ export function imapHeaderFetcher(
 export function graphHeaderFetcher(
   db: Database,
   client: GraphClient,
+  account: SyncAccount,
   signal?: AbortSignal,
 ): HeaderFetcher {
   return async (target) => {
     if (!target.providerMessageId) return false;
-    await fetchGraphMessageHeaders(db, client, target, signal);
+    await fetchGraphMessageHeaders(
+      db,
+      client,
+      target,
+      authTrustOf(account),
+      signal,
+    );
     return true;
   };
 }

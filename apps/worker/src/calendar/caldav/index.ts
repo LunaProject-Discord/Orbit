@@ -63,11 +63,12 @@ type PageState = {
 type CaldavCalendarState = {
   syncCollection?: boolean;
   /**
-   * サーバーが calendar-auto-schedule (RFC 6638) を返した。API はこれで、参加者を足せるか
-   * (scheduling が server か none か) を決める。OPTIONS が一時的に失敗して調べられなかった
-   * ときは鍵を書かない (保存は浅く重ねるので前の値が残る。初めてのカレンダーは none 扱い)。
+   * サーバーが calendar-auto-schedule (RFC 6638) を返したら true、送らないと分かったら false
+   * (Orbit が招待メールを送る。core の autoScheduleOf)。確かめられなかったら null (none 扱い。
+   * 前に false と書いていても消す)。OPTIONS が一時的に失敗して調べられなかったときは鍵を
+   * 書かない (保存は浅く重ねるので前の値が残る。初めてのカレンダーは none 扱い)。
    */
-  autoSchedule?: boolean;
+  autoSchedule?: boolean | null;
 };
 
 function startUrlOf(account: AccountRow): string {
@@ -186,24 +187,48 @@ export function createCaldavProvider(
     });
   }
 
-  function selfAddresses(account: AccountRow): Set<string> {
+  /**
+   * 自分のアドレス: アカウントの email と @ を含む username に、カレンダーの招待メールの
+   * 送信元のアドレス (imip-design 4.4。メールアカウントのアドレスで主催・参加した予定を、
+   * 取り込みのたびに他人の予定にしないため) を足す。userAddresses は主催者の判定にだけ渡す (M7)。
+   */
+  function selfAddresses(
+    account: AccountRow,
+    imipAddress: string | null | undefined,
+    userAddresses: ReadonlySet<string> = new Set(),
+  ): Set<string> {
     return new Set(
-      [account.email, account.username]
+      [account.email, account.username, imipAddress ?? "", ...userAddresses]
         .filter((value) => value.includes("@"))
-        .map((value) => value.toLowerCase()),
+        .map((value) => value.trim().toLowerCase()),
     );
   }
 
-  /** リソース 1 つを予定の行にする。読めなければ空。 */
+  /** リソース 1 つを予定の行にする。読めなければ空。ctx が無ければ self を付けない。 */
   function toRemoteEvents(
     resource: CaldavResource,
     calendar: CalendarRow,
-    account: AccountRow | null,
+    ctx: ProviderContext | null,
   ): RemoteEvent[] {
     const parsed = parseICalendar(resource.data, {
       defaultTimeZone: calendar.timeZone ?? "UTC",
     });
-    const self = account ? selfAddresses(account) : new Set<string>();
+    const account = ctx?.account ?? null;
+    const self = account
+      ? selfAddresses(account, ctx?.imipAddresses?.get(calendar.id))
+      : new Set<string>();
+    // 主催者の印には、自動スケジュールでないカレンダーなら利用者の全アカウントのアドレスも使う
+    // (送信元を変えた後も、前の送信元で主催した予定を自分の予定として扱う。imip レビュー M7)。
+    // 参加者の self は取り込み側の決まり (そのカレンダーの自分のアドレスだけ) のまま。
+    const organizerSelf = account
+      ? selfAddresses(
+          account,
+          ctx?.imipAddresses?.get(calendar.id),
+          calendar.providerState?.autoSchedule === true
+            ? undefined
+            : ctx?.userAddresses,
+        )
+      : self;
     return parsed.events.map((event) => ({
       ...event,
       raw: resource.data,
@@ -215,7 +240,7 @@ export function createCaldavProvider(
         event.organizer && account
           ? {
               ...event.organizer,
-              self: self.has(event.organizer.email.toLowerCase()),
+              self: organizerSelf.has(event.organizer.email.toLowerCase()),
             }
           : event.organizer,
       attendees: event.attendees.map((attendee) => ({
@@ -232,7 +257,7 @@ export function createCaldavProvider(
     calendar: CalendarRow,
   ): RemoteEvent[] | null {
     try {
-      return toRemoteEvents(resource, calendar, ctx.account);
+      return toRemoteEvents(resource, calendar, ctx);
     } catch (error) {
       if (!(error instanceof ICalendarError)) throw error;
       ctx.log(`予定 ${resource.href} の iCalendar を読めないので飛ばします`);
@@ -256,14 +281,14 @@ export function createCaldavProvider(
     if (etag) {
       return {
         status: "ok",
-        events: toRemoteEvents({ href, etag, data }, calendar, ctx.account),
+        events: toRemoteEvents({ href, etag, data }, calendar, ctx),
       };
     }
     const fetched = await client.get(absolute(calendar, href));
     if (!fetched) return { status: "gone" };
     return {
       status: "ok",
-      events: toRemoteEvents({ ...fetched, href }, calendar, ctx.account),
+      events: toRemoteEvents({ ...fetched, href }, calendar, ctx),
     };
   }
 
@@ -301,13 +326,30 @@ export function createCaldavProvider(
     }
   }
 
-  function writeOptions(ctx: ProviderContext, calendar: CalendarRow) {
+  /**
+   * 書き出しの設定。organizer は、書く予定の主催者 (events.organizer)。参加者のいる予定に
+   * ORGANIZER が無いときに書く主催者で、予定に主催者が無ければカレンダーの招待メールの送信元、
+   * それも無ければこのアカウントにする (imip-design 4.4。取り込んだ招待の主催者を、
+   * 自分に書き換えないため。writeICalendar は options.organizer を予定の値より先に使う)。
+   */
+  function writeOptions(
+    ctx: ProviderContext,
+    calendar: CalendarRow,
+    organizer?: { email: string; name?: string | null } | null,
+  ) {
     const email = ctx.account.email.includes("@") ? ctx.account.email : null;
+    const imipAddress = ctx.imipAddresses?.get(calendar.id) ?? null;
+    const fallback = imipAddress
+      ? { email: imipAddress, name: null }
+      : email
+        ? { email, name: ctx.account.displayName }
+        : null;
     return {
       defaultTimeZone: calendar.timeZone ?? "UTC",
       alarmEmail: email,
-      // 参加者のいる予定に ORGANIZER が無ければ、このアカウントを主催者として書く。
-      organizer: email ? { email, name: ctx.account.displayName } : null,
+      organizer: organizer?.email
+        ? { email: organizer.email, name: organizer.name ?? null }
+        : fallback,
       now: now(),
     };
   }
@@ -420,12 +462,14 @@ export function createCaldavProvider(
           (collection) => collection?.supportsEvents,
         );
         // null = 一時的に調べられなかった。前の値を上書きしない (レビュー 8)。
-        const autoSchedule = firstCollection
+        // "unconfirmed" = 送るかどうかを確かめられない。null を書いて none に倒す (imip レビュー H2)。
+        const probe = firstCollection
           ? await client.supportsAutoSchedule([
               firstCollection.url,
               ...found.homeUrls,
             ])
-          : false;
+          : "unconfirmed";
+        const autoSchedule = probe === "unconfirmed" ? null : probe;
         const seen = new Set<string>();
         const result: RemoteCalendar[] = [];
         for (const collection of collections) {
@@ -445,7 +489,7 @@ export function createCaldavProvider(
             kind: "normal",
             providerState: {
               syncCollection: collection.supportsSyncCollection,
-              ...(autoSchedule === null ? {} : { autoSchedule }),
+              ...(probe === null ? {} : { autoSchedule }),
             } satisfies CaldavCalendarState,
           });
         }
@@ -534,7 +578,7 @@ export function createCaldavProvider(
         const data = writeICalendar({
           base: write.event.raw,
           entries,
-          ...writeOptions(ctx, calendar),
+          ...writeOptions(ctx, calendar, write.event.organizer),
         });
         const result = await client.put(absolute(calendar, href), data, {
           ifNoneMatch: "*",
@@ -548,11 +592,7 @@ export function createCaldavProvider(
             if (!existing) return { status: "conflict", remoteId: href };
             return {
               status: "ok",
-              events: toRemoteEvents(
-                { ...existing, href },
-                calendar,
-                ctx.account,
-              ),
+              events: toRemoteEvents({ ...existing, href }, calendar, ctx),
             };
           }
           case "not_found":
@@ -598,7 +638,7 @@ export function createCaldavProvider(
         const rows = toRemoteEvents(
           { ...current, href: ref.remoteId },
           calendar,
-          ctx.account,
+          ctx,
         );
         const master = rows.find((row) => row.recurrenceId === null);
         const target = normalizeRecurrenceId(ref.recurrenceId);
@@ -634,7 +674,7 @@ export function createCaldavProvider(
               ]
             : [],
           remove: [target],
-          ...writeOptions(ctx, calendar),
+          ...writeOptions(ctx, calendar, master?.organizer),
         });
         return putResource(
           ctx,
@@ -658,7 +698,7 @@ export function createCaldavProvider(
         const rows = toRemoteEvents(
           { ...current, href: ref.remoteId },
           calendar,
-          ctx.account,
+          ctx,
         );
         const target =
           ref.recurrenceId === null
@@ -697,7 +737,7 @@ export function createCaldavProvider(
               fields: ["attendees"],
             },
           ],
-          ...writeOptions(ctx, calendar),
+          ...writeOptions(ctx, calendar, row.organizer),
         });
         return putResource(
           ctx,
@@ -762,7 +802,11 @@ export function createCaldavProvider(
       base,
       entries: [{ event, fields: newException ? "all" : write.fields }],
       remove,
-      ...writeOptions(ctx, calendar),
+      ...writeOptions(
+        ctx,
+        calendar,
+        write.event.organizer ?? write.master?.organizer,
+      ),
     });
     return putResource(ctx, client, calendar, href, data, ifMatch);
   }

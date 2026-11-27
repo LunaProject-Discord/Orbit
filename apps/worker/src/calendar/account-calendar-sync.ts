@@ -11,7 +11,9 @@ import {
   type Database,
   listEventEtags,
   listEventKeys,
+  resolveCalendarImipSender,
   upsertAccountCalendars,
+  userOwnAddresses,
 } from "@orbit/db";
 import { and, eq } from "drizzle-orm";
 import { recordChanges } from "../changes.js";
@@ -289,7 +291,15 @@ export class AccountCalendarSync {
 
   /** 同期 1 回分。次に同期する時刻を返す。失敗すると投げる。 */
   private async cycle(): Promise<number> {
-    const ctx = this.context();
+    const ctx: ProviderContext = {
+      ...this.context(),
+      ...(this.provider.source === "caldav"
+        ? {
+            imipAddresses: await calendarImipAddresses(this.db, this.account),
+            userAddresses: await userOwnAddresses(this.db, this.account.userId),
+          }
+        : {}),
+    };
     const log = (message: string) => this.log(message);
 
     // 1. 書き戻しを先に反映する (取り込みで古い状態に戻さないため)。
@@ -606,4 +616,27 @@ function describeError(error: unknown): string {
     return "サーバー内部でエラーが発生しました。";
   }
   return error.message;
+}
+
+/**
+ * CalDAV のアカウントのカレンダーごとの、招待メールの送信元のアドレス (imip-design 4.4)。
+ * 自動スケジュールのサーバー (サーバーが招待を送る) のカレンダーは、サーバーの判定に任せて足さない。
+ */
+export async function calendarImipAddresses(
+  db: Database,
+  account: Pick<AccountRow, "id" | "userId">,
+): Promise<Map<string, string>> {
+  const rows = await db
+    .select()
+    .from(calendars)
+    .where(
+      and(eq(calendars.accountId, account.id), eq(calendars.source, "caldav")),
+    );
+  const map = new Map<string, string>();
+  for (const calendar of rows) {
+    if (calendar.providerState?.autoSchedule === true) continue;
+    const resolved = await resolveCalendarImipSender(db, calendar);
+    if (resolved.sender) map.set(calendar.id, resolved.sender.email);
+  }
+  return map;
 }

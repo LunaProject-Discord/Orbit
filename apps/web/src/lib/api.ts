@@ -4,6 +4,11 @@
  * セッショントークンを localStorage に置いて Authorization ヘッダーで送る。
  */
 
+import type {
+  InviteApplyRequest,
+  InviteApplyResult,
+  MessageInviteImipFields,
+} from "@orbit/core/event-invite";
 import type { AccountIconName } from "@/lib/account-icons";
 import {
   AUTH_STATE_HEADER,
@@ -392,7 +397,29 @@ export type SenderCheck = {
   warnings: SenderWarning[];
   /** name_mismatch のとき、表示名が名乗っている相手。 */
   claimed: string | null;
+  /** 判定の決まりの版 (@orbit/core の SENDER_CHECK_VERSION)。古い結果には無い。 */
+  version?: number;
 };
+
+/**
+ * 送信元の確認結果の決まりの版 (@orbit/core の SENDER_CHECK_VERSION と同じ値)。
+ * 2 = 受信サーバーの信頼する判定 (authserv-id) だけを使う。
+ */
+export const SENDER_CHECK_VERSION = 2;
+
+/**
+ * 「確認済み」の印や BIMI のロゴを出してよいか (DMARC に合格し、注意が無い)。
+ * サーバーは古い決まりの結果を返さないが、端末に保存してあった古い内容にも出さない。
+ */
+export function isVerifiedSender(
+  check: SenderCheck | null | undefined,
+): boolean {
+  return (
+    check?.verified === true &&
+    check.warnings.length === 0 &&
+    check.version === SENDER_CHECK_VERSION
+  );
+}
 
 export type Attachment = {
   id: string;
@@ -2178,9 +2205,10 @@ export async function fetchAttachment(
 
 /**
  * メールの招待 (text/calendar の添付) の中身。API の GET /v1/messages/:id/invite の応答。
- * 予定の書き込みには使わない (表示と、カレンダーにある同じ予定への返事だけ)。
+ * 端末はメールの中身を予定の書き込みに使わない。取り込み・反映は apply で頼み、サーバーが
+ * 添付を読み直して書き込む (段取り 8b)。8b の項目 (MessageInviteImipFields) は古いサーバーには無い。
  */
-export type MessageInvite = {
+export type MessageInvite = Partial<MessageInviteImipFields> & {
   method: "request" | "cancel" | "reply" | "other";
   uid: string;
   sequence: number;
@@ -2219,6 +2247,23 @@ export type MessageInvite = {
    */
   eventTime?: MessageInvite["time"] | null;
 };
+
+/**
+ * メールの招待をカレンダーに取り込む・反映する (POST /v1/messages/:id/invite/apply、段取り 8b)。
+ * expect はカードに出ていた操作。状況が変わっていれば 409 changed、できない理由があれば
+ * 409 (sender_mismatch など、invite.blocked と同じコード)。何度呼んでも結果は同じ。
+ * event は API の予定の形 (lib/calendar/api の CalendarEvent)。
+ */
+export async function applyMessageInvite<E = unknown>(
+  messageId: string,
+  body: InviteApplyRequest,
+  signal?: AbortSignal,
+): Promise<InviteApplyResult<E>> {
+  return apiJson<InviteApplyResult<E>>(
+    `/v1/messages/${messageId}/invite/apply`,
+    { method: "POST", body, signal },
+  );
+}
 
 /** メールの招待を読む。招待として読めなければ null。 */
 export async function fetchMessageInvite(

@@ -14,6 +14,8 @@ export * from "./host-check.js";
 export * from "./icalendar.js";
 export * from "./icalendar-write.js";
 export * from "./ics-fetch.js";
+export * from "./itip.js";
+export * from "./itip-plan.js";
 export * from "./legacy-tls.js";
 export * from "./mail-providers.js";
 export * from "./mailbox-roles.js";
