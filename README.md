@@ -29,6 +29,7 @@ pnpm env:init          # .env を作成し、秘密の値 (BETTER_AUTH_SECRET �
 docker compose up -d   # PostgreSQL を起動
 pnpm db:migrate        # テーブルを作成
 pnpm user:create you@example.com "あなたの名前"   # ログイン用の利用者を作成 (パスワードを聞かれます)
+pnpm admin create admin "管理者"                  # 管理画面 (/admin) の管理者を作成 (任意。パスワードを聞かれます)
 pnpm dev               # api / worker / web を起動
 ```
 
@@ -90,7 +91,11 @@ cd deploy && docker compose up -d --build
 ## ログインとメールアカウント
 
 - アプリへのログインは [Better Auth](https://www.better-auth.com/) のメールアドレス + パスワードです。
-  新規登録は API では受け付けておらず (招待制)、最初の利用者は `pnpm user:create` で作成します (管理者になります)。ほかの人は、管理者が「設定」→「利用者と招待」で発行した招待リンクから、自分で登録します。
+  新規登録は API では受け付けておらず (招待制)、最初の利用者は `pnpm user:create` で作成します。ほかの人は、管理者が管理画面 (`/admin`) の「招待」で発行した招待リンクから、自分で登録します。
+- サーバーの管理者は、一般の利用者とは別のアカウントです (メールは使えず、管理画面 `/admin` にだけログインします)。
+  名前とパスワード (+ 2 段階認証・パスキー) でログインし、セッションは 12 時間です。
+  最初の管理者は `pnpm admin create <名前> <表示名>` か、管理者が 1 人もいないときに開ける `/admin/setup`
+  (API のログに出る合言葉が必要。30 分ごとに作り直す) で作ります。仕組みは `apps/api/src/admin-auth.ts` と `apps/api/src/routes/admin.ts`。
 - クライアントはログインで得たセッショントークンを `Authorization: Bearer` で送ります
   (Web / Tauri / Capacitor で同じ方式を使うため、Cookie には依存しません)。
 - 1 人の利用者が複数のメールアカウントを追加できます。アカウントの追加画面で、次の 4 つから選びます。
@@ -469,6 +474,11 @@ Web の画面 (Tauri / Capacitor に同梱する場合も同じ) は、サーバ
 | `POST /v1/auth/sign-in/email` | ログイン。レスポンスヘッダー `set-auth-token` がセッショントークン |
 | `POST /v1/auth/sign-out` | ログアウト |
 | `GET /v1/me` | ログイン中の利用者 |
+| `/v1/admin/auth/*` | 管理者のログイン、2 段階認証、パスキー (管理者用の Better Auth。一般の利用者のトークンは通らない) |
+| `GET /v1/admin/setup` / `POST /v1/admin/setup` | 初回セットアップ (管理者が 0 人か / 合言葉で最初の管理者を作る) |
+| `GET /v1/admin/me` / `GET /v1/admin/security` / `PUT /v1/admin/security/name` | ログイン中の管理者 / ログインの設定の状態 / 表示名の変更 |
+| `GET /v1/admin/users` / `GET /v1/admin/admins` | 利用者の一覧 / 管理者の一覧 |
+| `GET /v1/admin/invitations` / `POST` / `DELETE /v1/admin/invitations/:id` | 招待リンクの一覧 / 発行 / 取り消し |
 | `GET /v1/auth-features` | サーバーが利用者へメールを送れるか (ログイン前の画面が、再設定の案内を出すかどうかに使う) |
 | `POST /v1/auth/request-password-reset`、`POST /v1/auth/reset-password` | パスワードの再設定 (メールのリンクの合言葉で新しいパスワードを設定) |
 | `POST /v1/auth/change-password` | パスワードの変更 |
@@ -570,7 +580,10 @@ HTML の文字参照 (`&#12354;` など) も文字に戻してから探します
 | `pnpm db:generate` | スキーマの変更からマイグレーションを生成 |
 | `pnpm db:migrate` | マイグレーションを適用 (接続先・未適用の一覧を表示し、失敗したときは失敗したマイグレーションと SQL、PostgreSQL のエラー内容を表示) |
 | `pnpm --filter @orbit/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
-| `pnpm user:create <メール> <表示名> [--admin]` | ログイン用の利用者を作成 (最初の 1 人と `--admin` 付きは管理者) |
+| `pnpm user:create <メール> <表示名>` | ログイン用の利用者を作成 |
+| `pnpm admin create <名前> <表示名>` | 管理画面 (`/admin`) の管理者を作成 (一般の利用者とは別のアカウント) |
+| `pnpm admin password <名前> [--reset-two-factor]` | 管理者のパスワードを付け直す (復旧用。全端末のログアウトとパスキーの削除も行う) |
+| `pnpm admin list` / `pnpm admin delete <名前>` | 管理者の一覧 / 削除 |
 | `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
 
 ## UI
@@ -599,7 +612,8 @@ shadcn/ui の CLI がフォント設定を書き換えた場合は、`--font-san
 | `/drafts` | 下書きの一覧 |
 | `/starred` | スター付きのメール (全アカウント・全フォルダ)。`/starred/messages/<ID>` でメールを開いた状態 |
 | `/outgoing` | 送信待ちのメール |
-| `/settings`、`/settings/<カテゴリ>` | 設定。カテゴリごとのページに分かれている (`accounts`、`appearance`、`fonts`、`list`、`reading`、`actions`、`sidebar`、`notifications`、`signatures`、`system`)。広い画面は左にカテゴリの一覧と右にページ、狭い画面は一覧からページへ入る。外観・フォント・メール一覧・メールの表示などは端末ごとに localStorage へ保存する |
+| `/admin`、`/admin?section=<ページ>` | 管理画面 (`users`、`invitations`、`admins`、`security`)。管理者のアカウントでログインする。`/admin/setup` は初回セットアップ |
+| `/settings`、`/settings/<カテゴリ>` | 設定。カテゴリごとのページに分かれている (`accounts`、`appearance`、`fonts`、`list`、`reading`、`actions`、`sidebar`、`notifications`、`signatures`、`security`、`system`、`about`)。広い画面は左にカテゴリの一覧と右にページ、狭い画面は一覧からページへ入る。外観・フォント・メール一覧・メールの表示などは端末ごとに localStorage へ保存する |
 | `…/compose/<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `…/compose/new`) |
 | `…?q=<語>` | 検索 (絞り込みも `from:` などの書き方で `q` に入れる)。表示中のフォルダだけを探すときは `in=folder`。以前の `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1` も読める |
 

@@ -17,7 +17,8 @@
     "db:generate": "pnpm --filter @orbit/db generate",
     "db:migrate": "pnpm --filter @orbit/db migrate",
     "user:create": "pnpm --filter @orbit/api user:create",
-    "user:password": "pnpm --filter @orbit/api user:password"
+    "user:password": "pnpm --filter @orbit/api user:password",
+    "admin": "pnpm --filter @orbit/api admin"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",

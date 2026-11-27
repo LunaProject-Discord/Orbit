@@ -21,10 +21,22 @@ export type RouteDeps = {
   fcmEnabled: boolean;
 };
 
+/**
+ * Cookie を除いたヘッダー。このアプリは Cookie を使わず、セッションは Authorization: Bearer だけで
+ * 受け取る (Cookie で通ると、ほかのサイトからの要求 (CSRF) やログインの固定の余地が生まれる)。
+ */
+export function withoutCookies(headers: Headers): Headers {
+  const copy = new Headers(headers);
+  copy.delete("cookie");
+  return copy;
+}
+
 /** ログイン済みであることを確かめ、利用者を c.var.user に入れる。 */
 export function requireUser(auth: Auth) {
   return createMiddleware<AppEnv>(async (c, next) => {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const session = await auth.api.getSession({
+      headers: withoutCookies(c.req.raw.headers),
+    });
     if (!session) {
       return c.json({ error: "unauthorized" }, 401);
     }

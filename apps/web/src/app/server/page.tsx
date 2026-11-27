@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { forgetAdminSession } from "@/lib/admin-api";
 import { forgetSession } from "@/lib/api";
 import { releasePush } from "@/lib/notifications";
 import {
@@ -74,6 +75,7 @@ export default function ServerPage() {
       // 通知の送り先も、前のサーバーから消してから切り替える。
       if (auth.status === "signed-in") await releasePush(true);
       forgetSession();
+      forgetAdminSession();
       setServerUrl(url);
       auth.reset();
     }

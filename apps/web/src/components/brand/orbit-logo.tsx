@@ -10,12 +10,20 @@ import {
 
 /** Orbit のアプリ。 */
 export type OrbitProduct = "mail" | "calendar" | "contacts";
+/** ロゴの種類。orbit は製品名の付かない Orbit 全体 (管理画面など)。 */
+export type OrbitBrand = OrbitProduct | "orbit";
 
 /** 製品ごとの色。from → to が明るい背景とタイル、tint → tintTo が暗い背景。 */
 const COLORS: Record<
-  OrbitProduct,
+  OrbitBrand,
   { from: string; to: string; tint: string; tintTo: string }
 > = {
+  orbit: {
+    from: "#2B2F45",
+    to: "#12141F",
+    tint: "#FFFFFF",
+    tintTo: "#C9CEE8",
+  },
   mail: { from: "#5B5BF0", to: "#8B5CF6", tint: "#A5A8FF", tintTo: "#8B5CF6" },
   calendar: {
     from: "#F9603A",
@@ -37,7 +45,8 @@ const WORDMARKS: Record<OrbitProduct, { d: string; width: number }> = {
   contacts: WORDMARK_CONTACTS,
 };
 
-const NAMES: Record<OrbitProduct, string> = {
+const NAMES: Record<OrbitBrand, string> = {
+  orbit: "Orbit",
   mail: "Orbit Mail",
   calendar: "Orbit Calendar",
   contacts: "Orbit Contacts",
@@ -49,10 +58,12 @@ function Motif({
   inside,
   ink,
 }: {
-  product: OrbitProduct;
+  product: OrbitBrand;
   inside: string;
   ink: string;
 }) {
+  // Orbit 全体の記号は、輪と月だけ。
+  if (product === "orbit") return null;
   if (product === "mail") {
     return (
       <path
@@ -108,7 +119,7 @@ function Glyph({
   product,
   ink,
 }: {
-  product: OrbitProduct;
+  product: OrbitBrand;
   /** 線と点の色 (url(#…) か色の値)。 */
   ink: string;
 }) {
@@ -146,7 +157,7 @@ export function OrbitMark({
   product = "mail",
 }: {
   className?: string;
-  product?: OrbitProduct;
+  product?: OrbitBrand;
 }) {
   const id = useId();
   const ink = `${id}-ink`;
@@ -165,7 +176,12 @@ export function OrbitMark({
             className="dark:[stop-color:var(--orbit-tint)]"
             style={{ ["--orbit-tint" as string]: color.tint }}
           />
-          <stop offset="1" stopColor={color.to} />
+          <stop
+            offset="1"
+            stopColor={color.to}
+            className="dark:[stop-color:var(--orbit-tint-to)]"
+            style={{ ["--orbit-tint-to" as string]: color.tintTo }}
+          />
         </linearGradient>
       </defs>
       <Glyph product={product} ink={`url(#${ink})`} />
@@ -216,10 +232,10 @@ export function OrbitLogo({
   product = "mail",
 }: {
   className?: string;
-  product?: OrbitProduct;
+  product?: OrbitBrand;
 }) {
-  const name = WORDMARKS[product];
-  const width = WORDMARK_ORBIT.width + WORD_GAP + name.width;
+  const name = product === "orbit" ? null : WORDMARKS[product];
+  const width = WORDMARK_ORBIT.width + (name ? WORD_GAP + name.width : 0);
   return (
     <span
       role="img"
@@ -233,11 +249,13 @@ export function OrbitLogo({
         className="h-[62%] w-auto shrink-0 fill-current"
       >
         <path d={WORDMARK_ORBIT.d} />
-        <path
-          d={name.d}
-          transform={`translate(${WORDMARK_ORBIT.width + WORD_GAP} 0)`}
-          opacity="0.7"
-        />
+        {name && (
+          <path
+            d={name.d}
+            transform={`translate(${WORDMARK_ORBIT.width + WORD_GAP} 0)`}
+            opacity="0.7"
+          />
+        )}
       </svg>
     </span>
   );

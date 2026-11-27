@@ -30,7 +30,6 @@ import {
   SunIcon,
   Trash2Icon,
   TypeIcon,
-  UserPlusIcon,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
@@ -43,7 +42,6 @@ import {
 import { ColorPicker } from "@/components/mail/color-picker";
 import { FontPicker } from "@/components/mail/font-picker";
 import { IconPicker } from "@/components/mail/icon-picker";
-import { InvitationSettings } from "@/components/mail/invitation-settings";
 import { SecuritySettings } from "@/components/mail/security-settings";
 import { PopNotice, popDeleteOptions } from "@/components/mail/server-settings";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
@@ -285,13 +283,6 @@ const CATEGORIES: Record<
       "Orbit での名前と、ログインに使うメールアドレス、パスワード、2 段階認証、パスキーを設定します。メールアカウント (Gmail など) の設定とは別です。",
     icon: ShieldCheckIcon,
   },
-  users: {
-    label: "利用者と招待",
-    summary: "招待リンクの発行、このサーバーの利用者",
-    description:
-      "招待リンクを発行して、このサーバーの利用者を追加します。このページは管理者だけが使えます。",
-    icon: UserPlusIcon,
-  },
   system: {
     label: "同期と端末",
     summary: "同期の状況、ログアウト、設定の初期化",
@@ -395,10 +386,7 @@ export function SettingsView(props: Props) {
           )}
         >
           <ul className="flex flex-col gap-0.5">
-            {SETTINGS_CATEGORIES.filter(
-              // 利用者と招待は、管理者にだけ出す。
-              (id) => id !== "users" || props.user.isAdmin === true,
-            ).map((id) => {
+            {SETTINGS_CATEGORIES.map((id) => {
               const item = CATEGORIES[id];
               return (
                 <li key={id}>
@@ -496,8 +484,6 @@ function SettingsPage({
       return <SignaturesPage {...props} />;
     case "security":
       return <SecuritySettings user={props.user} />;
-    case "users":
-      return <InvitationSettings user={props.user} />;
     case "system":
       return <SystemPage {...props} />;
     case "about":

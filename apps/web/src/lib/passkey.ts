@@ -65,9 +65,27 @@ function translate(error: unknown): unknown {
 type CreationOptions = Parameters<typeof startRegistration>[0]["optionsJSON"];
 type RequestOptions = Parameters<typeof startAuthentication>[0]["optionsJSON"];
 
+/** パスキーの登録・ログインでサーバーと話す手段 (一般の利用者と管理者で差し替える)。 */
+export type PasskeyApi = {
+  registerOptions: () => Promise<unknown>;
+  register: (response: unknown, name: string) => Promise<Passkey>;
+  signInOptions: () => Promise<unknown>;
+  signIn: (response: unknown) => Promise<void>;
+};
+
+const userPasskeyApi: PasskeyApi = {
+  registerOptions: passkeyRegisterOptions,
+  register: passkeyRegister,
+  signInOptions: passkeySignInOptions,
+  signIn: passkeySignIn,
+};
+
 /** この端末 (または鍵) にパスキーを作って、アカウントに登録する。 */
-export async function registerPasskey(name: string): Promise<Passkey> {
-  const optionsJSON = (await passkeyRegisterOptions()) as CreationOptions;
+export async function registerPasskey(
+  name: string,
+  api: PasskeyApi = userPasskeyApi,
+): Promise<Passkey> {
+  const optionsJSON = (await api.registerOptions()) as CreationOptions;
   let response: Awaited<ReturnType<typeof startRegistration>>;
   try {
     response = await startRegistration({ optionsJSON });
@@ -75,12 +93,14 @@ export async function registerPasskey(name: string): Promise<Passkey> {
     throw translate(error);
   }
   const { clientExtensionResults: _ignored, ...body } = response;
-  return passkeyRegister(body, name);
+  return api.register(body, name);
 }
 
 /** パスキーでログインする。成功するとセッショントークンが保存される。 */
-export async function signInWithPasskey(): Promise<void> {
-  const optionsJSON = (await passkeySignInOptions()) as RequestOptions;
+export async function signInWithPasskey(
+  api: PasskeyApi = userPasskeyApi,
+): Promise<void> {
+  const optionsJSON = (await api.signInOptions()) as RequestOptions;
   let response: Awaited<ReturnType<typeof startAuthentication>>;
   try {
     response = await startAuthentication({ optionsJSON });
@@ -88,5 +108,5 @@ export async function signInWithPasskey(): Promise<void> {
     throw translate(error);
   }
   const { clientExtensionResults: _ignored, ...body } = response;
-  await passkeySignIn(body);
+  await api.signIn(body);
 }

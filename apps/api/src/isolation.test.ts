@@ -46,9 +46,12 @@ import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createAdminAuth } from "./admin-auth.js";
 import { createApp } from "./app.js";
 import { createAuth } from "./auth.js";
+import { SetupCode } from "./lib/admin-setup.js";
 import { EventsHub } from "./lib/events-hub.js";
+import { createAdmin } from "./routes/admin.js";
 
 const adminUrl = process.env.DATABASE_URL;
 const ORIGIN = "http://localhost:3000";
@@ -298,6 +301,8 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
   let b: Seeded;
   let tokenA: string;
   let tokenB: string;
+  /** 管理者 (一般の利用者とは別のアカウント) のトークン。 */
+  let adminToken: string;
 
   const request = (
     token: string,
@@ -361,10 +366,14 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     };
     const auth = createAuth(authOptions);
     const signUp = createAuth({ ...authOptions, allowSignUp: true });
+    const adminSignUp = createAdminAuth({ ...authOptions, allowSignUp: true });
     app = createApp({
       db,
       auth,
       signUpAuth: signUp,
+      adminAuth: createAdminAuth(authOptions),
+      adminSignUpAuth: adminSignUp,
+      setupCode: new SetupCode(() => {}),
       hub: new EventsHub(url.toString()),
       allowedOrigins: [ORIGIN],
       encryptionKey,
@@ -404,10 +413,21 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     const bob = await login("bob-private");
     tokenA = alice.token;
     tokenB = bob.token;
-    // A を管理者にする (招待リンクを発行できる)。B は管理者ではない。
-    await db.execute(
-      sql`update users set is_admin = true where id = ${alice.userId}`,
-    );
+    // 管理者は一般の利用者とは別のアカウント。招待リンクは管理者だけが発行できる。
+    const created = await createAdmin(db, adminSignUp, {
+      username: "root",
+      name: "管理者",
+      password: PASSWORD,
+    });
+    if (!created.ok)
+      throw new Error(`管理者を作れませんでした (${created.error})。`);
+    const adminLogin = await app.request("/v1/admin/auth/sign-in/username", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      body: JSON.stringify({ username: "root", password: PASSWORD }),
+    });
+    adminToken = adminLogin.headers.get("set-auth-token") ?? "";
+    if (!adminToken) throw new Error("管理者でログインできませんでした。");
     a = await seed(db, alice.userId, "alice-private");
     b = await seed(db, bob.userId, "bob-private");
   }, 120_000);
@@ -1683,7 +1703,12 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     const lookup = (value: string) =>
       app.request(`/v1/invitations/lookup?token=${encodeURIComponent(value)}`);
     const issue = async (body: unknown = {}) => {
-      const response = await request(tokenA, "POST", "/invitations", body);
+      const response = await request(
+        adminToken,
+        "POST",
+        "/admin/invitations",
+        body,
+      );
       expect(response.status).toBe(201);
       const data = (await response.json()) as {
         invitation: { id: string };
@@ -1698,26 +1723,29 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       password: PASSWORD,
     });
 
-    it("管理者でなければ、発行も一覧も取り消しもできない", async () => {
+    it("一般の利用者のトークンでは、管理の API を呼べない", async () => {
       const { id } = await issue();
-      for (const [method, path, body] of [
-        ["GET", "/invitations", undefined],
-        ["POST", "/invitations", {}],
-        ["DELETE", `/invitations/${id}`, undefined],
-      ] as const) {
-        const response = await request(tokenB, method, path, body);
-        expect(response.status, `${method} ${path}`).toBe(403);
+      for (const token of [tokenA, tokenB]) {
+        for (const [method, path, body] of [
+          ["GET", "/admin/me", undefined],
+          ["GET", "/admin/users", undefined],
+          ["GET", "/admin/invitations", undefined],
+          ["POST", "/admin/invitations", {}],
+          ["DELETE", `/admin/invitations/${id}`, undefined],
+        ] as const) {
+          const response = await request(token, method, path, body);
+          expect(response.status, `${method} ${path}`).toBe(401);
+        }
       }
-      const me = async (token: string) =>
-        (
-          (await (await request(token, "GET", "/me")).json()) as {
-            user: { isAdmin: boolean };
-          }
-        ).user.isAdmin;
-      expect(await me(tokenA)).toBe(true);
-      expect(await me(tokenB)).toBe(false);
+      // 以前の受け口 (/v1/invitations) は無い。
+      expect((await request(tokenA, "GET", "/invitations")).status).toBe(404);
+      // 管理者のトークンでは、利用者の API (メールなど) を呼べない。
+      for (const path of ["/me", "/accounts", "/settings"]) {
+        expect((await request(adminToken, "GET", path)).status, path).toBe(401);
+      }
       expect(
-        (await request(tokenA, "DELETE", `/invitations/${id}`)).status,
+        (await request(adminToken, "DELETE", `/admin/invitations/${id}`))
+          .status,
       ).toBe(204);
     });
 
@@ -1744,7 +1772,9 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       const carol = signedIn.headers.get("set-auth-token") ?? "";
       expect(carol).not.toBe("");
       // 新しい利用者は管理者ではなく、ほかの利用者のデータも見えない。
-      expect((await request(carol, "GET", "/invitations")).status).toBe(403);
+      expect((await request(carol, "GET", "/admin/invitations")).status).toBe(
+        401,
+      );
       const accountList = await request(carol, "GET", "/accounts");
       expect(await accountList.json()).toEqual({ accounts: [] });
 
@@ -1756,18 +1786,20 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       expect(again.status).toBe(404);
 
       const list = (await (
-        await request(tokenA, "GET", "/invitations")
+        await request(adminToken, "GET", "/admin/invitations")
       ).json()) as {
         invitations: { id: string; usedByEmail: string | null }[];
-        users: { email: string }[];
       };
       expect(
         list.invitations.find((row) => row.id === invite.id)?.usedByEmail,
       ).toBe("carol@example.com");
-      expect(list.users.map((user) => user.email)).toContain(
+      expect(JSON.stringify(list)).not.toContain(invite.token);
+      const members = (await (
+        await request(adminToken, "GET", "/admin/users")
+      ).json()) as { users: { email: string }[] };
+      expect(members.users.map((user) => user.email)).toContain(
         "carol@example.com",
       );
-      expect(JSON.stringify(list)).not.toContain(invite.token);
     });
 
     it("使えない招待 (でたらめ、期限切れ、取り消し済み) では作れない", async () => {
@@ -1776,7 +1808,7 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
         sql`update invitations set expires_at = now() - interval '1 minute' where id = ${expired.id}`,
       );
       const revoked = await issue();
-      await request(tokenA, "DELETE", `/invitations/${revoked.id}`);
+      await request(adminToken, "DELETE", `/admin/invitations/${revoked.id}`);
       for (const value of [expired.token, revoked.token, "x".repeat(43), ""]) {
         expect((await lookup(value)).status, value).toBe(404);
       }

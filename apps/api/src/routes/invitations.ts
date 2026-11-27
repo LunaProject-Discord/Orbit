@@ -2,13 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { zValidator } from "@hono/zod-validator";
 import { type Database, invitations, sessions, users } from "@orbit/db";
 import { isAPIError } from "better-auth/api";
-import { and, asc, count, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
-import { createMiddleware } from "hono/factory";
 import { z } from "zod";
 import type { Auth } from "../auth.js";
-import type { AppEnv } from "../context.js";
+import type { AdminEnv } from "./admin.js";
 
 /** パスワードの長さ (auth.ts の minPasswordLength と Better Auth の上限に合わせる)。 */
 const MIN_PASSWORD_LENGTH = 12;
@@ -168,57 +167,34 @@ export function invitationPublicRoutes({ db, signUpAuth }: PublicDeps) {
   return app;
 }
 
-/** 管理者であることを確かめる。requireUser のあとに使う。 */
-export function requireAdmin(db: Database) {
-  return createMiddleware<AppEnv>(async (c, next) => {
-    const [row] = await db
-      .select({ isAdmin: users.isAdmin })
-      .from(users)
-      .where(eq(users.id, c.var.user.id));
-    if (!row?.isAdmin) return c.json({ error: "forbidden" }, 403);
-    await next();
-  });
-}
-
 type AdminDeps = { db: Database; webOrigin: string };
 
-/** 管理者が招待を発行・確認・取り消しする。/v1/invitations の下に置く。 */
+/**
+ * 管理者が招待を発行・確認・取り消しする。管理画面の API (/v1/admin/invitations) の下に置き、
+ * 管理者のログインは呼び出し元 (routes/admin.ts の requireAdmin) が確かめる。
+ */
 export function invitationRoutes({ db, webOrigin }: AdminDeps) {
-  const app = new Hono<AppEnv>();
-  app.use(requireAdmin(db));
+  const app = new Hono<AdminEnv>();
 
-  /** 発行した招待と、このサーバーの利用者の一覧。 */
+  /** 発行した招待の一覧。 */
   app.get("/", async (c) => {
     const invited = alias(users, "invited");
-    const [rows, members] = await Promise.all([
-      db
-        .select({
-          id: invitations.id,
-          label: invitations.label,
-          email: invitations.email,
-          expiresAt: invitations.expiresAt,
-          usedAt: invitations.usedAt,
-          createdAt: invitations.createdAt,
-          usedByEmail: invited.email,
-          usedByName: invited.name,
-        })
-        .from(invitations)
-        .leftJoin(invited, eq(invited.id, invitations.usedBy))
-        .orderBy(desc(invitations.createdAt), desc(invitations.id))
-        .limit(200),
-      db
-        .select({
-          id: users.id,
-          email: users.email,
-          name: users.name,
-          isAdmin: users.isAdmin,
-          createdAt: users.createdAt,
-        })
-        .from(users)
-        .orderBy(asc(users.createdAt), asc(users.id))
-        .limit(500),
-    ]);
-    return c.json({ invitations: rows, users: members });
+    const rows = await db
+      .select({
+        id: invitations.id,
+        label: invitations.label,
+        email: invitations.email,
+        expiresAt: invitations.expiresAt,
+        usedAt: invitations.usedAt,
+        createdAt: invitations.createdAt,
+        usedByEmail: invited.email,
+        usedByName: invited.name,
+      })
+      .from(invitations)
+      .leftJoin(invited, eq(invited.id, invitations.usedBy))
+      .orderBy(desc(invitations.createdAt), desc(invitations.id))
+      .limit(200);
+    return c.json({ invitations: rows });
   });
 
   /**
@@ -248,7 +224,7 @@ export function invitationRoutes({ db, webOrigin }: AdminDeps) {
       .insert(invitations)
       .values({
         tokenHash: hashInvitationToken(value),
-        createdBy: c.var.user.id,
+        createdBy: c.var.admin.id,
         label: body.label || null,
         email: address,
         expiresAt: new Date(Date.now() + body.expiresInDays * 86_400_000),
