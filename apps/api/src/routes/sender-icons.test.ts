@@ -7,9 +7,15 @@ import { senderIconRoutes } from "./sender-icons.js";
 /** 頼まれた取得元を覚えておき、何も見つからなかったことにする、取得の代わり。 */
 function setup(allowed: boolean) {
   const asked: IconSource[][] = [];
+  const refreshes: boolean[] = [];
   const icons = {
-    find: async (_address: string, sources: IconSource[]) => {
+    find: async (
+      _address: string,
+      sources: IconSource[],
+      options?: { refresh?: boolean },
+    ) => {
       asked.push(sources);
+      refreshes.push(options?.refresh === true);
       return null;
     },
   } as unknown as SenderIconService;
@@ -22,11 +28,12 @@ function setup(allowed: boolean) {
     "/sender-icons",
     senderIconRoutes({ icons, allowGravatar: async () => allowed }),
   );
-  const get = (sources: string) =>
+  const get = (sources: string, headers: Record<string, string> = {}) =>
     app.request(
       `/sender-icons?address=a@example.com&sources=${encodeURIComponent(sources)}`,
+      { headers },
     );
-  return { asked, get };
+  return { asked, refreshes, get };
 }
 
 describe("差出人のアイコンの受け口", () => {
@@ -46,5 +53,12 @@ describe("差出人のアイコンの受け口", () => {
     const { asked, get } = setup(true);
     await get("gravatar,favicon");
     expect(asked).toEqual([["gravatar", "favicon"]]);
+  });
+
+  it("更新の見出しがあるときだけ、サーバーの控えも古ければ取り直すよう頼む", async () => {
+    const { refreshes, get } = setup(false);
+    await get("favicon");
+    await get("favicon", { "X-Icon-Refresh": "1" });
+    expect(refreshes).toEqual([false, true]);
   });
 });
