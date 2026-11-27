@@ -15,6 +15,7 @@ import {
   applyOpToEvents,
   type CalendarView,
   eventFieldsOf,
+  eventFromInput,
   overlay,
   provisionalException,
 } from "@/lib/calendar/offline/overlay";
@@ -117,19 +118,71 @@ const SERVER_ACTIONS: Record<CalendarConflict["kind"], ConflictAction[]> = {
   delete_cancelled: ["delete", "dismiss"],
 };
 
+/**
+ * サーバーの記録の snapshot は、予定の作成 (POST /events) と同じ項目の形に
+ * parentId と recurrenceId を足したもの (offline-api-notes.md)。画面と「復元」で
+ * 使えるように、予定の形 (CalendarEvent) に直す。
+ */
+type ServerSnapshot = EventFields & {
+  parentId?: string | null;
+  recurrenceId?: string | null;
+};
+
+export function snapshotEvent(
+  conflict: Pick<
+    CalendarConflict,
+    "eventId" | "calendarId" | "createdAt" | "snapshot"
+  >,
+): CalendarEvent | null {
+  const raw = conflict.snapshot as unknown;
+  if (!raw || typeof raw !== "object") return null;
+  // 予定全体の形 (古い記録や端末の控え) なら、そのまま使う。
+  if ("uid" in raw && "fieldUpdatedAt" in raw) return raw as CalendarEvent;
+  const {
+    parentId = null,
+    recurrenceId = null,
+    ...fields
+  } = raw as ServerSnapshot;
+  if (!fields.time) return null;
+  const event = eventFromInput(
+    {
+      ...fields,
+      time: fields.time,
+      id: conflict.eventId ?? randomUuid(),
+      calendarId: conflict.calendarId ?? "",
+    },
+    conflict.createdAt,
+  );
+  return {
+    ...event,
+    parentId,
+    recurrenceId: recurrenceId ? normalizeRecurrenceId(recurrenceId) : null,
+  };
+}
+
 function serverConflictItem(conflict: CalendarConflict): ConflictItem {
+  const snapshot = snapshotEvent(conflict);
+  // まだ相手側に無い回の例外の書き戻しが失敗したとき、snapshot が原本と回を持つ。
+  // 「もう一度試す」は、その回の変更 (PATCH /events/:parentId/occurrences/:rid) で送る。
+  const recurrenceId =
+    conflict.recurrenceId ??
+    (snapshot?.parentId ? snapshot.recurrenceId : null);
+  const eventId =
+    conflict.kind === "write_failed" && snapshot?.parentId && recurrenceId
+      ? snapshot.parentId
+      : conflict.eventId;
   return {
     id: conflict.id,
     source: "server",
     kind: conflict.kind,
     calendarId: conflict.calendarId,
-    eventId: conflict.eventId,
-    recurrenceId: conflict.recurrenceId ?? null,
+    eventId,
+    recurrenceId: recurrenceId ?? null,
     title: conflict.title,
     fields: conflict.fields,
     lost: conflict.lost,
     kept: null,
-    snapshot: conflict.snapshot,
+    snapshot,
     reason: conflict.reason,
     createdAt: conflict.createdAt,
     actions: SERVER_ACTIONS[conflict.kind] ?? ["dismiss"],

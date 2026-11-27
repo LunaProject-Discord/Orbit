@@ -13,10 +13,12 @@ import {
   VideoIcon,
   XIcon,
 } from "lucide-react";
+import { PendingBadge } from "@/components/calendar/pending-badge";
 import { type DisplayItem, itemTitle } from "@/components/calendar/types";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent } from "@/components/ui/popover";
 import type { Attendee, Calendar, Reminder } from "@/lib/calendar/api";
+import type { PendingState } from "@/lib/calendar/conflict-labels";
 import { formatMonthDayWeekday, formatTimeRange } from "@/lib/calendar/dates";
 import { describeRule } from "@/lib/calendar/recurrence-label";
 
@@ -50,21 +52,31 @@ function plainText(value: string): string {
   return doc.body.textContent ?? "";
 }
 
+type DetailProps = {
+  calendar: Calendar | undefined;
+  calendarLabel: string;
+  /** 送信待ちの状態 (無ければ null)。 */
+  pending?: PendingState | null;
+  /** サーバーに届かない状態か。 */
+  offline?: boolean;
+  /** 送信できなかった操作の「確認する」(反映されなかった変更の一覧を開く)。 */
+  onShowConflicts?: (() => void) | null;
+  onEdit: (() => void) | null;
+  onDelete: (() => void) | null;
+  onClose: () => void;
+};
+
 function DetailBody({
   item,
   calendar,
   calendarLabel,
+  pending = null,
+  offline = false,
+  onShowConflicts = null,
   onEdit,
   onDelete,
   onClose,
-}: {
-  item: DisplayItem;
-  calendar: Calendar | undefined;
-  calendarLabel: string;
-  onEdit: (() => void) | null;
-  onDelete: (() => void) | null;
-  onClose: () => void;
-}) {
+}: DetailProps & { item: DisplayItem }) {
   const { event, local } = item;
   const reminders = event.useDefaultReminders
     ? (calendar?.defaultReminders ?? [])
@@ -125,6 +137,12 @@ function DetailBody({
           </Button>
         </div>
       </div>
+      <PendingBadge
+        state={pending}
+        offline={offline}
+        onShowDetails={onShowConflicts}
+        className="ml-6"
+      />
       <div className="flex flex-col gap-2 text-sm">
         {item.repeating && (
           <p className="flex items-center gap-3">
@@ -240,19 +258,11 @@ function DetailBody({
 export function EventDetail({
   item,
   anchor,
-  calendar,
-  calendarLabel,
-  onEdit,
-  onDelete,
   onClose,
-}: {
+  ...rest
+}: DetailProps & {
   item: DisplayItem | null;
   anchor: HTMLElement | null;
-  calendar: Calendar | undefined;
-  calendarLabel: string;
-  onEdit: (() => void) | null;
-  onDelete: (() => void) | null;
-  onClose: () => void;
 }) {
   return (
     <Popover
@@ -269,14 +279,7 @@ export function EventDetail({
           sideOffset={8}
           className="w-[380px] max-w-[calc(100vw-2rem)] p-4"
         >
-          <DetailBody
-            item={item}
-            calendar={calendar}
-            calendarLabel={calendarLabel}
-            onEdit={onEdit}
-            onDelete={onDelete}
-            onClose={onClose}
-          />
+          <DetailBody item={item} onClose={onClose} {...rest} />
         </PopoverContent>
       )}
     </Popover>

@@ -401,6 +401,103 @@ describe("OfflineCalendarClient", () => {
     expect(client.conflicts()).toEqual([]);
   });
 
+  it("サーバーの snapshot (作成と同じ項目の形) から、新しい ID の予定として復元する", async () => {
+    const server = new FakeCalendarServer();
+    server.conflicts = [
+      {
+        id: "k2",
+        calendarId: CALENDAR_ID,
+        eventId: E1,
+        kind: "remote_deleted",
+        fields: ["summary"],
+        lost: { summary: "自分の題名" },
+        snapshot: {
+          summary: "元の題名",
+          location: "会議室",
+          time: {
+            allDay: false,
+            startAt: "2026-03-10T01:00:00.000Z",
+            endAt: "2026-03-10T02:00:00.000Z",
+            startTimeZone: "Asia/Tokyo",
+            endTimeZone: "Asia/Tokyo",
+          },
+          recurrence: { rrule: null, rdates: [], exdates: [] },
+          parentId: null,
+          recurrenceId: null,
+        } as never,
+        title: "元の題名",
+        reason: null,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        resolvedAt: null,
+      },
+    ];
+    const { client } = await setup(server);
+    await activate(client);
+    expect(client.conflicts()[0]?.snapshot).toMatchObject({
+      id: E1,
+      summary: "元の題名",
+      allDay: false,
+      startAt: "2026-03-10T01:00:00.000Z",
+    });
+    await client.resolveConflict("k2", "restore");
+    await client.flush();
+    const created = [...server.events.values()];
+    expect(created).toHaveLength(1);
+    expect(created[0]?.id).not.toBe(E1);
+    expect(created[0]).toMatchObject({
+      summary: "自分の題名",
+      location: "会議室",
+      startAt: "2026-03-10T01:00:00.000Z",
+    });
+  });
+
+  it("まだ相手側に無い回の書き戻しの失敗は、回の変更として送り直す", async () => {
+    const server = new FakeCalendarServer();
+    server.addEvent(
+      event({
+        id: E1,
+        rrule: "FREQ=DAILY",
+        startAt: "2026-03-10T01:00:00.000Z",
+        endAt: "2026-03-10T02:00:00.000Z",
+      }),
+    );
+    server.conflicts = [
+      {
+        id: "k3",
+        calendarId: CALENDAR_ID,
+        eventId: "00000000-0000-4000-8000-0000000000x1",
+        kind: "write_failed",
+        fields: ["summary"],
+        lost: { summary: "この回だけ" },
+        snapshot: {
+          summary: "この回だけ",
+          time: {
+            allDay: false,
+            startAt: "2026-03-11T01:00:00.000Z",
+            endAt: "2026-03-11T02:00:00.000Z",
+            startTimeZone: "Asia/Tokyo",
+          },
+          parentId: E1,
+          recurrenceId: "2026-03-11T01:00:00.000Z",
+        } as never,
+        title: "この回だけ",
+        reason: null,
+        createdAt: "2026-02-01T00:00:00.000Z",
+        resolvedAt: null,
+      },
+    ];
+    const { client } = await setup(server);
+    await activate(client);
+    expect(client.conflicts()[0]).toMatchObject({
+      eventId: E1,
+      recurrenceId: "2026-03-11T01:00:00Z",
+      actions: ["retry", "dismiss"],
+    });
+    await client.resolveConflict("k3", "retry");
+    await client.flush();
+    expect(server.calls).toContain(`occurrence ${E1} 2026-03-11T01:00:00Z`);
+  });
+
   it("古いサーバー (/sync に競合の項目が無い) では、競合の一覧を取りに行かない", async () => {
     const server = new FakeCalendarServer();
     const { client } = await setup(server);

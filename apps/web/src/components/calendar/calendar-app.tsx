@@ -10,6 +10,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Temporal } from "temporal-polyfill";
 import {
   AddCalendarDialog,
@@ -18,6 +19,11 @@ import {
 import { AgendaList } from "@/components/calendar/agenda-list";
 import { CalendarSidebar } from "@/components/calendar/calendar-sidebar";
 import { calendarColor } from "@/components/calendar/colors";
+import {
+  type ConflictBusy,
+  ConflictList,
+  ConflictsButton,
+} from "@/components/calendar/conflict-list";
 import { EventDetail } from "@/components/calendar/event-detail";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { MobileMonth } from "@/components/calendar/mobile-month";
@@ -29,7 +35,8 @@ import {
 import { SearchResults } from "@/components/calendar/search-results";
 import { TimeGrid } from "@/components/calendar/time-grid";
 import type { DisplayItem, SelectHandler } from "@/components/calendar/types";
-import { showNotice } from "@/components/mail/toasts";
+import { SyncIndicator } from "@/components/mail/sync-indicator";
+import { NOTICE_MS, showNotice } from "@/components/mail/toasts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,34 +49,25 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  type Account,
-  ApiError,
-  listAccounts,
-  NetworkError,
-  type User,
-} from "@/lib/api";
+import { type Account, ApiError, NetworkError, type User } from "@/lib/api";
 import { navigateApp } from "@/lib/app-navigation";
 import {
   type Calendar,
   type CalendarEvent,
   createCaldavAccount,
   createCalendar,
-  createEvent,
   deleteCalendar,
-  deleteEvent,
-  deleteOccurrence,
   type EventFields,
-  type EventRange,
-  listCalendars,
-  listEvents,
   refreshCalendar,
-  searchEvents,
   subscribeCalendar,
-  updateCalendar,
-  updateEvent,
-  updateOccurrence,
 } from "@/lib/calendar/api";
+import {
+  calendarSyncStatus,
+  conflictActionLabel,
+  conflictMessage,
+  conflictSummary,
+  pendingState,
+} from "@/lib/calendar/conflict-labels";
 import {
   type CalendarView,
   daysBetween,
@@ -89,8 +87,17 @@ import {
   shiftMasterTime,
 } from "@/lib/calendar/event-form";
 import { groupCalendars } from "@/lib/calendar/groups";
+import {
+  type CalendarClient,
+  type ConflictAction,
+  type ConflictItem,
+  OfflineCalendarClient,
+  OfflineUnavailableError,
+  type QueuedOp,
+  useCalendarData,
+} from "@/lib/calendar/offline";
 import { buildCalendarRoute, parseCalendarRoute } from "@/lib/calendar/route";
-import { subscribeEvents } from "@/lib/events";
+import { listAccounts, useOnline } from "@/lib/offline";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
 
@@ -107,8 +114,10 @@ const MOBILE_VIEWS: { view: CalendarView; label: string }[] = [
   { view: "agenda", label: "一覧" },
 ];
 
-const LOAD_ERROR = "予定を読み込めませんでした。接続を確かめてください。";
 const SAVE_ERROR = "保存できませんでした。もう一度お試しください。";
+const OFFLINE_SAVE_ERROR =
+  "接続していないので保存できません。接続してからもう一度お試しください。";
+const CONFLICT_TOAST = "calendar-conflict";
 const SIDEBAR_KEY = "orbit.calendar.sidebar";
 
 function readSidebarPreference(): boolean {
@@ -150,10 +159,7 @@ export function CalendarApp({ user }: { user: User }) {
     return chosen;
   })();
 
-  const [calendars, setCalendars] = useState<Calendar[] | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [data, setData] = useState<EventRange | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarShown, setSidebarShown] = useState(true);
   const [selected, setSelected] = useState<{
@@ -161,7 +167,6 @@ export function CalendarApp({ user }: { user: User }) {
     anchor: HTMLElement;
   } | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
-  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [scope, setScope] = useState<
     | { action: "save"; form: EventForm; item: DisplayItem }
@@ -175,6 +180,9 @@ export function CalendarApp({ user }: { user: User }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CalendarEvent[] | null>(null);
+  const [conflictsOpen, setConflictsOpen] = useState(false);
+  const [conflictBusy, setConflictBusy] = useState<ConflictBusy>(null);
+  const online = useOnline();
 
   useEffect(() => {
     setSidebarShown(readSidebarPreference());
@@ -218,61 +226,34 @@ export function CalendarApp({ user }: { user: User }) {
 
   const range = useMemo(() => viewRange(shownView, date), [shownView, date]);
 
-  const loadCalendars = useCallback(async () => {
-    try {
-      const [nextCalendars, nextAccounts] = await Promise.all([
-        listCalendars(),
-        listAccounts().catch(() => null),
-      ]);
-      setCalendars(nextCalendars);
-      if (nextAccounts) setAccounts(nextAccounts);
-    } catch {
-      setLoadFailed(true);
-    }
-  }, []);
+  // 読み書きは端末の控え (CalendarClient) を通す。サーバーとの同期、SSE、
+  // 送信待ちは client が受け持つ (ここで SSE を張ると接続が 2 本になる)。
+  const rangeQuery = useMemo(
+    () => ({
+      from: range.from.toString(),
+      to: range.to.toString(),
+      timeZone,
+    }),
+    [range, timeZone],
+  );
+  const { client, calendars, data, queue, conflicts } =
+    useCalendarData(rangeQuery);
 
-  const requestRef = useRef(0);
-  const loadRange = useCallback(async () => {
-    const request = ++requestRef.current;
-    try {
-      const next = await listEvents({
-        from: range.from.toString(),
-        to: range.to.toString(),
-        timeZone,
-      });
-      if (request !== requestRef.current) return;
-      setData(next);
-      setLoadFailed(false);
-    } catch {
-      if (request === requestRef.current) setLoadFailed(true);
-    }
-  }, [range, timeZone]);
+  // アカウントの一覧 (サイドバーの見出し)。メールの端末の控えから読む。
+  // カレンダーが変わったら (アカウントの追加など) 読み直す。
+  useEffect(() => {
+    if (calendars === null) return;
+    const controller = new AbortController();
+    listAccounts(controller.signal)
+      .then(setAccounts)
+      .catch(() => {});
+    return () => controller.abort();
+  }, [calendars]);
 
-  useEffect(() => {
-    void loadCalendars();
-  }, [loadCalendars]);
-  useEffect(() => {
-    void loadRange();
-  }, [loadRange]);
-
-  // ほかの端末での変更を受けたら、読み込み直す。
-  const reloadRef = useRef<() => void>(() => {});
-  reloadRef.current = () => {
-    void loadCalendars();
-    void loadRange();
-  };
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsubscribe = subscribeEvents((event) => {
-      if (event.event !== "change") return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => reloadRef.current(), 300);
-    });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsubscribe();
-    };
-  }, []);
+  /** 作ったカレンダーなどを、SSE を待たずに取り込む。 */
+  const pullNow = useCallback(() => {
+    if (client instanceof OfflineCalendarClient) void client.pull();
+  }, [client]);
 
   const calendarIndex = useMemo(() => {
     const map = new Map<string, { calendar: Calendar; index: number }>();
@@ -396,47 +377,50 @@ export function CalendarApp({ user }: { user: User }) {
   const masterOf = (item: DisplayItem): CalendarEvent | undefined =>
     item.event.parentId ? eventsById.get(item.event.parentId) : item.event;
 
-  const reportRejected = (rejected: string[]) => {
-    if (rejected.length > 0) {
-      showNotice(
-        "ほかの端末で後から変更された項目があったので、その項目は変更しませんでした。",
-        "info",
-      );
-    }
-  };
+  /**
+   * 表示中の同じ回 (原本と recurrenceId で探す)。送り終えると仮の例外の ID が
+   * サーバーの ID に替わるので、開いたときの item の ID は使わない。
+   */
+  const currentItem = useCallback(
+    (item: DisplayItem): DisplayItem | null =>
+      items.find((other) => sameOccurrence(other, item)) ?? null,
+    [items],
+  );
 
-  const save = async (form: EventForm, chosen: ChangeScope | null) => {
+  const save = (form: EventForm, chosen: ChangeScope | null) => {
     if (!editor) return;
-    const { item } = editor;
-    setSaving(true);
+    if (!client) {
+      setSaveError(SAVE_ERROR);
+      return;
+    }
+    const opened = editor.item;
+    const item = opened ? (currentItem(opened) ?? opened) : null;
     setSaveError(null);
     try {
-      if (!item) {
+      if (!opened || !item) {
         const fields = formChanges(form, timeZone, null);
         if (!fields?.time) throw new Error("invalid");
-        await createEvent({
+        client.createEvent({
           ...fields,
           time: fields.time,
           id: randomUuid(),
           calendarId: form.calendarId,
         });
       } else {
-        const before = eventFormOf(item.event, item.local);
+        // 開いたときの値と比べて、変えた項目だけを送る (ほかの端末の変更を上書きしない)。
+        const before = eventFormOf(opened.event, opened.local);
         const changes = formChanges(form, timeZone, before);
         if (!changes) throw new Error("invalid");
         if (Object.keys(changes).length > 0) {
           const recurrenceId = itemRecurrenceId(item);
           if (item.repeating && chosen === null) {
             setScope({ action: "save", form, item });
-            setSaving(false);
             return;
           }
           if (item.repeating && chosen === "this" && recurrenceId) {
             const { recurrence: _ignored, ...rest } = changes;
             const masterId = item.event.parentId ?? item.event.id;
-            reportRejected(
-              (await updateOccurrence(masterId, recurrenceId, rest)).rejected,
-            );
+            client.updateOccurrence(masterId, recurrenceId, rest);
           } else if (item.repeating && chosen === "all") {
             const master = masterOf(item);
             if (!master) throw new Error("master");
@@ -448,58 +432,54 @@ export function CalendarApp({ user }: { user: User }) {
                 changes.time,
               );
             }
-            reportRejected((await updateEvent(master.id, forMaster)).rejected);
+            client.updateEvent(master.id, forMaster);
           } else {
-            reportRejected(
-              (await updateEvent(item.event.id, changes)).rejected,
-            );
+            client.updateEvent(item.event.id, changes);
           }
         }
       }
+      // 保存を待たずに閉じる (表示はその場で変わり、送信待ちから順に送られる)。
       setEditor(null);
-      await loadRange();
-    } catch {
-      setSaveError(SAVE_ERROR);
-    } finally {
-      setSaving(false);
+    } catch (error) {
+      setSaveError(writeFailure(error));
     }
   };
 
-  const remove = async (item: DisplayItem, chosen: ChangeScope | null) => {
+  const remove = (target: DisplayItem, chosen: ChangeScope | null) => {
+    const item = currentItem(target) ?? target;
     if (item.repeating && chosen === null) {
       setScope({ action: "delete", item });
       return;
     }
     setSelected(null);
+    if (!client) {
+      showNotice("削除できませんでした。もう一度お試しください。");
+      return;
+    }
     try {
       if (item.repeating && chosen === "this") {
         const recurrenceId = itemRecurrenceId(item);
         const masterId = item.event.parentId ?? item.event.id;
-        if (recurrenceId) await deleteOccurrence(masterId, recurrenceId);
+        if (recurrenceId) client.deleteOccurrence(masterId, recurrenceId);
       } else if (item.repeating && chosen === "all") {
-        await deleteEvent(item.event.parentId ?? item.event.id);
+        client.deleteEvent(item.event.parentId ?? item.event.id);
       } else {
-        await deleteEvent(item.event.id);
+        client.deleteEvent(item.event.id);
       }
-      await loadRange();
-    } catch {
-      showNotice("削除できませんでした。もう一度お試しください。");
+    } catch (error) {
+      showNotice(
+        error instanceof OfflineUnavailableError
+          ? "接続していないので削除できません。"
+          : "削除できませんでした。もう一度お試しください。",
+      );
     }
   };
 
-  const toggleCalendar = async (calendar: Calendar) => {
-    const visible = !calendar.visible;
-    setCalendars(
-      (current) =>
-        current?.map((entry) =>
-          entry.id === calendar.id ? { ...entry, visible } : entry,
-        ) ?? null,
-    );
+  const toggleCalendar = (calendar: Calendar) => {
     try {
-      await updateCalendar(calendar.id, { visible });
+      client?.updateCalendar(calendar.id, { visible: !calendar.visible });
     } catch {
       showNotice("表示を切り替えられませんでした。");
-      void loadCalendars();
     }
   };
 
@@ -529,25 +509,23 @@ export function CalendarApp({ user }: { user: User }) {
             ? "iCloud のメールのアカウントで、カレンダーの同期を始めました。"
             : "アカウントを追加しました。カレンダーを同期しています。",
         );
-        void loadCalendars();
+        pullNow();
         return;
       }
-      const created =
-        input.kind === "local"
-          ? await createCalendar({
-              name: input.name,
-              color: input.color,
-              timeZone,
-            })
-          : await subscribeCalendar({
-              url: input.url,
-              name: input.name || undefined,
-              color: input.color,
-              timeZone,
-            });
-      setCalendars((current) => [...(current ?? []), created]);
+      await (input.kind === "local"
+        ? await createCalendar({
+            name: input.name,
+            color: input.color,
+            timeZone,
+          })
+        : await subscribeCalendar({
+            url: input.url,
+            name: input.name || undefined,
+            color: input.color,
+            timeZone,
+          }));
       setAddOpen(false);
-      if (input.kind === "subscription") void loadRange();
+      pullNow();
     } catch (error) {
       setAddError(addFailure(error));
     } finally {
@@ -558,14 +536,9 @@ export function CalendarApp({ user }: { user: User }) {
   const refreshSubscription = async (calendar: Calendar) => {
     try {
       const next = await refreshCalendar(calendar.id);
-      setCalendars(
-        (current) =>
-          current?.map((entry) => (entry.id === next.id ? next : entry)) ??
-          current,
-      );
       if (next.lastError) showNotice(next.lastError);
       else showNotice(`「${next.name}」を更新しました。`);
-      void loadRange();
+      pullNow();
     } catch {
       showNotice("更新できませんでした。");
     }
@@ -574,11 +547,7 @@ export function CalendarApp({ user }: { user: User }) {
   const removeCalendar = async (calendar: Calendar) => {
     try {
       await deleteCalendar(calendar.id);
-      setCalendars(
-        (current) =>
-          current?.filter((entry) => entry.id !== calendar.id) ?? null,
-      );
-      void loadRange();
+      pullNow();
     } catch {
       showNotice("削除できませんでした。");
     }
@@ -590,8 +559,10 @@ export function CalendarApp({ user }: { user: User }) {
       setResults(null);
       return;
     }
+    if (!client) return;
     try {
-      setResults(await searchEvents(trimmed));
+      // サーバーに届かなければ、client が端末の控えから探す。
+      setResults(await client.search(trimmed));
     } catch {
       showNotice("検索できませんでした。");
     }
@@ -602,7 +573,89 @@ export function CalendarApp({ user }: { user: User }) {
     setResults(null);
   };
 
-  const selectedItem = selected?.item ?? null;
+  // 開いている詳細は、表示中の同じ回に持ち直す (送り終えて ID が替わっても閉じない。
+  // 予定が消えたら閉じる)。
+  const selectedItem = selected
+    ? (currentItem(selected.item) ?? (data ? null : selected.item))
+    : null;
+  useEffect(() => {
+    if (selected && !selectedItem) setSelected(null);
+  }, [selected, selectedItem]);
+  // queue が変わると client の中身も変わるので、描画ごとに数え直す (件数は少ない)。
+  const selectedPending =
+    selectedItem && client
+      ? pendingState(pendingOf(client, selectedItem))
+      : null;
+
+  const calendarOf = useCallback(
+    (id: string | null) => (id ? calendarIndex.get(id)?.calendar : undefined),
+    [calendarIndex],
+  );
+  const syncStatus = calendarSyncStatus({
+    online,
+    pending: queue.filter((op) => op.state === "pending").length,
+    loaded: calendars !== null,
+  });
+
+  const resolveConflict = async (
+    item: ConflictItem,
+    action: ConflictAction,
+  ) => {
+    if (!client) return;
+    setConflictBusy({ id: item.id, action });
+    try {
+      await client.resolveConflict(item.id, action);
+    } catch (error) {
+      showNotice(
+        error instanceof NetworkError ||
+          error instanceof OfflineUnavailableError
+          ? "接続していないので、いまは操作できません。接続してからもう一度お試しください。"
+          : "操作できませんでした。もう一度お試しください。",
+      );
+    } finally {
+      setConflictBusy(null);
+    }
+  };
+  const resolveRef = useRef(resolveConflict);
+  resolveRef.current = resolveConflict;
+  const calendarOfRef = useRef(calendarOf);
+  calendarOfRef.current = calendarOf;
+
+  // 新しく届いた競合は、1 件につき 1 回だけトーストで知らせる
+  // (開いたときに既にあったものは、一覧の件数だけで知らせる)。
+  const seenConflicts = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (calendars === null) return;
+    const seen = seenConflicts.current;
+    if (!seen) {
+      seenConflicts.current = new Set(conflicts.map((item) => item.id));
+      return;
+    }
+    const fresh = conflicts.filter((item) => !seen.has(item.id));
+    for (const item of fresh) seen.add(item.id);
+    if (fresh.length === 0) return;
+    const options = {
+      id: CONFLICT_TOAST,
+      duration: NOTICE_MS,
+      closeButton: true,
+    };
+    const first = fresh[0];
+    const primary = first?.actions.find((action) => action !== "dismiss");
+    if (fresh.length === 1 && first && primary) {
+      toast(conflictMessage(first, calendarOfRef.current(first.calendarId)), {
+        ...options,
+        action: {
+          label: conflictActionLabel(first, primary),
+          onClick: () => void resolveRef.current(first, primary),
+        },
+      });
+    } else {
+      toast(conflictSummary(fresh.length), {
+        ...options,
+        action: { label: "確認する", onClick: () => setConflictsOpen(true) },
+      });
+    }
+  }, [conflicts, calendars]);
   const selectedCalendar = selectedItem
     ? calendarIndex.get(selectedItem.event.calendarId)?.calendar
     : undefined;
@@ -692,6 +745,8 @@ export function CalendarApp({ user }: { user: User }) {
       selectedRange={range}
       busyDays={busyDays}
       canCreate={calendars !== null}
+      online={online}
+      syncStatus={syncStatus}
       onSelectDate={(day) => {
         setSidebarOpen(false);
         goTo(day);
@@ -777,26 +832,36 @@ export function CalendarApp({ user }: { user: User }) {
             <h1 className="ml-1 truncate font-display font-semibold text-xl">
               {results ? "検索結果" : viewTitle(shownView, date)}
             </h1>
-            <form
-              className="relative ml-auto w-64 shrink"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void runSearch(query);
-              }}
-            >
-              <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="search"
-                aria-label="予定を検索"
-                placeholder="予定を検索"
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  if (!event.target.value) setResults(null);
-                }}
-                className="pl-9"
+            <div className="ml-auto flex min-w-0 shrink items-center gap-2">
+              {!showSidebar && (
+                <SyncIndicator status={syncStatus} short className="shrink-0" />
+              )}
+              <ConflictsButton
+                count={conflicts.length}
+                compact={!wide}
+                onClick={() => setConflictsOpen(true)}
               />
-            </form>
+              <form
+                className="relative w-64 shrink"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runSearch(query);
+                }}
+              >
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  aria-label="予定を検索"
+                  placeholder="予定を検索"
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    if (!event.target.value) setResults(null);
+                  }}
+                  className="pl-9"
+                />
+              </form>
+            </div>
             <div className="flex shrink-0 rounded-lg bg-muted p-1">
               {views.map((entry) => (
                 <button
@@ -861,24 +926,37 @@ export function CalendarApp({ user }: { user: User }) {
                   <h1 className="ml-1 font-display font-semibold text-xl">
                     {shortMonthTitle(shownView === "month" ? date : range.from)}
                   </h1>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="予定を検索"
-                    className="ml-auto"
-                    onClick={() => setSearchOpen(true)}
-                  >
-                    <SearchIcon className="size-5" />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    aria-label="今日へ"
-                    className="font-semibold text-xs"
-                    onClick={() => goTo(today)}
-                  >
-                    {today.day}
-                  </Button>
+                  <div className="ml-auto flex min-w-0 items-center gap-1">
+                    {!online && (
+                      <SyncIndicator
+                        status={syncStatus}
+                        short
+                        className="mr-1"
+                      />
+                    )}
+                    <ConflictsButton
+                      count={conflicts.length}
+                      compact
+                      onClick={() => setConflictsOpen(true)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="予定を検索"
+                      onClick={() => setSearchOpen(true)}
+                    >
+                      <SearchIcon className="size-5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      aria-label="今日へ"
+                      className="font-semibold text-xs"
+                      onClick={() => goTo(today)}
+                    >
+                      {today.day}
+                    </Button>
+                  </div>
                 </>
               )}
             </div>
@@ -904,19 +982,6 @@ export function CalendarApp({ user }: { user: User }) {
             )}
           </>
         )}
-        {loadFailed && (
-          <div className="flex shrink-0 items-center gap-2 border-b bg-destructive/10 px-4 py-2 text-destructive text-sm">
-            {LOAD_ERROR}
-            <Button
-              variant="outline"
-              size="xs"
-              className="ml-auto"
-              onClick={() => reloadRef.current()}
-            >
-              再読み込み
-            </Button>
-          </div>
-        )}
         <div
           className={cn("flex min-h-0 flex-1 flex-col", !medium && "border-t")}
           // スワイプで前後の期間へ動かすのは、アプリ版で足す。
@@ -941,6 +1006,12 @@ export function CalendarApp({ user }: { user: User }) {
         calendarLabel={[selectedCalendar?.name, selectedAccount?.email]
           .filter(Boolean)
           .join(" · ")}
+        pending={selectedPending}
+        offline={!online}
+        onShowConflicts={() => {
+          setSelected(null);
+          setConflictsOpen(true);
+        }}
         onEdit={
           selectedItem && !selectedItem.readOnly
             ? () => openEdit(selectedItem)
@@ -967,9 +1038,9 @@ export function CalendarApp({ user }: { user: User }) {
         }
         colorOf={colorOf}
         timeZone={timeZone}
-        busy={saving}
+        busy={false}
         error={saveError}
-        onSave={(form) => void save(form, null)}
+        onSave={(form) => save(form, null)}
         onClose={() => setEditor(null)}
       />
       <ScopeDialog
@@ -978,10 +1049,21 @@ export function CalendarApp({ user }: { user: User }) {
           const current = scope;
           setScope(null);
           if (!current) return;
-          if (current.action === "save") void save(current.form, chosen);
-          else void remove(current.item, chosen);
+          if (current.action === "save") save(current.form, chosen);
+          else remove(current.item, chosen);
         }}
         onCancel={() => setScope(null)}
+      />
+      <ConflictList
+        open={conflictsOpen}
+        items={conflicts}
+        calendarOf={calendarOf}
+        colorOf={colorOf}
+        eventOf={(id) => (id ? eventsById.get(id) : undefined)}
+        timeZone={timeZone}
+        busy={conflictBusy}
+        onAction={(item, action) => void resolveConflict(item, action)}
+        onClose={() => setConflictsOpen(false)}
       />
       <AddCalendarDialog
         open={addOpen}
@@ -1026,6 +1108,49 @@ export function CalendarApp({ user }: { user: User }) {
       </AlertDialog>
     </div>
   );
+}
+
+/** 同じ時刻を指す recurrenceId か (書き方の違い、.000Z の有無などを無視する)。 */
+function sameRecurrenceId(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  const left = Date.parse(a);
+  return !Number.isNaN(left) && left === Date.parse(b);
+}
+
+/** 同じ回か (原本と recurrenceId で比べる)。 */
+function sameOccurrence(a: DisplayItem, b: DisplayItem): boolean {
+  if (a.key === b.key) return true;
+  return (
+    a.local.occurrence.masterId === b.local.occurrence.masterId &&
+    sameRecurrenceId(
+      a.local.occurrence.recurrenceId,
+      b.local.occurrence.recurrenceId,
+    )
+  );
+}
+
+/**
+ * その回に関わる送信待ち。原本への「この回だけ」の操作は、その回のものだけを数える
+ * (ほかの回の変更で、すべての回に「未送信」が出ないように)。
+ */
+function pendingOf(client: CalendarClient, item: DisplayItem): QueuedOp[] {
+  const recurrenceId = itemRecurrenceId(item);
+  return client
+    .pendingFor(item.event.id)
+    .filter(
+      (op) =>
+        op.recurrenceId === null ||
+        recurrenceId === null ||
+        sameRecurrenceId(op.recurrenceId, recurrenceId),
+    );
+}
+
+/** 書き込めなかった理由。 */
+function writeFailure(error: unknown): string {
+  return error instanceof OfflineUnavailableError
+    ? OFFLINE_SAVE_ERROR
+    : SAVE_ERROR;
 }
 
 /** 回の recurrenceId (元の開始。サーバーが返した回の値)。 */

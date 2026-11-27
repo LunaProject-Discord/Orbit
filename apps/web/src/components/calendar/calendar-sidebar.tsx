@@ -16,6 +16,7 @@ import { useState } from "react";
 import type { Temporal } from "temporal-polyfill";
 import { AppSwitcher } from "@/components/brand/app-switcher";
 import { MiniMonth } from "@/components/calendar/mini-month";
+import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -26,6 +27,10 @@ import {
 import type { User } from "@/lib/api";
 import type { Calendar } from "@/lib/calendar/api";
 import type { CalendarGroup } from "@/lib/calendar/groups";
+import type { SyncStatus } from "@/lib/sync-status";
+
+/** オフライン中に押せないボタンに添える説明。 */
+const NEEDS_CONNECTION = "接続していないときは使えません";
 
 export function CalendarSidebar({
   user,
@@ -36,6 +41,8 @@ export function CalendarSidebar({
   selectedRange,
   busyDays,
   canCreate,
+  online = true,
+  syncStatus = null,
   onSelectDate,
   onCreateEvent,
   onToggleCalendar,
@@ -54,6 +61,13 @@ export function CalendarSidebar({
   selectedRange: { from: Temporal.PlainDate; to: Temporal.PlainDate };
   busyDays: ReadonlySet<string>;
   canCreate: boolean;
+  /**
+   * サーバーに届くか。届かない間は、接続が要る操作 (カレンダーの追加・削除、
+   * 購読の更新) を押せなくする。
+   */
+  online?: boolean;
+  /** 同期の表示 (null なら出さない)。 */
+  syncStatus?: SyncStatus | null;
   onSelectDate: (date: Temporal.PlainDate) => void;
   onCreateEvent: () => void;
   onToggleCalendar: (calendar: Calendar) => void;
@@ -217,6 +231,8 @@ export function CalendarSidebar({
                             <DropdownMenuContent align="end" className="w-52">
                               {subscription && (
                                 <DropdownMenuItem
+                                  disabled={!online}
+                                  title={online ? undefined : NEEDS_CONNECTION}
                                   onClick={() => onRefreshCalendar(calendar)}
                                 >
                                   <RefreshCwIcon />
@@ -225,6 +241,8 @@ export function CalendarSidebar({
                               )}
                               <DropdownMenuItem
                                 variant="destructive"
+                                disabled={!online}
+                                title={online ? undefined : NEEDS_CONNECTION}
                                 onClick={() => onRemoveCalendar(calendar)}
                               >
                                 <Trash2Icon />
@@ -242,13 +260,20 @@ export function CalendarSidebar({
           <button
             type="button"
             onClick={onAddCalendar}
-            className="flex h-8 items-center gap-2 rounded-md px-2 text-muted-foreground text-sm hover:bg-sidebar-accent hover:text-foreground"
+            disabled={!online}
+            title={online ? undefined : NEEDS_CONNECTION}
+            className="flex h-8 items-center gap-2 rounded-md px-2 text-muted-foreground text-sm hover:bg-sidebar-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
           >
             <PlusIcon className="size-4" />
             カレンダーを追加
           </button>
         </div>
       </div>
+      {syncStatus && (
+        <div className="flex h-10 shrink-0 items-center border-t px-4">
+          <SyncIndicator status={syncStatus} />
+        </div>
+      )}
       <div className="flex shrink-0 items-center gap-2 border-t py-3 pr-2 pl-4">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>
