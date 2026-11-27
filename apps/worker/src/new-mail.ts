@@ -162,7 +162,13 @@ export class PushSender {
         auth: pushSubscriptions.auth,
       })
       .from(pushSubscriptions)
-      .where(eq(pushSubscriptions.userId, notification.userId));
+      .where(
+        and(
+          eq(pushSubscriptions.userId, notification.userId),
+          // メールの通知を受ける送り先だけ (予定の通知だけの端末を除く)。
+          eq(pushSubscriptions.notifyMail, true),
+        ),
+      );
     if (subscriptions.length === 0) return;
     const signer = await actionSigner(
       this.db,
@@ -217,6 +223,7 @@ export class DevicePushSender {
         and(
           eq(devices.userId, notification.userId),
           eq(devices.platform, "android"),
+          eq(devices.notifyMail, true),
           isNotNull(devices.pushToken),
         ),
       );
