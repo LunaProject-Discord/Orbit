@@ -32,6 +32,9 @@ public class NotificationActionReceiver extends BroadcastReceiver {
     static final String EXTRA_TOKEN = "token";
     static final String EXTRA_TITLE = "title";
 
+    /** 合言葉を送ってよい受け口のパス (API の URL のパスの後ろ。サーバーの NOTIFICATION_ACTION_PATH)。 */
+    static final String ACTION_PATH = "/v1/notification-actions";
+
     /** 通知のボタンの処理に使える時間は短いので、通信は早めに打ち切る。 */
     private static final int TIMEOUT_MS = 8000;
 
@@ -49,6 +52,8 @@ public class NotificationActionReceiver extends BroadcastReceiver {
         final String token = intent.getStringExtra(EXTRA_TOKEN);
         final String title = intent.getStringExtra(EXTRA_TITLE);
         if (tag == null || messageId == null || action == null || url == null || token == null) return;
+        // 自分の API の受け口でなければ送らない (通知を作るときにも確かめている)。
+        if (!allowedUrl(context, url)) return;
 
         // 押したらすぐに通知を片付ける。送れなかったときは、改めて知らせる。
         MailNotifications.cancel(context, tag);
@@ -77,6 +82,8 @@ public class NotificationActionReceiver extends BroadcastReceiver {
         CharSequence input = results == null ? null : results.getCharSequence(KEY_REPLY_TEXT);
         final String text = input == null ? "" : input.toString();
         if (tag == null || messageId == null || url == null || token == null) return;
+        // 自分の API の受け口でなければ送らない。返信の送り先は、確かめた送り先 + "/reply"。
+        if (!allowedUrl(context, url)) return;
         // Android は空のままでは送れないが、念のため何も書かれていなければ送らない。
         if (text.trim().isEmpty()) return;
 
@@ -128,13 +135,30 @@ public class NotificationActionReceiver extends BroadcastReceiver {
         }
     }
 
-    /** JSON を POST して、応答の状態コードを返す。つながらなければ例外。 */
+    /**
+     * メールのボタンと返信の送り先として許す URL か。接続先サーバー (SharedConfig.serverUrl) の
+     * 「API のパス + /v1/notification-actions」だけ (出欠の EventActionReceiver.allowedUrl と同じ決まり)。
+     */
+    static boolean allowedUrl(Context context, String url) {
+        return allowedUrl(SharedConfig.load(context).serverUrl, url);
+    }
+
+    static boolean allowedUrl(String serverUrl, String url) {
+        return EventActionReceiver.allowedApiUrl(serverUrl, url, ACTION_PATH);
+    }
+
+    /** JSON を POST して、応答の状態コードを返す。つながらなければ例外。https と http だけを受け付ける。 */
     private static int post(String url, JSONObject body) throws Exception {
+        URL target = new URL(url);
+        String protocol = target.getProtocol();
+        if (!"https".equals(protocol) && !"http".equals(protocol)) throw new IllegalArgumentException(protocol);
         HttpURLConnection connection = null;
         try {
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
 
-            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection = (HttpURLConnection) target.openConnection();
+            // 転送先へ合言葉を持ち出さない (30x は失敗として扱う)。
+            connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(TIMEOUT_MS);
             connection.setReadTimeout(TIMEOUT_MS);
             connection.setRequestMethod("POST");

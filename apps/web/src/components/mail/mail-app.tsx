@@ -137,6 +137,7 @@ import {
 } from "@/lib/api";
 import { onOpenAppUpdateSettings } from "@/lib/app-update";
 import { backLog } from "@/lib/back-log";
+import { isCalendarPath } from "@/lib/calendar/route";
 import {
   buildDraftFrom,
   type ComposeDraft,
@@ -475,7 +476,14 @@ export function MailApp({ user }: { user: User }) {
   // 描画中のページの URL を Next.js から受け取る。
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [initialUrl] = useState(() => `${pathname}?${searchParams.toString()}`);
+  const [initialUrl] = useState(() =>
+    // カレンダーから切り替えてきた直後 (navigateApp。カレンダーの「設定」など) は、Next.js が
+    // まだ前の URL (/calendar/...) を返す。そのまま使うと受信トレイとして始まり、"/" を履歴に
+    // 積んでしまうので、navigateApp が書き換えた window.location を使う。
+    isCalendarPath(pathname)
+      ? `${window.location.pathname}${window.location.search || "?"}`
+      : `${pathname}?${searchParams.toString()}`,
+  );
   // URL は表示を変えるたびに書き換える (メールを開くたびなど)。Next.js はそのたびにこの部品を
   // 描き直すので、画面の本体は、使う値 (開いたときの URL) が変わらない限り描き直さない。
   return <MailView user={user} initialUrl={initialUrl} />;

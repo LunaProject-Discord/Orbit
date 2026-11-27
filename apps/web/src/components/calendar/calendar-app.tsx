@@ -710,6 +710,7 @@ export function CalendarApp({ user }: { user: User }) {
           merged
             ? "iCloud のメールのアカウントで、カレンダーの同期を始めました。"
             : "アカウントを追加しました。カレンダーを同期しています。",
+          "info",
         );
         pullNow();
         return;
@@ -768,7 +769,7 @@ export function CalendarApp({ user }: { user: User }) {
     try {
       const next = await refreshCalendar(calendar.id);
       if (next.lastError) showNotice(next.lastError);
-      else showNotice(`「${next.name}」を更新しました。`);
+      else showNotice(`「${next.name}」を更新しました。`, "info");
       pullNow();
     } catch {
       showNotice("更新できませんでした。");
@@ -1232,10 +1233,12 @@ export function CalendarApp({ user }: { user: User }) {
         {!medium && (
           <Button
             aria-label="予定を作成"
-            className="absolute right-4 bottom-6 size-14 rounded-2xl shadow-lg"
+            // Mail の「作成」ボタンと同じ形と大きさ (タッチの端末では高さ 44px)。
+            className="absolute right-4 bottom-4 z-10 h-14 gap-2 rounded-2xl px-5 text-base shadow-lg [&_svg]:size-5"
             onClick={() => openCreate(date, nextHour(now))}
           >
-            <PlusIcon className="size-6" />
+            <PlusIcon />
+            作成
           </Button>
         )}
       </main>

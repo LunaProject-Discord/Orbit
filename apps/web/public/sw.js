@@ -191,7 +191,8 @@ function readActions(data) {
   const actions = data.actions;
   if (
     !actions ||
-    typeof actions.url !== "string" ||
+    // 自分の API の受け口でなければ、ボタンを付けない (合言葉をよそへ送らない)。
+    !isMailActionUrl(actions.url) ||
     typeof actions.token !== "string" ||
     !Array.isArray(actions.buttons)
   ) {
@@ -221,11 +222,14 @@ const RSVP_BUTTONS = [
   { action: "declined", title: "不参加" },
 ];
 
-// 出欠のボタンが合言葉を送ってよい先: 自分の API の POST /v1/notification-actions/event だけ。
+// 通知のボタンが合言葉を送ってよい先: 自分の API の決まったパスだけ。出欠は
+// POST /v1/notification-actions/event、メールのボタンは POST /v1/notification-actions。
 // API の URL は、画面が登録するときに sw.js?api=<API の URL> で渡す (lib/server-url.ts の
 // serviceWorkerScriptUrl)。渡されていなければ (古い登録)、このサイトの /v1 だけを許す。
-// 同じ決まりを src/lib/calendar/notifications/action-url.ts と Android にも置く。
+// 同じ決まりを src/lib/calendar/notifications/action-url.ts と Android
+// (EventActionReceiver・NotificationActionReceiver の allowedUrl) にも置く。
 const EVENT_ACTION_PATH = "/v1/notification-actions/event";
+const MAIL_ACTION_PATH = "/v1/notification-actions";
 
 function apiBase() {
   try {
@@ -240,7 +244,7 @@ function apiBase() {
   return new URL(self.location.origin);
 }
 
-function isEventActionUrl(value) {
+function isApiActionUrl(value, path) {
   if (typeof value !== "string") return false;
   let target;
   try {
@@ -255,9 +259,16 @@ function isEventActionUrl(value) {
   const api = apiBase();
   const basePath = api.pathname.replace(/\/+$/, "");
   return (
-    target.origin === api.origin &&
-    target.pathname === `${basePath}${EVENT_ACTION_PATH}`
+    target.origin === api.origin && target.pathname === `${basePath}${path}`
   );
+}
+
+function isEventActionUrl(value) {
+  return isApiActionUrl(value, EVENT_ACTION_PATH);
+}
+
+function isMailActionUrl(value) {
+  return isApiActionUrl(value, MAIL_ACTION_PATH);
 }
 
 function isCalendarPush(data) {
@@ -454,9 +465,13 @@ async function runNotificationAction(notification, action) {
   const { messageId, title, action: target } = notification.data ?? {};
   let done = false;
   try {
+    // 自分の API の受け口でなければ、合言葉を送らない (検査の前に出た古い通知も)。
+    if (!target || !isMailActionUrl(target.url)) throw new Error("bad url");
     const response = await fetch(target.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // 転送先へ合言葉を持ち出さない。
+      redirect: "error",
       body: JSON.stringify({ messageId, action, token: target.token }),
     });
     // 404 は、ほかの端末ですでに削除や移動をしたメール。済んだものとして扱う。
