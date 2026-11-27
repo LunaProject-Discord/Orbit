@@ -177,7 +177,15 @@ export function unifiedHeads(userId: string, folder: Folder): SQL {
         partition by x.account_id, x.thread_key
         order by x.received_at, x.id
         rows between unbounded preceding and unbounded following
-      ) as t_ids
+      ) as t_ids,
+      coalesce(
+        json_agg(x.id) filter (where not x.seen) over (
+          partition by x.account_id, x.thread_key
+          order by x.received_at, x.id
+          rows between unbounded preceding and unbounded following
+        ),
+        '[]'::json
+      ) as t_unseen
     from (
       select distinct on (${messages.id})
         ${messages.id} as id,

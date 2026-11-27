@@ -471,6 +471,25 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     }
   });
 
+  it("一覧の行には、会話のうち未読のメールが入る", async () => {
+    type Row = {
+      id: string;
+      seen: boolean;
+      threadMessageIds: string[];
+      unseenIds: string[];
+    };
+    const lists = [
+      await request(tokenA, "GET", "/messages"),
+      await request(tokenA, "GET", `/unified/${a.unified}/messages`),
+    ];
+    for (const response of lists) {
+      const { messages } = (await response.json()) as { messages: Row[] };
+      const row = messages.find((item) => item.id === a.message);
+      expect(row).toBeDefined();
+      expect(row?.unseenIds).toEqual(row?.seen ? [] : row?.threadMessageIds);
+    }
+  });
+
   it("一覧や検索の応答に、他の利用者のデータが混ざらない", async () => {
     // B が、A のフォルダを集める統合フォルダを作ってみる。
     const created = await request(tokenB, "POST", "/unified", {

@@ -344,6 +344,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
           answered: messages.answered,
           threadCount,
           threadMessageIds: sql<string[]>`heads.t_ids`,
+          unseenIds: sql<string[]>`heads.t_unseen`,
           // 下書きフォルダにある控えなら、元の下書きの ID (開くと作成画面で続きを書ける)。
           draftId: sql<string | null>`(
             select d.id from drafts d

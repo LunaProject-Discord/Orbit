@@ -137,6 +137,7 @@ export function messageRoutes({
         flagged: thread.flagged,
         hasAttachments: thread.hasAttachments,
         threadMessageIds: thread.ids,
+        unseenIds: thread.unseenIds,
       }));
     const last = rows[query.limit - 1];
     const nextCursor =

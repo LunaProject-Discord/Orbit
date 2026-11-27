@@ -1,3 +1,4 @@
+import { knownUnseen } from "@/lib/actions";
 import type { MailboxSummary, MessageAction, MessageSummary } from "@/lib/api";
 
 /**
@@ -195,9 +196,24 @@ export function pruneSnapshots(
 }
 
 /**
+ * 行 (会話) のうち、ids に含まれる未読のメッセージの数。
+ * どれが未読か分からない会話は、全体が対象なら 1 通、一部なら 0 通と少なめに数える
+ * (サーバーの値が届けば正しい数に戻る)。
+ */
+export function unreadAmong(
+  row: MessageSummary,
+  ids: ReadonlySet<string>,
+): number {
+  const unseen = knownUnseen(row);
+  if (unseen) return unseen.filter((id) => ids.has(id)).length;
+  const hits = row.threadMessageIds.filter((id) => ids.has(id)).length;
+  return hits === row.threadMessageIds.length ? 1 : 0;
+}
+
+/**
  * 送信待ちの操作 (既読・未読、移動、削除) を、フォルダの未読数に重ねる。
- * snapshots は操作したときの行 (会話) の姿。会話の行は「どれかが未読」しか分からないので、
- * 何通が未読かが分からない会話は 1 通分として数える (サーバーの値が届けば正しい数に戻る)。
+ * snapshots は操作したときの行 (会話) の姿。どのメッセージが未読かは行の unseenIds で決め、
+ * それが無い会話だけ少なめに数える (unreadAmong)。
  */
 export function adjustUnreadCounts<T extends MailboxSummary>(
   mailboxes: T[],
@@ -216,17 +232,17 @@ export function adjustUnreadCounts<T extends MailboxSummary>(
     for (const row of rows) {
       const hits = row.threadMessageIds.filter((id) => ids.has(id)).length;
       if (hits === 0) continue;
-      const all = hits === row.threadMessageIds.length;
       /** 対象のうち未読の数 (分からなければ少なめに数える)。 */
-      const unread = row.seen
-        ? 0
-        : row.threadMessageIds.length === 1 || all
-          ? 1
-          : 0;
+      const unread = unreadAmong(row, ids);
       if (action.action === "set_flags") {
         if (action.seen === true) add(row.mailboxId, -unread);
-        // すべて既読の会話を未読にしたら、対象の数だけ増える。
-        if (action.seen === false && row.seen) add(row.mailboxId, hits);
+        if (action.seen === false) {
+          // 対象のうち既読だったものが未読になる。どれが未読か分からない会話は、
+          // すべて既読のときだけ数える。
+          const unseen = knownUnseen(row);
+          if (unseen) add(row.mailboxId, hits - unread);
+          else if (row.seen) add(row.mailboxId, hits);
+        }
         continue;
       }
       if (action.action === "move") {

@@ -29,6 +29,8 @@ export type ThreadInMailbox = {
   ids: string[];
   /** すべて既読か。 */
   seen: boolean;
+  /** ids のうち未読のもの (古い順)。 */
+  unseenIds: string[];
   /** どれかにスターが付いているか。 */
   flagged: boolean;
   hasAttachments: boolean;
@@ -38,6 +40,10 @@ export const threadInMailbox = sql<ThreadInMailbox>`(
   select json_build_object(
     'ids', json_agg(t.id order by t.received_at, t.id),
     'seen', bool_and(t.seen),
+    'unseenIds', coalesce(
+      json_agg(t.id order by t.received_at, t.id) filter (where not t.seen),
+      '[]'::json
+    ),
     'flagged', bool_or(t.flagged),
     'hasAttachments', bool_or(t.has_attachments)
   )
