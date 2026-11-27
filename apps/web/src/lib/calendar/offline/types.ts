@@ -5,6 +5,7 @@ import type {
   EventFields,
   EventRange,
   EventTimeInput,
+  InviteFailure,
 } from "@/lib/calendar/api";
 
 /**
@@ -104,6 +105,8 @@ export type QueuedOp = {
  * - deleted_elsewhere: 変更しようとした予定が、ほかの端末で削除されていた (端末) → restore
  * - occurrence_gone: 変えようとした回が、繰り返しの変更で無くなっていた (端末) → restore (単発の予定として作る)
  * - failed: そのほかの理由で、サーバーに断られた (端末) → retry
+ * - invite_failed: 招待メール (iMIP) を送れなかった (サーバー、段取り 8b) → resend (同じメールを送り直す)。
+ *   一部の宛先だけ送れなかったときは dismiss だけ
  *
  * どれも dismiss で閉じられる。
  */
@@ -116,9 +119,15 @@ export type ConflictKind =
   | "rejected"
   | "deleted_elsewhere"
   | "occurrence_gone"
-  | "failed";
+  | "failed"
+  | "invite_failed";
 
-export type ConflictAction = "restore" | "retry" | "delete" | "dismiss";
+export type ConflictAction =
+  | "restore"
+  | "retry"
+  | "delete"
+  | "resend"
+  | "dismiss";
 
 export type ConflictItem = {
   id: string;
@@ -145,6 +154,8 @@ export type ConflictItem = {
   actions: ConflictAction[];
   /** 端末の送信待ちから来たものなら、その操作の ID。 */
   opId: string | null;
+  /** invite_failed のときの、送れなかったメール (古い控えには無い)。 */
+  invite?: InviteFailure | null;
 };
 
 export type EventRangeQuery = { from: string; to: string; timeZone: string };

@@ -48,6 +48,7 @@ const api: ClientApi = {
   listConflicts: calendarApi.listConflicts,
   dismissConflict: calendarApi.dismissConflict,
   retryConflict: calendarApi.retryConflict,
+  resendInvite: calendarApi.resendInvite,
 };
 
 /** SSE の change をまとめる時間 (いまの画面と同じ)。 */

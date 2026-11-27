@@ -1852,7 +1852,7 @@ function MessageContent({
   );
   const embeddedUrls = useEmbeddedImages(message.id, embedded);
   // 招待のカードを出せたときは、招待の本体 (名前の無い text/calendar) を添付の一覧から外す。
-  const { invite } = useMessageInvite(message);
+  const { invite, reload: reloadInvite } = useMessageInvite(message);
   // 埋め込み画像が届くたびに本文を読み込み直すと、そのたびに本文が消えて大きさも決め直しになる。
   // 組み立てた時点で届いている分だけを入れ、後から届いた分は BodyFrame が差し込む。
   const embeddedUrlsRef = useRef(embeddedUrls);
@@ -2148,7 +2148,15 @@ function MessageContent({
 
       <SenderWarningBanner check={message.senderCheck} from={message.from[0]} />
 
-      {invite && <InviteCard invite={invite} accountId={message.accountId} />}
+      {invite && (
+        <InviteCard
+          key={message.id}
+          invite={invite}
+          accountId={message.accountId}
+          messageId={message.id}
+          onReload={reloadInvite}
+        />
+      )}
 
       {message.bodyFetchedAt === null ? (
         <output className="block p-4 text-muted-foreground text-sm sm:p-6">

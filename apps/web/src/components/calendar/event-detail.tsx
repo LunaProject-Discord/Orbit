@@ -21,17 +21,21 @@ import {
 import { type DisplayItem, itemTitle } from "@/components/calendar/types";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent } from "@/components/ui/popover";
-import {
-  type Attendee,
-  type Calendar,
-  type CalendarEvent,
-  calendarScheduling,
-  type Reminder,
+import type {
+  Attendee,
+  Calendar,
+  CalendarEvent,
+  Reminder,
 } from "@/lib/calendar/api";
 import type { PendingState } from "@/lib/calendar/conflict-labels";
 import { formatMonthDayWeekday, formatTimeRange } from "@/lib/calendar/dates";
+import type { ImipAccount } from "@/lib/calendar/imip";
 import { describeRule } from "@/lib/calendar/recurrence-label";
-import { canRespondTo, type RsvpAccount } from "@/lib/calendar/rsvp";
+import {
+  canRespondTo,
+  type RsvpAccount,
+  rsvpDelivery,
+} from "@/lib/calendar/rsvp";
 
 const STATUS: Record<Attendee["status"], { label: string; tone: string }> = {
   accepted: { label: "参加", tone: "text-emerald-600" },
@@ -57,25 +61,52 @@ export function reminderLabel(reminder: Reminder): string {
 }
 
 /**
- * 出欠のボタンの下の注記。繰り返しでは返事が届く範囲を、招待を送らない CalDAV では
- * 主催者に届かないことを添える (10 章の 4: 推奨 A)。
+ * 出欠のボタンの下の注記。繰り返しでは返事が届く範囲を、Orbit が返事のメールを送る
+ * カレンダーでは送信元のアドレスを、主催者に届かないカレンダーではそのことを添える
+ * (10 章の 4: 推奨 A、imip-design 12.3)。
  */
 export function rsvpNote(
   item: Pick<DisplayItem, "repeating"> & {
-    event: Pick<CalendarEvent, "parentId">;
+    event: Pick<CalendarEvent, "parentId"> &
+      Partial<Pick<CalendarEvent, "attendees">>;
   },
   calendar: Calendar | undefined,
+  accounts: readonly ImipAccount[] | null = null,
 ): string | null {
   const notes: string[] = [];
   if (item.event.parentId) notes.push("この回だけに返事します");
   else if (item.repeating) notes.push("すべての回に返事します");
-  if (
-    calendar?.source === "caldav" &&
-    calendarScheduling(calendar) === "none"
-  ) {
-    notes.push("主催者には通知されません (このカレンダーにだけ記録します)");
+  if (calendar?.source === "caldav" || calendar?.source === "local") {
+    const delivery = rsvpDelivery(
+      { attendees: item.event.attendees ?? [] },
+      calendar,
+      accounts,
+    );
+    if (delivery.via === "mail") {
+      notes.push(`返事は ${delivery.from} から主催者にメールで送ります`);
+    } else if (delivery.via === "none") {
+      notes.push(
+        delivery.reason === "no_sender"
+          ? "主催者には通知されません (返事を送れるメールアカウントがありません)"
+          : "主催者には通知されません (このカレンダーにだけ記録します)",
+      );
+    }
   }
   return notes.length > 0 ? notes.join("\n") : null;
+}
+
+/** 招待メールの送信の状態の文言 (imip-design 6.5、12.3)。送り終えていれば null。 */
+export function inviteDeliveryLabel(
+  event: Pick<CalendarEvent, "inviteDelivery">,
+): string | null {
+  switch (event.inviteDelivery) {
+    case "pending":
+      return "招待メールを送信中";
+    case "failed":
+      return "招待メールを送れませんでした";
+    default:
+      return null;
+  }
 }
 
 /** 自分の出欠 (未返信と代理は null)。 */
@@ -108,8 +139,11 @@ type DetailProps = {
   onDelete: (() => void) | null;
   /** 出欠を返す (返せない予定・画面では null)。 */
   onRespond?: ((status: RsvpChoice) => void) | null;
-  /** アカウントの一覧 (self の参加者がアカウントの持ち主かの判定に使う)。 */
-  accounts?: readonly RsvpAccount[] | null;
+  /**
+   * アカウントの一覧 (self の参加者がアカウントの持ち主かの判定と、返事のメールの
+   * 送信元に使う)。
+   */
+  accounts?: readonly (RsvpAccount & ImipAccount)[] | null;
   onClose: () => void;
 };
 
@@ -144,6 +178,7 @@ function DetailBody({
     },
     {} as Partial<Record<Attendee["status"], number>>,
   );
+  const delivery = inviteDeliveryLabel(event);
   const date = formatMonthDayWeekday(local.firstDay);
   const range = formatTimeRange(local);
   return (
@@ -263,26 +298,34 @@ function DetailBody({
                   const organizer =
                     event.organizer?.email.toLowerCase() ===
                     attendee.email.toLowerCase();
+                  const comment = attendee.comment?.trim();
                   return (
                     <li
                       key={attendee.email}
-                      className="flex items-center gap-2 text-sm"
+                      className="flex items-start gap-2 text-sm"
                     >
                       <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px]">
                         {name.slice(0, 1).toUpperCase()}
                       </span>
-                      <span className="min-w-0 flex-1 truncate">
-                        {name}
-                        {attendee.self && " (自分)"}{" "}
-                        {organizer && (
-                          <span className="text-muted-foreground text-xs">
-                            主催者
+                      <span className="flex min-h-6 min-w-0 flex-1 flex-col justify-center">
+                        <span className="truncate">
+                          {name}
+                          {attendee.self && " (自分)"}{" "}
+                          {organizer && (
+                            <span className="text-muted-foreground text-xs">
+                              主催者
+                            </span>
+                          )}
+                        </span>
+                        {comment && (
+                          <span className="line-clamp-3 whitespace-pre-wrap break-words text-muted-foreground text-xs">
+                            {comment}
                           </span>
                         )}
                       </span>
                       <span
                         className={cn(
-                          "shrink-0 text-xs",
+                          "shrink-0 text-xs leading-6",
                           STATUS[attendee.status].tone,
                         )}
                       >
@@ -292,6 +335,27 @@ function DetailBody({
                   );
                 })}
               </ul>
+              {delivery && (
+                <p
+                  className={cn(
+                    "mt-1.5 flex flex-wrap items-center gap-x-2 text-xs",
+                    event.inviteDelivery === "failed"
+                      ? "text-destructive"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {delivery}
+                  {event.inviteDelivery === "failed" && onShowConflicts && (
+                    <button
+                      type="button"
+                      onClick={onShowConflicts}
+                      className="text-primary underline-offset-4 outline-none hover:underline focus-visible:underline"
+                    >
+                      確認する
+                    </button>
+                  )}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -309,7 +373,7 @@ function DetailBody({
           <RsvpButtons
             value={myStatus(event)}
             onChange={onRespond}
-            note={rsvpNote(item, calendar)}
+            note={rsvpNote(item, calendar, accounts)}
           />
         </div>
       )}

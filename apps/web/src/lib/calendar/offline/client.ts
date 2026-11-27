@@ -10,6 +10,7 @@ import type {
   CalendarSyncPage,
   EventFields,
   EventRange,
+  InviteFailure,
 } from "@/lib/calendar/api";
 import { expandRange } from "@/lib/calendar/offline/expand";
 import {
@@ -83,6 +84,7 @@ export type ClientApi = QueueApi &
     | "listConflicts"
     | "dismissConflict"
     | "retryConflict"
+    | "resendInvite"
   >;
 
 export type ClientOptions = {
@@ -119,6 +121,7 @@ const SERVER_ACTIONS: Record<CalendarConflict["kind"], ConflictAction[]> = {
   create_failed: ["retry", "delete", "dismiss"],
   remote_deleted: ["restore", "dismiss"],
   delete_cancelled: ["delete", "dismiss"],
+  invite_failed: ["resend", "dismiss"],
 };
 
 /**
@@ -180,7 +183,53 @@ export function isRespondFailure(
   );
 }
 
+/** invite_failed の lost (送れなかったメール) を読む。形が違えば null。 */
+export function inviteFailureOf(lost: unknown): InviteFailure | null {
+  if (!lost || typeof lost !== "object") return null;
+  const raw = lost as Record<string, unknown>;
+  const method = raw.method;
+  return {
+    ...(typeof raw.outboxId === "string" ? { outboxId: raw.outboxId } : {}),
+    ...(method === "REQUEST" || method === "CANCEL" || method === "REPLY"
+      ? { method }
+      : {}),
+    ...(Array.isArray(raw.to)
+      ? {
+          to: raw.to.filter(
+            (entry): entry is string => typeof entry === "string",
+          ),
+        }
+      : {}),
+    ...(raw.partial === true ? { partial: true } : {}),
+  };
+}
+
+/** 招待メールの送信の失敗 (invite_failed) の項目。lost は項目の値ではないので invite に移す。 */
+function inviteConflictItem(conflict: CalendarConflict): ConflictItem {
+  const invite = inviteFailureOf(conflict.lost);
+  return {
+    id: conflict.id,
+    source: "server",
+    kind: "invite_failed",
+    calendarId: conflict.calendarId,
+    eventId: conflict.eventId,
+    recurrenceId: conflict.recurrenceId ?? null,
+    title: conflict.title,
+    fields: [],
+    lost: null,
+    kept: null,
+    snapshot: snapshotEvent(conflict),
+    reason: conflict.reason,
+    createdAt: conflict.createdAt,
+    // 一部の宛先だけ送れなかったときは、送り直さない (届いた人に 2 通目が行く)。
+    actions: invite?.partial ? ["dismiss"] : ["resend", "dismiss"],
+    opId: null,
+    invite,
+  };
+}
+
 function serverConflictItem(conflict: CalendarConflict): ConflictItem {
+  if (conflict.kind === "invite_failed") return inviteConflictItem(conflict);
   const snapshot = snapshotEvent(conflict);
   // まだ相手側に無い回の例外の書き戻しが失敗したとき、snapshot が原本と回を持つ。
   // 「もう一度試す」は、その回の変更 (PATCH /events/:parentId/occurrences/:rid) で送る。
@@ -655,6 +704,9 @@ export class OfflineCalendarClient implements CalendarClient {
       if (item.kind === "create_failed" && action === "retry") {
         await this.api.retryConflict(id);
       }
+      if (item.kind === "invite_failed" && action === "resend") {
+        await this.api.resendInvite(id);
+      }
       await this.api.dismissConflict(id).catch((error) => {
         if (!(error instanceof ApiError && error.status === 404)) throw error;
       });
@@ -716,7 +768,9 @@ export class OfflineCalendarClient implements CalendarClient {
       case "delete":
         if (item.eventId) this.deleteEvent(item.eventId);
         return;
+      case "resend":
       case "dismiss":
+        // resend はサーバーが送り直す (resolveConflict で済んでいる)。
         return;
     }
   }

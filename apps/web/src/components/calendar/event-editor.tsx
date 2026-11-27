@@ -29,8 +29,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import type { Account } from "@/lib/api";
 import {
   type Calendar,
+  type CalendarEvent,
   calendarScheduling,
   type Reminder,
 } from "@/lib/calendar/api";
@@ -39,6 +41,7 @@ import {
   formTime,
   inviteFormView,
 } from "@/lib/calendar/event-form";
+import { blockedSenderAddress, inviteSenderAddress } from "@/lib/calendar/imip";
 import { describeRule } from "@/lib/calendar/recurrence-label";
 
 const REMINDER_MINUTES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
@@ -80,12 +83,15 @@ export function EventEditor({
   existing = false,
   role = "organizer",
   online = true,
+  organizer = null,
+  accounts = null,
   calendars,
   colorOf,
   timeZone,
   busy,
   error,
   onSave,
+  onChooseSender = null,
   onClose,
 }: {
   open: boolean;
@@ -97,6 +103,10 @@ export function EventEditor({
   role?: InviteRole;
   /** サーバーに届くか (注記の言い方を変える)。 */
   online?: boolean;
+  /** 既にある予定の主催者 (招待メールの送信元のアドレスになる)。 */
+  organizer?: CalendarEvent["organizer"];
+  /** アカウントの一覧 (受信専用の送信元のアドレスを出すのに使う)。 */
+  accounts?: readonly Pick<Account, "id" | "email">[] | null;
   /** 予定を入れられるカレンダー。 */
   calendars: Calendar[];
   colorOf: (calendar: Calendar) => string;
@@ -104,6 +114,8 @@ export function EventEditor({
   busy: boolean;
   error: string | null;
   onSave: (form: EventForm) => void;
+  /** カレンダーの「招待メールの送信元」を開く (無ければ「送信元を選ぶ」を出さない)。 */
+  onChooseSender?: ((calendar: Calendar) => void) | null;
   onClose: () => void;
 }) {
   const id = useId();
@@ -115,15 +127,21 @@ export function EventEditor({
   const set = <K extends keyof EventForm>(key: K, value: EventForm[K]) =>
     setForm((current) => (current ? { ...current, [key]: value } : current));
   const valid = formTime(form, timeZone) !== null;
+  const selectedCalendar = calendars.find(
+    (calendar) => calendar.id === form.calendarId,
+  );
   const invite = inviteFormView({
     form,
     before: existing ? initial : null,
     role,
-    scheduling: calendarScheduling(
-      calendars.find((calendar) => calendar.id === form.calendarId),
-    ),
+    scheduling: calendarScheduling(selectedCalendar),
     timeZone,
     online,
+    sender: inviteSenderAddress(selectedCalendar, existing ? organizer : null),
+    schedulingBlocked: selectedCalendar?.schedulingBlocked ?? null,
+    blockedAddress: selectedCalendar
+      ? blockedSenderAddress(selectedCalendar, accounts)
+      : null,
   });
   const locked = invite.locked;
   const canSave = valid && invite.blocked === null;
@@ -378,6 +396,18 @@ export function EventEditor({
                 )}
               >
                 {invite.note}
+                {invite.chooseSender && onChooseSender && selectedCalendar && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={() => onChooseSender(selectedCalendar)}
+                      className="whitespace-nowrap text-primary underline-offset-4 outline-none hover:underline focus-visible:underline"
+                    >
+                      送信元を選ぶ
+                    </button>
+                  </>
+                )}
               </p>
             )}
           </Field>
@@ -507,6 +537,11 @@ export function EventEditor({
               onChange={(event) => set("description", event.target.value)}
               className="min-h-20"
             />
+            {invite.descriptionNote && (
+              <p className="text-muted-foreground text-xs">
+                {invite.descriptionNote}
+              </p>
+            )}
           </Field>
           {error && <p className="text-destructive text-sm">{error}</p>}
         </form>

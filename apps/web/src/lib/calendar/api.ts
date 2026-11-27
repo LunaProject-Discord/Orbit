@@ -1,4 +1,8 @@
-import type { CalendarScheduling } from "@orbit/core/event-invite";
+import type {
+  CalendarImipFields,
+  CalendarScheduling,
+  InviteDelivery,
+} from "@orbit/core/event-invite";
 import { ApiError, apiFetch } from "@/lib/api";
 
 /**
@@ -40,6 +44,14 @@ export type Calendar = {
    */
   scheduling?: CalendarScheduling;
   /**
+   * 招待メールの送信元 (段取り 8b、imip-design 10.1)。古いサーバーと古い控えには無い。
+   * imipAccountId は利用者が選んだ値 (null は自動)、imipSender は解決した送信元。
+   */
+  imipAccountId?: CalendarImipFields["imipAccountId"];
+  imipSender?: CalendarImipFields["imipSender"];
+  /** scheduling が none になった理由 (Orbit 内と CalDAV だけ)。古いサーバーには無い。 */
+  schedulingBlocked?: CalendarImipFields["schedulingBlocked"];
+  /**
    * 出欠を返してよいかの材料 (Google の primary と自分の権限)。古いサーバーと
    * Google 以外では無い。判定は lib/calendar/rsvp.ts の respondsAsAccount。
    */
@@ -48,11 +60,15 @@ export type Calendar = {
   updatedAt: string;
 };
 
-/** カレンダーが招待を送れるか。項目が無い (古いサーバー・古い控え) なら送れない側に倒す。 */
+/**
+ * カレンダーが招待を送れるか。項目が無い (古いサーバー・古い控え) か知らない値なら
+ * 送れない側に倒す。mail は Orbit が招待メールを送る (段取り 8b)。
+ */
 export function calendarScheduling(
   calendar: Pick<Calendar, "scheduling"> | null | undefined,
 ): CalendarScheduling {
-  return calendar?.scheduling === "server" ? "server" : "none";
+  const value = calendar?.scheduling;
+  return value === "server" || value === "mail" ? value : "none";
 }
 
 export type AttendeeStatus =
@@ -68,6 +84,10 @@ export type Attendee = {
   role: "chair" | "required" | "optional" | "non_participant";
   status: AttendeeStatus;
   self: boolean;
+  /** 返事のコメント (段取り 8b)。古いサーバーには無い。 */
+  comment?: string | null;
+  /** 最後に反映したメールの返事 (REPLY) の時刻。古いサーバーには無い。 */
+  repliedAt?: string | null;
 };
 
 export type CalendarEvent = {
@@ -103,6 +123,11 @@ export type CalendarEvent = {
   useDefaultReminders: boolean;
   reminders: Reminder[];
   attendees: Attendee[];
+  /**
+   * 招待メールの送信の状態 (段取り 8b。scheduling が mail のカレンダーだけ)。
+   * 送り終えたか送るものが無ければ null。古いサーバーには無い。
+   */
+  inviteDelivery?: InviteDelivery | null;
   fieldUpdatedAt: Record<string, string>;
   updatedAt: string;
 };
@@ -181,6 +206,7 @@ export async function updateCalendar(
       | "visible"
       | "sortOrder"
       | "pollIntervalSeconds"
+      | "imipAccountId"
     >
   >,
 ): Promise<Calendar> {
@@ -475,8 +501,10 @@ export type CalendarConflict = {
     | "write_failed"
     | "create_failed"
     | "remote_deleted"
-    | "delete_cancelled";
+    | "delete_cancelled"
+    | "invite_failed";
   fields: (keyof EventFields)[];
+  /** invite_failed では InviteFailure の形 (項目の値ではない)。 */
   lost: EventFields | null;
   snapshot: CalendarEvent | null;
   title: string | null;
@@ -499,6 +527,27 @@ export async function listConflicts(
 /** 競合を閉じる。 */
 export async function dismissConflict(id: string): Promise<void> {
   await apiFetch(`/v1/calendars/conflicts/${id}`, { method: "DELETE" });
+}
+
+/**
+ * 招待メールの送信の失敗 (invite_failed) の記録の lost (imip-design 6.5)。
+ * to は送れなかった宛先。partial は、ほかの宛先には送れた (一部の宛先だけ拒否された) とき true。
+ */
+export type InviteFailure = {
+  outboxId?: string;
+  method?: "REQUEST" | "CANCEL" | "REPLY";
+  to?: string[];
+  partial?: boolean;
+};
+
+/**
+ * 送れなかった招待メールを、同じ内容でもう一度送る (invite_failed だけ)。
+ * 送り直せない記録は 409 not_resendable。
+ */
+export async function resendInvite(id: string): Promise<void> {
+  await apiFetch(`/v1/calendars/conflicts/${id}/resend-invite`, {
+    method: "POST",
+  });
 }
 
 /** 作成が確定して失敗した予定を、もう一度書き戻す (create_failed だけ)。 */

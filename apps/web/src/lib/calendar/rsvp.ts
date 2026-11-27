@@ -1,6 +1,11 @@
 import { inviteRole } from "@orbit/core/event-invite";
 import type { Account } from "@/lib/api";
-import type { Calendar, CalendarEvent } from "@/lib/calendar/api";
+import {
+  type Calendar,
+  type CalendarEvent,
+  calendarScheduling,
+} from "@/lib/calendar/api";
+import { type ImipAccount, replySenderAccount } from "@/lib/calendar/imip";
 
 /**
  * 出欠のボタンを出してよいかの判定 (calendar-dev/review-invites.md の 3 と 6)。
@@ -79,4 +84,46 @@ export function needsAccounts(calendar: RsvpCalendar | null | undefined) {
     calendar.primary !== true &&
     calendar.accessRole !== "owner"
   );
+}
+
+/**
+ * 出欠の返事が主催者にどう届くか (imip-design 12.3)。
+ * - server: カレンダーのサービスが知らせる。
+ * - mail: Orbit が from のアドレスから REPLY のメールを送る。
+ * - none: 知らせない。no_sender は返事を送れるメールアカウントが無い、
+ *   calendar_only はこのカレンダーにだけ記録する (招待を送るか分からない CalDAV など)。
+ *
+ * mail で、自分のアドレスの送信できるアカウントが無ければ none (no_sender)。アカウントの
+ * 一覧が分からない (読み込み中) ときは、自分の参加者のアドレスから送るものとして出す
+ * (送るかどうかはサーバーが決める)。
+ */
+export type RsvpDelivery =
+  | { via: "server" }
+  | { via: "mail"; from: string }
+  | { via: "none"; reason: "no_sender" | "calendar_only" };
+
+export function rsvpDelivery(
+  event: Pick<CalendarEvent, "attendees">,
+  calendar: Pick<Calendar, "scheduling" | "schedulingBlocked"> | undefined,
+  accounts: readonly ImipAccount[] | null | undefined,
+): RsvpDelivery {
+  const scheduling = calendarScheduling(calendar);
+  if (scheduling === "server") return { via: "server" };
+  if (scheduling === "mail") {
+    const me = event.attendees.find((attendee) => attendee.self);
+    if (!me) return { via: "none", reason: "calendar_only" };
+    if (!accounts) return { via: "mail", from: me.email };
+    const account = replySenderAccount(me.email, accounts);
+    return account
+      ? { via: "mail", from: account.email }
+      : { via: "none", reason: "no_sender" };
+  }
+  const blocked = calendar?.schedulingBlocked;
+  return {
+    via: "none",
+    reason:
+      blocked === "no_sender" || blocked === "receive_only"
+        ? "no_sender"
+        : "calendar_only",
+  };
 }

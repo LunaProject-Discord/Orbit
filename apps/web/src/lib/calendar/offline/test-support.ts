@@ -359,6 +359,9 @@ export class FakeCalendarServer {
       retryConflict: async (id) => {
         this.guard(`retry ${id}`);
       },
+      resendInvite: async (id) => {
+        this.guard(`resend ${id}`);
+      },
     };
   }
 }

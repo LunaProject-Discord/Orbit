@@ -94,6 +94,8 @@ export function applyFields(
       const email = attendee.email.trim().toLowerCase();
       const existing = known.get(email);
       return {
+        // 返事のコメントなど、変えない項目は残す (新しいサーバーだけの項目も落とさない)。
+        ...existing,
         email,
         name: attendee.name ?? null,
         role: attendee.role ?? "required",
