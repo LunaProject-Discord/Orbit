@@ -70,40 +70,6 @@ while ((Get-Date) -lt `$end) {
   return Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-Command", $script) -PassThru -WindowStyle Hidden
 }
 
-# 撮った画面から、画面の真ん中 (インストーラーの画面のあたり) を切り出し、変わったところだけを
-# 小さな JPEG にしてログへ出す (成果物を開かなくても、ログから画面を確かめられるように)。
-function Show-Frames([string]$prefix, [int]$max = 6) {
-  Add-Type -AssemblyName System.Drawing
-  $files = Get-ChildItem (Join-Path $Out "$prefix-*.png") | Sort-Object Name
-  $md5 = [System.Security.Cryptography.MD5]::Create()
-  $seen = @{}
-  $picked = @()
-  $first = $null
-  foreach ($file in $files) {
-    $image = [System.Drawing.Image]::FromFile($file.FullName)
-    $w = [Math]::Min(600, $image.Width); $h = [Math]::Min(420, $image.Height)
-    $rect = New-Object System.Drawing.Rectangle ([int](($image.Width - $w) / 2)), ([int](($image.Height - $h) / 2)), $w, $h
-    $crop = ([System.Drawing.Bitmap]$image).Clone($rect, $image.PixelFormat)
-    $image.Dispose()
-    $stream = New-Object System.IO.MemoryStream
-    $crop.Save($stream, [System.Drawing.Imaging.ImageFormat]::Bmp)
-    $hash = [Convert]::ToBase64String($md5.ComputeHash($stream.ToArray()))
-    if ($null -eq $first) { $first = $hash }
-    if ($hash -ne $first -and -not $seen.ContainsKey($hash)) {
-      $seen[$hash] = $true
-      $jpeg = New-Object System.IO.MemoryStream
-      $crop.Save($jpeg, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-      $picked += ,@($file.Name, [Convert]::ToBase64String($jpeg.ToArray()))
-    }
-    $crop.Dispose()
-  }
-  if ($picked.Count -eq 0) { Write-Host "画面の変化なし: $prefix"; return }
-  $step = [Math]::Max(1, [Math]::Ceiling($picked.Count / $max))
-  for ($i = 0; $i -lt $picked.Count; $i += $step) {
-    Write-Host ("ORBIT-SHOT {0} {1}" -f $picked[$i][0], $picked[$i][1])
-  }
-}
-
 function Check-Installed([string]$label) {
   $key = Join-Path $uninstallRoot "Orbit"
   Check (Test-Path $key) "${label}: アプリと機能に Orbit がある"
@@ -151,7 +117,6 @@ if ($Legacy -ne "") {
     Check (Test-Path (Join-Path $desktop "Orbit Mail.lnk")) "更新: デスクトップの Orbit Mail が作り直された"
   }
   $recording.WaitForExit() | Out-Null
-  Show-Frames "update"
 
   Write-Host "== アンインストール (/S)"
   Check ((Run (Join-Path $installDir "uninstall.exe") @("/S")) -eq 0) "アンインストール: 成功した"
@@ -169,14 +134,12 @@ Stop-Orbit
 Check-Installed "新規"
 Check (Test-Path (Join-Path $desktop "Orbit Mail.lnk")) "新規: デスクトップに Orbit Mail がある"
 $recording.WaitForExit() | Out-Null
-Show-Frames "install"
 
 # 3. アンインストールの確認の画面
 Write-Host "== アンインストールの確認の画面"
 $recording = Start-Recording "uninstall" 8
 Start-Process -FilePath (Join-Path $installDir "uninstall.exe") | Out-Null
 $recording.WaitForExit() | Out-Null
-Show-Frames "uninstall" 3
 Stop-Orbit
 Run (Join-Path $installDir "uninstall.exe") @("/S") | Out-Null
 Wait-Uninstaller
