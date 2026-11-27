@@ -89,12 +89,13 @@ function ics(options: IcsOptions = {}): string {
   ].join("\r\n");
 }
 
-const verified = { verified: true, warnings: [], claimed: null };
-const unknown = { verified: false, warnings: [], claimed: null };
+const verified = { verified: true, warnings: [], claimed: null, version: 2 };
+const unknown = { verified: false, warnings: [], claimed: null, version: 2 };
 const dmarcFail = {
   verified: false,
   warnings: ["dmarc_fail" as const],
   claimed: null,
+  version: 2,
 };
 
 describe.skipIf(!adminUrl)("メールの招待の反映", () => {
@@ -188,6 +189,8 @@ describe.skipIf(!adminUrl)("メールの招待の反映", () => {
           username: email,
           credentialsEncrypted: "x",
           calendarEnabled: true,
+          // 送信できるアカウント (Orbit 内と CalDAV のカレンダーの scheduling が mail になる)。
+          smtpHost: "smtp.example.com",
         })
         .returning({ id: accounts.id });
       return row?.id as string;
@@ -280,9 +283,10 @@ describe.skipIf(!adminUrl)("メールの招待の反映", () => {
     content: string,
     options: {
       from?: string;
-      senderCheck?: typeof verified | null;
+      senderCheck?: Record<string, unknown> | null;
       owner?: string;
       account?: string;
+      receivedAt?: Date;
     } = {},
   ) => {
     const owner = options.owner ?? userId;
@@ -293,10 +297,11 @@ describe.skipIf(!adminUrl)("メールの招待の反映", () => {
         threadKey: randomUUID(),
         subject: "招待",
         from: [{ address: options.from ?? ORGANIZER }],
-        senderCheck:
-          options.senderCheck === undefined ? verified : options.senderCheck,
+        senderCheck: (options.senderCheck === undefined
+          ? verified
+          : options.senderCheck) as typeof verified | null,
         sentAt: new Date("2026-11-27T00:00:00Z"),
-        receivedAt: new Date("2026-11-27T00:00:01Z"),
+        receivedAt: options.receivedAt ?? new Date("2026-11-27T00:00:01Z"),
         hasAttachments: true,
       })
       .returning({ id: messages.id });
@@ -819,16 +824,20 @@ describe.skipIf(!adminUrl)("メールの招待の反映", () => {
         ...options,
       });
 
-    it("検証済みの REPLY は auto。反映すると出欠・コメント・replied_at が入り、2 回目は done", async () => {
+    it("検証済みの REPLY も自動では反映せず ready (ボタン)。反映すると出欠・コメント・replied_at が入り、2 回目は done", async () => {
       const eventId = await organized();
       const messageId = await insertMessage(reply(), {
         from: "suzuki@example.com",
       });
       expect((await get(messageId)).invite).toMatchObject({
-        sender: { email: "suzuki@example.com", matches: true },
+        sender: {
+          email: "suzuki@example.com",
+          matches: true,
+          auth: "verified",
+        },
         action: "apply_reply",
-        actionState: "auto",
-        eventId: null,
+        actionState: "ready",
+        eventId,
       });
       expect(await apply(messageId, { expect: "apply_reply" })).toEqual({
         status: 200,
@@ -918,11 +927,6 @@ describe.skipIf(!adminUrl)("メールの招待の反映", () => {
           reply("DELEGATED"),
           { from: "suzuki@example.com" },
           { blocked: "unsupported_method" },
-        ],
-        [
-          reply("ACCEPTED", { dtstamp: "20991231T000000Z" }),
-          { from: "suzuki@example.com" },
-          { actionState: "stale" },
         ],
       ];
       for (const [content, options, expected] of cases) {
@@ -1017,6 +1021,538 @@ describe.skipIf(!adminUrl)("メールの招待の反映", () => {
           { eventId, calendarId: caldavId, fields: ["attendees"] },
         ],
       ]);
+    });
+  });
+
+  describe("レビュー 8b の指摘", () => {
+    it("指摘 1: 照合を入れる前に保存した送信元の確認結果 (版なし) は、確認中として扱う", async () => {
+      const messageId = await insertMessage(ics(), {
+        senderCheck: { verified: true, warnings: [], claimed: null },
+      });
+      expect((await get(messageId)).invite).toMatchObject({
+        sender: { auth: "pending" },
+        actionState: "blocked",
+        blocked: "sender_unverified",
+      });
+    });
+
+    it("指摘 2: 認証の結果が無いメールの更新・取り消しは確認が要る (confirmed なしは 409)", async () => {
+      const eventId = await imported();
+      const update = await insertMessage(ics({ sequence: 2 }), {
+        senderCheck: unknown,
+      });
+      expect((await get(update)).invite).toMatchObject({
+        action: "update",
+        actionState: "confirm",
+        confirmReason: "sender_unverified",
+      });
+      expect(await apply(update, { expect: "update" })).toEqual({
+        status: 409,
+        body: { error: "sender_unverified" },
+      });
+      expect((await eventsOf(localId))[0]?.sequence).toBe(1);
+      expect(
+        (await apply(update, { expect: "update", confirmed: true })).body,
+      ).toEqual({ applied: true, eventId });
+
+      const cancel = await insertMessage(
+        ics({ method: "CANCEL", sequence: 2 }),
+        { senderCheck: unknown },
+      );
+      expect((await get(cancel)).invite).toMatchObject({
+        action: "remove",
+        actionState: "confirm",
+        confirmReason: "sender_unverified",
+      });
+      expect((await apply(cancel, { expect: "remove" })).status).toBe(409);
+      expect(await eventsOf(localId)).toHaveLength(1);
+      expect(
+        (await apply(cancel, { expect: "remove", confirmed: true })).body,
+      ).toEqual({ applied: true, eventId });
+      expect(await eventsOf(localId)).toEqual([]);
+    });
+
+    it("指摘 4: SEQUENCE が上限を超える招待は扱わず、大きく飛ぶ更新は確認を挟む", async () => {
+      const huge = await insertMessage(ics({ sequence: 9_999_999_999 }));
+      expect((await get(huge)).invite).toBeNull();
+      expect(await apply(huge, { expect: "import" })).toEqual({
+        status: 409,
+        body: { error: "unsupported_method" },
+      });
+      const eventId = await imported();
+      const jump = await insertMessage(ics({ sequence: 2000 }));
+      expect((await get(jump)).invite).toMatchObject({
+        action: "update",
+        actionState: "confirm",
+        confirmReason: "sequence_jump",
+      });
+      expect((await apply(jump, { expect: "update" })).status).toBe(409);
+      // 本物の次の更新は、そのまま反映できる。
+      const next = await insertMessage(ics({ sequence: 3 }));
+      expect(await apply(next, { expect: "update" })).toEqual({
+        status: 200,
+        body: { applied: true, eventId },
+      });
+    });
+
+    it("指摘 5: 長い UID・参加者 500 人超・1 秒ごとの繰り返しは扱わず、長い文字は切り詰め、形の悪いアドレスは落とす", async () => {
+      expect(
+        (await get(await insertMessage(ics({ uid: `${"u".repeat(300)}@x` }))))
+          .invite,
+      ).toBeNull();
+      const many = Array.from(
+        { length: 501 },
+        (_, index) => `ATTENDEE:mailto:p${index}@example.com`,
+      );
+      expect(
+        (await get(await insertMessage(ics({ attendees: many })))).invite,
+      ).toBeNull();
+      expect(
+        (
+          await get(
+            await insertMessage(
+              ics({ extra: ["RRULE:FREQ=SECONDLY;INTERVAL=1"] }),
+            ),
+          )
+        ).invite,
+      ).toBeNull();
+      const messageId = await insertMessage(
+        ics({
+          summary: "a".repeat(300_000),
+          attendees: [
+            `ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:${ME}`,
+            `ATTENDEE;CN=${"n".repeat(50_000)}:mailto:suzuki@example.com`,
+            "ATTENDEE:mailto:a b@c d",
+          ],
+        }),
+      );
+      const result = await apply(messageId, { expect: "import" });
+      expect(result, JSON.stringify(result.body)).toMatchObject({
+        status: 200,
+      });
+      const [row] = await eventsOf(localId);
+      expect(row?.summary).toHaveLength(1000);
+      const attendees = await attendeesOf(result.body.eventId as string);
+      expect(attendees.map((a) => a.email)).toEqual([ME, "suzuki@example.com"]);
+      expect(attendees[1]?.name).toHaveLength(300);
+    });
+
+    it("指摘 6: 自動スケジュールか分からない CalDAV のカレンダーには取り込まない", async () => {
+      const [unknownDav] = await db
+        .insert(calendars)
+        .values({
+          userId,
+          accountId: caldavAccountId,
+          source: "caldav",
+          name: "不明",
+          remoteId: "/dav/unknown/",
+          providerState: {},
+        })
+        .returning({ id: calendars.id });
+      try {
+        const messageId = await insertMessage(ics());
+        const { invite } = await get(messageId);
+        expect(
+          (invite.calendars as { id: string }[]).map((entry) => entry.id),
+        ).not.toContain(unknownDav?.id);
+        expect(
+          await apply(messageId, {
+            expect: "import",
+            calendarId: unknownDav?.id,
+          }),
+        ).toEqual({ status: 409, body: { error: "no_calendar" } });
+      } finally {
+        await db
+          .delete(calendars)
+          .where(eq(calendars.id, unknownDav?.id ?? ""));
+      }
+    });
+
+    it("指摘 7: CalDAV へ取り込むときの self は、そのカレンダーの自分のアドレスだけ", async () => {
+      // 受信したアドレス (Gmail) は CalDAV のアカウントの自分ではないので、self なしになる。
+      const toGmail = await insertMessage(ics());
+      expect(
+        (await apply(toGmail, { expect: "import", calendarId: caldavId }))
+          .status,
+      ).toBe(200);
+      const [first] = await eventsOf(caldavId);
+      expect((await attendeesOf(first?.id as string)).some((a) => a.self)).toBe(
+        false,
+      );
+      await db.delete(events);
+      await db.delete(outbox);
+      // CalDAV のアカウントのアドレスが参加者にいれば、それを self にする。
+      const toDav = await insertMessage(
+        ics({
+          attendees: [
+            `ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:${ME}`,
+            "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@dav.example",
+          ],
+        }),
+      );
+      expect(
+        (await apply(toDav, { expect: "import", calendarId: caldavId })).status,
+      ).toBe(200);
+      const [second] = await eventsOf(caldavId);
+      expect(
+        (await attendeesOf(second?.id as string))
+          .filter((a) => a.self)
+          .map((a) => a.email),
+      ).toEqual(["me@dav.example"]);
+    });
+
+    it("指摘 8: 1 回だけの招待の後に原本の招待を取り込むと、親の無い例外の行を原本につなぎ直す", async () => {
+      const single = await insertMessage(
+        ics({ recurrenceId: "20261217T100000", start: "20261217T100000" }),
+      );
+      expect(
+        (await apply(single, { expect: "import", calendarId: localId })).status,
+      ).toBe(200);
+      const [orphan] = await eventsOf(localId);
+      await db
+        .update(eventAttendees)
+        .set({ status: "accepted" })
+        .where(
+          and(
+            eq(eventAttendees.eventId, orphan?.id as string),
+            eq(eventAttendees.self, true),
+          ),
+        );
+      // その回を含む原本の招待。
+      const series = await insertMessage(
+        ics({
+          extra: ["RRULE:FREQ=WEEKLY;COUNT=4"],
+          more: [
+            vevent({
+              recurrenceId: "20261217T100000",
+              start: "20261217T100000",
+              summary: "設計レビュー (この回)",
+            }),
+          ],
+        }),
+      );
+      expect((await get(series)).invite).toMatchObject({
+        action: "import",
+        actionState: "ready",
+      });
+      const result = await apply(series, {
+        expect: "import",
+        calendarId: localId,
+      });
+      expect(result.status).toBe(200);
+      const rows = await eventsOf(localId);
+      expect(rows).toHaveLength(2);
+      const master = rows.find((row) => row.recurrenceId === null);
+      const exception = rows.find((row) => row.recurrenceId !== null);
+      expect(master?.id).toBe(result.body.eventId);
+      expect(exception).toMatchObject({
+        parentId: master?.id,
+        summary: "設計レビュー (この回)",
+      });
+      expect(exception?.id).not.toBe(orphan?.id);
+      // 同じ SEQUENCE なので、その回への自分の出欠を引き継ぐ。
+      expect(
+        (await attendeesOf(exception?.id as string)).find((a) => a.self)
+          ?.status,
+      ).toBe("accepted");
+      const deleted = await db
+        .select()
+        .from(changes)
+        .where(eq(changes.op, "delete"));
+      expect(deleted.map((row) => row.entityId)).toContain(orphan?.id);
+    });
+
+    it("指摘 8: その回を含まない原本の招待なら、親の無い行は消して原本の繰り返しに任せる", async () => {
+      await apply(
+        await insertMessage(
+          ics({ recurrenceId: "20261217T100000", start: "20261217T100000" }),
+        ),
+        { expect: "import", calendarId: localId },
+      );
+      await apply(
+        await insertMessage(ics({ extra: ["RRULE:FREQ=WEEKLY;COUNT=4"] })),
+        { expect: "import", calendarId: localId },
+      );
+      const rows = await eventsOf(localId);
+      expect(rows.map((row) => [row.recurrenceId, row.rrule])).toEqual([
+        [null, "FREQ=WEEKLY;COUNT=4"],
+      ]);
+    });
+
+    it("指摘 9: 原本の無い例外が複数ある招待は、先頭の 1 回だけを取り込む (CalDAV の作成は 1 本)", async () => {
+      const messageId = await insertMessage(
+        ics({
+          recurrenceId: "20261210T100000",
+          more: [
+            vevent({
+              recurrenceId: "20261217T100000",
+              start: "20261217T100000",
+            }),
+          ],
+        }),
+      );
+      expect(
+        (await apply(messageId, { expect: "import", calendarId: caldavId }))
+          .status,
+      ).toBe(200);
+      expect(await eventsOf(caldavId)).toHaveLength(1);
+      const queued = await db.select().from(outbox);
+      expect(queued.map((row) => row.kind)).toEqual(["event_create"]);
+    });
+
+    it("親の無い例外の行の更新・取り消し", async () => {
+      const options = {
+        recurrenceId: "20261217T100000",
+        start: "20261217T100000",
+      };
+      await apply(await insertMessage(ics(options)), {
+        expect: "import",
+        calendarId: localId,
+      });
+      const [orphan] = await eventsOf(localId);
+      const update = await insertMessage(
+        ics({ ...options, sequence: 2, summary: "変更後" }),
+      );
+      expect(await apply(update, { expect: "update" })).toEqual({
+        status: 200,
+        body: { applied: true, eventId: orphan?.id },
+      });
+      expect((await eventsOf(localId))[0]).toMatchObject({
+        id: orphan?.id,
+        summary: "変更後",
+        sequence: 2,
+      });
+      const cancel = await insertMessage(
+        ics({ ...options, method: "CANCEL", sequence: 2 }),
+      );
+      expect(await apply(cancel, { expect: "remove" })).toEqual({
+        status: 200,
+        body: { applied: true, eventId: orphan?.id },
+      });
+      expect(await eventsOf(localId)).toEqual([]);
+    });
+
+    it("指摘 14: 原本は同じで例外だけ新しい招待は、更新として反映する", async () => {
+      const exception = (stamp: string, summary: string) =>
+        vevent({
+          recurrenceId: "20261217T100000",
+          start: "20261217T100000",
+          dtstamp: stamp,
+          summary,
+        });
+      await imported({
+        extra: ["RRULE:FREQ=WEEKLY;COUNT=4"],
+        more: [exception("20261127T000000Z", "この回")],
+      });
+      const messageId = await insertMessage(
+        ics({
+          extra: ["RRULE:FREQ=WEEKLY;COUNT=4"],
+          more: [exception("20261128T000000Z", "この回 (変更)")],
+        }),
+      );
+      expect((await get(messageId)).invite).toMatchObject({
+        action: "update",
+        actionState: "ready",
+      });
+      expect((await apply(messageId, { expect: "update" })).status).toBe(200);
+      expect(
+        (await eventsOf(localId)).find((row) => row.recurrenceId !== null)
+          ?.summary,
+      ).toBe("この回 (変更)");
+    });
+
+    it("指摘 17: self なしで取り込んだ予定も、GET の eventId に返す", async () => {
+      const eventId = await imported({
+        attendees: ["ATTENDEE:mailto:suzuki@example.com"],
+      });
+      const messageId = await insertMessage(
+        ics({ attendees: ["ATTENDEE:mailto:suzuki@example.com"] }),
+      );
+      expect((await get(messageId)).invite).toMatchObject({
+        action: "update",
+        actionState: "done",
+        eventId,
+      });
+    });
+
+    it("同じ UID の予定が 2 つの mail 側のカレンダーにあれば、1 つずつ取り消す", async () => {
+      const [second] = await db
+        .insert(calendars)
+        .values({ userId, source: "local", name: "2 つ目", sortOrder: 9 })
+        .returning({ id: calendars.id });
+      try {
+        await imported();
+        // 2 つ目のカレンダーにも同じ予定 (ほかの経路で入ったもの)。
+        const [copy] = await eventsOf(localId);
+        await db.insert(events).values({
+          ...(copy as typeof events.$inferInsert),
+          id: undefined,
+          calendarId: second?.id as string,
+        });
+        expect(
+          await db.select().from(events).where(eq(events.uid, UID)),
+        ).toHaveLength(2);
+        const cancel = await insertMessage(
+          ics({ method: "CANCEL", sequence: 1 }),
+        );
+        expect((await apply(cancel, { expect: "remove" })).body.applied).toBe(
+          true,
+        );
+        expect((await get(cancel)).invite).toMatchObject({
+          action: "remove",
+          actionState: "ready",
+        });
+        expect((await apply(cancel, { expect: "remove" })).body.applied).toBe(
+          true,
+        );
+        expect(
+          await db.select().from(events).where(eq(events.uid, UID)),
+        ).toEqual([]);
+      } finally {
+        await db.delete(calendars).where(eq(calendars.id, second?.id ?? ""));
+      }
+    });
+
+    it("同時に 2 回 apply を呼んでも 1 件だけ作る (排他)", async () => {
+      const messageId = await insertMessage(ics());
+      const results = await Promise.all([
+        apply(messageId, { expect: "import", calendarId: localId }),
+        apply(messageId, { expect: "import", calendarId: localId }),
+      ]);
+      expect(results.map((r) => r.status)).toEqual([200, 200]);
+      expect(results.map((r) => r.body.applied).sort()).toEqual([false, true]);
+      expect(await eventsOf(localId)).toHaveLength(1);
+    });
+  });
+
+  describe("レビュー 8b の指摘 (REPLY)", () => {
+    const organizedBy = async (
+      values: Partial<typeof events.$inferInsert> = {},
+    ) => {
+      const [row] = await db
+        .insert(events)
+        .values({
+          userId,
+          calendarId: localId,
+          uid: UID,
+          startAt: new Date("2026-12-10T01:00:00Z"),
+          endAt: new Date("2026-12-10T02:00:00Z"),
+          organizer: { email: ME, self: true },
+          sequence: 1,
+          ...values,
+        })
+        .returning({ id: events.id });
+      const id = row?.id as string;
+      await db
+        .insert(eventAttendees)
+        .values([{ eventId: id, email: "suzuki@example.com" }]);
+      return id;
+    };
+    const replyIcs = (options: IcsOptions = {}) =>
+      ics({
+        method: "REPLY",
+        organizer: ME,
+        attendees: ["ATTENDEE;PARTSTAT=ACCEPTED:mailto:suzuki@example.com"],
+        ...options,
+      });
+    const statusOf = async (eventId: string) =>
+      (await attendeesOf(eventId)).find(
+        (a) => a.email === "suzuki@example.com",
+      );
+
+    it("指摘 10: 未来の DTSTAMP の REPLY は受け取った時刻に丸め、その後の本物の返事を止めない", async () => {
+      const eventId = await organizedBy();
+      const future = await insertMessage(
+        replyIcs({ dtstamp: "20261127T230000Z" }),
+        { from: "suzuki@example.com", senderCheck: unknown },
+      );
+      expect((await apply(future, { expect: "apply_reply" })).body).toEqual({
+        applied: true,
+        eventId,
+      });
+      expect((await statusOf(eventId))?.repliedAt).toEqual(
+        new Date("2026-11-27T00:00:01Z"),
+      );
+      const genuine = await insertMessage(
+        replyIcs({
+          dtstamp: "20261127T005900Z",
+          attendees: ["ATTENDEE;PARTSTAT=DECLINED:mailto:suzuki@example.com"],
+        }),
+        {
+          from: "suzuki@example.com",
+          receivedAt: new Date("2026-11-27T01:00:00Z"),
+        },
+      );
+      expect((await apply(genuine, { expect: "apply_reply" })).body).toEqual({
+        applied: true,
+        eventId,
+      });
+      expect((await statusOf(eventId))?.status).toBe("declined");
+    });
+
+    it("DTSTAMP の無い REPLY は、メールの送信日時で比べる", async () => {
+      const eventId = await organizedBy();
+      const messageId = await insertMessage(
+        replyIcs().replace(/DTSTAMP:[^\r\n]*\r\n/, ""),
+        { from: "suzuki@example.com" },
+      );
+      expect((await apply(messageId, { expect: "apply_reply" })).status).toBe(
+        200,
+      );
+      expect((await statusOf(eventId))?.repliedAt).toEqual(
+        new Date("2026-11-27T00:00:00Z"),
+      );
+    });
+
+    it("親の無い (1 回だけの) 主催の予定への REPLY", async () => {
+      const eventId = await organizedBy({
+        recurrenceId: "2026-12-17T01:00:00Z",
+      });
+      const messageId = await insertMessage(
+        replyIcs({ recurrenceId: "20261217T100000" }),
+        { from: "suzuki@example.com" },
+      );
+      expect(await apply(messageId, { expect: "apply_reply" })).toEqual({
+        status: 200,
+        body: { applied: true, eventId },
+      });
+    });
+
+    it("指摘 12: 送信元の無い (scheduling が mail でない) カレンダーの予定には反映しない", async () => {
+      const [receiveOnly] = await db
+        .insert(accounts)
+        .values({
+          userId,
+          email: "recv@example.com",
+          provider: "generic",
+          authType: "password",
+          username: "recv@example.com",
+          credentialsEncrypted: "x",
+        })
+        .returning({ id: accounts.id });
+      const [calendar] = await db
+        .insert(calendars)
+        .values({
+          userId,
+          source: "local",
+          name: "受信専用",
+          imipAccountId: receiveOnly?.id,
+        })
+        .returning({ id: calendars.id });
+      try {
+        await organizedBy({ calendarId: calendar?.id as string });
+        const messageId = await insertMessage(replyIcs(), {
+          from: "suzuki@example.com",
+        });
+        expect((await get(messageId)).invite).toMatchObject({
+          action: "none",
+          actionState: "blocked",
+        });
+      } finally {
+        await db.delete(events);
+        await db.delete(calendars).where(eq(calendars.id, calendar?.id ?? ""));
+        await db.delete(accounts).where(eq(accounts.id, receiveOnly?.id ?? ""));
+      }
     });
   });
 

@@ -8,7 +8,7 @@ import {
   type ParsedEvent,
 } from "@orbit/core";
 import { calendars, eventAttendees, events } from "@orbit/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
@@ -216,15 +216,51 @@ export function messageInviteRoutes({
             Number(a.accountId === message.accountId)
           );
         });
-      const found = candidates[0] ?? null;
-
       const replying = method === "reply" ? event.attendees[0] : undefined;
       // 8b: いまできる操作 (取り込み・更新・取り消し・REPLY の反映)。
-      const { fields } = await inspectInvite(db, {
+      const inspection = await inspectInvite(db, {
         userId,
         invite: loaded.invite,
         writable,
       });
+      const { fields } = inspection;
+      // 操作の対象の予定があれば、それを返す (8a の選び方と別の予定を指さないように。
+      // self なしで取り込んだ予定も、更新・取り消しの対象として返す。レビュー 8b 指摘 17)。
+      let found: (typeof rows)[number] | null = null;
+      if (inspection.eventId) {
+        found = rows.find((row) => row.id === inspection.eventId) ?? null;
+        if (!found) {
+          const [row] = await db
+            .select({
+              id: events.id,
+              calendarId: events.calendarId,
+              sequence: events.sequence,
+              recurrenceId: events.recurrenceId,
+              allDay: events.allDay,
+              startAt: events.startAt,
+              endAt: events.endAt,
+              startDate: events.startDate,
+              endDate: events.endDate,
+              startTimeZone: events.startTimeZone,
+              endTimeZone: events.endTimeZone,
+              accountId: calendars.accountId,
+              source: calendars.source,
+              readOnly: calendars.readOnly,
+              selfEmail: sql<string>`''`,
+            })
+            .from(events)
+            .innerJoin(calendars, eq(calendars.id, events.calendarId))
+            .where(
+              and(
+                eq(events.id, inspection.eventId),
+                eq(events.userId, userId),
+                eq(calendars.userId, userId),
+              ),
+            );
+          found = row ?? null;
+        }
+      }
+      found ??= candidates[0] ?? null;
       const invite: MessageInvite = {
         method,
         uid: event.uid,

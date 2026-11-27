@@ -66,8 +66,10 @@ export type InviteAction =
   | "apply_reply";
 
 /**
- * 操作の状態。ready = そのまま実行できる。confirm = 確認が要る。
- * auto = 端末が自動で apply を呼んでよい (REPLY だけ)。
+ * 操作の状態。ready = そのまま実行できる。confirm = 確認が要る (理由は confirmReason)。
+ * auto = 端末が自動で apply を呼んでよい。いまの API は返さない (REPLY もボタンで反映する。
+ * 差出人が書いた偽の Authentication-Results で確認済みに見せられる経路があったため。
+ * 8b のレビュー指摘 1)。古い API の応答のために型には残す。
  */
 export type InviteActionState =
   | "ready"
@@ -88,6 +90,16 @@ export type InviteBlocked =
   | "server_calendar"
   | "unsupported_method";
 
+/**
+ * 確認が要る理由。sender_failed = 送信元の認証に失敗した (新しく追加するとき)。
+ * sender_unverified = 送信元を確認できていない (既にある予定の更新・取り消し)。
+ * sequence_jump = 招待の版 (SEQUENCE) が予定より大きく飛んでいる (更新)。
+ */
+export type InviteConfirmReason =
+  | "sender_failed"
+  | "sender_unverified"
+  | "sequence_jump";
+
 /** 差出人の認証の結果 (messages.senderCheck から)。 */
 export type InviteSenderAuth = "verified" | "unknown" | "failed" | "pending";
 
@@ -99,6 +111,8 @@ export type MessageInviteImipFields = {
   action: InviteAction;
   actionState: InviteActionState;
   blocked: InviteBlocked | null;
+  /** actionState が confirm のときの理由。それ以外は null。古い API の応答には無い。 */
+  confirmReason?: InviteConfirmReason | null;
   /** import のときの取り込み先の候補と既定。 */
   calendars: { id: string; default: boolean }[];
 };

@@ -302,6 +302,7 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
       action: "none",
       actionState: "blocked",
       blocked: "server_calendar",
+      confirmReason: null,
       calendars: [],
     });
     // メモ (DESCRIPTION) は返さない。

@@ -265,6 +265,33 @@ describe("writeICalendar", () => {
     expect(afterException?.recurrenceId).toBe(exception.recurrenceId);
   });
 
+  it("他人が主催する予定 (取り込んだ招待) は、時刻を変えても SEQUENCE を上げない", () => {
+    const organizer = { email: "sato@example.com", self: false };
+    const base = writeICalendar({
+      base: null,
+      entries: [{ event: event({ sequence: 2, organizer }), fields: "all" }],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    const moved = writeICalendar({
+      base,
+      entries: [
+        {
+          event: event({
+            sequence: 2,
+            organizer,
+            startAt: "2026-12-09T01:00:00Z",
+            endAt: "2026-12-09T02:00:00Z",
+          }),
+          fields: ["time"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(read(moved)[0]?.sequence).toBe(2);
+  });
+
   it("API が先に上げた SEQUENCE を、もう 1 回上げない (二重上げの修正)", () => {
     const base = writeICalendar({
       base: null,

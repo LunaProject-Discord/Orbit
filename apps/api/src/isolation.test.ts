@@ -38,7 +38,7 @@ import {
   signatureRules,
   unifiedFolders,
 } from "@orbit/db";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -471,6 +471,61 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       expect(await unified.text()).toContain(own.message);
       const contacts = await request(token, "GET", "/contacts?q=sender");
       expect(await contacts.text()).toContain(`${own.mark}-sender`);
+    }
+  });
+
+  it("送信元の確認結果は、いまの決まり (版 2) のものだけ返す。古いものは確認中 (null) にして取り直しを頼む", async () => {
+    const old = {
+      verified: true,
+      warnings: [],
+      claimed: null,
+    };
+    const auth = {
+      authservId: "mx.forged.example",
+      spf: null,
+      dkim: [],
+      dmarc: { result: "pass", domain: "example.com" },
+      compauth: null,
+    };
+    try {
+      await db
+        .update(messages)
+        .set({ senderCheck: old, authResults: auth })
+        .where(eq(messages.id, a.message));
+      type Row = { id: string; senderCheck: unknown };
+      const listed = (
+        (await (await request(tokenA, "GET", "/messages")).json()) as {
+          messages: Row[];
+        }
+      ).messages.find((row) => row.id === a.message);
+      expect(listed?.senderCheck).toBeNull();
+      const detail = (await (
+        await request(tokenA, "GET", `/messages/${a.message}`)
+      ).json()) as { message: { senderCheck: unknown; authResults: unknown } };
+      expect(detail.message.senderCheck).toBeNull();
+      expect(detail.message.authResults).toBeNull();
+      const searched = (
+        (await (
+          await request(tokenA, "GET", "/messages/search?q=shared-word")
+        ).json()) as { messages: Row[] }
+      ).messages.find((row) => row.id === a.message);
+      expect(searched?.senderCheck).toBeNull();
+
+      const current = { ...old, version: 2 };
+      await db
+        .update(messages)
+        .set({ senderCheck: current })
+        .where(eq(messages.id, a.message));
+      const after = (await (
+        await request(tokenA, "GET", `/messages/${a.message}`)
+      ).json()) as { message: { senderCheck: unknown; authResults: unknown } };
+      expect(after.message.senderCheck).toEqual(current);
+      expect(after.message.authResults).toEqual(auth);
+    } finally {
+      await db
+        .update(messages)
+        .set({ senderCheck: null, authResults: null })
+        .where(eq(messages.id, a.message));
     }
   });
 
@@ -908,7 +963,12 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
                 method === "REPLY" ? "sender@example.com" : "boss@example.com",
             },
           ],
-          senderCheck: { verified: true, warnings: [], claimed: null },
+          senderCheck: {
+            verified: true,
+            warnings: [],
+            claimed: null,
+            version: 2,
+          },
           receivedAt: new Date(),
           hasAttachments: true,
         })

@@ -559,7 +559,13 @@ export function InviteCard({
         )
       : null;
   const authPending = invite.sender?.auth === "pending";
-  const state = result ? "done" : invite.actionState;
+  // 自動の反映 (auto) はやめた (8b のレビュー指摘 1)。古い API が auto を返しても、ボタンで反映する。
+  const state =
+    result !== null
+      ? "done"
+      : invite.actionState === "auto"
+        ? "ready"
+        : invite.actionState;
   const shownAction: InviteAction | undefined = result?.action ?? action;
 
   const run = async (
@@ -599,28 +605,11 @@ export function InviteCard({
       setApplying(false);
     }
   };
-  const runRef = useRef(run);
-  runRef.current = run;
   const start = (expect: InviteApplyExpect, status: RsvpChoice | null) => {
     if (applying || authPending) return;
     if (invite.actionState === "confirm") setConfirming({ status });
     else void run(expect, { status });
   };
-
-  // 検証済みの返事 (auto) は、開いたときに 1 回だけ反映する (imip-design 8.1)。
-  const autoKey = `${messageId ?? ""}|${invite.uid}`;
-  const autoDone = useRef<string | null>(null);
-  const autoApply =
-    action === "apply_reply" &&
-    invite.actionState === "auto" &&
-    result === null &&
-    apply !== null &&
-    online;
-  useEffect(() => {
-    if (!autoApply || autoDone.current === autoKey) return;
-    autoDone.current = autoKey;
-    void runRef.current("apply_reply");
-  }, [autoApply, autoKey]);
 
   const calendarOptions = (invite.calendars ?? []).map((entry) => ({
     value: entry.id,
@@ -646,13 +635,20 @@ export function InviteCard({
     invite.sender && !invite.sender.matches && shown.organizer
       ? `差出人 (${invite.sender.email}) と主催者 (${shown.organizer.email}) が違います`
       : null;
-  const unverifiedNote =
-    invite.actionState === "confirm" ||
-    (invite.sender?.auth === "unknown" && state === "ready")
-      ? action === "import"
-        ? "このメールは送信元を確認できませんでした。差出人をよく確かめてから追加してください。"
-        : "送信元を確認できていません"
+  const confirmReason =
+    invite.actionState === "confirm"
+      ? (invite.confirmReason ??
+        (action === "import" ? "sender_failed" : "sender_unverified"))
       : null;
+  const unverifiedNote =
+    confirmReason === "sequence_jump"
+      ? "招待の版 (SEQUENCE) が大きく飛んでいます。主催者からの連絡か確かめてから反映してください。"
+      : confirmReason !== null ||
+          (invite.sender?.auth === "unknown" && state === "ready")
+        ? action === "import"
+          ? "このメールは送信元を確認できませんでした。差出人をよく確かめてから追加してください。"
+          : "送信元を確認できていません。主催者からの連絡か確かめてから反映してください。"
+        : null;
 
   const openDate = Temporal.PlainDate.from(
     shown.occurrence.allDay
@@ -808,7 +804,7 @@ export function InviteCard({
               {blockedLabel}
             </p>
           )}
-          {(state === "ready" || state === "confirm" || state === "auto") && (
+          {(state === "ready" || state === "confirm") && (
             <>
               {unverifiedNote && (
                 <p className="rounded-md bg-amber-500/10 px-2.5 py-1.5 text-amber-800 text-xs dark:text-amber-300">
@@ -874,13 +870,7 @@ export function InviteCard({
                   </Button>
                 </div>
               )}
-              {action === "apply_reply" && state === "auto" && (
-                <p className="flex items-center gap-2 text-muted-foreground">
-                  <Spinner className="size-3.5" />
-                  返事を予定に反映しています…
-                </p>
-              )}
-              {action === "apply_reply" && state !== "auto" && (
+              {action === "apply_reply" && (
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="min-w-0">{replyLabel}</span>
                   <Button
@@ -927,9 +917,13 @@ export function InviteCard({
             <AlertDialogTitle>
               {action === "import"
                 ? "送信元を確認できていない招待を追加しますか?"
-                : "送信元を確認できていないメールを反映しますか?"}
+                : confirmReason === "sequence_jump"
+                  ? "版が大きく飛んだ招待を反映しますか?"
+                  : "送信元を確認できていないメールを反映しますか?"}
             </AlertDialogTitle>
             <AlertDialogDescription>
+              {action !== "import" &&
+                "主催者からの連絡か確かめてから反映してください。"}
               差出人: {invite.sender?.email ?? "不明"}
             </AlertDialogDescription>
           </AlertDialogHeader>

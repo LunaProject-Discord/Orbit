@@ -162,8 +162,8 @@ export class GraphAccountSync {
     this.bodyRequests = new BodyRequests(
       db,
       account,
-      graphBodyFetcher(db, onDemand, this.abort.signal),
-      graphHeaderFetcher(db, onDemand, this.abort.signal),
+      graphBodyFetcher(db, onDemand, account, this.abort.signal),
+      graphHeaderFetcher(db, onDemand, account, this.abort.signal),
       (message) => this.log(message),
       ON_DEMAND_BODY_CONCURRENCY,
     );
