@@ -26,6 +26,24 @@ import {
 /** 1 通あたりの宛先の上限 (To / Cc / Bcc の合計)。 */
 const MAX_RECIPIENTS = 100;
 
+/** 予約送信で指定できる日時の上限 (今からの期間)。 */
+const MAX_SCHEDULE_MS = 366 * 24 * 60 * 60_000;
+
+/**
+ * 予約の日時を確かめる。過ぎていれば (オフラインの間に時刻を過ぎた場合など) null にして
+ * すぐ送る。遠すぎれば "too_far"。
+ */
+export function scheduleOf(
+  value: string | null | undefined,
+  now = Date.now(),
+): Date | null | "too_far" {
+  if (!value) return null;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime()) || at.getTime() <= now) return null;
+  if (at.getTime() - now > MAX_SCHEDULE_MS) return "too_far";
+  return at;
+}
+
 // 改行などの制御文字は、ヘッダーへの差し込みに使われるので受け付けない。
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を弾くための正規表現
 const noControl = /^[^\u0000-\u001f\u007f]*$/;
@@ -52,9 +70,16 @@ const sendBody = z.object({
   mode: z.enum(["new", "reply", "forward"]).default("new"),
   /** 返信・転送の元になったメッセージ。返信では In-Reply-To / References を引き継ぐ。 */
   sourceMessageId: z.uuid().optional(),
+  /** 予約送信の日時 (ISO 8601)。無いか過ぎていれば、すぐ送る。 */
+  scheduledAt: z.iso.datetime({ offset: true }).optional(),
 });
 
 const idParam = z.object({ id: z.uuid() });
+
+const rescheduleBody = z.object({
+  /** 新しい予約の日時。null なら今すぐ送る。 */
+  scheduledAt: z.iso.datetime({ offset: true }).nullable(),
+});
 
 /**
  * メールの送信。/v1/messages の下に置く。
@@ -74,6 +99,10 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
     }
     if (count > MAX_RECIPIENTS) {
       return c.json({ error: "too_many_recipients" }, 400);
+    }
+    const scheduledAt = scheduleOf(body.scheduledAt);
+    if (scheduledAt === "too_far") {
+      return c.json({ error: "schedule_too_far" }, 400);
     }
 
     const [account] = await db
@@ -175,6 +204,8 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
           kind: "send",
           payload,
           idempotencyKey: body.idempotencyKey,
+          // 予約送信は、その日時になるまで同期ワーカーが手を付けない。
+          ...(scheduledAt ? { scheduledAt, runAfter: scheduledAt } : {}),
         })
         .onConflictDoNothing({
           target: [outbox.accountId, outbox.idempotencyKey],
@@ -229,6 +260,7 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
         attempts: outbox.attempts,
         lastError: outbox.lastError,
         createdAt: outbox.createdAt,
+        scheduledAt: outbox.scheduledAt,
         payload: outbox.payload,
       })
       .from(outbox)
@@ -240,7 +272,10 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
           inArray(outbox.status, ["pending", "processing", "failed"]),
         ),
       )
-      .orderBy(asc(outbox.createdAt), asc(outbox.id));
+      .orderBy(
+        asc(sql`coalesce(${outbox.scheduledAt}, ${outbox.createdAt})`),
+        asc(outbox.id),
+      );
     return c.json({
       outgoing: rows.map(({ payload, ...row }) => {
         const { message, mode, sourceMessageId } =
@@ -301,6 +336,68 @@ export function sendRoutes({ db }: Pick<RouteDeps, "db">) {
     if (result === "in_progress") return c.json({ error: "in_progress" }, 409);
     return c.body(null, 204);
   });
+
+  /**
+   * 予約送信の日時を変える。scheduledAt を null にすると今すぐ送る。
+   * 送信待ち (pending) の予約だけ変えられる。
+   */
+  app.patch(
+    "/outgoing/:id",
+    zValidator("param", idParam),
+    zValidator("json", rescheduleBody),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const user = c.var.user;
+      const scheduledAt = scheduleOf(body.scheduledAt);
+      if (scheduledAt === "too_far") {
+        return c.json({ error: "schedule_too_far" }, 400);
+      }
+      const result = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({
+            id: outbox.id,
+            accountId: outbox.accountId,
+            status: outbox.status,
+            scheduledAt: outbox.scheduledAt,
+          })
+          .from(outbox)
+          .innerJoin(mailAccounts, eq(mailAccounts.id, outbox.accountId))
+          .where(
+            and(
+              eq(outbox.id, id),
+              eq(outbox.kind, "send"),
+              eq(mailAccounts.userId, user.id),
+            ),
+          );
+        if (!row) return "not_found" as const;
+        if (row.scheduledAt === null) return "not_scheduled" as const;
+        const [updated] = await tx
+          .update(outbox)
+          .set({
+            scheduledAt,
+            runAfter: scheduledAt ?? new Date(),
+          })
+          .where(and(eq(outbox.id, id), eq(outbox.status, "pending")))
+          .returning({ id: outbox.id });
+        if (!updated) return "in_progress" as const;
+        await notifyAccountChanged(tx, user.id, row.accountId);
+        // 今すぐ送るとき (と、予約を早めたとき) に、同期ワーカーがすぐ気づけるようにする。
+        await tx.execute(
+          sql`select pg_notify(${CHANNEL_OUTBOX}, ${row.accountId})`,
+        );
+        return "updated" as const;
+      });
+      if (result === "not_found") return c.json({ error: "not_found" }, 404);
+      if (result === "not_scheduled") {
+        return c.json({ error: "not_scheduled" }, 409);
+      }
+      if (result === "in_progress") {
+        return c.json({ error: "in_progress" }, 409);
+      }
+      return c.body(null, 204);
+    },
+  );
 
   return app;
 }

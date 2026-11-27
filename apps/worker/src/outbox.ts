@@ -4,7 +4,7 @@ import {
   type OutboxTarget,
 } from "@orbit/core";
 import { type Database, mailAccounts, mailboxes, outbox } from "@orbit/db";
-import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "./changes.js";
 import { dropPendingPlacements } from "./mailbox-store.js";
 
@@ -175,7 +175,14 @@ export async function accountsWithPendingOutbox(
   const rows = await db
     .selectDistinct({ accountId: outbox.accountId })
     .from(outbox)
-    .where(inArray(outbox.status, ["pending", "processing"]));
+    // 予約送信ややり直し待ちで、まだ時刻になっていないものは数えない
+    // (毎回の確認でそのアカウントの同期を起こさないため)。
+    .where(
+      or(
+        eq(outbox.status, "processing"),
+        and(eq(outbox.status, "pending"), lte(outbox.runAfter, new Date())),
+      ),
+    );
   return rows.map((row) => row.accountId);
 }
 

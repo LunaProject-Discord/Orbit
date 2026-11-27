@@ -3,6 +3,8 @@
 import { cn } from "cn";
 import {
   AppWindowIcon,
+  CalendarClockIcon,
+  ChevronDownIcon,
   EllipsisVerticalIcon,
   FileIcon,
   FileTextIcon,
@@ -32,6 +34,10 @@ import { Hint } from "@/components/hint";
 import { Editor, TextEditor } from "@/components/mail/editor";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import {
+  ScheduleDialog,
+  schedulePresets,
+} from "@/components/mail/schedule-send";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -46,6 +52,10 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
@@ -89,7 +99,7 @@ import {
 import { useDateStyle } from "@/lib/date-format-settings";
 import { setTitleBarTitle } from "@/lib/desktop/title-bar-menu";
 import { insertIntoField } from "@/lib/emoji/insert";
-import { formatShortTime, formatSize } from "@/lib/format";
+import { formatFullDate, formatShortTime, formatSize } from "@/lib/format";
 import { sendMailOrQueue, useOnline } from "@/lib/offline";
 import { randomUuid } from "@/lib/uuid";
 
@@ -111,6 +121,8 @@ function sendErrorOf(error: unknown, limit: number): string {
         return "添付ファイルがサーバーに残っていません。外してから、もう一度添付してください。";
       case "attachments_too_large":
         return `添付ファイルが大きすぎます。このアカウントでは合計 ${formatSize(limit)} までです。`;
+      case "schedule_too_far":
+        return "予約できるのは 1 年先までです。日時を選び直してください。";
     }
     if (error.status === 400) {
       return "入力内容に誤りがあります。宛先と件名を確認してください。";
@@ -168,8 +180,8 @@ type Props = {
   onBeforeSend: () => Promise<void>;
   /** 送信を受け付けてもらえなかった。下書きの保存を再開する。 */
   onSendFailed: () => void;
-  /** 送信を受け付けてもらえた。 */
-  onSent: () => void;
+  /** 送信を受け付けてもらえた。予約送信なら、その日時 (ISO 8601)。 */
+  onSent: (scheduledAt?: string) => void;
   onDiscard: () => void;
 };
 
@@ -234,6 +246,8 @@ export function ComposeWindow({
   const textRef = useRef<HTMLTextAreaElement>(null);
   /** 書式付きからテキストに切り替える前の確認を出しているか。 */
   const [confirmPlain, setConfirmPlain] = useState(false);
+  /** 予約送信の日時を選ぶ画面を出しているか。 */
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const subjectRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** 送信中の処理から、最新の下書きを読むためのもの。 */
@@ -516,7 +530,11 @@ export function ComposeWindow({
     void deleteAttachment(file.id).catch(() => {});
   }
 
-  async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(
+    event?: FormEvent<HTMLFormElement>,
+    /** 予約送信の日時。無ければすぐ送る。 */
+    scheduledAt?: Date,
+  ) {
     event?.preventDefault();
     if (!draft || sending) return;
     // 送れない理由は差出人の下に出しているので、ここでは送らないだけにする。
@@ -567,6 +585,7 @@ export function ComposeWindow({
           text: body.text,
           // テキストだけで書いたメールは、HTML を付けずに送る。
           ...(body.html !== null ? { html: body.html } : {}),
+          ...(scheduledAt ? { scheduledAt: scheduledAt.toISOString() } : {}),
           attachmentIds: draft.attachments.map((file) => file.id),
           mode: draft.mode,
           ...(draft.sourceMessageId
@@ -575,7 +594,7 @@ export function ComposeWindow({
         },
         draft.attachments,
       );
-      onSent();
+      onSent(scheduledAt?.toISOString());
     } catch (cause) {
       setError(sendErrorOf(cause, limit));
       onSendFailed();
@@ -689,16 +708,57 @@ export function ComposeWindow({
     );
   }
 
-  const renderToolbar = (format: ReactNode) => (
-    <div className="flex shrink-0 items-center gap-1 border-t px-3 py-2">
-      <Button
-        type="submit"
-        disabled={sending || uploading || !canSend}
-        className="hidden sm:inline-flex"
-      >
+  const sendDisabled = sending || uploading || !canSend;
+  const sendButton = (className?: string) => (
+    <div className={cn("flex shrink-0 items-center", className)}>
+      <Button type="submit" disabled={sendDisabled} className="rounded-r-none">
         <SendIcon />
         {sending ? "送信中…" : "送信"}
       </Button>
+      <DropdownMenu>
+        <Hint label="送信日時を指定" side="top">
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                size="icon"
+                aria-label="送信日時を指定"
+                disabled={sendDisabled}
+                className="rounded-l-none border-primary-foreground/20 border-l"
+              />
+            }
+          >
+            <ChevronDownIcon />
+          </DropdownMenuTrigger>
+        </Hint>
+        <DropdownMenuContent align="start" className="w-auto min-w-64">
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>送信日時を指定</DropdownMenuLabel>
+            {schedulePresets().map((preset) => (
+              <DropdownMenuItem
+                key={preset.label}
+                onClick={() => void handleSubmit(undefined, preset.at)}
+              >
+                <span className="flex-1">{preset.label}</span>
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {formatFullDate(preset.at.toISOString(), dateStyle)}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => setScheduleOpen(true)}>
+            <CalendarClockIcon />
+            日時を選ぶ…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
+  const renderToolbar = (format: ReactNode) => (
+    <div className="flex shrink-0 items-center gap-1 border-t px-3 py-2">
+      {sendButton("hidden sm:flex")}
       <Button
         type="button"
         variant="ghost"
@@ -937,10 +997,7 @@ export function ComposeWindow({
           >
             <PaperclipIcon />
           </Button>
-          <Button type="submit" disabled={sending || uploading || !canSend}>
-            <SendIcon />
-            {sending ? "送信中…" : "送信"}
-          </Button>
+          {sendButton()}
         </header>
 
         {/* 広い画面: 窓の見出し。作成専用のウィンドウでは、題名はタイトルバーに出すので置かない。 */}
@@ -1199,6 +1256,14 @@ export function ComposeWindow({
           </div>
         )}
       </form>
+      <ScheduleDialog
+        open={scheduleOpen}
+        onOpenChange={setScheduleOpen}
+        onConfirm={(at) => {
+          setScheduleOpen(false);
+          void handleSubmit(undefined, at);
+        }}
+      />
       <AlertDialog open={confirmPlain} onOpenChange={setConfirmPlain}>
         <AlertDialogContent>
           <AlertDialogHeader>

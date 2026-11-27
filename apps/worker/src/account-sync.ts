@@ -50,7 +50,7 @@ import {
 import { headerBackfillPause } from "./message-headers.js";
 import { processOutbox } from "./outbox.js";
 import { applyImapOperation } from "./outbox-imap.js";
-import { processSends, type SendOutcome } from "./send.js";
+import { processSends, type SendOutcome, SendTimer } from "./send.js";
 import { sendViaSmtp } from "./send-smtp.js";
 
 const INBOX = "INBOX";
@@ -133,6 +133,8 @@ export class AccountSync {
   private wake: (() => void) | null = null;
   private backoff = MIN_BACKOFF_MS;
   private sending: Promise<void> = Promise.resolve();
+  /** 予約送信ややり直し待ちの送信を、その時刻に送り始める。 */
+  private readonly sendTimer = new SendTimer(() => this.flushSends());
   private readonly attachmentDownloader: ImapAttachmentDownloader;
   private readonly attachmentRequests: AttachmentRequests;
   private readonly bodyRequests: BodyRequests;
@@ -252,6 +254,7 @@ export class AccountSync {
 
   stop() {
     this.stopped = true;
+    this.sendTimer.stop();
     this.wake?.();
     this.watcher.close();
     this.push.close();
@@ -364,6 +367,7 @@ export class AccountSync {
           (message) => this.sendMessage(message),
           (message) => this.log(message),
         );
+        if (!this.stopped) this.sendTimer.schedule(result.nextRunAt);
         if (result.sent > 0) this.log(`メールを ${result.sent} 通送信しました`);
         // 送信済みフォルダへの保存などを、同期の接続で反映させる。
         if (result.queued) this.requestSync();
