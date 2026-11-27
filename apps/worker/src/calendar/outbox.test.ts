@@ -2,8 +2,15 @@
  * 予定の書き戻し (processEventOutbox) を、偽のプロバイダと実際の PostgreSQL で確かめる。
  * DATABASE_URL が無い環境では実行しない。
  */
-import { calendars, changes, type Database, events, outbox } from "@orbit/db";
-import { and, asc, eq } from "drizzle-orm";
+import {
+  calendars,
+  changes,
+  type Database,
+  eventConflicts,
+  events,
+  outbox,
+} from "@orbit/db";
+import { and, asc, eq, gt } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { processEventOutbox } from "./outbox.js";
 import type { AccountRow, CalendarRow } from "./provider.js";
@@ -355,5 +362,258 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
     // 次の全件同期で、相手側の内容に戻る。
     await sync();
     expect((await rowOf(row.id))?.summary).toBe("元の題");
+  });
+  describe("反映されなかった変更の記録 (event_conflicts)", () => {
+    const conflictsOf = (eventId: string) =>
+      db
+        .select()
+        .from(eventConflicts)
+        .where(eq(eventConflicts.eventId, eventId));
+    /** いまの最後の変更番号より後に、このカレンダーの変更が載ったか。 */
+    const lastSeq = async () => {
+      const rows = await db
+        .select({ seq: changes.seq })
+        .from(changes)
+        .orderBy(asc(changes.seq));
+      return rows.at(-1)?.seq ?? 0n;
+    };
+    const calendarNoticedAfter = async (seq: bigint) => {
+      const rows = await db
+        .select()
+        .from(changes)
+        .where(
+          and(
+            eq(changes.entity, "calendar"),
+            eq(changes.entityId, calendar.id),
+            gt(changes.seq, seq),
+          ),
+        );
+      return rows.length > 0;
+    };
+
+    it("field_lost: 412 の統合で負けた項目と、負けた値を記録する", async () => {
+      const row = await syncedEvent({});
+      await db
+        .update(events)
+        .set({
+          summary: "ローカルの題",
+          fieldUpdatedAt: {
+            summary: new Date(Date.now() - 10 * 60_000).toISOString(),
+          },
+        })
+        .where(eq(events.id, row.id));
+      await enqueue("event_update", {
+        eventId: row.id,
+        calendarId: calendar.id,
+        fields: ["summary"],
+      });
+      // 相手側でも、ローカルより後に題が変わっていた。
+      fake.putRemote(remoteId(), [
+        {
+          remoteId: "ev",
+          summary: "相手側の新しい題",
+          location: "元の場所",
+          remoteUpdatedAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ]);
+      fake.enqueue("updateEvent", { status: "conflict" });
+      const seq = await lastSeq();
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      expect((await rowOf(row.id))?.summary).toBe("相手側の新しい題");
+      expect(await conflictsOf(row.id)).toEqual([
+        expect.objectContaining({
+          kind: "field_lost",
+          calendarId: calendar.id,
+          fields: ["summary"],
+          lost: { summary: "ローカルの題" },
+          title: "ローカルの題",
+          snapshot: null,
+        }),
+      ]);
+      expect(await calendarNoticedAfter(seq)).toBe(true);
+    });
+
+    it("write_failed: 断られた変更を、巻き戻す前の値で記録する", async () => {
+      const row = await syncedEvent({});
+      await editSummary(row.id, "ローカルの題");
+      fake.enqueue("updateEvent", {
+        status: "rejected",
+        reason: "拒否された",
+      });
+      expect(await run()).toMatchObject({ done: 0, failed: 1 });
+      expect((await rowOf(row.id))?.summary).toBe("元の題");
+      expect(await conflictsOf(row.id)).toEqual([
+        expect.objectContaining({
+          kind: "write_failed",
+          fields: ["summary"],
+          lost: { summary: "ローカルの題" },
+          title: "ローカルの題",
+          reason: "拒否された",
+        }),
+      ]);
+    });
+
+    it("create_failed: 作成が確定して失敗したら記録し、行は残す", async () => {
+      const local = await insertLocal("作れない予定");
+      await enqueue("event_create", {
+        eventId: local.id,
+        calendarId: calendar.id,
+      });
+      fake.enqueue("createEvent", {
+        status: "rejected",
+        reason: "書き込めません",
+      });
+      expect(await run()).toMatchObject({ done: 0, failed: 1 });
+      expect(await rowOf(local.id)).toBeDefined();
+      expect(await conflictsOf(local.id)).toEqual([
+        expect.objectContaining({
+          kind: "create_failed",
+          fields: [],
+          lost: null,
+          title: "作れない予定",
+          reason: "書き込めません",
+        }),
+      ]);
+    });
+
+    it("remote_deleted: 相手側で消えていたので消した予定を、snapshot に控える", async () => {
+      const row = await syncedEvent({});
+      await db
+        .update(events)
+        .set({
+          summary: "古い変更",
+          fieldUpdatedAt: { summary: "2020-01-01T00:00:00.000Z" },
+        })
+        .where(eq(events.id, row.id));
+      await enqueue("event_update", {
+        eventId: row.id,
+        calendarId: calendar.id,
+        fields: ["summary"],
+      });
+      fake.removeRemote(remoteId(), "ev");
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      expect(await rowOf(row.id)).toBeUndefined();
+      const [conflict] = await conflictsOf(row.id);
+      expect(conflict).toMatchObject({
+        kind: "remote_deleted",
+        fields: ["summary"],
+        lost: { summary: "古い変更" },
+        title: "古い変更",
+      });
+      expect(conflict?.snapshot).toMatchObject({
+        summary: "古い変更",
+        location: "元の場所",
+        parentId: null,
+        recurrenceId: null,
+        time: { allDay: false },
+      });
+    });
+
+    it("delete_cancelled: 消した後に相手側で変わっていたので戻した予定を記録する", async () => {
+      const row = await syncedEvent({});
+      // API が行を消して削除を積んだ (消したのは 10 分前)。
+      await db.delete(events).where(eq(events.id, row.id));
+      await enqueue("event_delete", {
+        calendarId: calendar.id,
+        target: {
+          eventId: row.id,
+          calendarId: calendar.id,
+          remoteId: "ev",
+          etag: row.etag,
+          uid: row.uid,
+          recurrenceId: null,
+          parentRemoteId: null,
+        },
+        deletedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      });
+      // その後、相手側で変えられていた。
+      fake.putRemote(remoteId(), [
+        {
+          remoteId: "ev",
+          summary: "相手側で変えた題",
+          location: "元の場所",
+          remoteUpdatedAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ]);
+      fake.enqueue("deleteEvent", { status: "conflict" });
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      const [restored] = await db
+        .select()
+        .from(events)
+        .where(
+          and(eq(events.calendarId, calendar.id), eq(events.remoteId, "ev")),
+        );
+      expect(restored?.summary).toBe("相手側で変えた題");
+      expect(await conflictsOf(restored?.id as string)).toEqual([
+        expect.objectContaining({
+          kind: "delete_cancelled",
+          fields: [],
+          title: "相手側で変えた題",
+        }),
+      ]);
+    });
+
+    it("write_failed (削除): 断られた削除は、戻した予定の ID で記録する", async () => {
+      const row = await syncedEvent({});
+      await db.delete(events).where(eq(events.id, row.id));
+      await enqueue("event_delete", {
+        calendarId: calendar.id,
+        target: {
+          eventId: row.id,
+          calendarId: calendar.id,
+          remoteId: "ev",
+          etag: row.etag,
+          uid: row.uid,
+          recurrenceId: null,
+          parentRemoteId: null,
+        },
+        deletedAt: new Date().toISOString(),
+      });
+      fake.enqueue("deleteEvent", {
+        status: "rejected",
+        reason: "消せません",
+      });
+      expect(await run()).toMatchObject({ done: 0, failed: 1 });
+      const [restored] = await db
+        .select()
+        .from(events)
+        .where(
+          and(eq(events.calendarId, calendar.id), eq(events.remoteId, "ev")),
+        );
+      expect(restored).toBeDefined();
+      expect(await conflictsOf(restored?.id as string)).toEqual([
+        expect.objectContaining({
+          kind: "write_failed",
+          fields: [],
+          lost: null,
+          title: "元の題",
+          reason: "消せません",
+        }),
+      ]);
+    });
+
+    it("30 日より古い記録は、書き戻しの掃除と同じ時機に消す", async () => {
+      const old = crypto.randomUUID();
+      const recent = crypto.randomUUID();
+      await db.insert(eventConflicts).values([
+        {
+          userId,
+          calendarId: calendar.id,
+          eventId: old,
+          kind: "field_lost",
+          createdAt: new Date(Date.now() - 31 * 24 * 60 * 60_000),
+        },
+        {
+          userId,
+          calendarId: calendar.id,
+          eventId: recent,
+          kind: "field_lost",
+          createdAt: new Date(Date.now() - 29 * 24 * 60 * 60_000),
+        },
+      ]);
+      await run();
+      expect(await conflictsOf(old)).toEqual([]);
+      expect(await conflictsOf(recent)).toHaveLength(1);
+    });
   });
 });

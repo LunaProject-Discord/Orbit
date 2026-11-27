@@ -2,8 +2,13 @@ import { randomUUID } from "node:crypto";
 import { zValidator } from "@hono/zod-validator";
 import {
   CALENDAR_WRITEBACK_SOURCES,
+  changedEventFields,
+  correctClientTime,
+  correctClientTimes,
   type EventFieldName,
+  type EventFieldSource,
   type EventTiming,
+  eventFieldValues,
   expandOccurrences,
   HOLIDAYS_VERSION,
   holidayEvents,
@@ -18,6 +23,7 @@ import {
   changes,
   type Database,
   eventAttendees,
+  eventConflicts,
   eventReminders,
   eventSearch,
   events,
@@ -36,7 +42,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { recordChanges } from "../lib/changes.js";
@@ -197,12 +203,23 @@ const eventFields = z
 type EventFields = z.infer<typeof eventFields>;
 type FieldName = keyof EventFields;
 
+const isoTime = z.iso.datetime({ offset: true });
+
+/**
+ * 送る瞬間の端末の時刻 (ISO 8601)。付けると、端末の時計のずれ (10 秒を超えるもの) を
+ * changedAt などに足して直す (@orbit/core の client-time)。
+ */
+const clientNow = isoTime.optional();
+
 const eventCreate = eventFields
   .extend({
     /** 端末が決める ID (オフラインで作った予定を、再送しても二重に作らない)。 */
     id: z.uuid().optional(),
     calendarId: z.uuid(),
     time: timing,
+    /** 端末で作った時刻。全項目の fieldUpdatedAt になる。無ければ届いた時刻。 */
+    changedAt: isoTime.optional(),
+    clientNow,
   })
   .strict();
 
@@ -212,7 +229,28 @@ const eventPatch = z.object({
    * 項目ごとの、端末で変えた時刻 (ISO 8601)。無い項目は届いた時刻。
    * サーバーにある同じ項目の変更の方が新しければ、その項目は変えない (rejected で返す)。
    */
-  changedAt: z.record(z.string(), z.iso.datetime({ offset: true })).default({}),
+  changedAt: z.record(z.string(), isoTime).default({}),
+  clientNow,
+});
+
+/** DELETE /events/:id の本文 (省略できる)。 */
+const eventDelete = z.object({
+  /**
+   * 端末で消した時刻。付けると、これより後に変わった項目がある予定は消さずに
+   * 409 changed_since を返す。無ければいままでどおり無条件で消す。
+   */
+  deletedAt: isoTime.optional(),
+  clientNow,
+});
+
+/** DELETE /events/:id/occurrences/:recurrenceId の本文 (省略できる)。 */
+const occurrenceDelete = z.object({
+  /**
+   * 端末でその回を消した時刻。原本の繰り返しの変更時刻に使う。付けると、その回の例外が
+   * これより後に変わっていれば消さずに 409 changed_since を返す。
+   */
+  changedAt: isoTime.optional(),
+  clientNow,
 });
 
 const rangeQuery = z.object({
@@ -530,6 +568,85 @@ export function mergeFields(
   return { accepted, fieldUpdatedAt, rejected };
 }
 
+/** 行とリマインダー・参加者を、比べられる値 (eventFieldValues) の入力にする。 */
+function rowSource(row: EventRow, extras: EventExtras): EventFieldSource {
+  return {
+    ...row,
+    reminders: extras.reminders,
+    attendees: extras.attendees,
+  };
+}
+
+/**
+ * incoming の項目のうち、いまの行と同じ値のもの (eventFieldValues の正規化で比べる)。
+ * 再送や時計の補正で時刻だけ古くなった変更を、rejected にしないために使う。
+ */
+async function unchangedFields(
+  tx: Tx,
+  row: EventRow,
+  incoming: EventFields,
+  fields: readonly FieldName[],
+): Promise<Set<FieldName>> {
+  if (fields.length === 0) return new Set();
+  const extras = (await loadExtras(tx, [row.id])).get(row.id) ?? {
+    reminders: [],
+    attendees: [],
+  };
+  const current = rowSource(row, extras);
+  const previous = new Map(
+    extras.attendees.map((attendee) => [
+      attendee.email.toLowerCase(),
+      attendee,
+    ]),
+  );
+  const next: EventFieldSource = {
+    ...current,
+    ...(fieldColumns(incoming) as Partial<EventFieldSource>),
+    reminders: incoming.reminders ?? current.reminders,
+    attendees:
+      incoming.attendees?.map((attendee) => ({
+        ...attendee,
+        status: previous.get(attendee.email)?.status ?? "needs_action",
+      })) ?? current.attendees,
+  };
+  const differ = new Set(
+    changedEventFields(eventFieldValues(current), eventFieldValues(next)),
+  );
+  return new Set(fields.filter((field) => !differ.has(field)));
+}
+
+/** fieldUpdatedAt のうち、at より後の時刻があれば true。 */
+function changedAfter(
+  fieldUpdatedAt: Record<string, string> | null,
+  at: Date,
+): boolean {
+  return Object.values(fieldUpdatedAt ?? {}).some((value) => {
+    const time = Date.parse(value);
+    return !Number.isNaN(time) && time > at.getTime();
+  });
+}
+
+/**
+ * 省略できる JSON の本文を読む (DELETE の本文など)。空なら {} として schema に通す。
+ * 読めなければ null。
+ */
+async function optionalJson<T extends z.ZodType>(
+  c: Context<AppEnv>,
+  schema: T,
+): Promise<z.infer<T> | null> {
+  const text = await c.req.text();
+  let value: unknown = {};
+  if (text.trim() !== "") {
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+  const parsed = schema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * 予定の取得と変更。プロバイダのカレンダーは、書き戻しに対応したものだけ変えられ、
  * 変更は outbox に積んで同期ワーカーがプロバイダへ反映する。
@@ -592,11 +709,18 @@ export function calendarRoutes({
     calendar: CalendarRow,
     master: EventRow,
     recurrenceId: string,
+    at: Date,
   ) => {
     const exdates = [...new Set([...(master.exdates ?? []), recurrenceId])];
+    // 回を消した時刻 (端末で操作した時刻) を繰り返しの変更時刻にする。ただし EXDATE は
+    // 集合に足すだけなので、後から行った規則の変更の時刻を古くはしない。
+    const previous = master.fieldUpdatedAt?.recurrence;
     const fieldUpdatedAt = {
       ...(master.fieldUpdatedAt ?? {}),
-      recurrence: new Date().toISOString(),
+      recurrence:
+        previous && Date.parse(previous) > at.getTime()
+          ? previous
+          : at.toISOString(),
     };
     await tx
       .update(events)
@@ -655,6 +779,7 @@ export function calendarRoutes({
     tx: Tx,
     calendar: CalendarRow,
     row: EventRow,
+    deletedAt: Date,
   ) => {
     if (!isProviderCalendar(calendar)) return;
     if (row.remoteId === null) {
@@ -686,7 +811,7 @@ export function calendarRoutes({
             recurrenceId: row.recurrenceId,
             parentRemoteId: null,
           },
-          deletedAt: new Date().toISOString(),
+          deletedAt: deletedAt.toISOString(),
         },
       },
       eventDeleteKey(row.id),
@@ -1171,6 +1296,22 @@ export function calendarRoutes({
     ]);
     const foundCalendars = new Set(calendarRows.map((row) => row.id));
     const foundEvents = new Set(eventRows.map((row) => row.id));
+    // 反映されなかった変更 (event_conflicts) の未解決の件数と、最新の記録の時刻。
+    // 端末は値が変わったときだけ /v1/calendars/conflicts を取り直す。
+    const [open] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        latest: sql<Date | null>`max(${eventConflicts.createdAt})`.mapWith(
+          eventConflicts.createdAt,
+        ),
+      })
+      .from(eventConflicts)
+      .where(
+        and(
+          eq(eventConflicts.userId, userId),
+          isNull(eventConflicts.resolvedAt),
+        ),
+      );
     return c.json({
       calendars: calendarRows.map(toPublic),
       events: await publicEvents(db, eventRows),
@@ -1180,6 +1321,8 @@ export function calendarRoutes({
       },
       latestSeq: page.at(-1)?.seq.toString() ?? since,
       hasMore: rows.length > limit,
+      openConflicts: open?.count ?? 0,
+      conflictsAt: open?.latest?.toISOString() ?? null,
     });
   });
 
@@ -1212,10 +1355,25 @@ export function calendarRoutes({
         // 同じ ID で再送された (端末の送信待ちの再送)。作り直さずにそのまま返す。
         const existing = await ownEvent(tx, userId, body.id);
         if (existing) return existing;
+        // 作ったあと (ほかの端末で) 消された予定の再送。作り直さない。
+        if (await wasDeleted(tx, userId, body.id)) return "gone" as const;
       }
-      const { id, calendarId, ...fields } = body;
+      const {
+        id,
+        calendarId,
+        changedAt: _changedAt,
+        clientNow: _clientNow,
+        ...fields
+      } = body;
+      // 端末で作った時刻 (時計のずれを直したもの) を全項目の変更時刻にする。
+      // 作ったあとオフラインのまま変えた項目の PATCH が、届いた時刻に負けないようにするため。
+      const createdAt = correctClientTime(
+        body.changedAt,
+        body.clientNow,
+        now,
+      ).toISOString();
       const fieldUpdatedAt = Object.fromEntries(
-        Object.keys(fields).map((key) => [key, now.toISOString()]),
+        Object.keys(fields).map((key) => [key, createdAt]),
       );
       const eventId = id ?? randomUUID();
       const [row] = await tx
@@ -1248,6 +1406,7 @@ export function calendarRoutes({
     if (result === "calendar_disabled" || result === "calendar_sync_stopped")
       return c.json({ error: result }, 409);
     if (result === "conflict") return c.json({ error: "conflict" }, 409);
+    if (result === "gone") return c.json({ error: "gone" }, 410);
     const [event] = await publicEvents(db, [result]);
     return c.json({ event }, 201);
   });
@@ -1265,6 +1424,7 @@ export function calendarRoutes({
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
       const userId = c.var.user.id;
+      const now = new Date();
       const result = await db.transaction(async (tx) => {
         const row = await lockEventForWrite(tx, userId, id);
         if (!row) return "not_found" as const;
@@ -1281,7 +1441,8 @@ export function calendarRoutes({
           userId,
           row,
           body.changes,
-          body.changedAt,
+          correctClientTimes(body.changedAt, body.clientNow, now),
+          now,
         );
         await enqueueUpdate(tx, calendar, applied.row, applied.accepted);
         return applied;
@@ -1308,6 +1469,7 @@ export function calendarRoutes({
       const { id, recurrenceId } = c.req.valid("param");
       const body = c.req.valid("json");
       const userId = c.var.user.id;
+      const now = new Date();
       if (body.changes.recurrence !== undefined) {
         return c.json({ error: "invalid" }, 400);
       }
@@ -1330,7 +1492,8 @@ export function calendarRoutes({
           userId,
           exception,
           body.changes,
-          body.changedAt,
+          correctClientTimes(body.changedAt, body.clientNow, now),
+          now,
         );
         // 例外の行の変更として積む。例外の remoteId が無ければ、ワーカーがその回を
         // 上書きする書き込みとしてプロバイダへ渡す。
@@ -1354,6 +1517,10 @@ export function calendarRoutes({
     async (c) => {
       const { id, recurrenceId } = c.req.valid("param");
       const userId = c.var.user.id;
+      const body = await optionalJson(c, occurrenceDelete);
+      if (!body) return c.json({ error: "invalid" }, 400);
+      const now = new Date();
+      const at = correctClientTime(body.changedAt, body.clientNow, now);
       const normalized = normalizeRecurrenceId(recurrenceId);
       const result = await db.transaction(async (tx) => {
         const master = await lockEventForWrite(tx, userId, id);
@@ -1362,7 +1529,22 @@ export function calendarRoutes({
         if (!canWrite(calendar)) return "read_only" as const;
         const blocked = await providerWriteBlocked(tx, calendar);
         if (blocked) return blocked;
-        await excludeOccurrence(tx, calendar, master, normalized);
+        if (body.changedAt) {
+          // その回が、消した後に (ほかの端末などで) 変えられていれば消さない。
+          const [exception] = await tx
+            .select()
+            .from(events)
+            .where(
+              and(
+                eq(events.parentId, master.id),
+                eq(events.recurrenceId, normalized),
+              ),
+            );
+          if (exception && changedAfter(exception.fieldUpdatedAt, at)) {
+            return { changedSince: exception };
+          }
+        }
+        await excludeOccurrence(tx, calendar, master, normalized, at);
         const removed = await tx
           .delete(events)
           .where(
@@ -1391,6 +1573,10 @@ export function calendarRoutes({
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
       if (result === "calendar_disabled" || result === "calendar_sync_stopped")
         return c.json({ error: result }, 409);
+      if (typeof result === "object") {
+        const [event] = await publicEvents(db, [result.changedSince]);
+        return c.json({ error: "changed_since", event }, 409);
+      }
       return c.body(null, 204);
     },
   );
@@ -1402,6 +1588,10 @@ export function calendarRoutes({
     async (c) => {
       const { id } = c.req.valid("param");
       const userId = c.var.user.id;
+      const body = await optionalJson(c, eventDelete);
+      if (!body) return c.json({ error: "invalid" }, 400);
+      const now = new Date();
+      const deletedAt = correctClientTime(body.deletedAt, body.clientNow, now);
       const result = await db.transaction(async (tx) => {
         const row = await lockEventForWrite(tx, userId, id);
         if (!row) return "not_found" as const;
@@ -1409,6 +1599,24 @@ export function calendarRoutes({
         if (!canWrite(calendar)) return "read_only" as const;
         const blocked = await providerWriteBlocked(tx, calendar);
         if (blocked) return blocked;
+        if (body.deletedAt) {
+          // 削除と変更は後から行った方を採る。消した後に (ほかの端末などで) 変えられた
+          // 項目があれば消さない。原本なら例外の変更も見る。
+          const exceptions =
+            row.parentId === null
+              ? await tx
+                  .select({ fieldUpdatedAt: events.fieldUpdatedAt })
+                  .from(events)
+                  .where(eq(events.parentId, row.id))
+              : [];
+          if (
+            [row, ...exceptions].some((item) =>
+              changedAfter(item.fieldUpdatedAt, deletedAt),
+            )
+          ) {
+            return { changedSince: row };
+          }
+        }
         let master: EventRow | undefined;
         if (row.parentId && row.recurrenceId) {
           // 例外を消す = その回を消す。プロバイダへは原本の繰り返しの変更として書き戻す。
@@ -1418,7 +1626,13 @@ export function calendarRoutes({
             .where(eq(events.id, row.parentId))
             .for("update");
           if (master) {
-            await excludeOccurrence(tx, calendar, master, row.recurrenceId);
+            await excludeOccurrence(
+              tx,
+              calendar,
+              master,
+              row.recurrenceId,
+              deletedAt,
+            );
             await recordChanges(tx, userId, "event", [master.id]);
           }
         }
@@ -1432,7 +1646,7 @@ export function calendarRoutes({
           removed.map((event) => event.id),
         );
         // 原本の EXDATE で取り消した回は、削除を積まない。
-        if (!master) await enqueueDelete(tx, calendar, row);
+        if (!master) await enqueueDelete(tx, calendar, row, deletedAt);
         await recordChanges(
           tx,
           userId,
@@ -1446,6 +1660,10 @@ export function calendarRoutes({
       if (result === "read_only") return c.json({ error: "read_only" }, 409);
       if (result === "calendar_disabled" || result === "calendar_sync_stopped")
         return c.json({ error: result }, 409);
+      if (typeof result === "object") {
+        const [event] = await publicEvents(db, [result.changedSince]);
+        return c.json({ error: "changed_since", event }, 409);
+      }
       return c.body(null, 204);
     },
   );
@@ -1484,19 +1702,27 @@ async function lockEventForWrite(tx: Tx, userId: string, id: string) {
   return lockEvent(tx, userId, id);
 }
 
+/**
+ * 予定に変更を当てる。changedAt は時計のずれを直したもの。時刻で負けた項目のうち、
+ * 値がいまの行と同じもの (再送など) は rejected に入れない (何もしない)。
+ */
 async function applyChanges(
   tx: Tx,
   userId: string,
   row: EventRow,
   incoming: EventFields,
   changedAt: Record<string, string>,
+  now: Date,
 ) {
-  const { accepted, fieldUpdatedAt, rejected } = mergeFields(
+  const merged = mergeFields(
     row.fieldUpdatedAt ?? {},
     incoming,
     changedAt,
-    new Date(),
+    now,
   );
+  const { accepted, fieldUpdatedAt } = merged;
+  const same = await unchangedFields(tx, row, incoming, merged.rejected);
+  const rejected = merged.rejected.filter((field) => !same.has(field));
   if (Object.keys(accepted).length === 0) return { row, rejected, accepted };
   const [next] = await tx
     .update(events)
@@ -1582,7 +1808,9 @@ async function findOrCreateException(
       sequence: master.sequence,
       conferenceUrl: master.conferenceUrl,
       useDefaultReminders: master.useDefaultReminders,
-      fieldUpdatedAt: master.fieldUpdatedAt,
+      // 原本の時刻は写さない。原本の変更と例外の変更は別の行なので、互いに負けないようにする
+      // (原本が後から変わっていても、その前に行ったこの回の変更を採る)。
+      fieldUpdatedAt: {},
     })
     .returning();
   if (!row) return null;
@@ -1610,6 +1838,24 @@ async function findOrCreateException(
     }
   }
   return row;
+}
+
+/** 予定 id が、利用者の変更履歴で消されたことになっているか (POST の再送で作り直さないため)。 */
+async function wasDeleted(tx: Tx, userId: string, id: string) {
+  const [row] = await tx
+    .select({ seq: changes.seq })
+    .from(changes)
+    .where(
+      and(
+        eq(changes.entityId, id),
+        // changes_delete_entity_idx (op = 'delete' の部分索引) を使うよう、値を埋め込む。
+        sql`${changes.op} = 'delete'`,
+        eq(changes.entity, "event"),
+        eq(changes.userId, userId),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /**

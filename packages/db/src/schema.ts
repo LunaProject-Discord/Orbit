@@ -680,7 +680,17 @@ export const changes = pgTable(
     op: changeOp().notNull(),
     createdAt: createdAt(),
   },
-  (t) => [index("changes_user_seq_idx").on(t.userId, t.seq)],
+  (t) => [
+    index("changes_user_seq_idx").on(t.userId, t.seq),
+    /**
+     * 消えた予定の作り直しを防ぐ (POST /v1/calendars/events の再送) ときに引く。
+     * entity の値は条件に入れない ("event" は後から足した enum の値で、新しい DB に全部の
+     * マイグレーションを 1 つのトランザクションで当てると使えないため)。
+     */
+    index("changes_delete_entity_idx")
+      .on(t.entityId)
+      .where(sql`${t.op} = 'delete'`),
+  ],
 );
 
 export const outboxKind = pgEnum("outbox_kind", [
@@ -1340,5 +1350,55 @@ export const eventSearch = pgTable(
       sql`mail_search_grams(${t.doc})`,
     ),
     index("event_search_user_idx").on(t.userId),
+  ],
+);
+
+export const eventConflictKind = pgEnum("event_conflict_kind", [
+  /** 未送信の変更が、相手側の新しい変更に負けた (取り込みか、書き戻しの競合の統合)。 */
+  "field_lost",
+  /** 書き戻しが確定して失敗した。変更は相手側の内容に巻き戻し済み。 */
+  "write_failed",
+  /** 作成の書き戻しが確定して失敗した。行は残っている。 */
+  "create_failed",
+  /** 相手側で消されていて、ローカルの変更の方が古かったので消した。 */
+  "remote_deleted",
+  /** 削除しようとしたが、相手側の変更の方が新しかったので取りやめた。 */
+  "delete_cancelled",
+]);
+
+/**
+ * 反映されなかった変更の記録 (端末の「反映されなかった変更」の一覧に出す)。
+ * 同期ワーカーが書き、端末が閉じる (resolvedAt)。30 日たった行はワーカーが消す。
+ * eventId は外部キーにしない (予定が消えても残す)。
+ */
+export const eventConflicts = pgTable(
+  "event_conflicts",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    calendarId: uuid()
+      .notNull()
+      .references(() => calendars.id, { onDelete: "cascade" }),
+    eventId: uuid().notNull(),
+    kind: eventConflictKind().notNull(),
+    /** 関係する項目名 (EVENT_FIELD_NAMES)。削除の失敗などでは空。 */
+    fields: jsonb().$type<string[]>().notNull().default([]),
+    /** 負けた側 (Orbit) の値。API の予定の変更 (changes) と同じ形。 */
+    lost: jsonb().$type<Record<string, unknown>>(),
+    /** 消されたときの予定全体 (API の作成の項目と同じ形 + parentId、recurrenceId)。 */
+    snapshot: jsonb().$type<Record<string, unknown>>(),
+    /** 表示用の題名 (記録したときの予定の題名)。 */
+    title: text(),
+    reason: text(),
+    createdAt: createdAt(),
+    resolvedAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    index("event_conflicts_user_open_idx")
+      .on(t.userId, t.createdAt)
+      .where(sql`${t.resolvedAt} is null`),
+    index("event_conflicts_created_idx").on(t.createdAt),
   ],
 );

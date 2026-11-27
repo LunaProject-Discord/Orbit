@@ -25,6 +25,7 @@ import type { BuildInfo, UpdatePolicy } from "./lib/update-policy.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { caldavAccountRoutes } from "./routes/calendar-accounts-caldav.js";
+import { calendarConflictRoutes } from "./routes/calendar-conflicts.js";
 import {
   GOOGLE_CALENDAR_WEBHOOK_PATH,
   googleCalendarWebhookRoutes,
@@ -236,6 +237,8 @@ export function createApp({
   );
   authed.route("/signatures", signatureRoutes(deps));
   authed.route("/contacts", contactRoutes(deps));
+  // 反映されなかった変更 (/calendars/conflicts) は、/calendars/:id より先に登録する。
+  authed.route("/calendars/conflicts", calendarConflictRoutes(deps));
   authed.route("/calendars", calendarRoutes(deps));
   authed.route("/invitations", invitationRoutes({ db, webOrigin }));
   authed.route("/focus", focusRoutes(deps));

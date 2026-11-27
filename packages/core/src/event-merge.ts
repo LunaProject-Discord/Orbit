@@ -282,3 +282,107 @@ export function mergeEventFields(input: EventMergeInput): EventMergeResult {
   }
   return { takeRemote, keepLocal, lostLocal, fieldUpdatedAt };
 }
+
+/**
+ * API の予定の変更 (PATCH の changes、POST の項目) と同じ形の値。
+ * 競合の記録 (event_conflicts.lost / snapshot) に入れ、端末はそのまま PATCH / POST に使える。
+ */
+export type EventFieldChanges = {
+  summary?: string | null;
+  location?: string | null;
+  description?: string | null;
+  status?: string;
+  busy?: boolean;
+  time?:
+    | { allDay: true; startDate: string; endDate: string }
+    | {
+        allDay: false;
+        startAt: string;
+        endAt: string;
+        startTimeZone: string | null;
+        endTimeZone: string | null;
+      };
+  recurrence?: { rrule: string | null; rdates: string[]; exdates: string[] };
+  conferenceUrl?: string | null;
+  useDefaultReminders?: boolean;
+  reminders?: { method: string; minutes: number }[];
+  attendees?: { email: string; name: string | null; role: string }[];
+};
+
+/**
+ * eventFieldValues の値のうち fields の項目を、API の変更の形 (EventFieldChanges) にする。
+ * 参加者の出欠 (status) は API で変えられない値なので外す。時刻が欠けていて API の形に
+ * できない time は入れない。RRULE は比べるための形 (大文字、部分の順番をそろえたもの) のまま。
+ */
+export function fieldValuesToChanges(
+  values: EventFieldValues,
+  fields: readonly EventFieldName[] = EVENT_FIELD_NAMES,
+): EventFieldChanges {
+  const result: EventFieldChanges = {};
+  for (const field of fields) {
+    switch (field) {
+      case "summary":
+      case "location":
+      case "description":
+      case "conferenceUrl":
+        result[field] = values[field] as string | null;
+        break;
+      case "status":
+        result.status = values.status as string;
+        break;
+      case "busy":
+      case "useDefaultReminders":
+        result[field] = values[field] as boolean;
+        break;
+      case "time": {
+        const time = values.time as ReturnType<typeof timeValue>;
+        if (time.allDay) {
+          if (time.startDate && time.endDate) {
+            result.time = {
+              allDay: true,
+              startDate: time.startDate,
+              endDate: time.endDate,
+            };
+          }
+        } else if (time.startAt && time.endAt) {
+          result.time = {
+            allDay: false,
+            startAt: time.startAt,
+            endAt: time.endAt,
+            startTimeZone: time.startTimeZone ?? null,
+            endTimeZone: time.endTimeZone ?? null,
+          };
+        }
+        break;
+      }
+      case "recurrence": {
+        const value = values.recurrence as {
+          rrule: string | null;
+          rdates: string[];
+          exdates: string[];
+        };
+        result.recurrence = {
+          rrule: value.rrule,
+          rdates: [...value.rdates],
+          exdates: [...value.exdates],
+        };
+        break;
+      }
+      case "reminders":
+        result.reminders = (
+          values.reminders as { method: string; minutes: number }[]
+        ).map((reminder) => ({ ...reminder }));
+        break;
+      case "attendees":
+        result.attendees = (
+          values.attendees as {
+            email: string;
+            name: string | null;
+            role: string;
+          }[]
+        ).map(({ email, name, role }) => ({ email, name, role }));
+        break;
+    }
+  }
+  return result;
+}

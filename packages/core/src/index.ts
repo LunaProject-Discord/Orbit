@@ -1,5 +1,6 @@
 export * from "./attachment-store.js";
 export * from "./caldav.js";
+export * from "./client-time.js";
 export * from "./credentials.js";
 export * from "./event-merge.js";
 export * from "./events.js";
