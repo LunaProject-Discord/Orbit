@@ -135,6 +135,7 @@ import {
   type UnifiedState,
   type User,
 } from "@/lib/api";
+import { onOpenAppUpdateSettings } from "@/lib/app-update";
 import { backLog } from "@/lib/back-log";
 import {
   buildDraftFrom,
@@ -2892,6 +2893,13 @@ const MailView = memo(function MailView({
     handleSelectSpecial("settings");
     setSettingsCategory("sidebar");
   };
+  // トレイの「更新を確認」と、アプリ本体の更新の知らせの「詳細」で、設定の「バージョン情報」を開く。
+  const openAboutRef = useRef<() => void>(() => {});
+  openAboutRef.current = () => {
+    handleSelectSpecial("settings");
+    setSettingsCategory("about");
+  };
+  useEffect(() => onOpenAppUpdateSettings(() => openAboutRef.current()), []);
   const openUnifiedDialog = (target: UnifiedDialogTarget) => {
     setSidebarOpen(false);
     setUnifiedDialog(target);

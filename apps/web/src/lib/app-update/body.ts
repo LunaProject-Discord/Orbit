@@ -8,7 +8,7 @@
  *   入れ替えが既定で制限されているため)。ここではサーバーとの互換性だけを確かめる。
  */
 
-import { isDesktopApp } from "@/lib/desktop/app";
+import { isDesktopApp, listenDesktop } from "@/lib/desktop/app";
 
 /** この画面が話せる API の版の範囲。サーバーの範囲 (api.minVersion〜api.version) と重なれば使える。 */
 export const CLIENT_API_MIN = 1;
@@ -96,13 +96,45 @@ export async function fetchServerInfo(
 
 // --- アプリ側の機能 ---
 
+/** アプリ側 (src-tauri/src/updater.rs の Phase) がいま行っていること。 */
+export type DesktopBodyPhase =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "up-to-date"; checkedAt: number }
+  /** 新しい版がある (notify)。「更新して再起動」を待っている */
+  | { kind: "available"; version: string }
+  | {
+      kind: "downloading";
+      version: string;
+      downloaded: number;
+      total: number | null;
+    }
+  /** 入れている (終わると再起動する、または次に起動したときに使われる) */
+  | { kind: "installing"; version: string }
+  | { kind: "error"; message: string };
+
 export type DesktopBodyStatus = {
   configured: boolean;
   version: string;
   mode: AppUpdateMode | null;
+  /** 古いアプリ (この項目より前) では無い。 */
+  phase?: DesktopBodyPhase;
   pending: string | null;
   installed: string | null;
 };
+
+/** 状態が変わるたびにアプリ側から届くイベント (中身は DesktopBodyStatus)。 */
+export const DESKTOP_BODY_STATUS_EVENT = "native-update://status";
+/** トレイの「更新を確認」で届く。設定の「バージョン情報」を開く。 */
+export const DESKTOP_BODY_OPEN_EVENT = "native-update://open";
+
+/** 取得の進み具合 (0〜100)。全体の大きさが分からなければ null。 */
+export function downloadPercent(
+  phase: Extract<DesktopBodyPhase, { kind: "downloading" }>,
+): number | null {
+  if (!phase.total || phase.total <= 0) return null;
+  return Math.min(100, Math.floor((phase.downloaded / phase.total) * 100));
+}
 
 async function invoke<T>(
   command: string,
@@ -124,6 +156,10 @@ export const desktopBody = {
   status: () => invoke<DesktopBodyStatus>("native_update_status"),
   check: () => invoke<void>("native_update_check"),
   installNow: () => invoke<void>("native_update_install_now"),
+  onStatus: (listener: (status: DesktopBodyStatus) => void) =>
+    listenDesktop<DesktopBodyStatus>(DESKTOP_BODY_STATUS_EVENT, listener),
+  onOpen: (listener: () => void) =>
+    listenDesktop<unknown>(DESKTOP_BODY_OPEN_EVENT, () => listener()),
 };
 
 export function bodyPlatform(): "desktop" | null {
