@@ -599,32 +599,54 @@ shadcn/ui の CLI がフォント設定を書き換えた場合は、`--font-san
 
 ### 画面の URL
 
-表示中のアカウント、フォルダ、メール、検索、下書きの一覧、作成画面は URL に反映します。再読み込みやブックマーク、ブラウザーの「戻る」「進む」で同じ表示に戻れます。
-表示はパスで表し、検索の内容だけを `?` 以降に置きます。読み書きは `apps/web/src/lib/route.ts` にまとめています。
+画面はアプリごとに URL を分けています。メール `/mail/*`、カレンダー `/calendar/*`、連絡先 `/contacts/*` (アプリはまだ無い)、設定 `/settings/*`、管理画面 `/admin`。`/` を開くとメール (`/mail`) へ移ります。
+
+メールの表示中のアカウント、フォルダ、メール、検索、下書きの一覧、作成画面は URL に反映します。再読み込みやブックマーク、ブラウザーの「戻る」「進む」で同じ表示に戻れます。
+表示はパスで表し、検索の内容だけを `?` 以降に置きます。読み書きは `apps/web/src/lib/route.ts` (メール)、`apps/web/src/lib/calendar/route.ts` (カレンダー)、`apps/web/src/lib/settings-route.ts` (設定) にまとめています。
 
 | URL | 表示 |
 | --- | --- |
-| `/` | すべての受信トレイ |
-| `/accounts/<ID>` | そのアカウントの受信トレイ |
-| `/accounts/<ID>/folders/<ID>` | フォルダ |
-| `/unified/<ID>` | 統合フォルダ (自分で作った、複数のフォルダをまとめた一覧) |
-| `…/messages/<ID>` | メール (会話) を開いた状態 (`/messages/<ID>`、`/accounts/<ID>/messages/<ID>` なども同じ) |
-| `/drafts` | 下書きの一覧 |
-| `/starred` | スター付きのメール (全アカウント・全フォルダ)。`/starred/messages/<ID>` でメールを開いた状態 |
-| `/outgoing` | 送信待ちのメール |
-| `/admin`、`/admin?section=<ページ>` | 管理画面 (`users`、`invitations`、`admins`、`security`)。管理者のアカウントでログインする。`/admin/setup` は初回セットアップ |
-| `/settings`、`/settings/<カテゴリ>` | 設定。カテゴリごとのページに分かれている (`accounts`、`appearance`、`fonts`、`list`、`reading`、`actions`、`sidebar`、`notifications`、`signatures`、`security`、`system`、`about`)。広い画面は左にカテゴリの一覧と右にページ、狭い画面は一覧からページへ入る。外観・フォント・メール一覧・メールの表示などは端末ごとに localStorage へ保存する |
-| `…/compose/<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `…/compose/new`) |
+| `/mail` | すべての受信トレイ |
+| `/mail/accounts/<ID>` | そのアカウントの受信トレイ |
+| `/mail/accounts/<ID>/folders/<ID>` | フォルダ |
+| `/mail/unified/<ID>` | 統合フォルダ (自分で作った、複数のフォルダをまとめた一覧) |
+| `…/messages/<ID>` | メール (会話) を開いた状態 (`/mail/messages/<ID>`、`/mail/accounts/<ID>/messages/<ID>` なども同じ)。`…/messages/<ID>/single` は会話の中の 1 通だけ |
+| `/mail/drafts` | 下書きの一覧 |
+| `/mail/starred` | スター付きのメール (全アカウント・全フォルダ)。`/mail/starred/messages/<ID>` でメールを開いた状態 |
+| `/mail/outgoing` | 送信待ちのメール |
+| `…/compose/<下書きの ID>` | 作成画面を開いた状態 (何も書いていない新規のメールは `…/compose/new`)。デスクトップ版の新しいウィンドウは `?window=compose` / `?window=message` を付けて開く |
 | `…?q=<語>` | 検索 (絞り込みも `from:` などの書き方で `q` に入れる)。表示中のフォルダだけを探すときは `in=folder`。以前の `from` `to` `subject` `since` `until` `attachment=1` `unread=1` `starred=1` も読める |
+| `/calendar`、`/calendar/<表示>/<日付>` | カレンダー (`day`、`3day`、`week`、`month`、`agenda` など。例 `/calendar/week/2026-11-27`) |
+| `/calendar/events/<ID>?o=<回>` | 予定を開く (通知を押したとき) |
+| `/settings`、`/settings/<分類>/<ページ>` | 設定のダイアログ。どのアプリから開いても同じダイアログで、背後には開いた元のアプリの画面を残す。`/settings` だけなら共通の最初のページ (狭い画面では一覧) |
+| `/admin`、`/admin?section=<ページ>` | 管理画面 (`users`、`invitations`、`admins`、`security`)。管理者のアカウントでログインする。`/admin/setup` は初回セットアップ |
 
-Web は静的ファイルとして出力する (Tauri / Capacitor にも同梱する) ので、Next.js のページは `/` の 1 つだけで、パスはブラウザー側で読み取ります。対応するファイルの無いパスを開いたときに同じ画面を返すのは、配信する側の役目です。
+設定の分類とページ (`apps/web/src/lib/settings-route.ts` の `SETTINGS_PAGES`、名前と中身は `apps/web/src/components/mail/settings-view.tsx`):
+
+| 分類 | ページ |
+| --- | --- |
+| `common` 共通 | `accounts` アカウント、`appearance` 外観、`fonts` フォント、`datetime` 日付と時刻、`notifications` この端末の通知、`security` ログインとセキュリティ、`system` 同期と端末、`about` バージョン情報 |
+| `mail` メール | `list` メール一覧、`reading` メールの表示、`actions` 操作、`sidebar` サイドバー、`signatures` 作成と署名、`notifications` メールの通知 (アカウントごと、通知に付けるボタン) |
+| `calendar` カレンダー | `notifications` 予定の通知 (招待・変更、終日の予定、カレンダーごとの通知)。カレンダーの無いサーバーでは出さない |
+| `contacts` 連絡先 | (アプリができたら足す。ページが無い分類は一覧に出さない) |
+
+広い画面では大きな中央のダイアログで左に分類とページの一覧、右にページ。スマホ幅では画面いっぱいに広げ、一覧からページへ入ります。閉じると開く前のアプリの URL に戻ります (直接 `/settings` を開いたときはメールへ)。一覧からページへ入るときは履歴に積み、ページどうしの移動は書き換えます。外観・フォント・メール一覧・メールの表示などは端末ごとに localStorage へ保存します。
+
+Web は静的ファイルとして出力する (Tauri / Capacitor にも同梱する) ので、Next.js のページは `/` の 1 つだけで、パスはブラウザー側で読み取ります (`apps/web/src/app/page.tsx` が URL を見て、出すアプリを選ぶ)。対応するファイルの無いパスを開いたときに同じ画面を返すのは、配信する側の役目です。
 
 - 本番: `deploy/Caddyfile` が、拡張子の無いパスに `index.html` を返す。
 - オフライン: サービスワーカー (`apps/web/public/sw.js`) が、保存してある最初の画面を返す。
 - `next dev` や、`404.html` しか返さない置き場: 404 の画面 (`apps/web/src/app/not-found.tsx`) も同じアプリなので、そのまま開ける。
 - ほかの場所に置くときは、知らないパスに `index.html` を返す設定 (SPA のフォールバック) を入れる。
 
-以前の形の URL (`/?account=<ID>&folder=<ID>&message=<ID>`、`/?view=drafts` など) を開くと、いまの形に書き換えます。
+以前の形の URL は、開くといまの形に書き換えます (`apps/web/src/lib/route.ts` の `canonicalAppUrl`)。ブックマーク、古い版の通知 (サービスワーカーが組み立てた `/messages/<ID>`)、サービスワーカーが保存した画面、古いアプリが覚えている戻り先から来るためです。
 
-フォルダの切り替えと、メールや作成画面を開く操作は履歴に積みます。メールからメールへの移動と検索欄の入力は、いまの履歴を書き換えます。
+| 以前の URL | いまの URL |
+| --- | --- |
+| `/`、`/?q=…` | `/mail`、`/mail?q=…` |
+| `/accounts/…`、`/unified/…`、`/messages/…`、`/drafts`、`/starred`、`/outgoing`、`/compose/…` | 前に `/mail` を付けた URL (`?` 以降、`?window=…` もそのまま) |
+| `/?account=<ID>&folder=<ID>&message=<ID>`、`/?view=drafts` など (? だけの形) | `/mail/accounts/<ID>/folders/<ID>/messages/<ID>`、`/mail/drafts` など。`/?view=settings` は `/settings` |
+| `/settings/<カテゴリ>` | `/settings/<分類>/<ページ>` (`fonts` → `common/fonts`、`list` → `mail/list`、`notifications` → `common/notifications` など) |
+
+メールでは、フォルダの切り替えと、メールや作成画面を開く操作は履歴に積みます。メールからメールへの移動と検索欄の入力は、いまの履歴を書き換えます。
 ログインしていない状態で開いた URL は、ログイン後にそのまま開きます (`/login?next=`)。

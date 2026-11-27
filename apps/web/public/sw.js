@@ -117,7 +117,7 @@ async function fromShell(shell, pathname) {
 async function networkFirst(request, shell, timeoutMs) {
   const url = new URL(request.url);
   const navigate = request.mode === "navigate";
-  // 画面は 1 つのアプリで、パス (/accounts/… など) はアプリが読み取る。
+  // 画面は 1 つのアプリで、パス (/mail/…、/calendar/…、/settings/… など) はアプリが読み取る。
   // そのパスのファイルが無ければ、最初の画面を出す。
   const saved = async () =>
     (await fromShell(shell, url.pathname)) ??
@@ -518,8 +518,10 @@ self.addEventListener("notificationclick", (event) => {
         await client.focus().catch(() => {});
         return;
       }
+      // メールの画面の URL (apps/web/src/lib/route.ts の buildRoute と同じ形)。
+      // 古い版のサービスワーカーが開く /messages/<ID> も、画面が /mail/messages/<ID> に書き換える。
       await self.clients.openWindow(
-        messageId ? `/messages/${encodeURIComponent(messageId)}` : "/",
+        messageId ? `/mail/messages/${encodeURIComponent(messageId)}` : "/mail",
       );
     })(),
   );

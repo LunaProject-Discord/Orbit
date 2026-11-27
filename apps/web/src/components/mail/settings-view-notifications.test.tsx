@@ -15,6 +15,7 @@ import {
   type NotificationStatus,
   onCalendarNotificationsChange,
 } from "@/lib/notifications";
+import type { SettingsPageRef } from "@/lib/settings-route";
 
 const api = vi.hoisted(() => ({
   settings: null as unknown,
@@ -41,7 +42,11 @@ const READY = {
   timeZone: "Asia/Tokyo",
 };
 
-describe("設定 → 通知 の予定の通知", () => {
+const DEVICE: SettingsPageRef = { group: "common", page: "notifications" };
+const CALENDAR: SettingsPageRef = { group: "calendar", page: "notifications" };
+const MAIL: SettingsPageRef = { group: "mail", page: "notifications" };
+
+describe("設定の通知 (共通・メール・カレンダー)", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -75,15 +80,18 @@ describe("設定 → 通知 の予定の通知", () => {
     resetCalendarNotificationSettingsForTest();
   });
 
-  async function render(status: NotificationStatus = "push") {
+  async function render(
+    page: SettingsPageRef = DEVICE,
+    status: NotificationStatus = "push",
+  ) {
     await act(async () => {
       root.render(
         <SettingsView
           user={{ id: "u1", email: "aoi@example.com", name: "あおい" }}
           accounts={[]}
-          category="notifications"
-          onCategoryChange={() => {}}
-          onMenu={() => {}}
+          page={page}
+          onPageChange={() => {}}
+          onClose={() => {}}
           notificationStatus={status}
           notificationBusy={false}
           onNotificationChange={() => {}}
@@ -106,19 +114,30 @@ describe("設定 → 通知 の予定の通知", () => {
     });
   }
 
-  const text = () => container.textContent ?? "";
+  // 設定はダイアログなので、body の直下 (ポータル) に描かれる。右側のページの中だけを見る。
+  const page = () =>
+    document.querySelector<HTMLElement>("[data-settings-page]") ??
+    document.body;
+  const text = () => page().textContent ?? "";
   const switchOf = (label: string) => {
-    const id = [...container.querySelectorAll("span")].find(
+    const id = [...page().querySelectorAll("span")].find(
       (span) => span.textContent === label,
     )?.id;
-    return container.querySelector<HTMLElement>(`[aria-labelledby="${id}"]`);
+    return page().querySelector<HTMLElement>(`[aria-labelledby="${id}"]`);
   };
 
-  it("この端末・共通の設定・カレンダーごとの通知を出す", async () => {
+  it("共通の「この端末の通知」に、新着メールと予定のオン・オフを出す", async () => {
     await render();
     expect(text()).toContain("新着メール: オン");
     expect(text()).toContain("予定: オン");
     expect(text()).toContain("この画面を閉じていても届きます");
+    expect(text()).not.toContain("終日の予定の通知");
+    expect(text()).not.toContain("通知に付けるボタン");
+  });
+
+  it("カレンダーの「予定の通知」に、共通の設定とカレンダーごとの通知を出す", async () => {
+    await render(CALENDAR);
+    expect(text()).not.toContain("新着メール: ");
     expect(text()).toContain("終日の予定の通知");
     expect(text()).toContain("当日 9:00");
     expect(text()).toContain("カレンダーごとの通知");
@@ -132,7 +151,7 @@ describe("設定 → 通知 の予定の通知", () => {
     const stop = onCalendarNotificationsChange(listener);
     await render();
     const button = [
-      ...container.querySelectorAll<HTMLButtonElement>(
+      ...page().querySelectorAll<HTMLButtonElement>(
         "[data-device-calendar-notifications] button",
       ),
     ][0];
@@ -147,7 +166,7 @@ describe("設定 → 通知 の予定の通知", () => {
   });
 
   it("共通の設定を変えると全体を保存し、予約の仕組みに知らせる (M3)", async () => {
-    await render();
+    await render(CALENDAR);
     const changed = vi.fn();
     const stop = onCalendarNotificationSettingsChange(changed);
     await act(async () => switchOf("新しい招待")?.click());
@@ -164,32 +183,42 @@ describe("設定 → 通知 の予定の通知", () => {
 
   it("カレンダーの通知を切り替え、保存できなければ戻す", async () => {
     api.updateCalendar.mockRejectedValue(new Error("offline"));
-    await render();
+    await render(CALENDAR);
     await act(async () => switchOf("個人")?.click());
     expect(api.updateCalendar).toHaveBeenCalledWith("c1", { notify: false });
     expect(switchOf("個人")?.getAttribute("aria-checked")).toBe("true");
     expect(text()).toContain("変更を保存できませんでした");
   });
 
-  it("古いサーバーでは予定の通知の項目を出さない", async () => {
+  it("古いサーバーでは予定の通知の項目とカレンダーの分類を出さない", async () => {
     api.settings = null;
     const { notify: _a, notifyDefault: _b, ...old } = calendar();
     api.calendars = [old];
     await render();
     expect(text()).toContain("この端末の通知: オン");
     expect(text()).not.toContain("予定: ");
-    expect(text()).not.toContain("終日の予定の通知");
-    const headings = [...container.querySelectorAll("h3")].map(
-      (heading) => heading.textContent,
-    );
-    expect(headings).toEqual(["新着メールの通知", "通知に付けるボタン"]);
+    const headings = () =>
+      [...page().querySelectorAll("h3")].map((heading) => heading.textContent);
+    expect(headings()).toEqual(["新着メールの通知"]);
+    expect(
+      document.querySelector('[data-settings-group="calendar"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-settings-group="mail"]'),
+    ).not.toBeNull();
+    // 連絡先はアプリが無いので、分類を出さない。
+    expect(
+      document.querySelector('[data-settings-group="contacts"]'),
+    ).toBeNull();
+    await render(MAIL);
+    expect(headings()).toEqual(["通知に付けるボタン"]);
   });
 
   it("この端末の通知がオフなら、予定は選べない", async () => {
-    await render("off");
+    await render(DEVICE, "off");
     expect(text()).toContain("予定: オフ");
     expect(
-      container.querySelector("[data-device-calendar-notifications] button"),
+      page().querySelector("[data-device-calendar-notifications] button"),
     ).toBeNull();
   });
 });

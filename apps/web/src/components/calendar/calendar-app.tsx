@@ -53,7 +53,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Account, ApiError, NetworkError, type User } from "@/lib/api";
-import { navigateApp } from "@/lib/app-navigation";
 import {
   type Calendar,
   type CalendarEvent,
@@ -111,12 +110,14 @@ import {
 import {
   buildCalendarRoute,
   type CalendarEventTarget,
+  isCalendarPath,
   OPEN_CALENDAR_EVENT,
   parseCalendarEventRoute,
   parseCalendarRoute,
 } from "@/lib/calendar/route";
 import { canRespondTo } from "@/lib/calendar/rsvp";
 import { listAccounts, useOnline } from "@/lib/offline";
+import { openSettings } from "@/lib/settings-route";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
 
@@ -247,7 +248,9 @@ export function CalendarApp({ user }: { user: User }) {
   }, [timeZone]);
 
   // 表示と日付を URL に残す (再読み込みやブックマークで同じ表示に戻れるように)。
+  // 設定のダイアログを開いている間 (URL が /settings/…) は書き換えない。閉じると開く前の URL に戻る。
   useEffect(() => {
+    if (!isCalendarPath(window.location.pathname)) return;
     const path = buildCalendarRoute(shownView, date);
     if (window.location.pathname !== path) {
       window.history.replaceState(window.history.state, "", path);
@@ -255,6 +258,8 @@ export function CalendarApp({ user }: { user: User }) {
   }, [shownView, date]);
   useEffect(() => {
     const onPopState = () => {
+      // 設定のダイアログの履歴では、後ろのカレンダーの表示はそのままにする。
+      if (!isCalendarPath(window.location.pathname)) return;
       const target = parseCalendarEventRoute(
         window.location.pathname,
         window.location.search,
@@ -997,7 +1002,10 @@ export function CalendarApp({ user }: { user: User }) {
       onRefreshCalendar={(calendar) => void refreshSubscription(calendar)}
       onRemoveCalendar={(calendar) => setRemoving(calendar)}
       onChooseSender={openSenderSetting}
-      onOpenSettings={() => navigateApp("/settings")}
+      onOpenSettings={() => {
+        setSidebarOpen(false);
+        openSettings();
+      }}
       onToggleSidebar={wide ? toggleSidebar : null}
       onNavigate={() => setSidebarOpen(false)}
     />
@@ -1332,7 +1340,10 @@ export function CalendarApp({ user }: { user: User }) {
         busy={senderBusy}
         error={senderError}
         onSave={(accountId) => void saveSender(accountId)}
-        onOpenSettings={() => navigateApp("/settings")}
+        onOpenSettings={() => {
+          setSenderCalendar(null);
+          openSettings({ group: "common", page: "accounts" });
+        }}
         onClose={() => setSenderCalendar(null)}
       />
       <AddCalendarDialog

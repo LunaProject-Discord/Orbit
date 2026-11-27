@@ -135,9 +135,7 @@ import {
   type UnifiedState,
   type User,
 } from "@/lib/api";
-import { onOpenAppUpdateSettings } from "@/lib/app-update";
 import { backLog } from "@/lib/back-log";
-import { isCalendarPath } from "@/lib/calendar/route";
 import {
   buildDraftFrom,
   type ComposeDraft,
@@ -240,10 +238,11 @@ import {
   buildRoute,
   emptyRoute,
   historyMode,
+  isMailPath,
   type MailRoute,
   NEW_COMPOSE,
   parseRoute,
-  type SettingsCategory,
+  type SidebarView,
   type SpecialView,
   sameSearch,
 } from "@/lib/route";
@@ -252,6 +251,14 @@ import { completeQuery } from "@/lib/search-input";
 import { actionBatches, selectRange, toggleSelection } from "@/lib/selection";
 import { reloadSenderIcons } from "@/lib/sender-icon";
 import { refreshSenderIconSettings } from "@/lib/sender-icon-settings";
+import {
+  changeSettingsPage,
+  closeSettings,
+  leaveSettings,
+  openSettings,
+  type SettingsRoute,
+  settingsBackground,
+} from "@/lib/settings-route";
 import { registerSheetBack } from "@/lib/sheet-back";
 import {
   isSelectAllKey,
@@ -470,31 +477,58 @@ function setNotice(notice: { message: string; tone: "error" | "info" } | null) {
   else hideNotice();
 }
 
-export function MailApp({ user }: { user: User }) {
+export function MailApp({
+  user,
+  settings,
+  host = false,
+  initialUrl: givenUrl,
+}: {
+  user: User;
+  /** 開いている設定のダイアログ (/settings/…)。閉じていれば null。 */
+  settings: SettingsRoute | null;
+  /**
+   * 設定のダイアログだけを出す (カレンダーの上に設定を開いたとき)。メールの画面は出さず、
+   * URL も書き換えない。設定のダイアログが使うアカウントなどの読み込みと、ダイアログを受け持つ。
+   */
+  host?: boolean;
+  /** 始めるときのメールの URL。省くと、いまの URL から始める。 */
+  initialUrl?: string;
+}) {
   // 開いたときの URL が指す表示から始める (再読み込み、ブックマーク、通知から開いた場合)。
-  // ログイン画面から移ってきた直後は window.location がまだ前の画面を指していることがあるので、
-  // 描画中のページの URL を Next.js から受け取る。
+  // ログイン画面から移ってきた直後は window.location がまだ前の画面 (/login) を指していることが
+  // あるので、そのときは描画中のページの URL を Next.js から受け取る。それ以外 (navigateApp で
+  // カレンダーから切り替えてきた直後など) は Next.js がまだ前の URL を返すので、window.location を使う。
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [initialUrl] = useState(() =>
-    // カレンダーから切り替えてきた直後 (navigateApp。カレンダーの「設定」など) は、Next.js が
-    // まだ前の URL (/calendar/...) を返す。そのまま使うと受信トレイとして始まり、"/" を履歴に
-    // 積んでしまうので、navigateApp が書き換えた window.location を使う。
-    isCalendarPath(pathname)
-      ? `${window.location.pathname}${window.location.search || "?"}`
-      : `${pathname}?${searchParams.toString()}`,
+  const [initialUrl] = useState(
+    () =>
+      givenUrl ??
+      (window.location.pathname.startsWith("/login")
+        ? `${pathname}?${searchParams.toString()}`
+        : `${window.location.pathname}${window.location.search || "?"}`),
   );
   // URL は表示を変えるたびに書き換える (メールを開くたびなど)。Next.js はそのたびにこの部品を
   // 描き直すので、画面の本体は、使う値 (開いたときの URL) が変わらない限り描き直さない。
-  return <MailView user={user} initialUrl={initialUrl} />;
+  return (
+    <MailView
+      user={user}
+      initialUrl={initialUrl}
+      settings={settings}
+      host={host}
+    />
+  );
 }
 
 const MailView = memo(function MailView({
   user,
   initialUrl,
+  settings,
+  host,
 }: {
   user: User;
   initialUrl: string;
+  settings: SettingsRoute | null;
+  host: boolean;
 }) {
   const preferences = usePreferences();
   const { signOut } = useAuth();
@@ -701,13 +735,14 @@ const MailView = memo(function MailView({
   const [drafts, setDrafts] = useState<ServerDraft[] | null>(null);
   /** 下書きの一覧を表示している。 */
   const [draftsSelected, setDraftsSelected] = useState(initialRoute.drafts);
-  /** フォルダ以外の表示 (スター付き、送信待ち、設定)。null ならフォルダか下書きの一覧。 */
+  /** フォルダ以外の表示 (スター付き、送信待ち)。null ならフォルダか下書きの一覧。 */
   const [special, setSpecial] = useState<SpecialView | null>(
     initialRoute.special,
   );
-  /** 設定画面で開いているページ。null なら設定の最初の画面。 */
-  const [settingsCategory, setSettingsCategory] =
-    useState<SettingsCategory | null>(initialRoute.settings);
+  /** 設定のダイアログを開いている (URL が /settings/…)。メールの画面はその後ろに残す。 */
+  const settingsOpen = settings !== null;
+  const settingsOpenRef = useRef(settingsOpen);
+  settingsOpenRef.current = settingsOpen;
   const starred = special === "starred";
   const starredRef = useRef(starred);
   starredRef.current = starred;
@@ -1170,12 +1205,15 @@ const MailView = memo(function MailView({
 
   // タブの題名に、受信トレイの未読数を出す。
   useEffect(() => {
+    if (host) return;
     showUnreadCount(inboxUnreadCount(countedMailboxes ?? []));
-  }, [countedMailboxes]);
-  useEffect(() => () => showUnreadCount(0), []);
+  }, [countedMailboxes, host]);
+  useEffect(() => (host ? undefined : () => showUnreadCount(0)), [host]);
 
   /** 通知から開く。受信トレイに切り替えて、そのメールを表示する。 */
   const openFromNotification = useCallback((messageId: string | null) => {
+    // 設定を開いていれば閉じる (通知で開くメールは、設定の後ろではなく前に出す)。
+    if (settingsOpenRef.current) leaveSettings(settingsBackground());
     setSidebarOpen(false);
     setDraftsSelected(false);
     setSpecial(null);
@@ -1196,14 +1234,17 @@ const MailView = memo(function MailView({
     void syncNotifications().then((status) => {
       if (active) setNotificationStatus(status);
     });
-    // 通知から新しく開かれた場合は URL (/messages/<ID>) でメールが指定されていて、
+    // 通知から新しく開かれた場合は URL (/mail/messages/<ID>) でメールが指定されていて、
     // 開いたときの URL としてすでに表示に反映している。
-    const unsubscribe = onNotificationOpen(openFromNotification);
+    // 設定だけを受け持つとき (カレンダーの上の設定) は、画面 (app/page.tsx) がメールへ移す。
+    const unsubscribe = host
+      ? () => {}
+      : onNotificationOpen(openFromNotification);
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [openFromNotification]);
+  }, [openFromNotification, host]);
 
   function handleNotificationChange(enabled: boolean) {
     setNotificationBusy(true);
@@ -2588,6 +2629,14 @@ const MailView = memo(function MailView({
   // (lib/native/app.ts の setAppBackHandler)。閉じるものが無ければ false。
   const appBackRef = useRef<() => boolean>(() => false);
   appBackRef.current = () => {
+    if (settings?.page) {
+      changeSettingsPage(null);
+      return true;
+    }
+    if (settings) {
+      closeSettings();
+      return true;
+    }
     if (standaloneCompose || standaloneMessage) return false;
     if (draft && composeOpen) {
       void closeCompose();
@@ -2595,15 +2644,6 @@ const MailView = memo(function MailView({
     }
     if (selectedMessageId) {
       setSelectedMessageId(null);
-      return true;
-    }
-    if (special === "settings" && settingsCategory) {
-      setSettingsCategory(null);
-      return true;
-    }
-    if (special === "settings") {
-      // 設定の一覧からは、すべての受信トレイへ戻る (アプリを裏へ回さない)。
-      handleSelectFolder(null, null);
       return true;
     }
     if (searchScreen) {
@@ -2705,7 +2745,17 @@ const MailView = memo(function MailView({
     setDraftsSelected(true);
   }
 
-  /** スター付き、送信待ち、設定を表示する。どれもフォルダには結び付かない。 */
+  /** サイドバーのフォルダ以外の項目。設定はダイアログを開く。 */
+  function handleSelectSidebarView(view: SidebarView) {
+    if (view === "settings") {
+      setSidebarOpen(false);
+      openSettings();
+      return;
+    }
+    handleSelectSpecial(view);
+  }
+
+  /** スター付き、送信待ちを表示する。どちらもフォルダには結び付かない。 */
   function handleSelectSpecial(view: SpecialView) {
     setSidebarOpen(false);
     setSelectedMessageId(null);
@@ -2719,7 +2769,6 @@ const MailView = memo(function MailView({
     setSelectedAccountId(null);
     setSelectedMailboxId(null);
     setSpecial(view);
-    setSettingsCategory(null);
   }
 
   const handleMissing = useCallback(() => {
@@ -2745,7 +2794,6 @@ const MailView = memo(function MailView({
     drafts: draftsSelected,
     special,
     messageId: selectedMessageId,
-    settings: settingsCategory,
     single: single !== null && single.messageId === selectedMessageId,
     composeId: openComposeId ?? composeTarget,
     search,
@@ -2754,6 +2802,9 @@ const MailView = memo(function MailView({
   // 表示が変わったら URL に反映する。
   // biome-ignore lint/correctness/useExhaustiveDependencies: routeSync は照らし合わせ直すきっかけとして使う
   useEffect(() => {
+    // 設定のダイアログを開いている間 (URL が /settings/…) と、設定だけを受け持つときは書き換えない。
+    // 閉じると開く前の URL に戻り、そこで照らし合わせ直す。
+    if (host || settingsOpen) return;
     if (backPendingRef.current !== null) return;
     const currentUrl = `${window.location.pathname}${window.location.search}`;
     const forceReplace = replaceNextRef.current;
@@ -2794,7 +2845,7 @@ const MailView = memo(function MailView({
         routeUrl,
       );
     }
-  }, [routeUrl, routeSync]);
+  }, [routeUrl, routeSync, settingsOpen]);
 
   /** URL が指す表示に切り替える (ブラウザーの「戻る」「進む」)。 */
   const applyRouteRef = useRef<(route: MailRoute) => void>(() => {});
@@ -2816,7 +2867,6 @@ const MailView = memo(function MailView({
     setUnifiedId(route.unifiedId);
     setDraftsSelected(route.drafts);
     setSpecial(route.special);
-    setSettingsCategory(route.settings);
     setSelectedMessageId(route.messageId);
     setSingle((current) =>
       route.single && route.messageId
@@ -2838,8 +2888,11 @@ const MailView = memo(function MailView({
     }
   };
   useEffect(() => {
+    if (host) return;
     const onPopState = () => {
       const url = `${window.location.pathname}${window.location.search}`;
+      // 設定のダイアログの履歴 (/settings/…) では、後ろのメールの表示はそのままにする。
+      if (!isMailPath(window.location.pathname)) return;
       const pending = backPendingRef.current;
       backPendingRef.current = null;
       backLog(
@@ -2858,7 +2911,7 @@ const MailView = memo(function MailView({
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [host]);
 
   // URL が指す作成画面を開く。下書きが見つからなければ、URL から外すだけにする。
   // biome-ignore lint/correctness/useExhaustiveDependencies: 開く処理は毎回の描画で作り直すので、きっかけになる値だけを見る
@@ -2901,16 +2954,9 @@ const MailView = memo(function MailView({
     return sources.length > 0 && sources.every(showsRecipients);
   })();
   const openUnifiedSettings = () => {
-    handleSelectSpecial("settings");
-    setSettingsCategory("sidebar");
+    setSidebarOpen(false);
+    openSettings({ group: "mail", page: "sidebar" });
   };
-  // トレイの「更新を確認」と、アプリ本体の更新の知らせの「詳細」で、設定の「バージョン情報」を開く。
-  const openAboutRef = useRef<() => void>(() => {});
-  openAboutRef.current = () => {
-    handleSelectSpecial("settings");
-    setSettingsCategory("about");
-  };
-  useEffect(() => onOpenAppUpdateSettings(() => openAboutRef.current()), []);
   const openUnifiedDialog = (target: UnifiedDialogTarget) => {
     setSidebarOpen(false);
     setUnifiedDialog(target);
@@ -3113,7 +3159,6 @@ const MailView = memo(function MailView({
         : undefined,
     [selectedAccountId, accounts],
   );
-  const settingsOpen = special === "settings";
   /** 狭い画面でサイドバーを開くボタン。 */
   const menuButton = (className: string) => (
     <Button
@@ -3259,8 +3304,7 @@ const MailView = memo(function MailView({
     // ダイアログやメニューを開いている間は、後ろの画面を操作しない。
     if (document.querySelector('[role="dialog"], [role="menu"]')) return;
     /** メールを表示しているか (メールだけのウィンドウを含む)。 */
-    const showingMessage =
-      standaloneMessage || (selectedMessageId !== null && !settingsOpen);
+    const showingMessage = standaloneMessage || selectedMessageId !== null;
     const findInMessage = () => {
       if (!showingMessage) return;
       setFindRequest((current) => ({
@@ -3319,9 +3363,7 @@ const MailView = memo(function MailView({
     if (isSelectAllKey(event)) {
       if (!selectAllTargetsList(event.target, lastPointerRef.current)) return;
       if (document.querySelector('[role="dialog"], [role="menu"]')) return;
-      if (draftsSelected || special === "outgoing" || special === "settings") {
-        return;
-      }
+      if (draftsSelected || special === "outgoing") return;
       const list = messages ?? [];
       if (list.length === 0) return;
       event.preventDefault();
@@ -3355,9 +3397,7 @@ const MailView = memo(function MailView({
       return;
     }
     // 下書きの一覧を表示している間は、メールの一覧への操作は受け付けない。
-    if (draftsSelected || special === "outgoing" || special === "settings") {
-      return;
-    }
+    if (draftsSelected || special === "outgoing") return;
     const list = messages ?? [];
     const index = selectedMessage ? list.indexOf(selectedMessage) : -1;
 
@@ -3579,6 +3619,225 @@ const MailView = memo(function MailView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  /** 設定のダイアログ (/settings/…)。メールの画面の上に重ねて出す。 */
+  const settingsDialog = settings && (
+    <SettingsView
+      user={user}
+      accounts={accounts}
+      page={settings.page}
+      onPageChange={changeSettingsPage}
+      onClose={closeSettings}
+      notificationStatus={notificationStatus}
+      notificationBusy={notificationBusy}
+      onNotificationChange={handleNotificationChange}
+      syncStatus={syncStatus}
+      devices={devices}
+      onAdd={() => setAddOpen(true)}
+      onDelete={setDeleteTarget}
+      onEditSignature={(account) =>
+        setSignatureTarget({ kind: "account", account })
+      }
+      onReauth={handleReauth}
+      onAccountUpdated={(account) =>
+        setAccounts(
+          (current) =>
+            current?.map((item) => (item.id === account.id ? account : item)) ??
+            null,
+        )
+      }
+      onSignOut={() => {
+        // ログアウトしたあとに別の利用者がログインしても、この表示には戻さない。
+        window.history.replaceState(null, "", "/");
+        void signOut();
+      }}
+      signatureRules={
+        <SignatureRulesSettings
+          rules={signatureRules}
+          accounts={accounts ?? []}
+          onEdit={(rule) => {
+            if (rule.kind === "contact") {
+              setSignatureTarget({
+                kind: "contact",
+                address: {
+                  name: rule.label ?? undefined,
+                  address: rule.key,
+                },
+                rule,
+                fallbackHtml: null,
+              });
+            } else if (rule.accountId) {
+              setSignatureTarget({
+                kind: "thread",
+                accountId: rule.accountId,
+                threadKey: rule.key,
+                subject: rule.label ?? "",
+                rule,
+                fallbackHtml: null,
+              });
+            }
+          }}
+          onDelete={(rule) => {
+            deleteSignatureRule(rule.id)
+              .then(() =>
+                updateSignatureRules((current) =>
+                  current.filter((item) => item.id !== rule.id),
+                ),
+              )
+              .catch(() =>
+                setNotice({
+                  message: SIGNATURE_RULE_DELETE_ERROR,
+                  tone: "error",
+                }),
+              );
+          }}
+        />
+      }
+      sidebarItems={
+        <>
+          <UnifiedSettings
+            unified={unified}
+            mailboxes={mailboxes ?? []}
+            onLayoutChange={changeLayout}
+            onCreate={() => openUnifiedDialog({ kind: "create" })}
+            onEdit={(folder) => openUnifiedDialog({ kind: "edit", folder })}
+            onEditBuiltin={openBuiltinDialog}
+            onDelete={(folder) => openUnifiedDialog({ kind: "delete", folder })}
+          />
+          <CategorySettings
+            unified={unified}
+            accounts={accounts ?? []}
+            onCreate={categoryActions.onCreate}
+            onRename={categoryActions.onRename}
+            onDelete={categoryActions.onDelete}
+            onReorder={categoryActions.onReorder}
+          />
+        </>
+      }
+    />
+  );
+  /** 設定のダイアログと、そこから開くダイアログ (メールの画面からも開く)。 */
+  const settingsDialogs = (
+    <>
+      {settingsDialog}
+      <AddAccountDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onCreated={(account) => {
+          setAccounts((current) =>
+            current?.some((item) => item.id === account.id)
+              ? current
+              : [...(current ?? []), account],
+          );
+          void loadMailboxes();
+        }}
+      />
+      <SignatureDialog
+        target={signatureTarget}
+        onClose={() => setSignatureTarget(null)}
+        onRuleSaved={(rule) =>
+          updateSignatureRules((current) => [
+            ...current.filter((item) => item.id !== rule.id),
+            rule,
+          ])
+        }
+        onRuleDeleted={(id) =>
+          updateSignatureRules((current) =>
+            current.filter((item) => item.id !== id),
+          )
+        }
+        onAccountSaved={(account) =>
+          setAccounts(
+            (current) =>
+              current?.map((item) =>
+                item.id === account.id ? account : item,
+              ) ?? null,
+          )
+        }
+      />
+      <CategoryDialog
+        target={categoryDialog}
+        onClose={() => setCategoryDialog(null)}
+        onSubmit={(target, name) => {
+          if (target.kind === "rename") {
+            changeCategories((list) =>
+              renameCategory(list, target.category.id, name),
+            );
+          } else {
+            const id = randomUuid();
+            changeCategories((list) =>
+              addCategory(list, { id, name }, target.key),
+            );
+          }
+        }}
+      />
+      <UnifiedDialog
+        target={unifiedDialog}
+        accounts={accounts ?? []}
+        mailboxes={mailboxes ?? []}
+        onClose={() => setUnifiedDialog(null)}
+        onRequestDelete={(folder) =>
+          setUnifiedDialog({ kind: "delete", folder })
+        }
+        onBuiltinsSaved={(builtins) => {
+          setUnified((current) => {
+            const next = { ...current, builtins };
+            storeCachedUnified(next);
+            return next;
+          });
+        }}
+        onSaved={(created) => {
+          void loadUnified();
+          if (created) {
+            // 作ったフォルダは、すぐ開いて中身を確かめられるようにする。
+            setUnified((current) => ({
+              ...current,
+              folders: [...current.folders, created],
+            }));
+            handleSelectUnified(created.id);
+          } else if (selectionRef.current.unifiedId) {
+            void loadFirstPage(selectionRef.current, true);
+          }
+        }}
+        onDeleted={(folder) => {
+          setUnified((current) => ({
+            ...current,
+            folders: current.folders.filter((item) => item.id !== folder.id),
+          }));
+          if (selectionRef.current.unifiedId === folder.id) {
+            handleSelectFolder(null, null);
+          }
+          void loadUnified();
+        }}
+      />
+      <DeleteAccountDialog
+        account={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onDeleted={(id) => {
+          setAccounts(
+            (current) => current?.filter((item) => item.id !== id) ?? null,
+          );
+          setMailboxes(
+            (current) =>
+              current?.filter((mailbox) => mailbox.accountId !== id) ?? null,
+          );
+          if (selectedMessageId || selectedAccountId === id) {
+            replaceNextRef.current = true;
+          }
+          setSelectedMessageId(null);
+          if (selectedAccountId === id) {
+            setSelectedAccountId(null);
+            setSelectedMailboxId(null);
+          } else {
+            void loadFirstPage(selectionRef.current, true);
+          }
+        }}
+      />
+    </>
+  );
+
+  // カレンダーの上に設定を開いたときは、設定のダイアログだけを出す。
+  if (host) return settingsDialogs;
+
   return (
     // 高さは画面に固定し、一覧と本文をそれぞれの枠の中でスクロールさせる。
     // body は縦並びの flex なので、ここに flex-1 を付けると高さの指定が効かず、
@@ -3625,7 +3884,7 @@ const MailView = memo(function MailView({
             }
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
-            special={special}
+            special={settingsOpen ? "settings" : special}
             unified={countedUnified}
             selectedUnifiedId={unifiedId}
             onSelectUnified={handleSelectUnified}
@@ -3636,7 +3895,7 @@ const MailView = memo(function MailView({
             }
             onSelect={handleSelectFolder}
             onSelectDrafts={handleSelectDrafts}
-            onSelectSpecial={handleSelectSpecial}
+            onSelectSpecial={handleSelectSidebarView}
             onCompose={canCompose ? handleNewMail : null}
             onToggleFold={toggleSidebarFolded}
             inert={sidebarPeek}
@@ -3704,7 +3963,10 @@ const MailView = memo(function MailView({
                 setSidebarOpen(false);
                 setDeleteTarget(account);
               },
-              onOpenSettings: () => handleSelectSpecial("settings"),
+              onOpenSettings: () => {
+                setSidebarOpen(false);
+                openSettings();
+              },
               onReauth: handleReauth,
               onCreateFolder: (account, parent) =>
                 openFolderDialog({ kind: "create", account, parent }),
@@ -3720,8 +3982,8 @@ const MailView = memo(function MailView({
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
             onSelectDrafts={handleSelectDrafts}
-            special={special}
-            onSelectSpecial={handleSelectSpecial}
+            special={settingsOpen ? "settings" : special}
+            onSelectSpecial={handleSelectSidebarView}
             unified={countedUnified}
             selectedUnifiedId={unifiedId}
             onSelectUnified={handleSelectUnified}
@@ -3762,112 +4024,11 @@ const MailView = memo(function MailView({
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1">
-        {settingsOpen && (
-          <SettingsView
-            user={user}
-            accounts={accounts}
-            category={settingsCategory}
-            onCategoryChange={setSettingsCategory}
-            onMenu={() => setSidebarOpen(true)}
-            notificationStatus={notificationStatus}
-            notificationBusy={notificationBusy}
-            onNotificationChange={handleNotificationChange}
-            syncStatus={syncStatus}
-            devices={devices}
-            onAdd={() => setAddOpen(true)}
-            onDelete={setDeleteTarget}
-            onEditSignature={(account) =>
-              setSignatureTarget({ kind: "account", account })
-            }
-            onReauth={handleReauth}
-            onAccountUpdated={(account) =>
-              setAccounts(
-                (current) =>
-                  current?.map((item) =>
-                    item.id === account.id ? account : item,
-                  ) ?? null,
-              )
-            }
-            onSignOut={() => {
-              // ログアウトしたあとに別の利用者がログインしても、この表示には戻さない。
-              window.history.replaceState(null, "", "/");
-              void signOut();
-            }}
-            signatureRules={
-              <SignatureRulesSettings
-                rules={signatureRules}
-                accounts={accounts ?? []}
-                onEdit={(rule) => {
-                  if (rule.kind === "contact") {
-                    setSignatureTarget({
-                      kind: "contact",
-                      address: {
-                        name: rule.label ?? undefined,
-                        address: rule.key,
-                      },
-                      rule,
-                      fallbackHtml: null,
-                    });
-                  } else if (rule.accountId) {
-                    setSignatureTarget({
-                      kind: "thread",
-                      accountId: rule.accountId,
-                      threadKey: rule.key,
-                      subject: rule.label ?? "",
-                      rule,
-                      fallbackHtml: null,
-                    });
-                  }
-                }}
-                onDelete={(rule) => {
-                  deleteSignatureRule(rule.id)
-                    .then(() =>
-                      updateSignatureRules((current) =>
-                        current.filter((item) => item.id !== rule.id),
-                      ),
-                    )
-                    .catch(() =>
-                      setNotice({
-                        message: SIGNATURE_RULE_DELETE_ERROR,
-                        tone: "error",
-                      }),
-                    );
-                }}
-              />
-            }
-            sidebarItems={
-              <>
-                <UnifiedSettings
-                  unified={unified}
-                  mailboxes={mailboxes ?? []}
-                  onLayoutChange={changeLayout}
-                  onCreate={() => openUnifiedDialog({ kind: "create" })}
-                  onEdit={(folder) =>
-                    openUnifiedDialog({ kind: "edit", folder })
-                  }
-                  onEditBuiltin={openBuiltinDialog}
-                  onDelete={(folder) =>
-                    openUnifiedDialog({ kind: "delete", folder })
-                  }
-                />
-                <CategorySettings
-                  unified={unified}
-                  accounts={accounts ?? []}
-                  onCreate={categoryActions.onCreate}
-                  onRename={categoryActions.onRename}
-                  onDelete={categoryActions.onDelete}
-                  onReorder={categoryActions.onReorder}
-                />
-              </>
-            }
-          />
-        )}
         {/* 一覧とメールの表示。広い画面では横に並べるか、設定で上下に並べる。 */}
         <div
           className={cn(
             "flex min-h-0 min-w-0 flex-1",
             messageBelow && "flex-col",
-            settingsOpen && "hidden",
           )}
         >
           <section
@@ -3877,7 +4038,7 @@ const MailView = memo(function MailView({
               "@container/pane relative min-h-0 min-w-0 flex-1 flex-col lg:flex lg:flex-none",
               messageBelow ? "lg:border-b" : "lg:w-96 lg:border-r",
               selectedMessageId ? "hidden" : "flex",
-              (settingsOpen || standaloneMessage) && "hidden!",
+              standaloneMessage && "hidden!",
             )}
             // 一覧の大きさは、メールの表示との境目のつまみで変えられる。右に並べるときは
             // テーブル表示のときだけ幅を、下に並べるときは高さを変える。
@@ -4192,7 +4353,6 @@ const MailView = memo(function MailView({
             className={cn(
               "@container/pane relative min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex",
               selectedMessageId ? "flex" : "hidden",
-              settingsOpen && "hidden!",
             )}
           >
             {selectedMessageId ? (
@@ -4268,18 +4428,6 @@ const MailView = memo(function MailView({
         </div>
       </main>
 
-      <AddAccountDialog
-        open={addOpen}
-        onOpenChange={setAddOpen}
-        onCreated={(account) => {
-          setAccounts((current) =>
-            current?.some((item) => item.id === account.id)
-              ? current
-              : [...(current ?? []), account],
-          );
-          void loadMailboxes();
-        }}
-      />
       <ComposeWindow
         draft={draft}
         open={composeOpen}
@@ -4354,45 +4502,6 @@ const MailView = memo(function MailView({
         onRetry={handleRetryFailures}
         onDismiss={handleDismissFailures}
       />
-      <SignatureDialog
-        target={signatureTarget}
-        onClose={() => setSignatureTarget(null)}
-        onRuleSaved={(rule) =>
-          updateSignatureRules((current) => [
-            ...current.filter((item) => item.id !== rule.id),
-            rule,
-          ])
-        }
-        onRuleDeleted={(id) =>
-          updateSignatureRules((current) =>
-            current.filter((item) => item.id !== id),
-          )
-        }
-        onAccountSaved={(account) =>
-          setAccounts(
-            (current) =>
-              current?.map((item) =>
-                item.id === account.id ? account : item,
-              ) ?? null,
-          )
-        }
-      />
-      <CategoryDialog
-        target={categoryDialog}
-        onClose={() => setCategoryDialog(null)}
-        onSubmit={(target, name) => {
-          if (target.kind === "rename") {
-            changeCategories((list) =>
-              renameCategory(list, target.category.id, name),
-            );
-          } else {
-            const id = randomUuid();
-            changeCategories((list) =>
-              addCategory(list, { id, name }, target.key),
-            );
-          }
-        }}
-      />
       <FolderDialogs
         target={folderDialog}
         onClose={() => setFolderDialog(null)}
@@ -4440,68 +4549,7 @@ const MailView = memo(function MailView({
         }
         onClose={() => setMoveTarget(null)}
       />
-      <UnifiedDialog
-        target={unifiedDialog}
-        accounts={accounts ?? []}
-        mailboxes={mailboxes ?? []}
-        onClose={() => setUnifiedDialog(null)}
-        onRequestDelete={(folder) =>
-          setUnifiedDialog({ kind: "delete", folder })
-        }
-        onBuiltinsSaved={(builtins) => {
-          setUnified((current) => {
-            const next = { ...current, builtins };
-            storeCachedUnified(next);
-            return next;
-          });
-        }}
-        onSaved={(created) => {
-          void loadUnified();
-          if (created) {
-            // 作ったフォルダは、すぐ開いて中身を確かめられるようにする。
-            setUnified((current) => ({
-              ...current,
-              folders: [...current.folders, created],
-            }));
-            handleSelectUnified(created.id);
-          } else if (selectionRef.current.unifiedId) {
-            void loadFirstPage(selectionRef.current, true);
-          }
-        }}
-        onDeleted={(folder) => {
-          setUnified((current) => ({
-            ...current,
-            folders: current.folders.filter((item) => item.id !== folder.id),
-          }));
-          if (selectionRef.current.unifiedId === folder.id) {
-            handleSelectFolder(null, null);
-          }
-          void loadUnified();
-        }}
-      />
-      <DeleteAccountDialog
-        account={deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onDeleted={(id) => {
-          setAccounts(
-            (current) => current?.filter((item) => item.id !== id) ?? null,
-          );
-          setMailboxes(
-            (current) =>
-              current?.filter((mailbox) => mailbox.accountId !== id) ?? null,
-          );
-          if (selectedMessageId || selectedAccountId === id) {
-            replaceNextRef.current = true;
-          }
-          setSelectedMessageId(null);
-          if (selectedAccountId === id) {
-            setSelectedAccountId(null);
-            setSelectedMailboxId(null);
-          } else {
-            void loadFirstPage(selectionRef.current, true);
-          }
-        }}
-      />
+      {settingsDialogs}
     </div>
   );
 });
