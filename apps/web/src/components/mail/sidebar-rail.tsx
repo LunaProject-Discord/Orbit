@@ -13,11 +13,25 @@ import {
   type ComposeHandler,
   RailComposeButton,
 } from "@/components/mail/compose-button";
+import {
+  FLYOUT_CLASS,
+  FlyoutAccount,
+  FlyoutRow,
+  type FlyoutSelection,
+  useFlyoutCollapsed,
+} from "@/components/mail/rail-flyout";
 import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ACCOUNT_ON_CLASS } from "@/lib/account-colors";
 import { AccountDot, AccountMark } from "@/lib/account-icons";
 import type { Account, MailboxSummary, UnifiedState } from "@/lib/api";
+import { buildMailboxTree, type MailboxNode } from "@/lib/mailboxes";
 import {
   hoveredOverlayScrollbarOwner,
   overlayScrollbarOwner,
@@ -74,6 +88,8 @@ type RailProps = {
   accounts: Account[] | null;
   mailboxes: MailboxSummary[] | null;
   selectedAccountId: string | null;
+  /** 開いているフォルダ。アカウントの受信トレイ (またはアカウント全体) なら null。 */
+  selectedMailboxId: string | null;
   /** フォルダの一覧を表示している (下書きやスター付きなどではない)。 */
   folderView: boolean;
   draftCount: number;
@@ -95,16 +111,32 @@ type RailProps = {
   className?: string;
 };
 
+/** 帯の項目 1 つ分の表示 (帯とポップアップで共通)。 */
+type ViewInfo = {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  /** 右上の点の説明 (未読数など)。null なら点を出さない。 */
+  badge: string | null;
+  badgeTone: keyof typeof badgeTones;
+  /** ポップアップに出す数。 */
+  count: number;
+  selected: boolean;
+  onClick: () => void;
+};
+
 /**
  * 折りたたんだサイドバーの代わりに出す、アイコンだけの細い帯。
  * 帯の項目はそのまま押して使う。サイドバーを一時的に重ねるのは、
  * カーソルをウィンドウの左端 (またはそのすぐ近く) に寄せたときだけ (useSidebarPeek)。
  * 項目は等間隔に並べる (名前とアドレスの 2 行になるアカウントも 1 行と同じ高さ)。
+ * アカウントとカテゴリは、乗せるか押すと右にポップアップを出し、中のフォルダなどを選べる。
  */
 export function SidebarRail({
   accounts,
   mailboxes,
   selectedAccountId,
+  selectedMailboxId,
   folderView,
   draftCount,
   draftsSelected,
@@ -122,36 +154,62 @@ export function SidebarRail({
   inert,
   className,
 }: RailProps) {
+  /** 開いているポップアップ (アカウントかカテゴリの ID)。 */
+  const [flyout, setFlyout] = useState<string | null>(null);
+  // 左端に寄せてサイドバーが重なったら、帯のポップアップは閉じる。
+  useEffect(() => {
+    if (inert) setFlyout(null);
+  }, [inert]);
+  const flyoutProps = (key: string) => ({
+    open: flyout === key,
+    onOpenChange: (open: boolean) =>
+      setFlyout((current) => (open ? key : current === key ? null : current)),
+  });
+  const close = () => setFlyout(null);
+
   const unreadByAccount = new Map<string, number>();
+  const byAccount = new Map<string, MailboxSummary[]>();
   for (const mailbox of mailboxes ?? []) {
+    const list = byAccount.get(mailbox.accountId);
+    if (list) list.push(mailbox);
+    else byAccount.set(mailbox.accountId, [mailbox]);
     if (mailbox.specialUse !== "inbox") continue;
     unreadByAccount.set(
       mailbox.accountId,
       (unreadByAccount.get(mailbox.accountId) ?? 0) + mailbox.unreadCount,
     );
   }
+  const treeOf = (accountId: string) =>
+    buildMailboxTree(byAccount.get(accountId) ?? []);
   const inboxUnread = [...unreadByAccount.values()].reduce(
     (sum, count) => sum + count,
     0,
   );
   const groups = groupSidebar(unified, accounts ?? []);
   const folded = useFoldedCategories();
-  const renderView = (entry: SidebarEntry) => {
+  const selection: FlyoutSelection = {
+    folderView,
+    selectedAccountId,
+    selectedMailboxId,
+  };
+  const selectFolder = (accountId: string | null, mailboxId: string | null) => {
+    close();
+    onSelect(accountId, mailboxId);
+  };
+
+  const viewInfo = (entry: SidebarEntry): ViewInfo => {
     if (entry.folder) {
       const { folder } = entry;
-      return (
-        <RailItem
-          key={entry.key}
-          label={folder.name}
-          badge={
-            folder.unreadCount > 0 ? `未読 ${folder.unreadCount} 件` : null
-          }
-          selected={selectedUnifiedId === folder.id}
-          onClick={() => onSelectUnified(folder.id)}
-        >
-          <UnifiedMark folder={folder} />
-        </RailItem>
-      );
+      return {
+        key: entry.key,
+        label: folder.name,
+        icon: <UnifiedMark folder={folder} />,
+        badge: folder.unreadCount > 0 ? `未読 ${folder.unreadCount} 件` : null,
+        badgeTone: "unread",
+        count: folder.unreadCount,
+        selected: selectedUnifiedId === folder.id,
+        onClick: () => onSelectUnified(folder.id),
+      };
     }
     const view = entry.builtin;
     const count =
@@ -163,39 +221,68 @@ export function SidebarRail({
             ? outgoingCount
             : 0;
     const problem = view === "outgoing" && outgoingFailed;
+    return {
+      key: entry.key,
+      label: builtinLabel(unified, view),
+      icon: problem ? (
+        <CircleAlertIcon className="text-destructive" />
+      ) : (
+        <BuiltinMark view={view} style={builtinStyle(unified, view)} />
+      ),
+      badge:
+        count > 0
+          ? view === "inbox"
+            ? `未読 ${count} 件`
+            : problem
+              ? `送信できなかったメールあり、${count} 件`
+              : `${count} 件`
+          : null,
+      badgeTone: view === "inbox" ? "unread" : problem ? "problem" : "muted",
+      count,
+      selected:
+        view === "inbox"
+          ? folderView && selectedAccountId === null
+          : view === "drafts"
+            ? draftsSelected
+            : special === view,
+      onClick: () => {
+        if (view === "inbox") onSelect(null, null);
+        else if (view === "drafts") onSelectDrafts();
+        else onSelectSpecial(view);
+      },
+    };
+  };
+  const renderView = (entry: SidebarEntry) => {
+    const info = viewInfo(entry);
     return (
       <RailItem
-        key={entry.key}
-        label={builtinLabel(unified, view)}
-        badge={
-          count > 0
-            ? view === "inbox"
-              ? `未読 ${count} 件`
-              : problem
-                ? `送信できなかったメールあり、${count} 件`
-                : `${count} 件`
-            : null
-        }
-        badgeTone={view === "inbox" ? "unread" : problem ? "problem" : "muted"}
-        selected={
-          view === "inbox"
-            ? folderView && selectedAccountId === null
-            : view === "drafts"
-              ? draftsSelected
-              : special === view
-        }
-        onClick={() => {
-          if (view === "inbox") onSelect(null, null);
-          else if (view === "drafts") onSelectDrafts();
-          else onSelectSpecial(view);
-        }}
+        key={info.key}
+        label={info.label}
+        badge={info.badge}
+        badgeTone={info.badgeTone}
+        selected={info.selected}
+        onClick={info.onClick}
       >
-        {problem ? (
-          <CircleAlertIcon className="text-destructive" />
-        ) : (
-          <BuiltinMark view={view} style={builtinStyle(unified, view)} />
-        )}
+        {info.icon}
       </RailItem>
+    );
+  };
+  const renderFlyoutView = (entry: SidebarEntry) => {
+    const info = viewInfo(entry);
+    return (
+      <div key={info.key} className="flex items-center">
+        <span className="size-5 shrink-0" aria-hidden="true" />
+        <FlyoutRow
+          icon={info.icon}
+          label={info.label}
+          count={info.count}
+          selected={info.selected}
+          onClick={() => {
+            close();
+            info.onClick();
+          }}
+        />
+      </div>
     );
   };
   const renderAccount = (account: Account) => {
@@ -218,7 +305,21 @@ export function SidebarRail({
         }
         badgeTone={problem ? "problem" : "unread"}
         selected={folderView && selectedAccountId === account.id}
-        onClick={() => onSelect(account.id, null)}
+        onClick={() => {}}
+        flyout={{
+          ...flyoutProps(account.id),
+          // 中身は開いている間だけ組み立てる (フォルダのツリーを毎回作らないため)。
+          content: flyout === account.id && (
+            <AccountFlyout
+              account={account}
+              accounts={accounts ?? []}
+              tree={treeOf(account.id)}
+              unread={unread}
+              selection={selection}
+              onSelect={selectFolder}
+            />
+          ),
+        }}
         // サイドバーのアカウントの行と同じく、上に 8px 空ける (並びの先頭では空けない)。
         // 名前を設定したアカウント (サイドバーでは 2 行) も、帯では他と同じ間隔で並べる。
         className="mt-2 first:mt-0"
@@ -273,19 +374,34 @@ export function SidebarRail({
             0,
           );
           return (
-            // サイドバーのカテゴリと同じ組み立て (見出しの直下に中身、上に 8px) にして、
-            // 折りたたみの前後で同じ項目が同じ高さに来るようにする。
+            // サイドバーのカテゴリと同じく、上に 8px 空ける。
             <div
               key={category.id}
               className="mt-2 flex shrink-0 flex-col items-center first:mt-0"
             >
-              {/* カテゴリの区切り。押すと、カテゴリを折りたたむ / 開く。 */}
+              {/* カテゴリの区切り。乗せるか押すと、カテゴリの中身をポップアップで出す。 */}
               <RailItem
                 label={`${category.name} (${isFolded ? "折りたたみ中" : "カテゴリ"})`}
                 badge={isFolded && unread > 0 ? `未読 ${unread} 件` : null}
                 selected={false}
-                expanded={!isFolded}
-                onClick={() => toggleCategoryFolded(category.id)}
+                onClick={() => {}}
+                flyout={{
+                  ...flyoutProps(category.id),
+                  content: flyout === category.id && (
+                    <CategoryFlyout
+                      name={category.name}
+                      folded={isFolded}
+                      onToggleFolded={() => toggleCategoryFolded(category.id)}
+                      views={views.map(renderFlyoutView)}
+                      members={members}
+                      accounts={accounts ?? []}
+                      treeOf={treeOf}
+                      unreadOf={(id) => unreadByAccount.get(id) ?? 0}
+                      selection={selection}
+                      onSelect={selectFolder}
+                    />
+                  ),
+                }}
                 className="h-6"
               >
                 <span
@@ -325,19 +441,109 @@ export function SidebarRail({
   );
 }
 
+/** アカウントのポップアップ。名前の行 (アカウント全体) と、フォルダのツリー。 */
+function AccountFlyout(
+  props: Omit<
+    React.ComponentProps<typeof FlyoutAccount>,
+    "collapsed" | "onToggle"
+  >,
+) {
+  const { collapsed, toggle } = useFlyoutCollapsed();
+  return <FlyoutAccount {...props} collapsed={collapsed} onToggle={toggle} />;
+}
+
+/**
+ * カテゴリのポップアップ。見出し (カテゴリの開閉) の下に、中の項目とアカウントを並べる。
+ * アカウントのフォルダは、矢印で開いたときだけ出す (アカウントが多いと長くなるため)。
+ */
+function CategoryFlyout({
+  name,
+  folded,
+  onToggleFolded,
+  views,
+  members,
+  accounts,
+  treeOf,
+  unreadOf,
+  selection,
+  onSelect,
+}: {
+  name: string;
+  folded: boolean;
+  onToggleFolded: () => void;
+  views: React.ReactNode[];
+  members: Account[];
+  accounts: Account[];
+  treeOf: (accountId: string) => MailboxNode[];
+  unreadOf: (accountId: string) => number;
+  selection: FlyoutSelection;
+  onSelect: (accountId: string, mailboxId: string | null) => void;
+}) {
+  const { collapsed, toggle } = useFlyoutCollapsed(
+    members.map((account) => account.id),
+  );
+  return (
+    <>
+      <div className="flex items-center gap-2 px-1.5 pt-0.5 pb-1">
+        <PopoverTitle className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+          {name}
+        </PopoverTitle>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={onToggleFolded}
+          className="h-6 shrink-0 text-muted-foreground text-xs"
+        >
+          {folded ? "帯で開く" : "帯で折りたたむ"}
+        </Button>
+      </div>
+      {views}
+      {members.map((account) => (
+        <FlyoutAccount
+          key={account.id}
+          account={account}
+          accounts={accounts}
+          tree={treeOf(account.id)}
+          unread={unreadOf(account.id)}
+          selection={selection}
+          collapsed={collapsed}
+          onToggle={toggle}
+          onSelect={onSelect}
+        />
+      ))}
+      {views.length === 0 && members.length === 0 && (
+        <p className="px-1.5 py-1 text-muted-foreground text-xs">
+          このカテゴリには何も入っていません
+        </p>
+      )}
+    </>
+  );
+}
+
 const badgeTones = {
   unread: "bg-primary",
   muted: "bg-muted-foreground/60",
   problem: "bg-destructive",
 };
 
+/** ポップアップの開閉と中身。 */
+type RailFlyout = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  content: React.ReactNode;
+};
+
+/** 乗せてからポップアップを出すまでと、離れてから閉じるまでの時間 (ミリ秒)。 */
+const FLYOUT_OPEN_DELAY = 150;
+const FLYOUT_CLOSE_DELAY = 200;
+
 function RailItem({
   label,
   badge = null,
   badgeTone = "unread",
   selected,
-  expanded,
   onClick,
+  flyout,
   className,
   children,
 }: {
@@ -346,36 +552,68 @@ function RailItem({
   badge?: string | null;
   badgeTone?: keyof typeof badgeTones;
   selected: boolean;
-  /** 開閉を切り替える項目なら、開いているか。 */
-  expanded?: boolean;
   onClick: () => void;
+  /** 乗せるか押すと右に出すポップアップ。あれば、押したときは onClick ではなくこれを開く。 */
+  flyout?: RailFlyout;
   className?: string;
   children: React.ReactNode;
 }) {
+  const accessibleLabel = badge ? `${label} (${badge})` : label;
+  const buttonClass = cn(
+    "relative flex size-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
+    selected && "bg-sidebar-accent text-sidebar-accent-foreground",
+    flyout?.open && "bg-sidebar-accent",
+    className,
+  );
+  const content = (
+    <>
+      {children}
+      {badge && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute top-1 right-1 size-2 rounded-full ring-2 ring-sidebar",
+            badgeTones[badgeTone],
+          )}
+        />
+      )}
+    </>
+  );
+  if (flyout) {
+    return (
+      <Popover open={flyout.open} onOpenChange={flyout.onOpenChange}>
+        <PopoverTrigger
+          openOnHover
+          delay={FLYOUT_OPEN_DELAY}
+          closeDelay={FLYOUT_CLOSE_DELAY}
+          aria-label={accessibleLabel}
+          aria-current={selected ? "page" : undefined}
+          className={buttonClass}
+        >
+          {content}
+        </PopoverTrigger>
+        <PopoverContent
+          side="right"
+          align="start"
+          sideOffset={12}
+          alignOffset={-6}
+          className={FLYOUT_CLASS}
+        >
+          {flyout.content}
+        </PopoverContent>
+      </Popover>
+    );
+  }
   return (
-    <Hint label={badge ? `${label} (${badge})` : label} side="right">
+    <Hint label={accessibleLabel} side="right">
       <button
         type="button"
         onClick={onClick}
-        aria-label={badge ? `${label} (${badge})` : label}
+        aria-label={accessibleLabel}
         aria-current={selected ? "page" : undefined}
-        aria-expanded={expanded}
-        className={cn(
-          "relative flex size-8 shrink-0 items-center justify-center rounded-md outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 [&_svg]:size-4",
-          selected && "bg-sidebar-accent text-sidebar-accent-foreground",
-          className,
-        )}
+        className={buttonClass}
       >
-        {children}
-        {badge && (
-          <span
-            aria-hidden="true"
-            className={cn(
-              "absolute top-1 right-1 size-2 rounded-full ring-2 ring-sidebar",
-              badgeTones[badgeTone],
-            )}
-          />
-        )}
+        {content}
       </button>
     </Hint>
   );

@@ -3394,6 +3394,7 @@ const MailView = memo(function MailView({
             accounts={accounts}
             mailboxes={countedMailboxes}
             selectedAccountId={selectedAccountId}
+            selectedMailboxId={selectedMailboxId}
             folderView={
               !draftsSelected && special === null && unifiedId === null
             }
