@@ -774,7 +774,8 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
     const eventId = event?.id as string;
     await db.insert(eventAttendees).values([
       { eventId, email: "boss@example.com", status: "accepted" },
-      { eventId, email: "alice@example.com", self: true },
+      // self の行はアカウントのアドレス (primary でないカレンダーでは、ここが違うと返事できない)。
+      { eventId, email: "alice-private@example.com", self: true },
     ]);
     const attendeesBefore = await db
       .select()

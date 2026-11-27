@@ -1112,22 +1112,35 @@ ${hrefs.map((href) => `  <d:href>${escapeXml(href)}</d:href>`).join("\n")}
   /**
    * サーバーが招待と返事を自分で送るか (RFC 6638 の calendar-auto-schedule) を調べる。
    * urls を順に OPTIONS で試し (カレンダーのコレクション、駄目ならホーム)、最初に答えた
-   * URL の DAV ヘッダーで決める。どれも答えなければ false (参加者を足せない側に倒す)。
+   * URL の DAV ヘッダーで決める。どれも答えず、一時的な失敗 (接続の失敗、5xx、408、429) が
+   * あれば null (調べられなかった。呼び出し側は前の値を残す)。どれも 4xx (405 など) なら false。
    * 認証の失敗 (CaldavAuthError) だけは投げる。
    */
-  async supportsAutoSchedule(urls: readonly string[]): Promise<boolean> {
+  async supportsAutoSchedule(urls: readonly string[]): Promise<boolean | null> {
+    let transient = false;
     for (const url of urls) {
       let response: CaldavResponse;
       try {
         response = await this.request("OPTIONS", url);
       } catch (error) {
         if (error instanceof CaldavAuthError) throw error;
+        transient = true;
         continue;
       }
-      if (response.status < 200 || response.status >= 300) continue;
+      if (response.status < 200 || response.status >= 300) {
+        // 5xx・408・429 は一時的な失敗。ほかの 4xx (405 など) は「対応していない」。
+        if (
+          response.status >= 500 ||
+          response.status === 408 ||
+          response.status === 429
+        ) {
+          transient = true;
+        }
+        continue;
+      }
       return hasAutoSchedule(response.headers.get("dav"));
     }
-    return false;
+    return transient ? null : false;
   }
 
   /** リソース 1 つを取る。無ければ null。 */

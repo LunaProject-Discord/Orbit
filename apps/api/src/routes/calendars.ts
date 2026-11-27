@@ -3,7 +3,6 @@ import { zValidator } from "@hono/zod-validator";
 import {
   ATTENDEE_EDITABLE_FIELDS,
   CALENDAR_WRITEBACK_SOURCES,
-  type CalendarScheduling,
   calendarScheduling,
   changedEventFields,
   correctClientTime,
@@ -55,6 +54,12 @@ import {
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import {
+  type CalendarIdentity,
+  calendarIdentities,
+  ownAddresses,
+  selfIsMe,
+} from "../lib/calendar-identity.js";
 import { recordChanges } from "../lib/changes.js";
 import {
   enqueueEventOperation,
@@ -338,18 +343,6 @@ type EventExtras = {
   }[];
 };
 
-/** アカウントの自分のアドレス (email と、@ を含む username)。小文字。 */
-function ownAddresses(account: {
-  email: string;
-  username: string;
-}): Set<string> {
-  return new Set(
-    [account.email, account.username]
-      .filter((value) => value.includes("@"))
-      .map((value) => value.trim().toLowerCase()),
-  );
-}
-
 /** カレンダーごとの、そのアカウントの自分のアドレス。アカウントの無いカレンダーは入らない。 */
 async function calendarAddresses(
   db: Database | Tx,
@@ -412,8 +405,9 @@ async function roleOf(
 function publicEvent(
   row: EventRow,
   extras: EventExtras,
-  addresses?: ReadonlySet<string>,
+  identity?: CalendarIdentity,
 ) {
+  const organizer = resolveOrganizer(row.organizer, identity?.addresses);
   return {
     id: row.id,
     calendarId: row.calendarId,
@@ -435,7 +429,15 @@ function publicEvent(
     rrule: row.rrule,
     rdates: row.rdates ?? [],
     exdates: row.exdates ?? [],
-    organizer: resolveOrganizer(row.organizer, addresses),
+    organizer,
+    /**
+     * 出欠の返事 (POST /events/:id/respond) を受け付ける予定か。招待された予定 (役割が
+     * attendee) で、self の行が自分を指しているとき true (レビュー 3)。カレンダーの
+     * readOnly、予定の取り消し、同期の停止は含まない (それぞれの値で見る)。
+     */
+    canRespond:
+      inviteRole({ organizer, attendees: extras.attendees }) === "attendee" &&
+      selfIsMe(extras.attendees, identity),
     sequence: row.sequence,
     conferenceUrl: row.conferenceUrl,
     useDefaultReminders: row.useDefaultReminders,
@@ -484,26 +486,21 @@ async function loadExtras(
 }
 
 async function publicEvents(db: Database | Tx, rows: EventRow[]) {
-  const [extras, addresses] = await Promise.all([
+  const [extras, identities] = await Promise.all([
     loadExtras(
       db,
       rows.map((row) => row.id),
     ),
-    // 主催者の印の補いが要る行のカレンダーだけ引く。
-    calendarAddresses(
+    calendarIdentities(
       db,
-      rows
-        .filter(
-          (row) => row.organizer && typeof row.organizer.self !== "boolean",
-        )
-        .map((row) => row.calendarId),
+      rows.map((row) => row.calendarId),
     ),
   ]);
   return rows.map((row) =>
     publicEvent(
       row,
       extras.get(row.id) ?? { reminders: [], attendees: [] },
-      addresses.get(row.calendarId),
+      identities.get(row.calendarId),
     ),
   );
 }
@@ -744,9 +741,10 @@ const ATTENDEE_EDITABLE: ReadonlySet<string> = new Set(
 async function checkInviteRules(
   tx: Tx,
   target: EventRow,
-  scheduling: CalendarScheduling,
+  calendar: CalendarRow,
   incoming: EventFields,
 ): Promise<{ error: InviteErrorCode } | { changes: EventFields }> {
+  const scheduling = calendarScheduling(calendar);
   const keys = (Object.keys(incoming) as FieldName[]).filter(
     (key) => incoming[key] !== undefined,
   );
@@ -758,12 +756,28 @@ async function checkInviteRules(
   const role = await roleOf(tx, target, extras);
   const same = await unchangedFields(tx, target, incoming, keys);
   const changed = keys.filter((key) => !same.has(key));
+  const current = new Set(
+    extras.attendees.map((attendee) => attendee.email.toLowerCase()),
+  );
+  const onlyRemoves =
+    incoming.attendees?.every((attendee) => current.has(attendee.email)) ??
+    false;
+  // 主催者の分からない予定 (organizer が null) や Orbit 内のカレンダー (アカウントが無い)
+  // では、参加者を外すだけの変更は通す (設計 4.2。招待を送れないので外す道だけは残す)。
+  const mayRemoveAttendees =
+    onlyRemoves && (target.organizer === null || calendar.accountId === null);
   let changes = incoming;
   if (role !== "organizer") {
-    if (changed.includes("attendees")) return { error: "not_organizer" };
+    if (changed.includes("attendees") && !mayRemoveAttendees) {
+      return { error: "not_organizer" };
+    }
     if (
       role === "attendee" &&
-      changed.some((key) => !ATTENDEE_EDITABLE.has(key))
+      changed.some(
+        (key) =>
+          !ATTENDEE_EDITABLE.has(key) &&
+          !(key === "attendees" && mayRemoveAttendees),
+      )
     ) {
       return { error: "not_organizer" };
     }
@@ -774,24 +788,25 @@ async function checkInviteRules(
   if (
     scheduling === "none" &&
     changed.includes("attendees") &&
-    incoming.attendees
+    incoming.attendees &&
+    !onlyRemoves
   ) {
-    const current = new Set(
-      extras.attendees.map((attendee) => attendee.email.toLowerCase()),
-    );
-    if (incoming.attendees.some((attendee) => !current.has(attendee.email))) {
-      return { error: "no_scheduling" };
-    }
+    return { error: "no_scheduling" };
   }
   return { changes };
 }
 
-/** fieldUpdatedAt のうち、at より後の時刻があれば true。 */
+/**
+ * fieldUpdatedAt のうち、at より後の時刻があれば true。自分の出欠 (myResponse) は見ない
+ * (レビュー 5)。「不参加にして削除」は返事の直後に削除を送るので、時計のずれの補正量が
+ * 返事と削除で揺れると、自分の返事を「消した後の変更」と取り違えて 409 になる。
+ */
 function changedAfter(
   fieldUpdatedAt: Record<string, string> | null,
   at: Date,
 ): boolean {
-  return Object.values(fieldUpdatedAt ?? {}).some((value) => {
+  return Object.entries(fieldUpdatedAt ?? {}).some(([field, value]) => {
+    if (field === MY_RESPONSE_FIELD) return false;
     const time = Date.parse(value);
     return !Number.isNaN(time) && time > at.getTime();
   });
@@ -1633,12 +1648,7 @@ export function calendarRoutes({
         if (row.parentId && body.changes.recurrence !== undefined) {
           return "invalid" as const;
         }
-        const checked = await checkInviteRules(
-          tx,
-          row,
-          calendarScheduling(calendar),
-          body.changes,
-        );
+        const checked = await checkInviteRules(tx, row, calendar, body.changes);
         if ("error" in checked) return checked;
         const applied = await applyChanges(
           tx,
@@ -1700,7 +1710,7 @@ export function calendarRoutes({
         const checked = await checkInviteRules(
           tx,
           existing ?? master,
-          calendarScheduling(calendar),
+          calendar,
           body.changes,
         );
         if ("error" in checked) return checked;
@@ -1759,9 +1769,18 @@ export function calendarRoutes({
         if (!canWrite(calendar)) return "read_only" as const;
         const blocked = await providerWriteBlocked(tx, calendar);
         if (blocked) return blocked;
-        const role = await roleOf(tx, row);
+        const extras = (await loadExtras(tx, [row.id])).get(row.id);
+        const attendees = extras?.attendees ?? [];
+        const role = await roleOf(tx, row, extras);
         if (role === "organizer") return { error: "organizer" as const };
         if (role !== "attendee") return { error: "not_attendee" as const };
+        // 共有カレンダーの self は自分とは限らない (ほかの人の出欠を書き換えない)。
+        const identity = (await calendarIdentities(tx, [row.calendarId])).get(
+          row.calendarId,
+        );
+        if (!selfIsMe(attendees, identity)) {
+          return { error: "not_attendee" as const };
+        }
         if (row.status === "cancelled") return { error: "cancelled" as const };
         const scheduling = calendarScheduling(calendar);
         const at = correctClientTime(body.respondedAt, body.clientNow, now);

@@ -64,7 +64,8 @@ type CaldavCalendarState = {
   syncCollection?: boolean;
   /**
    * サーバーが calendar-auto-schedule (RFC 6638) を返した。API はこれで、参加者を足せるか
-   * (scheduling が server か none か) を決める。調べられなかったときは false。
+   * (scheduling が server か none か) を決める。OPTIONS が一時的に失敗して調べられなかった
+   * ときは鍵を書かない (保存は浅く重ねるので前の値が残る。初めてのカレンダーは none 扱い)。
    */
   autoSchedule?: boolean;
 };
@@ -418,6 +419,7 @@ export function createCaldavProvider(
         const firstCollection = collections.find(
           (collection) => collection?.supportsEvents,
         );
+        // null = 一時的に調べられなかった。前の値を上書きしない (レビュー 8)。
         const autoSchedule = firstCollection
           ? await client.supportsAutoSchedule([
               firstCollection.url,
@@ -443,7 +445,7 @@ export function createCaldavProvider(
             kind: "normal",
             providerState: {
               syncCollection: collection.supportsSyncCollection,
-              autoSchedule,
+              ...(autoSchedule === null ? {} : { autoSchedule }),
             } satisfies CaldavCalendarState,
           });
         }

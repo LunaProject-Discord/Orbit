@@ -1870,6 +1870,216 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       }
     });
 
+    it("レビュー 3: 共有カレンダーで self がほかの人なら返事できない (canRespond: false)。primary / owner なら通る", async () => {
+      const shared = async (providerState: Record<string, unknown> | null) => {
+        const [row] = await db
+          .insert(calendars)
+          .values({
+            userId: ownerId,
+            accountId: inviteAccountId,
+            name: "同僚のカレンダー",
+            source: "google",
+            remoteId: `colleague-${randomUUID()}@example.com`,
+            providerState,
+          })
+          .returning({ id: calendars.id });
+        return row?.id as string;
+      };
+      // Google の共有カレンダー: attendees[].self はカレンダーの持ち主 (同僚)。
+      const colleagueSelf = (calendarId: string) =>
+        seedEvent({
+          calendarId,
+          organizer: { email: "boss@example.com", self: false },
+          attendees: [
+            { email: "boss@example.com", status: "accepted" },
+            { email: "colleague@example.com", self: true, status: "accepted" },
+          ],
+        });
+      const respond = (id: string) =>
+        send("POST", `/events/${id}/respond`, {
+          status: "declined",
+          respondedAt: ago(0),
+        });
+      const canRespond = async (id: string) =>
+        ((await send("GET", `/events/${id}`)).body.event as Json).canRespond;
+
+      const writerId = await shared({ accessRole: "writer", primary: false });
+      const foreign = await colleagueSelf(writerId);
+      expect(await canRespond(foreign.id)).toBe(false);
+      expect(await respond(foreign.id)).toMatchObject({
+        status: 409,
+        body: { error: "not_attendee" },
+      });
+      const [unchanged] = await db
+        .select({ status: eventAttendees.status })
+        .from(eventAttendees)
+        .where(
+          and(
+            eq(eventAttendees.eventId, foreign.id),
+            eq(eventAttendees.self, true),
+          ),
+        );
+      expect(unchanged?.status).toBe("accepted");
+      expect(await queuedFor(foreign.id)).toEqual([]);
+      // 期間の一覧でも同じ値。
+      const listed = await send(
+        "GET",
+        "/events?from=2027-03-01&to=2027-03-02&timeZone=Asia/Tokyo",
+      );
+      const byId = new Map(
+        (listed.body.events as Json[]).map((item) => [
+          item.id,
+          item.canRespond,
+        ]),
+      );
+      expect(byId.get(foreign.id)).toBe(false);
+
+      // 同じ共有カレンダーでも、self の行がアカウントのアドレスなら返事できる。
+      const mine = await invitation(writerId);
+      expect(await canRespond(mine.id)).toBe(true);
+      expect((await respond(mine.id)).status).toBe(200);
+
+      // primary か accessRole が owner のカレンダーは self の行をそのまま自分とみなす。
+      for (const state of [
+        { accessRole: "owner", primary: true },
+        { accessRole: "owner", primary: false },
+      ]) {
+        const own = await colleagueSelf(await shared(state));
+        expect(await canRespond(own.id)).toBe(true);
+        expect((await respond(own.id)).status).toBe(200);
+      }
+
+      // 主催者の予定、参加者でない予定は false。
+      const organized = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "invitee@gmail.com", self: true },
+        attendees: [
+          { email: "invitee@gmail.com", self: true, status: "accepted" },
+          { email: "bob@example.com" },
+        ],
+      });
+      expect(await canRespond(organized.id)).toBe(false);
+      const outsider = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [{ email: "boss@example.com" }],
+      });
+      expect(await canRespond(outsider.id)).toBe(false);
+      expect(await canRespond((await invitation()).id)).toBe(true);
+    });
+
+    it("レビュー 5: 削除の changed_since は自分の出欠 (myResponse) を見ない", async () => {
+      const row = await invitation();
+      // 端末の時計が進んでいて、返事と削除の補正量が揺れた (返事の時刻が削除より後になった)。
+      const responded = await send("POST", `/events/${row.id}/respond`, {
+        status: "declined",
+        respondedAt: ago(0),
+      });
+      expect(responded.status).toBe(200);
+      const deleted = await send("DELETE", `/events/${row.id}`, {
+        deletedAt: ago(5_000),
+      });
+      expect(deleted.status).toBe(204);
+
+      // ほかの項目が削除の後に変わっていれば、いままでどおり消さない。
+      const other = await invitation();
+      await db
+        .update(events)
+        .set({
+          fieldUpdatedAt: { busy: ago(0), myResponse: ago(0) },
+        })
+        .where(eq(events.id, other.id));
+      expect(
+        await send("DELETE", `/events/${other.id}`, { deletedAt: ago(MIN) }),
+      ).toMatchObject({ status: 409, body: { error: "changed_since" } });
+
+      // 回の削除も同じ。
+      const series = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [{ email: "invitee@gmail.com", self: true }],
+        rrule: "FREQ=DAILY;COUNT=3",
+      });
+      await db.insert(events).values({
+        userId: ownerId,
+        calendarId: googleId,
+        parentId: series.id,
+        uid: series.uid,
+        recurrenceId: "2027-03-02T01:00:00Z",
+        startAt: new Date("2027-03-02T01:00:00Z"),
+        endAt: new Date("2027-03-02T02:00:00Z"),
+        organizer: { email: "boss@example.com", self: false },
+        fieldUpdatedAt: { myResponse: ago(0) },
+      });
+      expect(
+        (
+          await send(
+            "DELETE",
+            `/events/${series.id}/occurrences/2027-03-02T01:00:00Z`,
+            { changedAt: ago(5_000) },
+          )
+        ).status,
+      ).toBe(204);
+    });
+
+    it("レビュー 7: 主催者の無い予定と Orbit 内のカレンダーでは、参加者を外す変更を通す (足すのは断る)", async () => {
+      const remove = (id: string, attendees: string[]) =>
+        send("PATCH", `/events/${id}`, {
+          changes: { attendees: attendees.map((email) => ({ email })) },
+        });
+      // Orbit 内のカレンダーの、主催者の無い古い予定 (役割は none)。
+      const legacy = await seedEvent({
+        calendarId: localId,
+        organizer: null,
+        attendees: [
+          { email: "bob@example.com" },
+          { email: "carol@example.com" },
+        ],
+      });
+      const fewer = await remove(legacy.id, ["bob@example.com"]);
+      expect(fewer.status).toBe(200);
+      expect(attendeesOf(fewer.body)).toEqual([
+        ["bob@example.com", "needs_action", false],
+      ]);
+      expect(
+        await remove(legacy.id, ["bob@example.com", "dave@example.com"]),
+      ).toMatchObject({ status: 409 });
+      expect((await remove(legacy.id, [])).status).toBe(200);
+
+      // Orbit 内のカレンダーに取り込んだ、ほかの人が主催する予定 (役割は attendee)。
+      const imported = await seedEvent({
+        calendarId: localId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [
+          { email: "boss@example.com" },
+          { email: "invitee@gmail.com", self: true },
+          { email: "carol@example.com" },
+        ],
+      });
+      expect(
+        (await remove(imported.id, ["boss@example.com", "invitee@gmail.com"]))
+          .status,
+      ).toBe(200);
+
+      // プロバイダのカレンダーで主催者が null の予定も外せる。
+      const orphan = await seedEvent({
+        calendarId: googleId,
+        organizer: null,
+        attendees: [
+          { email: "invitee@gmail.com", self: true },
+          { email: "carol@example.com" },
+        ],
+      });
+      expect((await remove(orphan.id, ["invitee@gmail.com"])).status).toBe(200);
+
+      // プロバイダのカレンダーで主催者がほかの人なら、外すのも not_organizer のまま。
+      const invited = await invitation();
+      expect(await remove(invited.id, ["invitee@gmail.com"])).toMatchObject({
+        status: 409,
+        body: { error: "not_organizer" },
+      });
+    });
+
     it("招待を送れるカレンダーで参加者付きで作ると、自分を仮の主催者にする", async () => {
       for (const calendarId of [googleId, caldavServerId]) {
         const created = await send("POST", "/events", {

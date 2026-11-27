@@ -16,10 +16,11 @@ import {
   events,
   messages,
 } from "@orbit/db";
-import { and, asc, eq, exists } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
+import { calendarIdentities, selfIsMe } from "../lib/calendar-identity.js";
 import type { EventsHub } from "../lib/events-hub.js";
 import {
   ensureReceivedAttachment,
@@ -36,6 +37,12 @@ import {
 
 /** これより大きい招待は読まない (9 章)。 */
 export const MAX_INVITE_BYTES = 1024 * 1024;
+
+/**
+ * これより行の多い招待は読まない。ふつうの招待は数百行 (参加者が多くても数千行) なので余裕を見た値。
+ * 1 MB に収まる悪意のある入力 (閉じない BEGIN、同じ UID の予定を並べる など) で API を止めないため。
+ */
+export const MAX_INVITE_LINES = 10_000;
 
 export type InviteMethod = "request" | "cancel" | "reply" | "other";
 
@@ -205,6 +212,7 @@ export function messageInviteRoutes({
         parsed = parseICalendar(content.toString("utf8"), {
           defaultTimeZone: "UTC",
           maxEvents: 100,
+          maxLines: MAX_INVITE_LINES,
         });
       } catch {
         return c.json({ invite: null });
@@ -218,9 +226,11 @@ export function messageInviteRoutes({
       const method = METHODS[parsed.method ?? ""] ?? "other";
 
       // 5. 利用者の予定から同じ UID を探す。書き込めるカレンダーで、self の参加者がいる行。
+      //    共有カレンダーの self は自分とは限らないので、自分を指す行だけ (レビュー 3)。
       const rows = await db
         .select({
           id: events.id,
+          calendarId: events.calendarId,
           sequence: events.sequence,
           recurrenceId: events.recurrenceId,
           allDay: events.allDay,
@@ -233,33 +243,40 @@ export function messageInviteRoutes({
           accountId: calendars.accountId,
           source: calendars.source,
           readOnly: calendars.readOnly,
+          selfEmail: eventAttendees.email,
         })
         .from(events)
         .innerJoin(calendars, eq(calendars.id, events.calendarId))
+        .innerJoin(
+          eventAttendees,
+          and(
+            eq(eventAttendees.eventId, events.id),
+            eq(eventAttendees.self, true),
+          ),
+        )
         .where(
           and(
             eq(events.userId, userId),
             eq(calendars.userId, userId),
             eq(events.uid, event.uid),
-            exists(
-              db
-                .select({ id: eventAttendees.id })
-                .from(eventAttendees)
-                .where(
-                  and(
-                    eq(eventAttendees.eventId, events.id),
-                    eq(eventAttendees.self, true),
-                  ),
-                ),
-            ),
           ),
         );
+      const identities = await calendarIdentities(
+        db,
+        rows.map((row) => row.calendarId),
+      );
       const candidates = rows
         .filter(
           (row) =>
             !row.readOnly &&
             (row.source === "local" ||
               (writable.has(row.source) && row.accountId !== null)),
+        )
+        .filter((row) =>
+          selfIsMe(
+            [{ email: row.selfEmail, self: true }],
+            identities.get(row.calendarId),
+          ),
         )
         // 同じ回 (例外) を先に、無ければ原本。
         .filter(

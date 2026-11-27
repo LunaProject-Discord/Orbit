@@ -4,6 +4,8 @@ import {
   type CalendarRow,
   CalendarTransientError,
   type ProviderContext,
+  type RemoteCalendar,
+  toAccountCalendarInput,
 } from "../provider.js";
 import {
   calendarRowFrom,
@@ -705,20 +707,35 @@ describe("CalDAV の招待と出欠 (段取り 8)", () => {
     ).toHaveLength(1);
   });
 
-  it("返さないサーバーと、OPTIONS が失敗するサーバーは false", async () => {
+  it("返さないサーバーと、OPTIONS に対応しない (405) サーバーは false", async () => {
     const plain = setup();
     expect(
       (await workCalendar(plain.provider, plain.ctx)).providerState,
     ).toMatchObject({ autoSchedule: false });
-    const failing = setup({ optionsStatus: 500 });
+    const unsupported = setup({ optionsStatus: 405 });
     expect(
-      (await workCalendar(failing.provider, failing.ctx)).providerState,
+      (await workCalendar(unsupported.provider, unsupported.ctx)).providerState,
     ).toMatchObject({ autoSchedule: false });
     // コレクションで失敗したら、ホームでも尋ねる。
     expect(
-      failing.server.requests.filter((request) => request.method === "OPTIONS")
-        .length,
+      unsupported.server.requests.filter(
+        (request) => request.method === "OPTIONS",
+      ).length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("レビュー 8: OPTIONS が一時的に失敗 (5xx) したら autoSchedule を書かず、前の値を残す", async () => {
+    const failing = setup({ optionsStatus: 503 });
+    const list = await failing.provider.listCalendars(failing.ctx);
+    const remote = list.find((entry) => entry.name === "仕事");
+    expect(remote?.providerState).toBeDefined();
+    expect(remote?.providerState).not.toHaveProperty("autoSchedule");
+    // 保存は providerState に浅く重ねる (upsertAccountCalendars) ので、前の true が残る。
+    const input = toAccountCalendarInput(remote as RemoteCalendar);
+    expect({
+      autoSchedule: true,
+      ...(input.providerState ?? {}),
+    }).toMatchObject({ autoSchedule: true });
   });
 
   it("ORGANIZER がアカウントのアドレスなら主催者の印を付ける", async () => {
