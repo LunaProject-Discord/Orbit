@@ -159,6 +159,14 @@ export function invitationPublicRoutes({ db, signUpAuth }: PublicDeps) {
       .update(invitations)
       .set({ usedBy: userId })
       .where(eq(invitations.id, claimed.id));
+    // 管理者がメールアドレスを決めた招待なら、そのアドレスは確かめたものとして扱う
+    // (IdP のメールアドレスとの自動の結び付けは、確かめた利用者にだけ行う)。
+    if (invitation.email) {
+      await db
+        .update(users)
+        .set({ emailVerified: true })
+        .where(eq(users.id, userId));
+    }
     // 登録と同時に作られるセッションは使わない (端末は、2 段階認証なども通る通常のログインをする)。
     await db.delete(sessions).where(eq(sessions.userId, userId));
     return c.json({ email: address }, 201);

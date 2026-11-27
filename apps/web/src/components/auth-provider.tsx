@@ -16,10 +16,12 @@ import {
   ApiError,
   signIn as apiSignIn,
   signOut as apiSignOut,
+  completeSsoLogin,
   fetchMe,
   getToken,
   onUnauthorized,
   type SignInResult,
+  type SsoLoginResult,
   type User,
   verifyTwoFactorSignIn,
 } from "@/lib/api";
@@ -99,6 +101,11 @@ type AuthContextValue = AuthState & {
     trustDevice: boolean,
   ) => Promise<void>;
   signInWithPasskey: () => Promise<void>;
+  /**
+   * IdP (シングルサインオン) のログイン画面から戻ってきた code と state でログインする。
+   * twoFactor が返ったら、ログイン画面で verifyTwoFactor を続ける。
+   */
+  completeSso: (code: string, state: string) => Promise<SsoLoginResult>;
   /** 利用者の情報 (メールアドレスなど) をサーバーから取り直す。 */
   refreshUser: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -200,6 +207,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await signInWithPasskey();
         await enter();
       },
+      completeSso: async (code, state) => {
+        const result = await completeSsoLogin(code, state);
+        if (!result.twoFactor) await enter();
+        return result;
+      },
       refreshUser: enter,
       signOut: async () => {
         // ログアウトした端末に新着メールの通知が届かないよう、先に送り先を消す。
@@ -240,7 +252,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     pathname === "/forgot-password" ||
     pathname === "/forgot-password/" ||
     pathname === "/reset-password" ||
-    pathname === "/reset-password/";
+    pathname === "/reset-password/" ||
+    // IdP (シングルサインオン) からの戻り先。ページ自身がログインを終えて行き先を決める。
+    pathname === "/oauth/sso" ||
+    pathname === "/oauth/sso/";
 
   // スマホアプリから始めた Google / Microsoft のログインが、ブラウザーへ戻ってきたとき。
   // このブラウザーでログインしていなくても、アプリへ引き渡すページをそのまま出す。

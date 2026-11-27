@@ -1310,6 +1310,10 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
           ["GET", "/admin/invitations", undefined],
           ["POST", "/admin/invitations", {}],
           ["DELETE", `/admin/invitations/${id}`, undefined],
+          ["GET", "/admin/sso", undefined],
+          ["POST", "/admin/sso", {}],
+          ["PUT", `/admin/sso/${id}`, {}],
+          ["DELETE", `/admin/sso/${id}`, undefined],
         ] as const) {
           const response = await request(token, method, path, body);
           expect(response.status, `${method} ${path}`).toBe(401);
@@ -1431,6 +1435,14 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
         ...person("frank"),
       });
       expect(ok.status).toBe(201);
+      // 管理者がメールアドレスを決めた招待なら確認済み、決めない招待 (carol) は未確認。
+      const verified = await db.execute(
+        sql`select email, email_verified from users where email in ('frank@example.com', 'carol@example.com') order by email`,
+      );
+      expect(verified.rows).toEqual([
+        { email: "carol@example.com", email_verified: false },
+        { email: "frank@example.com", email_verified: true },
+      ]);
     });
 
     it("同じ招待を同時に使っても、作れるのは 1 人だけ", async () => {

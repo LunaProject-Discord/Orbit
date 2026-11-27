@@ -11,6 +11,8 @@
  * アプリから始めたログインかどうかは、state の先頭の目印 (app~) で見分ける。目印はサーバーが付ける。
  * code と state を受け取っても、アカウントの追加にはログインを始めた本人のセッションが要るので、
  * ほかのアプリがこの URL を横取りしても悪用はできない。
+ * Orbit 自体へのログイン (IdP、/oauth/sso) は、ログインを始めた端末だけが知る合言葉を
+ * サーバーが照合するので、こちらも横取りした code と state だけではログインできない。
  */
 
 import { isDesktopApp } from "@/lib/desktop/app";
@@ -29,7 +31,7 @@ export const APP_URL_SCHEME = "jp.lunaproject.orbit.mail";
 /** アプリから始めたログインの state に付く目印。サーバー (apps/api) と合わせる。 */
 export const APP_STATE_PREFIX = "app~";
 
-const PROVIDERS = new Set(["google", "microsoft"]);
+const PROVIDERS = new Set(["google", "microsoft", "sso"]);
 
 /** ログイン画面から戻ってきた URL の state が、アプリから始めたものか。 */
 export function isAppOAuthReturn(search: string): boolean {

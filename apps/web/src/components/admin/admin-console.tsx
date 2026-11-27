@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import {
+  KeyRoundIcon,
   LogOutIcon,
   type LucideIcon,
   ShieldCheckIcon,
@@ -13,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminAuthProvider, useAdminAuth } from "@/components/admin/admin-auth";
 import { AdminLogin } from "@/components/admin/admin-login";
 import { InvitationSettings } from "@/components/admin/invitation-settings";
+import { SsoSettings } from "@/components/admin/sso-settings";
 import { OrbitLogo } from "@/components/brand/orbit-logo";
 import {
   type SecurityClient,
@@ -46,7 +48,7 @@ import { registerPasskey } from "@/lib/passkey";
 import { isBundledApp } from "@/lib/server-url";
 
 /** 管理画面のページ。並びは画面に出す順。 */
-const SECTIONS = ["users", "invitations", "admins", "security"] as const;
+const SECTIONS = ["users", "invitations", "sso", "admins", "security"] as const;
 type Section = (typeof SECTIONS)[number];
 
 const SECTION_INFO: Record<
@@ -64,6 +66,12 @@ const SECTION_INFO: Record<
     description:
       "招待リンクを発行して、このサーバーの利用者を追加します。リンクを開いた人は、自分で名前・メールアドレス・パスワードを決めて登録できます。",
     icon: UserPlusIcon,
+  },
+  sso: {
+    label: "シングルサインオン",
+    description:
+      "ほかのサービスのアカウント (OAuth 2.0 / OpenID Connect) で Orbit にログインできるようにします。管理者のログインには使えません。",
+    icon: KeyRoundIcon,
   },
   admins: {
     label: "管理者",
@@ -224,6 +232,7 @@ function AdminShell({ admin }: { admin: Admin }) {
             </div>
             {section === "users" && <MemberList />}
             {section === "invitations" && <InvitationSettings />}
+            {section === "sso" && <SsoSettings />}
             {section === "admins" && <AdminList self={admin} />}
             {section === "security" && (
               <AdminSecurity admin={admin} refresh={refresh} />
