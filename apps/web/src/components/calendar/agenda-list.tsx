@@ -71,7 +71,8 @@ export function AgendaList({
   holidays,
   selectedKey,
   compact = false,
-  emptyLabel = "この期間に予定はありません",
+  emptyLabel = "この期間に予定はありません。",
+  emptyAtTop = false,
   onSelect,
 }: {
   items: DisplayItem[];
@@ -83,12 +84,22 @@ export function AgendaList({
   /** 狭い画面 (日付を上に、行を詰める)。 */
   compact?: boolean;
   emptyLabel?: string;
+  /** 予定が無いときの文言を、枠の中央ではなく上に寄せる (月の下の一覧)。 */
+  emptyAtTop?: boolean;
   onSelect: SelectHandler;
 }) {
   const days = useMemo(() => agendaDays(items, from, to), [items, from, to]);
   if (days.length === 0) {
     return (
-      <p className="px-6 py-10 text-center text-muted-foreground text-sm">
+      <p
+        className={cn(
+          "text-center text-muted-foreground text-sm",
+          // Mail の空の一覧と同じく、枠の中央に置く。
+          emptyAtTop
+            ? "px-6 py-10"
+            : "flex flex-1 items-center justify-center p-8",
+        )}
+      >
         {emptyLabel}
       </p>
     );

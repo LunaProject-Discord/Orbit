@@ -21,8 +21,8 @@ export function SearchResults({
 }) {
   if (events.length === 0) {
     return (
-      <p className="px-6 py-10 text-center text-muted-foreground text-sm">
-        「{query}」に一致する予定はありません
+      <p className="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground text-sm">
+        「{query}」に一致する予定はありません。
       </p>
     );
   }
