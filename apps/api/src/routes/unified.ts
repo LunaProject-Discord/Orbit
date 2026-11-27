@@ -18,6 +18,7 @@ import {
   listOrderSql,
   nextListCursor,
 } from "../lib/list-order.js";
+import { currentSenderCheck } from "../lib/sender-check.js";
 import { threadCount } from "../lib/threads.js";
 import {
   BUILTIN_VIEWS,
@@ -333,7 +334,7 @@ export function unifiedRoutes({ db }: Pick<RouteDeps, "db">) {
           threadKey: messages.threadKey,
           subject: messages.subject,
           from: messages.from,
-          senderCheck: messages.senderCheck,
+          senderCheck: currentSenderCheck(messages.senderCheck),
           to: messages.to,
           receivedAt: messages.receivedAt,
           snippet: messages.snippet,

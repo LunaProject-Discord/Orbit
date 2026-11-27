@@ -1,6 +1,7 @@
 import {
   accountLockKey,
   EVENT_OUTBOX_KINDS,
+  IMIP_OUTBOX_KIND,
   type OutboxOperation,
   type OutboxTarget,
 } from "@orbit/core";
@@ -12,7 +13,6 @@ import {
   inArray,
   lt,
   lte,
-  ne,
   notInArray,
   or,
   type SQL,
@@ -39,8 +39,8 @@ export type OutboxExecutor = (
 type OutboxRow = typeof outbox.$inferSelect;
 
 function toOperation(row: OutboxRow): OutboxOperation | null {
-  // 送信 (send) は processSends が別に扱うので、ここには来ない。
-  if (row.kind === "send") return null;
+  // 送信 (send、imip_send) は processSends が別に扱うので、ここには来ない。
+  if (row.kind === "send" || row.kind === IMIP_OUTBOX_KIND) return null;
   return { kind: row.kind, payload: row.payload } as OutboxOperation;
 }
 
@@ -62,8 +62,8 @@ export async function processOutbox(
     .where(
       and(
         eq(outbox.accountId, accountId),
-        // メールの送信は processSends が別に扱う。
-        ne(outbox.kind, "send"),
+        // メールの送信 (招待メールを含む) は processSends が別に扱う。
+        notInArray(outbox.kind, ["send", IMIP_OUTBOX_KIND]),
         // 予定の書き戻しは、カレンダーの同期 (calendar/outbox.ts) が扱う。
         notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
         inArray(outbox.status, ["pending", "processing"]),
@@ -170,17 +170,16 @@ export async function processOutbox(
 
   // 反映済みの記録と、やり直されないまま残った失敗の記録は、期間を過ぎたら消す
   // (送信の失敗は、利用者が破棄するまで残す)。
-  await db
-    .delete(outbox)
-    .where(
-      and(
-        eq(outbox.accountId, accountId),
-        ne(outbox.kind, "send"),
-        notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
-        inArray(outbox.status, ["done", "failed"]),
-        lt(outbox.updatedAt, new Date(Date.now() - KEEP_DONE_MS)),
-      ),
-    );
+  await db.delete(outbox).where(
+    and(
+      eq(outbox.accountId, accountId),
+      // 招待メール (imip_send) の記録は processSends が消す (失敗は event_conflicts から参照する)。
+      notInArray(outbox.kind, ["send", IMIP_OUTBOX_KIND]),
+      notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
+      inArray(outbox.status, ["done", "failed"]),
+      lt(outbox.updatedAt, new Date(Date.now() - KEEP_DONE_MS)),
+    ),
+  );
   return { done, failed };
 }
 

@@ -98,6 +98,7 @@ GitHub Actions の **Deploy** (main に入るたびに SSH で更新する、[de
 
 - サーバーは `/v1/server-info` で、話せる API の版の範囲 (`api.minVersion`〜`api.version`) を返します。画面は自分が話せる範囲 (`apps/web/src/lib/app-update/body.ts` の `CLIENT_API_MIN`〜`CLIENT_API_MAX`) と比べ、重ならなければバージョン情報に警告を出します。
 - サーバーの API は、古いアプリからも使えるよう後方互換を保ちます。互換が切れる変更をしたときだけ `apps/api/src/routes/server-info.ts` の `API_VERSION` を上げ、古いアプリへの対応をやめたときに `MIN_API_VERSION` を上げます。画面側も、新しい API を使うようにしたら `CLIENT_API_MAX` を、古いサーバーへの対応をやめたら `CLIENT_API_MIN` を上げます。
+- 新しい種類の送信待ち (outbox の kind) を足した版では、**マイグレーション → worker → API** の順に入れ替えます。古い worker は知らない種類の行を「未対応の操作」として失敗にするためです。例: 招待メール (`imip_send`、マイグレーション 0048) は、古い worker が拾うと送られずに失敗になり、「もう一度送る」もできません。全体を一度に入れ替える場合も、古い worker が動いている間に新しい API が受け付けた招待は失敗になるので、worker を先に (または同時に) 止めて入れ替えてください。
 - 複数のサーバーにつなぐようになったら、アプリ本体と画面の更新は「更新元」の 1 台に従い、ほかのサーバーは互換性の判定にだけ使う想定です (未実装)。
 
 ## 準備 (1 回だけ)

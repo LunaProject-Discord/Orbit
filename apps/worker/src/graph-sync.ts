@@ -1,4 +1,4 @@
-import type { NewMailCandidate } from "@orbit/core";
+import type { AuthTrust, NewMailCandidate } from "@orbit/core";
 import {
   type Address,
   attachments,
@@ -30,7 +30,11 @@ import {
   removePlacements,
   type SyncAccount,
 } from "./mailbox-store.js";
-import { headersPending, listInfoFromGraph } from "./message-headers.js";
+import {
+  authTrustOf,
+  headersPending,
+  listInfoFromGraph,
+} from "./message-headers.js";
 import { type AttachmentInfo, clean, makeSnippet } from "./message-parse.js";
 import { announceNewMail } from "./new-mail.js";
 import { loadPendingGuard } from "./outbox.js";
@@ -423,6 +427,7 @@ export async function fetchGraphBody(
   db: Database,
   client: GraphClient,
   row: GraphBodyTarget,
+  trust: AuthTrust | null,
   signal?: AbortSignal,
 ) {
   let body: GraphMessage["body"] = null;
@@ -470,7 +475,7 @@ export async function fetchGraphBody(
         snippet: row.snippet || makeSnippet(bodyText, bodyHtml),
         bodyFetchedAt: new Date(),
         // メーリングリストの情報は、本文と同じ取得で受け取る。
-        ...listInfoFromGraph(headers, row.from),
+        ...listInfoFromGraph(headers, row.from, trust),
         headersFetchedAt: new Date(),
       })
       .where(eq(messages.id, row.messageId));
@@ -533,7 +538,7 @@ export async function fetchGraphBodies(
   for (let i = 0; i < batch.length; i += BODY_CONCURRENCY) {
     await Promise.all(
       batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
-        await fetchGraphBody(db, client, row, signal);
+        await fetchGraphBody(db, client, row, authTrustOf(account), signal);
         done.push(row.messageId);
       }),
     );
@@ -579,7 +584,15 @@ export async function fetchGraphHeaders(
   for (let i = 0; i < batch.length; i += BODY_CONCURRENCY) {
     await Promise.all(
       batch.slice(i, i + BODY_CONCURRENCY).map(async (row) => {
-        if (await fetchGraphMessageHeaders(db, client, row, signal)) {
+        if (
+          await fetchGraphMessageHeaders(
+            db,
+            client,
+            row,
+            authTrustOf(account),
+            signal,
+          )
+        ) {
           changed.push(row.messageId);
         }
       }),
@@ -600,6 +613,7 @@ export async function fetchGraphMessageHeaders(
   db: Database,
   client: GraphClient,
   row: { messageId: string; providerMessageId: string | null; from: Address[] },
+  trust: AuthTrust | null,
   signal?: AbortSignal,
 ): Promise<boolean> {
   let message: GraphMessage | null = null;
@@ -618,7 +632,11 @@ export async function fetchGraphMessageHeaders(
     id: row.providerMessageId ?? "",
     sender: message?.sender ?? null,
   }).sender;
-  const list = listInfoFromGraph(message?.internetMessageHeaders, row.from);
+  const list = listInfoFromGraph(
+    message?.internetMessageHeaders,
+    row.from,
+    trust,
+  );
   await db
     .update(messages)
     .set({ sender, ...list, headersFetchedAt: new Date() })

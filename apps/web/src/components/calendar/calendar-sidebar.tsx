@@ -9,6 +9,7 @@ import {
   MenuIcon,
   PlusIcon,
   RefreshCwIcon,
+  SendIcon,
   SettingsIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -27,6 +28,7 @@ import {
 import type { User } from "@/lib/api";
 import type { Calendar } from "@/lib/calendar/api";
 import type { CalendarGroup } from "@/lib/calendar/groups";
+import { imipConfigurable } from "@/lib/calendar/imip";
 import type { SyncStatus } from "@/lib/sync-status";
 
 /** オフライン中に押せないボタンに添える説明。 */
@@ -49,6 +51,7 @@ export function CalendarSidebar({
   onAddCalendar,
   onRefreshCalendar,
   onRemoveCalendar,
+  onChooseSender = null,
   onOpenSettings,
   onToggleSidebar,
   onNavigate,
@@ -76,6 +79,8 @@ export function CalendarSidebar({
   onRefreshCalendar: (calendar: Calendar) => void;
   /** カレンダーを消す (購読ならやめる)。確認は呼んだ側で出す。 */
   onRemoveCalendar: (calendar: Calendar) => void;
+  /** カレンダーの「招待メールの送信元」を開く (無ければメニューに出さない)。 */
+  onChooseSender?: ((calendar: Calendar) => void) | null;
   onOpenSettings: () => void;
   /** 広い画面でサイドバーを閉じる。null なら出さない。 */
   onToggleSidebar: (() => void) | null;
@@ -171,6 +176,9 @@ export function CalendarSidebar({
                     const subscription = calendar.source === "ics";
                     const removable =
                       calendar.source === "local" || subscription;
+                    const senderSetting =
+                      onChooseSender !== null && imipConfigurable(calendar);
+                    const menu = removable || senderSetting;
                     return (
                       <div
                         key={calendar.id}
@@ -184,7 +192,7 @@ export function CalendarSidebar({
                           onClick={() => onToggleCalendar(calendar)}
                           className={cn(
                             "flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-md pr-2 pl-7 text-left text-sm",
-                            removable && "pr-9",
+                            menu && "pr-9",
                           )}
                         >
                           <span
@@ -220,7 +228,7 @@ export function CalendarSidebar({
                             </CircleAlertIcon>
                           )}
                         </button>
-                        {removable && (
+                        {menu && (
                           <DropdownMenu>
                             <DropdownMenuTrigger
                               aria-label={`「${calendar.name}」のメニュー`}
@@ -239,15 +247,27 @@ export function CalendarSidebar({
                                   今すぐ更新
                                 </DropdownMenuItem>
                               )}
-                              <DropdownMenuItem
-                                variant="destructive"
-                                disabled={!online}
-                                title={online ? undefined : NEEDS_CONNECTION}
-                                onClick={() => onRemoveCalendar(calendar)}
-                              >
-                                <Trash2Icon />
-                                {subscription ? "購読をやめる" : "削除"}
-                              </DropdownMenuItem>
+                              {senderSetting && (
+                                <DropdownMenuItem
+                                  disabled={!online}
+                                  title={online ? undefined : NEEDS_CONNECTION}
+                                  onClick={() => onChooseSender?.(calendar)}
+                                >
+                                  <SendIcon />
+                                  招待メールの送信元
+                                </DropdownMenuItem>
+                              )}
+                              {removable && (
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  disabled={!online}
+                                  title={online ? undefined : NEEDS_CONNECTION}
+                                  onClick={() => onRemoveCalendar(calendar)}
+                                >
+                                  <Trash2Icon />
+                                  {subscription ? "購読をやめる" : "削除"}
+                                </DropdownMenuItem>
+                              )}
                             </DropdownMenuContent>
                           </DropdownMenu>
                         )}

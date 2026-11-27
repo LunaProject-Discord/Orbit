@@ -1,48 +1,36 @@
-import { readFile } from "node:fs/promises";
 import { zValidator } from "@hono/zod-validator";
 import {
-  attachmentPath,
   attachmentsDir,
   CALENDAR_WRITEBACK_SOURCES,
   type EventFieldChanges,
+  type InviteApplyResult,
+  type MessageInviteImipFields,
   type ParsedEvent,
-  parseICalendar,
 } from "@orbit/core";
-import {
-  accounts,
-  attachments,
-  calendars,
-  eventAttendees,
-  events,
-  messages,
-} from "@orbit/db";
-import { and, asc, eq } from "drizzle-orm";
+import { calendars, eventAttendees, events } from "@orbit/db";
+import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppEnv, RouteDeps } from "../context.js";
 import { calendarIdentities, selfIsMe } from "../lib/calendar-identity.js";
 import type { EventsHub } from "../lib/events-hub.js";
 import {
-  ensureReceivedAttachment,
-  statusOfFetchError,
-} from "../lib/received-attachments.js";
+  applyInvite,
+  inspectInvite,
+  loadMessageInvite,
+} from "../lib/invite-apply.js";
+
+export { MAX_INVITE_BYTES, MAX_INVITE_LINES } from "../lib/invite-apply.js";
 
 /**
  * メールの招待 (text/calendar の添付) の中身 `GET /v1/messages/:id/invite`。
  * 設計は calendar-dev/invites-design.md の 4.4 と 6 章。
  *
- * 8a ではメールの中身を予定の書き込みに使わない。表示用に読んで返し、利用者のカレンダーに
- * 同じ UID の予定があれば、その予定の ID を添える (返事はその予定に対して端末が送る)。
+ * 表示用に読んで返し、利用者のカレンダーに同じ UID の予定があれば、その予定の ID を添える
+ * (返事はその予定に対して端末が送る)。8b (imip-design 7・8・10.3 章) で、サーバーが決めた
+ * 「いまできる操作」(action) を足し、書き込みは POST /:id/invite/apply だけが行う
+ * (lib/invite-apply.ts。サーバーが添付を読み直す)。
  */
-
-/** これより大きい招待は読まない (9 章)。 */
-export const MAX_INVITE_BYTES = 1024 * 1024;
-
-/**
- * これより行の多い招待は読まない。ふつうの招待は数百行 (参加者が多くても数千行) なので余裕を見た値。
- * 1 MB に収まる悪意のある入力 (閉じない BEGIN、同じ UID の予定を並べる など) で API を止めないため。
- */
-export const MAX_INVITE_LINES = 10_000;
 
 export type InviteMethod = "request" | "cancel" | "reply" | "other";
 
@@ -73,26 +61,13 @@ export type MessageInvite = {
    * この日時で予定を探せるように添える。予定が無ければ null。
    */
   eventTime: MessageInvite["time"] | null;
-};
+} & MessageInviteImipFields;
 
 const METHODS: Record<string, InviteMethod> = {
   REQUEST: "request",
   CANCEL: "cancel",
   REPLY: "reply",
 };
-
-/** 招待として読む添付か。text/calendar を優先し、次に名前が .ics のもの。 */
-function invitePriority(file: {
-  filename: string | null;
-  contentType: string;
-}): number {
-  const type = file.contentType.toLowerCase().split(";")[0]?.trim() ?? "";
-  if (type === "text/calendar") return 2;
-  if (type === "application/ics" || /\.ics$/i.test(file.filename ?? "")) {
-    return 1;
-  }
-  return 0;
-}
 
 /** 予定の行の日時を、time と同じ形にする。 */
 function timeOfRow(row: {
@@ -160,70 +135,17 @@ export function messageInviteRoutes({
     async (c) => {
       const { id } = c.req.valid("param");
       const userId = c.var.user.id;
-      // 1. メールを利用者の ID で探す。
-      const [message] = await db
-        .select({ id: messages.id, accountId: messages.accountId })
-        .from(messages)
-        .innerJoin(accounts, eq(accounts.id, messages.accountId))
-        .where(and(eq(messages.id, id), eq(accounts.userId, userId)));
-      if (!message) return c.json({ error: "not_found" }, 404);
-
-      // 2. 対象の添付を 1 つ選ぶ。
-      const files = await db
-        .select({
-          id: attachments.id,
-          filename: attachments.filename,
-          contentType: attachments.contentType,
-          size: attachments.size,
-        })
-        .from(attachments)
-        .where(eq(attachments.messageId, id))
-        .orderBy(asc(attachments.partId));
-      const candidate = files
-        .filter((file) => invitePriority(file) > 0)
-        .sort((a, b) => invitePriority(b) - invitePriority(a))[0];
-      if (!candidate || candidate.size > MAX_INVITE_BYTES) {
-        return c.json({ invite: null });
+      // 1〜4. メールを利用者の ID で探し、招待の添付を読む (先頭の UID の原本、無ければ最初の例外)。
+      const loaded = await loadMessageInvite({ db, hub, dir }, userId, id);
+      if (!loaded.ok) {
+        return c.json({ error: loaded.error }, loaded.status);
       }
-
-      // 3. 実体を用意して読む。
-      const result = await ensureReceivedAttachment(
-        { db, hub, dir },
-        userId,
-        id,
-        candidate.id,
-      );
-      if (!result.ok) {
-        return c.json(
-          { error: result.error },
-          statusOfFetchError(result.error),
-        );
-      }
-      const content = await readFile(
-        attachmentPath(dir, result.attachment.storageKey),
-      ).catch(() => null);
-      if (!content) return c.json({ error: "fetch_failed" }, 502);
-      if (content.byteLength > MAX_INVITE_BYTES)
-        return c.json({ invite: null });
-
-      // 4. 先頭の UID の予定 (原本があれば原本、無ければ最初の例外) を使う。
-      let parsed: ReturnType<typeof parseICalendar>;
-      try {
-        parsed = parseICalendar(content.toString("utf8"), {
-          defaultTimeZone: "UTC",
-          maxEvents: 100,
-          maxLines: MAX_INVITE_LINES,
-        });
-      } catch {
-        return c.json({ invite: null });
-      }
-      const uid = parsed.events[0]?.uid;
-      const sameUid = parsed.events.filter((event) => event.uid === uid);
-      const event =
-        sameUid.find((entry) => entry.recurrenceId === null) ?? sameUid[0];
-      const time = event ? timeOf(event) : null;
-      if (!event || !time) return c.json({ invite: null });
-      const method = METHODS[parsed.method ?? ""] ?? "other";
+      if (!loaded.invite) return c.json({ invite: null });
+      const message = loaded.invite.message;
+      const event: ParsedEvent = loaded.invite.primary;
+      const time = timeOf(event);
+      if (!time) return c.json({ invite: null });
+      const method = METHODS[loaded.invite.method ?? ""] ?? "other";
 
       // 5. 利用者の予定から同じ UID を探す。書き込めるカレンダーで、self の参加者がいる行。
       //    共有カレンダーの self は自分とは限らないので、自分を指す行だけ (レビュー 3)。
@@ -294,9 +216,51 @@ export function messageInviteRoutes({
             Number(a.accountId === message.accountId)
           );
         });
-      const found = candidates[0] ?? null;
-
       const replying = method === "reply" ? event.attendees[0] : undefined;
+      // 8b: いまできる操作 (取り込み・更新・取り消し・REPLY の反映)。
+      const inspection = await inspectInvite(db, {
+        userId,
+        invite: loaded.invite,
+        writable,
+      });
+      const { fields } = inspection;
+      // 操作の対象の予定があれば、それを返す (8a の選び方と別の予定を指さないように。
+      // self なしで取り込んだ予定も、更新・取り消しの対象として返す。レビュー 8b 指摘 17)。
+      let found: (typeof rows)[number] | null = null;
+      if (inspection.eventId) {
+        found = rows.find((row) => row.id === inspection.eventId) ?? null;
+        if (!found) {
+          const [row] = await db
+            .select({
+              id: events.id,
+              calendarId: events.calendarId,
+              sequence: events.sequence,
+              recurrenceId: events.recurrenceId,
+              allDay: events.allDay,
+              startAt: events.startAt,
+              endAt: events.endAt,
+              startDate: events.startDate,
+              endDate: events.endDate,
+              startTimeZone: events.startTimeZone,
+              endTimeZone: events.endTimeZone,
+              accountId: calendars.accountId,
+              source: calendars.source,
+              readOnly: calendars.readOnly,
+              selfEmail: sql<string>`''`,
+            })
+            .from(events)
+            .innerJoin(calendars, eq(calendars.id, events.calendarId))
+            .where(
+              and(
+                eq(events.id, inspection.eventId),
+                eq(events.userId, userId),
+                eq(calendars.userId, userId),
+              ),
+            );
+          found = row ?? null;
+        }
+      }
+      found ??= candidates[0] ?? null;
       const invite: MessageInvite = {
         method,
         uid: event.uid,
@@ -320,8 +284,53 @@ export function messageInviteRoutes({
         eventId: found?.id ?? null,
         eventSequence: found?.sequence ?? null,
         eventTime: found ? timeOfRow(found) : null,
+        ...fields,
       };
       return c.json({ invite });
+    },
+  );
+
+  /**
+   * メールの招待を反映する (imip-design 10.3)。取り込み (import)、更新 (update)、
+   * 取り消し (remove)、REPLY の反映 (apply_reply)。サーバーが添付を読み直して操作を決め、
+   * expect と違えば 409 changed。済んでいれば applied: false (何度呼んでも同じ)。
+   */
+  app.post(
+    "/:id/invite/apply",
+    zValidator("param", z.object({ id: z.uuid() })),
+    zValidator(
+      "json",
+      z.object({
+        expect: z.enum(["import", "update", "remove", "apply_reply"]),
+        calendarId: z.uuid().optional(),
+        confirmed: z.boolean().optional(),
+      }),
+    ),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const userId = c.var.user.id;
+      const loaded = await loadMessageInvite({ db, hub, dir }, userId, id);
+      if (!loaded.ok) {
+        return c.json({ error: loaded.error }, loaded.status);
+      }
+      if (!loaded.invite) return c.json({ error: "unsupported_method" }, 409);
+      const outcome = await applyInvite(db, {
+        userId,
+        invite: loaded.invite,
+        writable,
+        expect: body.expect,
+        calendarId: body.calendarId,
+        confirmed: body.confirmed,
+      });
+      if (!outcome.ok) {
+        return c.json({ error: outcome.error }, outcome.status);
+      }
+      const response: InviteApplyResult = {
+        applied: outcome.applied,
+        eventId: outcome.eventId,
+      };
+      return c.json(response);
     },
   );
 

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  type AuthTrust,
   checkSender,
   displayNameMismatch,
+  isCurrentSenderCheck,
+  isTrustedAuthservId,
   organizationalDomain,
   parseAuthenticationResults,
+  SENDER_CHECK_VERSION,
+  selectAuthResults,
 } from "./sender-auth.js";
 
 describe("parseAuthenticationResults", () => {
@@ -121,6 +126,7 @@ describe("checkSender", () => {
       verified: true,
       warnings: [],
       claimed: null,
+      version: SENDER_CHECK_VERSION,
     });
   });
 
@@ -164,6 +170,136 @@ describe("checkSender", () => {
       verified: false,
       warnings: ["name_mismatch"],
       claimed: "PayPal",
+      version: SENDER_CHECK_VERSION,
     });
+  });
+
+  it("DMARC の合格に header.from が無ければ、確認済みにしない", () => {
+    const auth = parseAuthenticationResults("mx.google.com; dmarc=pass");
+    expect(checkSender(from, auth).verified).toBe(false);
+  });
+
+  it("版の無い (古い決まりで作った) 結果は、いまの結果として使わない", () => {
+    expect(isCurrentSenderCheck(checkSender(from, null))).toBe(true);
+    expect(
+      isCurrentSenderCheck({ verified: true, warnings: [], claimed: null }),
+    ).toBe(false);
+    expect(isCurrentSenderCheck(null)).toBe(false);
+  });
+});
+
+describe("信頼する判定サーバー", () => {
+  const gmail: AuthTrust = { provider: "gmail", host: "imap.gmail.com" };
+  const microsoft: AuthTrust = { provider: "microsoft", host: null };
+  const icloud: AuthTrust = { provider: "icloud", host: "imap.mail.me.com" };
+  const generic: AuthTrust = { provider: "generic", host: "imap.example.net" };
+  const from = { address: "suzuki@example.com" };
+  const pass =
+    "dkim=pass header.d=example.com; dmarc=pass header.from=example.com";
+
+  it("アカウントごとに信頼する名前", () => {
+    expect(isTrustedAuthservId(gmail, "mx.google.com")).toBe(true);
+    expect(isTrustedAuthservId(gmail, "mx.google.com.evil.example")).toBe(
+      false,
+    );
+    expect(isTrustedAuthservId(gmail, "")).toBe(false);
+    expect(isTrustedAuthservId(microsoft, "")).toBe(true);
+    expect(isTrustedAuthservId(microsoft, "x.eurprd01.prod.outlook.com")).toBe(
+      true,
+    );
+    expect(isTrustedAuthservId(microsoft, "mx.google.com")).toBe(false);
+    expect(isTrustedAuthservId(icloud, "dmarc.icloud.com")).toBe(true);
+    expect(isTrustedAuthservId(icloud, "icloud.com.evil.example")).toBe(false);
+    expect(isTrustedAuthservId(generic, "mx.example.net")).toBe(true);
+    expect(isTrustedAuthservId(generic, "mx.small.example")).toBe(false);
+    expect(isTrustedAuthservId(generic, "")).toBe(false);
+    // 受信ホストが IP アドレスや公開サフィックスの下に無い名前なら、何も信頼しない。
+    expect(
+      isTrustedAuthservId({ provider: "generic", host: "192.0.2.1" }, "x"),
+    ).toBe(false);
+    expect(
+      isTrustedAuthservId(
+        { provider: "generic", host: "localhost" },
+        "localhost",
+      ),
+    ).toBe(false);
+    // 一般の設定で足した Gmail は Gmail として扱う。
+    expect(
+      isTrustedAuthservId(
+        { provider: "generic", host: "imap.gmail.com" },
+        "mx.google.com",
+      ),
+    ).toBe(true);
+    expect(isTrustedAuthservId(null, "mx.google.com")).toBe(false);
+  });
+
+  it("受信サーバーが付けない一般のサーバーでは、差出人が書いた偽のヘッダーを使わない", () => {
+    const forged = `mx.small.example; ${pass}`;
+    expect(selectAuthResults([forged], generic)).toBeNull();
+    expect(checkSender(from, selectAuthResults([forged], generic))).toEqual({
+      verified: false,
+      warnings: [],
+      claimed: null,
+      version: SENDER_CHECK_VERSION,
+    });
+    // 受信ホストと同じ組織の名前なら使う。
+    expect(
+      checkSender(from, selectAuthResults([`mx.example.net; ${pass}`], generic))
+        .verified,
+    ).toBe(true);
+  });
+
+  it("いちばん上が信頼しない名前なら、下の信頼する名前も使わない", () => {
+    const values = [`mx.small.example; ${pass}`, `mx.google.com; ${pass}`];
+    expect(selectAuthResults(values, gmail)).toBeNull();
+  });
+
+  it("同じ名前の 2 本目 (偽物の可能性) は使わず、上の本物を使う", () => {
+    const values = [
+      "mx.google.com; dmarc=fail header.from=example.com",
+      `mx.google.com; ${pass}`,
+    ];
+    const results = selectAuthResults(values, gmail);
+    expect(results?.dmarc).toEqual({ result: "fail", domain: "example.com" });
+    expect(checkSender(from, results).warnings).toEqual(["dmarc_fail"]);
+  });
+
+  it("iCloud の方式ごとに分かれたヘッダーをまとめる", () => {
+    const values = [
+      "bimi.icloud.com; bimi=skipped reason=insufficient dmarc",
+      "dmarc.icloud.com; dmarc=fail header.from=example.com",
+      "dkim-verifier.icloud.com; dkim=none",
+      "spf.icloud.com; spf=fail smtp.mailfrom=example.com",
+      // iCloud のヘッダーの下に差出人が書いた偽物。
+      `dmarc.icloud.com; ${pass}`,
+    ];
+    const results = selectAuthResults(values, icloud);
+    expect(results).toMatchObject({
+      authservId: "bimi.icloud.com",
+      dmarc: { result: "fail", domain: "example.com" },
+      spf: { result: "fail", domain: "example.com" },
+      dkim: [{ result: "none", domain: null }],
+    });
+    expect(checkSender(from, results).warnings).toEqual(["dmarc_fail"]);
+    expect(
+      checkSender(
+        from,
+        selectAuthResults(
+          [
+            "bimi.icloud.com; bimi=pass",
+            "dmarc.icloud.com; dmarc=pass header.from=example.com",
+          ],
+          icloud,
+        ),
+      ).verified,
+    ).toBe(true);
+  });
+
+  it("Microsoft の名前を省いた形は、いちばん上の 1 本だけ", () => {
+    const values = [
+      "spf=fail smtp.mailfrom=example.com; dmarc=fail header.from=example.com",
+      `spf=pass smtp.mailfrom=example.com; ${pass}`,
+    ];
+    expect(selectAuthResults(values, microsoft)?.dmarc?.result).toBe("fail");
   });
 });

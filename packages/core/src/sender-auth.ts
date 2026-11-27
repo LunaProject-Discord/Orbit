@@ -5,6 +5,8 @@ import { getDomain, parse } from "tldts";
  *
  * 結果は、つなぎ先のメールサーバー (Gmail なら mx.google.com) がメールに付けた
  * Authentication-Results ヘッダー (RFC 8601) を読むだけで、Orbit 自身は検証しない。
+ * 差出人もこのヘッダーを書けるので、アカウントごとに「信頼する判定サーバーの名前 (authserv-id)」
+ * を決め (authTrustRules)、その名前のヘッダーだけを使う (selectAuthResults)。
  */
 
 /** 認証の 1 つの方式 (SPF など) の結果。 */
@@ -43,7 +45,26 @@ export type SenderCheck = {
   warnings: SenderWarning[];
   /** name_mismatch のとき、表示名から読み取った相手 (「Amazon」や「example.com」)。 */
   claimed: string | null;
+  /**
+   * 判定の決まりの版 (SENDER_CHECK_VERSION)。信頼する判定サーバーとの照合を入れる前に
+   * 保存した結果には無い。版が古い結果は使わず、まだ確認していないもの (null) として扱う。
+   */
+  version?: number;
 };
+
+/**
+ * 判定の決まりの版。2 = 信頼する判定サーバー (authserv-id) のヘッダーだけを使う。
+ * これより古い保存済みの結果 (差出人が書いた偽のヘッダーを拾っていたかもしれない) は、
+ * 画面・招待の判定では「確認中」として扱い、開いたときや一覧に見えたときに取り直す。
+ */
+export const SENDER_CHECK_VERSION = 2;
+
+/** 保存済みの確認結果が、いまの決まりで作ったものか。 */
+export function isCurrentSenderCheck(
+  check: SenderCheck | null | undefined,
+): check is SenderCheck {
+  return !!check && check.version === SENDER_CHECK_VERSION;
+}
 
 const MAX_HEADER = 8000;
 const MAX_TOKEN = 255;
@@ -469,9 +490,9 @@ export function displayNameMismatch(
   return null;
 }
 
-/** DMARC の合格が、差出人のアドレスのドメインについてのものか。 */
+/** DMARC の合格が、差出人のアドレスのドメインについてのものか。ドメインが書かれていなければ一致とみなさない。 */
 function dmarcAligned(dmarc: AuthMethodResult, fromDomain: string): boolean {
-  if (!dmarc.domain) return true;
+  if (!dmarc.domain) return false;
   return dmarc.domain === fromDomain;
 }
 
@@ -501,5 +522,124 @@ export function checkSender(
   }
   const claimed = displayNameMismatch(from?.name, from?.address);
   if (claimed) warnings.push("name_mismatch");
-  return { verified, warnings, claimed };
+  return { verified, warnings, claimed, version: SENDER_CHECK_VERSION };
+}
+
+/* ------------------------------------------------------------------ */
+/* 信頼する判定サーバー (authserv-id)                                    */
+/* ------------------------------------------------------------------ */
+
+/** アカウントの種類と受信サーバー。どのヘッダーを信頼するかを決める。 */
+export type AuthTrust = {
+  provider: "gmail" | "microsoft" | "icloud" | "generic";
+  /** 受信 (IMAP / POP3) のホスト名。Microsoft Graph など、無ければ null。 */
+  host: string | null;
+};
+
+type TrustRule =
+  | { kind: "gmail" }
+  | { kind: "microsoft" }
+  | { kind: "icloud" }
+  /** 一般のサーバー: 受信ホストと組織のドメイン (登録ドメイン) が同じ名前。 */
+  | { kind: "domain"; domain: string }
+  | { kind: "none" };
+
+/** 受信ホストの組織のドメインから、大手のサービスかを見分ける (一般の設定で足したアカウント)。 */
+const HOST_PROVIDERS: Record<string, "gmail" | "microsoft" | "icloud"> = {
+  "gmail.com": "gmail",
+  "googlemail.com": "gmail",
+  "office365.com": "microsoft",
+  "outlook.com": "microsoft",
+  "hotmail.com": "microsoft",
+  "live.com": "microsoft",
+  "me.com": "icloud",
+  "icloud.com": "icloud",
+};
+
+function hostDomain(host: string | null): string | null {
+  if (!host) return null;
+  const lower = host.trim().toLowerCase().replace(/\.$/, "");
+  // IP アドレスや、公開サフィックスの下に無い名前 (localhost など) は比べられない。
+  if (/^[0-9.]+$/.test(lower) || lower.includes(":")) return null;
+  const parsed = parse(lower, { allowPrivateDomains: false });
+  if (parsed.isIcann !== true || !parsed.domain) return null;
+  return parsed.domain;
+}
+
+function trustRule(trust: AuthTrust | null | undefined): TrustRule {
+  if (!trust) return { kind: "none" };
+  if (trust.provider !== "generic") return { kind: trust.provider };
+  const domain = hostDomain(trust.host);
+  if (!domain) return { kind: "none" };
+  const known = HOST_PROVIDERS[domain];
+  return known ? { kind: known } : { kind: "domain", domain };
+}
+
+/**
+ * その判定サーバーの名前 (authserv-id、小文字) を信頼するか。
+ * - Gmail: mx.google.com だけ (Gmail が受け取ったメールに付ける名前)。
+ * - Microsoft (Graph、Outlook.com / Exchange Online の IMAP・POP3): 名前を省いた形 (空) か、
+ *   .outlook.com で終わる名前。Exchange Online は名前を省いて付ける (公開資料のヘッダーの例)。
+ *   .outlook.com は推測 (保護のサーバー *.protection.outlook.com が付けることがある)。
+ * - iCloud: .icloud.com で終わる名前。iCloud は dmarc.icloud.com / dkim-verifier.icloud.com /
+ *   spf.icloud.com / bimi.icloud.com のように方式ごとに分けて付ける (レビューの記憶と、
+ *   公開されているヘッダーの例による。推測を含む)。
+ * - 一般の IMAP / POP3: 受信ホストと組織のドメイン (登録ドメイン) が同じ名前だけ。
+ *   例: imap.example.net なら mx.example.net を信頼し、mx.small.example は信頼しない。
+ */
+export function isTrustedAuthservId(
+  trust: AuthTrust | null | undefined,
+  authservId: string,
+): boolean {
+  const id = authservId.toLowerCase();
+  const rule = trustRule(trust);
+  switch (rule.kind) {
+    case "gmail":
+      return id === "mx.google.com";
+    case "microsoft":
+      return id === "" || id.endsWith(".outlook.com");
+    case "icloud":
+      return id.endsWith(".icloud.com");
+    case "domain": {
+      const domain = domainOf(id);
+      return domain !== null && organizationalDomain(domain) === rule.domain;
+    }
+    default:
+      return false;
+  }
+}
+
+/** 読むヘッダーの数の上限 (中継が多いメールでも、上の数本だけを見る)。 */
+const MAX_AUTH_HEADERS = 16;
+
+/**
+ * 同じメールの Authentication-Results (上から順) のうち、信頼する判定サーバーが付けたものだけを
+ * まとめて返す。使うのは、いちばん上から続く信頼するヘッダーで、信頼しない名前・読めない
+ * ヘッダー・同じ名前の 2 本目に当たったらそこでやめる (それより下は差出人が書いた可能性がある)。
+ * iCloud のように方式ごとに分かれていれば、方式ごとに上のものを使う。
+ * 信頼するヘッダーが無ければ null (認証の結果は無いものとして扱う = unknown)。
+ */
+export function selectAuthResults(
+  values: readonly string[],
+  trust: AuthTrust | null | undefined,
+): AuthResults | null {
+  const picked: AuthResults[] = [];
+  const seen = new Set<string>();
+  for (const value of values.slice(0, MAX_AUTH_HEADERS)) {
+    const parsed = parseAuthenticationResults(value);
+    if (!parsed) break;
+    if (!isTrustedAuthservId(trust, parsed.authservId)) break;
+    if (seen.has(parsed.authservId)) break;
+    seen.add(parsed.authservId);
+    picked.push(parsed);
+  }
+  const head = picked[0];
+  if (!head) return null;
+  return {
+    authservId: head.authservId,
+    spf: picked.find((item) => item.spf)?.spf ?? null,
+    dkim: picked.flatMap((item) => item.dkim).slice(0, 8),
+    dmarc: picked.find((item) => item.dmarc)?.dmarc ?? null,
+    compauth: picked.find((item) => item.compauth)?.compauth ?? null,
+  };
 }

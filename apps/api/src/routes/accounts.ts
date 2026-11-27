@@ -17,6 +17,7 @@ import {
   hasGmailScope,
   hasGoogleCalendarScope,
   hasMicrosoftCalendarScope,
+  IMIP_OUTBOX_KIND,
   MAIL_PROVIDER_PRESETS,
   MicrosoftOAuthError,
   openGoogleState,
@@ -325,14 +326,18 @@ type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
  * 消したものは変更履歴に載せ、端末からも消えるようにする。
  */
 async function resetMailData(tx: Tx, userId: string, accountId: string) {
-  // 予定の書き戻し (event_*) はメールのデータではないので残す。
+  // 予定の書き戻し (event_*) はメールのデータではないので残す。送信待ちの招待メール
+  // (imip_send) も、ふつうのメールと同じく受信の方式と関係が無いので残す。
   await tx
     .delete(outbox)
     .where(
       and(
         eq(outbox.accountId, accountId),
-        ne(outbox.kind, "send"),
-        notInArray(outbox.kind, [...EVENT_OUTBOX_KINDS]),
+        notInArray(outbox.kind, [
+          "send",
+          IMIP_OUTBOX_KIND,
+          ...EVENT_OUTBOX_KINDS,
+        ]),
       ),
     );
   await tx.delete(popMessages).where(eq(popMessages.accountId, accountId));

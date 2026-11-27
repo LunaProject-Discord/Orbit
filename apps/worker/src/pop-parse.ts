@@ -1,3 +1,4 @@
+import type { AuthTrust } from "@orbit/core";
 import type { Address } from "@orbit/db";
 import {
   type AddressObject,
@@ -88,6 +89,8 @@ function partIdOf(index: number): string {
 export async function parseRawMessage(
   raw: Buffer,
   fallbackKey: string,
+  /** 送信元の認証結果のうち、信頼する判定サーバー (アカウントから決める)。 */
+  trust: AuthTrust | null = null,
 ): Promise<ParsedRawMessage> {
   const mail = await simpleParser(raw, {
     // HTML 本文の cid: は残す (IMAP と同じく、画面がインライン画像を添付ファイルから表示する)。
@@ -127,7 +130,7 @@ export async function parseRawMessage(
     bcc: toAddresses(mail.bcc),
     replyTo: toAddresses(mail.replyTo),
     sender: toAddresses(sender),
-    ...parseListHeaders(headers, toAddresses(mail.from)),
+    ...parseListHeaders(headers, toAddresses(mail.from), trust),
     sentAt: toDate(mail.date),
     bodyText,
     bodyHtml,

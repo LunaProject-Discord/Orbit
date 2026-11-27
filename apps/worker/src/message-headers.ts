@@ -1,11 +1,13 @@
 import {
   type AuthResults,
+  type AuthTrust,
   checkSender,
-  parseAuthenticationResults,
+  SENDER_CHECK_VERSION,
   type SenderCheck,
+  selectAuthResults,
 } from "@orbit/core";
-import { type Address, messages } from "@orbit/db";
-import { isNull } from "drizzle-orm";
+import { type Address, type accounts, messages } from "@orbit/db";
+import { isNull, or, sql } from "drizzle-orm";
 import { clean } from "./message-parse.js";
 
 /**
@@ -83,8 +85,28 @@ function parseListUnsubscribe(value: string | undefined): string[] {
  */
 export const headersPending = isNull(messages.headersFetchedAt);
 
-/** 送信元の確認結果がまだ無いメール。開いたときや一覧に見えたときに補う。 */
-export const senderCheckPending = isNull(messages.senderCheck);
+/**
+ * 送信元の確認結果がまだ無いメール、または古い決まり (信頼する判定サーバーとの照合の前) で
+ * 作った結果のメール。開いたときや一覧に見えたときに補う。
+ */
+export const senderCheckPending = or(
+  isNull(messages.senderCheck),
+  sql`(${messages.senderCheck}->>'version') is distinct from ${String(SENDER_CHECK_VERSION)}`,
+);
+
+/** 同期するアカウント (信頼する判定サーバーを決めるのに使う列)。 */
+export type AuthTrustSource = Partial<
+  Pick<typeof accounts.$inferSelect, "provider" | "imapHost">
+>;
+
+/**
+ * アカウントの、信頼する判定サーバー (authserv-id) の決め方。種類が分からなければ null
+ * (どのヘッダーも信頼しない = 認証の結果は無いものとして扱う)。
+ */
+export function authTrustOf(account: AuthTrustSource): AuthTrust | null {
+  if (!account.provider) return null;
+  return { provider: account.provider, host: account.imapHost ?? null };
+}
 
 /**
  * 取り込み済みのメールにヘッダーを補うとき、1 回分 (数百通の書き換え) ごとに空ける間。
@@ -110,19 +132,22 @@ export type HeaderInfo = ListInfo & {
 
 /**
  * ヘッダーの名前 (小文字) と値の組から、メーリングリストの情報と認証結果を取り出す。
- * header は、同じ名前のヘッダーが複数あれば、いちばん上 (最後に受け取ったサーバーが付けたもの) を返す。
- * 認証結果は、送り主が偽のヘッダーを書き込むこともできるので、いちばん上だけを使う。
+ * headers は、同じ名前のヘッダーを上 (最後に受け取ったサーバーが付けたもの) から順に返す。
+ * 認証結果は、送り主も偽のヘッダーを書き込めるので、アカウントの信頼する判定サーバーが
+ * いちばん上から付けたものだけを使う (selectAuthResults)。無ければ認証の結果は無いものとする。
  */
 export function headerInfoOf(
-  header: (name: string) => string | undefined,
+  headers: (name: string) => string[],
   from: Address[],
+  trust: AuthTrust | null,
 ): HeaderInfo {
-  const authResults = parseAuthenticationResults(
-    header("authentication-results"),
+  const authResults = selectAuthResults(
+    headers("authentication-results"),
+    trust,
   );
   return {
-    listId: parseListId(header("list-id")),
-    listUnsubscribe: parseListUnsubscribe(header("list-unsubscribe")),
+    listId: parseListId(headers("list-id")[0]),
+    listUnsubscribe: parseListUnsubscribe(headers("list-unsubscribe")[0]),
     authResults,
     senderCheck: checkSender(from[0], authResults),
   };
@@ -132,26 +157,34 @@ export function headerInfoOf(
 export function parseListHeaders(
   headers: Buffer | undefined,
   from: Address[],
+  trust: AuthTrust | null,
 ): HeaderInfo {
   const unfolded = (headers?.toString("latin1") ?? "").replace(
     /\r?\n[ \t]+/g,
     " ",
   );
-  return headerInfoOf((name) => {
-    const line = new RegExp(`^${name}:(.*)$`, "im").exec(unfolded);
-    return line?.[1]?.trim();
-  }, from);
+  return headerInfoOf(
+    (name) =>
+      [...unfolded.matchAll(new RegExp(`^${name}:(.*)$`, "gim"))].map(
+        (line) => line[1]?.trim() ?? "",
+      ),
+    from,
+    trust,
+  );
 }
 
 /** Microsoft Graph の internetMessageHeaders から、メーリングリストの情報と認証結果を取り出す。 */
 export function listInfoFromGraph(
   headers: { name?: string | null; value?: string | null }[] | null | undefined,
   from: Address[],
+  trust: AuthTrust | null,
 ): HeaderInfo {
   return headerInfoOf(
     (name) =>
-      headers?.find((item) => item.name?.toLowerCase() === name)?.value ??
-      undefined,
+      (headers ?? [])
+        .filter((item) => item.name?.toLowerCase() === name)
+        .map((item) => item.value ?? ""),
     from,
+    trust,
   );
 }

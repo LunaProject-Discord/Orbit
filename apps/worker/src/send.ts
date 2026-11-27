@@ -1,19 +1,31 @@
-import type {
-  AppendPayload,
-  OutboxTarget,
-  OutgoingMessage,
-  SendPayload,
-  SetFlagsPayload,
+import {
+  type AppendPayload,
+  calendarScheduling,
+  IMIP_OUTBOX_KIND,
+  type ImipSendPayload,
+  isSendableAccount,
+  type OutboxTarget,
+  type OutgoingMessage,
+  type SendPayload,
+  type SetFlagsPayload,
 } from "@orbit/core";
 import {
   type accounts,
+  accounts as accountsTable,
+  calendars,
   type Database,
   mailboxes,
   messageMailboxes,
   messages,
   outbox,
 } from "@orbit/db";
-import { and, asc, eq, inArray, min } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, min, notInArray, or } from "drizzle-orm";
+import {
+  imipFailurePrefix,
+  KEEP_CONFLICTS_MS,
+  pruneEventConflicts,
+  recordInviteFailure,
+} from "./calendar/conflicts.js";
 import { recordChanges } from "./changes.js";
 import { missingAttachments } from "./mime.js";
 import { lockAccount } from "./outbox.js";
@@ -25,6 +37,18 @@ const RETRY_BASE_MS = 30_000;
 
 const INTERRUPTED =
   "送信の途中で処理が中断されました。相手に届いているか確認してから送り直してください。";
+
+/** 送信の種類 (outbox.kind)。招待メール (imip_send) も同じ順番で送る。 */
+const SEND_KINDS = ["send", IMIP_OUTBOX_KIND] as const;
+/** 送った招待メールの記録を残す期間 (送信数の上限は 1 日分を数える)。 */
+const KEEP_IMIP_DONE_MS = 7 * 24 * 60 * 60_000;
+/** processing のまま、これだけ動きの無い招待メールは、送信の途中で中断されたとみなす。 */
+const INTERRUPTED_AFTER_MS = 10 * 60_000;
+/**
+ * 送信元のアカウントの同期が止まっていて (再ログイン待ち、メールの無効化など)、これだけたっても
+ * 送れていない招待メールは、失敗として利用者に知らせる (imip レビュー M8)。
+ */
+export const IMIP_STALE_MS = 60 * 60_000;
 
 /**
  * 送信 1 回の結果。
@@ -82,7 +106,7 @@ export async function processSends(
     .where(
       and(
         eq(outbox.accountId, account.id),
-        eq(outbox.kind, "send"),
+        inArray(outbox.kind, [...SEND_KINDS]),
         inArray(outbox.status, ["pending", "processing"]),
       ),
     )
@@ -92,6 +116,12 @@ export async function processSends(
   let queued = false;
 
   for (const row of rows) {
+    if (row.kind === IMIP_OUTBOX_KIND) {
+      const result = await processImipSend(db, account, row, send, log);
+      if (result === "sent") sent++;
+      if (result === "failed") failed++;
+      continue;
+    }
     if (row.status === "processing") {
       // 前回の送信中にワーカーが止まった。届いたかどうか分からないので、送り直さない。
       await finish(db, account, row.id, "failed", INTERRUPTED);
@@ -216,17 +246,242 @@ export async function processSends(
     });
     if (followUps > 0) queued = true;
   }
+  await pruneImipSends(db, account);
   const [next] = await db
     .select({ at: min(outbox.runAfter) })
     .from(outbox)
     .where(
       and(
         eq(outbox.accountId, account.id),
-        eq(outbox.kind, "send"),
+        inArray(outbox.kind, [...SEND_KINDS]),
         eq(outbox.status, "pending"),
       ),
     );
   return { sent, failed, queued, nextRunAt: next?.at ?? null };
+}
+
+type OutboxRow = typeof outbox.$inferSelect;
+
+/**
+ * 招待メール (imip_send) を 1 通送る (imip-design 6.4、6.5)。ふつうのメールとの違い:
+ * - processing のまま残った行 (送信の途中で止まった) も送り直す。同じ iTIP が 2 通届いても
+ *   予定は 1 つで、メールが重複するだけのため (未決 3)。回数の上限は同じ 5 回。
+ * - 送る直前に、カレンダーの scheduling がまだ mail で、このアカウントから送れるかを確かめる。
+ * - 送信済みフォルダへの控えは積まない (未決 4)。返信済みの印も付けない。
+ * - 確定した失敗と、一部の宛先だけ拒否されたときは event_conflicts に invite_failed を残す。
+ *   一部の宛先だけの失敗は送信済み (done) として扱う。
+ */
+async function processImipSend(
+  db: Database,
+  account: AccountRow,
+  row: OutboxRow,
+  send: Sender,
+  log: (message: string) => void,
+): Promise<"sent" | "failed" | "skipped"> {
+  const payload = row.payload as unknown as ImipSendPayload;
+  const fail = async (reason: string) => {
+    log(`${imipFailurePrefix(payload.imip)}: ${reason}`);
+    await finishImip(db, account, row, payload, "failed", reason);
+    return "failed" as const;
+  };
+  // ほかの worker (入れ替えの重なりなど) が送っている最中の行は取らない。processing のまま
+  // INTERRUPTED_AFTER_MS 動きが無い行だけを、中断されたものとして送り直す (L6)。
+  if (
+    row.status === "processing" &&
+    Date.now() - row.updatedAt.getTime() < INTERRUPTED_AFTER_MS
+  ) {
+    return "skipped";
+  }
+  if (row.status === "processing" && row.attempts >= MAX_ATTEMPTS) {
+    return fail(
+      "送信の途中で処理が中断され、やり直しの上限に達しました。相手に届いているか確認してください。",
+    );
+  }
+  if (row.status === "pending" && row.runAfter.getTime() > Date.now()) {
+    return "skipped";
+  }
+  const [claimed] = await db
+    .update(outbox)
+    .set({ status: "processing", attempts: row.attempts + 1 })
+    .where(and(eq(outbox.id, row.id), eq(outbox.status, row.status)))
+    .returning({ id: outbox.id });
+  if (!claimed) return "skipped";
+  if (row.status === "processing") {
+    log("送信の途中で中断された招待メールを送り直します。");
+  }
+
+  // 送る直前の検査 (3.1 の 2・4、6.4): カレンダーがまだ mail で、このアカウントから送れるか。
+  const [calendar] = await db
+    .select({
+      source: calendars.source,
+      readOnly: calendars.readOnly,
+      providerState: calendars.providerState,
+    })
+    .from(calendars)
+    .where(
+      and(
+        eq(calendars.id, payload.imip.calendarId),
+        eq(calendars.userId, account.userId),
+      ),
+    );
+  if (!isSendableAccount(account)) {
+    return fail(`送信元の ${account.email} からはメールを送れません。`);
+  }
+  // カレンダーを消すときに積んだ取り消し (CANCEL) は、カレンダーが消えていても送る
+  // (積んだ時点で scheduling が mail だったことは確かめてある。imip レビュー M9)。
+  // 招待 (REQUEST) と返事 (REPLY) は送らない。
+  if (!calendar && payload.imip.method !== "CANCEL") {
+    return fail("カレンダーが削除されています。");
+  }
+  const scheduling = calendar
+    ? calendarScheduling({ ...calendar, imipSender: true })
+    : "mail";
+  if (scheduling !== "mail") {
+    return fail(
+      scheduling === "server"
+        ? "カレンダーのサービスが招待を送るようになったため、Orbit からは送りませんでした。"
+        : "このカレンダーからは招待メールを送れなくなりました。",
+    );
+  }
+
+  let outcome: SendOutcome;
+  try {
+    outcome = await send(payload.message);
+  } catch (error) {
+    // 届いたか分からないが、招待メールは送り直してよい (予定は重複しない)。
+    outcome = {
+      status: "retry",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (outcome.status === "retry" && row.attempts + 1 >= MAX_ATTEMPTS) {
+    outcome = { status: "failed", reason: outcome.reason };
+  }
+  if (outcome.status === "retry") {
+    log(`招待メールの送信をやり直します: ${outcome.reason}`);
+    await db
+      .update(outbox)
+      .set({
+        status: "pending",
+        lastError: outcome.reason,
+        runAfter: new Date(Date.now() + RETRY_BASE_MS * 2 ** row.attempts),
+      })
+      .where(eq(outbox.id, row.id));
+    return "skipped";
+  }
+  if (outcome.status === "failed") return fail(outcome.reason);
+  if (outcome.warning) log(outcome.warning);
+  await finishImip(db, account, row, payload, "done", outcome.warning ?? null);
+  return "sent";
+}
+
+/**
+ * 招待メールの結果を記録する。reason があれば (失敗、または一部の宛先だけの失敗)
+ * event_conflicts に invite_failed を残す (同じトランザクション)。
+ */
+async function finishImip(
+  db: Database,
+  account: AccountRow,
+  row: OutboxRow,
+  payload: ImipSendPayload,
+  status: "done" | "failed",
+  reason: string | null,
+) {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(outbox)
+      .set({ status, lastError: reason })
+      .where(eq(outbox.id, row.id));
+    if (reason !== null) {
+      await recordInviteFailure(tx, account.userId, row.id, payload, reason, {
+        partial: status === "done",
+      });
+    }
+  });
+}
+
+/**
+ * 招待メールの古い記録を消す。送れたものは KEEP_IMIP_DONE_MS、失敗は event_conflicts の記録と
+ * 同じ期間 (「もう一度送る」がその行を pending に戻すため) が過ぎたら消す。
+ */
+async function pruneImipSends(db: Database, account: AccountRow) {
+  const accountId = account.id;
+  const now = Date.now();
+  for (const [status, keep] of [
+    ["done", KEEP_IMIP_DONE_MS],
+    ["failed", KEEP_CONFLICTS_MS],
+  ] as const) {
+    await db
+      .delete(outbox)
+      .where(
+        and(
+          eq(outbox.accountId, accountId),
+          eq(outbox.kind, IMIP_OUTBOX_KIND),
+          eq(outbox.status, status),
+          lt(outbox.updatedAt, new Date(now - keep)),
+        ),
+      );
+  }
+  // 失敗の記録 (invite_failed など) の古いものも消す。CalDAV の書き戻しの処理からも消すが、
+  // Orbit 内のカレンダーだけの利用者では、そちらが動かないため (L12)。
+  await pruneEventConflicts(db, account.userId, new Date(now));
+}
+
+/**
+ * 送信元のアカウントの同期が動いていない (メールの同期は active と error だけ) ために、
+ * IMIP_STALE_MS たっても送れていない招待メールを失敗にし、invite_failed を残す (M8)。
+ * 同期が動いていないアカウントでは processSends が呼ばれないので、worker の定期の処理から呼ぶ。
+ * 再ログインした後は「もう一度送る」で送り直せる。戻り値は失敗にした行の数。
+ */
+export async function failStaleImipSends(
+  db: Database,
+  now: Date = new Date(),
+): Promise<number> {
+  const stale = await db
+    .select({ row: outbox, account: accountsTable })
+    .from(outbox)
+    .innerJoin(accountsTable, eq(accountsTable.id, outbox.accountId))
+    .where(
+      and(
+        eq(outbox.kind, IMIP_OUTBOX_KIND),
+        inArray(outbox.status, ["pending", "processing"]),
+        lt(outbox.createdAt, new Date(now.getTime() - IMIP_STALE_MS)),
+        or(
+          eq(accountsTable.mailEnabled, false),
+          notInArray(accountsTable.status, ["active", "error"]),
+        ),
+      ),
+    );
+  let count = 0;
+  for (const { row, account } of stale) {
+    const reason =
+      account.status === "auth_required"
+        ? `送信元の ${account.email} の再ログインが必要なため、送れていません。再ログインしてから「もう一度送る」を押してください。`
+        : `送信元の ${account.email} の同期が止まっているため、送れていません。`;
+    const updated = await db.transaction(async (tx) => {
+      const [claimed] = await tx
+        .update(outbox)
+        .set({ status: "failed", lastError: reason })
+        .where(
+          and(
+            eq(outbox.id, row.id),
+            inArray(outbox.status, ["pending", "processing"]),
+          ),
+        )
+        .returning({ id: outbox.id });
+      if (!claimed) return false;
+      await recordInviteFailure(
+        tx,
+        account.userId,
+        row.id,
+        row.payload as unknown as ImipSendPayload,
+        reason,
+      );
+      return true;
+    });
+    if (updated) count++;
+  }
+  return count;
 }
 
 /** setTimeout で待てる最長の時間 (これより先は、定期的な確認に任せる)。 */

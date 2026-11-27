@@ -356,7 +356,7 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
     ).toHaveLength(0);
   });
 
-  it("指摘 7: 受信方式を変えても、予定の書き戻し (event_*) は消さない", async () => {
+  it("指摘 7: 受信方式を変えても、予定の書き戻し (event_*) と招待メールは消さない", async () => {
     const id = await addAccount(userId, "switch-calendar@old.example");
     await db.insert(outbox).values([
       {
@@ -375,6 +375,13 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
         },
         idempotencyKey: `event_update:${randomUUID()}`,
       },
+      {
+        // 送信待ちの招待メールも残す (imip レビュー M6)。
+        accountId: id,
+        kind: "imip_send",
+        payload: {},
+        idempotencyKey: `imip:${randomUUID()}:REQUEST:0`,
+      },
     ]);
     const response = await request("PUT", `/accounts/${id}/server`, {
       ...body,
@@ -387,7 +394,10 @@ describe.skipIf(!adminUrl)("アカウントの接続先の変更", () => {
       .select({ kind: outbox.kind })
       .from(outbox)
       .where(eq(outbox.accountId, id));
-    expect(left.map((row) => row.kind)).toEqual(["event_update"]);
+    expect(left.map((row) => row.kind).sort()).toEqual([
+      "event_update",
+      "imip_send",
+    ]);
   });
 
   it("送信にログインできなければ保存しない", async () => {

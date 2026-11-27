@@ -1,4 +1,8 @@
-import type { CalendarScheduling, InviteRole } from "@orbit/core/event-invite";
+import type {
+  CalendarScheduling,
+  InviteRole,
+  SchedulingBlocked,
+} from "@orbit/core/event-invite";
 import { Temporal } from "temporal-polyfill";
 import type { Address } from "@/lib/api";
 import type {
@@ -294,7 +298,7 @@ export function attendeeEditableChanges(changes: EventFields): EventFields {
   return result;
 }
 
-/** 編集画面の参加者の欄と保存ボタンの出し方 (7.2)。 */
+/** 編集画面の参加者の欄と保存ボタンの出し方 (7.2、imip-design 12.1)。 */
 export type InviteFormView = {
   /** 招待された予定: 通知と予定あり / 空き以外の欄を無効にする。 */
   locked: boolean;
@@ -304,10 +308,49 @@ export type InviteFormView = {
   note: string | null;
   /** 注記を警告の色で出すか (保存できない理由など)。 */
   warning: boolean;
+  /** 注記に「送信元を選ぶ」を添えるか (送信元が無い・受信専用のとき)。 */
+  chooseSender: boolean;
+  /** メモの欄の下に小さく添える注記 (メモも参加者に送られる)。 */
+  descriptionNote: string | null;
   saveLabel: string;
   /** 保存できない理由 (無ければ null)。 */
   blocked: string | null;
 };
+
+/** 招待を送れないカレンダーの注記 (schedulingBlocked ごと)。理由が分からなければ従来の文。 */
+function blockedNote(
+  blocked: SchedulingBlocked | null | undefined,
+  address: string | null | undefined,
+): string {
+  switch (blocked) {
+    case "no_sender":
+      return "招待を送るには、送信できるメールアカウントが必要です";
+    case "receive_only":
+      return address
+        ? `送信元の ${address} は受信専用のため、招待を送れません`
+        : "送信元のアカウントは受信専用のため、招待を送れません";
+    case "unknown_server":
+      return "サーバーが招待を送るかを確認中です。確認が済むまで参加者を追加できません";
+    default:
+      return "このカレンダーからは招待を送れません";
+  }
+}
+
+/** 変えた項目のうち、参加者に連絡が送られるもの (通知と予定あり / 空きは送らない)。 */
+function notifiedChanges(
+  form: EventForm,
+  before: EventForm,
+  timeZone: string,
+): string[] {
+  const changes = formChanges(form, timeZone, before);
+  return Object.keys(changes ?? {}).filter(
+    (key) =>
+      key !== "attendees" &&
+      key !== "reminders" &&
+      key !== "useDefaultReminders" &&
+      key !== "busy",
+  );
+}
 
 export function inviteFormView(options: {
   form: EventForm;
@@ -319,6 +362,12 @@ export function inviteFormView(options: {
   scheduling: CalendarScheduling;
   timeZone: string;
   online: boolean;
+  /** scheduling が mail のとき、招待メールを送るアドレス (分からなければ null)。 */
+  sender?: string | null;
+  /** scheduling が none の理由 (新しいサーバーの Orbit 内・CalDAV のカレンダーだけ)。 */
+  schedulingBlocked?: SchedulingBlocked | null;
+  /** receive_only のときの送信元のアドレス。 */
+  blockedAddress?: string | null;
 }): InviteFormView {
   const { form, before, role, scheduling, online } = options;
   const view: InviteFormView = {
@@ -326,6 +375,8 @@ export function inviteFormView(options: {
     attendees: "edit",
     note: null,
     warning: false,
+    chooseSender: false,
+    descriptionNote: null,
     saveLabel: "保存",
     blocked: null,
   };
@@ -348,10 +399,12 @@ export function inviteFormView(options: {
   const changedList =
     before === null ? list.length > 0 : attendeesChanged(form, before);
   if (scheduling === "none") {
+    const blocked = options.schedulingBlocked ?? null;
     const noneView: InviteFormView = {
       ...view,
       attendees: form.attendees.list.length > 0 ? "remove_only" : "disabled",
-      note: "このカレンダーからは招待を送れません",
+      note: blockedNote(blocked, options.blockedAddress),
+      chooseSender: blocked === "no_sender" || blocked === "receive_only",
     };
     // 参加者を外すのは通す。足した (新しい予定でカレンダーを切り替えた) ときは止める。
     const added = before
@@ -365,7 +418,9 @@ export function inviteFormView(options: {
       : list.length > 0;
     if (added) {
       noneView.blocked =
-        "このカレンダーからは招待を送れません。参加者を外すか、招待を送れるカレンダーを選んでください。";
+        blocked === null
+          ? "このカレンダーからは招待を送れません。参加者を外すか、招待を送れるカレンダーを選んでください。"
+          : `${blockedNote(blocked, options.blockedAddress)}。参加者を外すか、招待を送れるカレンダーを選んでください。`;
       noneView.note = noneView.blocked;
       noneView.warning = true;
     }
@@ -374,6 +429,9 @@ export function inviteFormView(options: {
   if (list.length > MAX_FORM_ATTENDEES) {
     const reason = `参加者は ${MAX_FORM_ATTENDEES} 人までです。`;
     return { ...view, note: reason, warning: true, blocked: reason };
+  }
+  if (scheduling === "mail") {
+    return mailFormView(view, options, list.length, changedList);
   }
   if (changedList) {
     return {
@@ -384,26 +442,68 @@ export function inviteFormView(options: {
       saveLabel: "保存して招待を送る",
     };
   }
-  if (before && list.length > 0) {
-    const changes = formChanges(form, options.timeZone, before);
-    const others = Object.keys(changes ?? {}).filter(
-      (key) =>
-        key !== "attendees" &&
-        key !== "reminders" &&
-        key !== "useDefaultReminders" &&
-        key !== "busy",
-    );
-    if (others.length > 0) {
-      return {
-        ...view,
-        note: online
-          ? "保存すると参加者に変更の連絡が届きます"
-          : "接続したときに参加者に変更の連絡が届きます",
-        saveLabel: "保存して連絡を送る",
-      };
-    }
+  if (
+    before &&
+    list.length > 0 &&
+    notifiedChanges(form, before, options.timeZone).length > 0
+  ) {
+    return {
+      ...view,
+      note: online
+        ? "保存すると参加者に変更の連絡が届きます"
+        : "接続したときに参加者に変更の連絡が届きます",
+      saveLabel: "保存して連絡を送る",
+    };
   }
   return view;
+}
+
+/**
+ * Orbit が招待メールを送るカレンダー (scheduling: mail) の注記。送信元のアドレスは
+ * 送る前に必ず見えるようにする (未決 1 の推奨 A)。
+ */
+function mailFormView(
+  view: InviteFormView,
+  options: Parameters<typeof inviteFormView>[0],
+  count: number,
+  changedList: boolean,
+): InviteFormView {
+  const { form, before, online } = options;
+  const sender = options.sender?.trim() || null;
+  const from = sender ? `${sender} から` : "";
+  const descriptionNote =
+    count > 0 && form.description.trim() ? "メモも参加者に送られます" : null;
+  const withNote = (note: string, saveLabel: string): InviteFormView => ({
+    ...view,
+    note,
+    saveLabel,
+    descriptionNote,
+  });
+  if (changedList) {
+    return withNote(
+      online
+        ? `保存すると、${from}参加者に招待メールを送ります`
+        : `接続したときに、${from}招待メールを送ります`,
+      "保存して招待を送る",
+    );
+  }
+  if (
+    before &&
+    count > 0 &&
+    notifiedChanges(form, before, options.timeZone).length > 0
+  ) {
+    return withNote(
+      online
+        ? `保存すると、${from}参加者に変更のメールを送ります`
+        : `接続したときに、${from}変更のメールを送ります`,
+      "保存して連絡を送る",
+    );
+  }
+  return {
+    ...view,
+    note: sender ? `招待メールは ${sender} から送ります` : null,
+    descriptionNote,
+  };
 }
 
 /**

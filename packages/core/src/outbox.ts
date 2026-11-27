@@ -1,4 +1,5 @@
 import type { EventFieldName } from "./event-merge.js";
+import type { ItipMethod } from "./itip.js";
 
 /**
  * 送信待ちキュー (outbox テーブル) の payload。
@@ -72,6 +73,11 @@ export type OutgoingMessage = {
   date: string;
   inReplyTo: string | null;
   references: string[];
+  /**
+   * 招待メール (iMIP、RFC 6047) の iCalendar。あれば text/calendar; method=… の alternative と
+   * invite.ics の添付を入れる (apps/worker の buildMime)。
+   */
+  calendar?: { method: ItipMethod; content: string } | null;
 };
 
 export type SendPayload = {
@@ -211,14 +217,22 @@ export type EventOutboxRef = {
   parentRemoteId: string | null;
 };
 
-/** 予定を作る。中身は実行時に DB の行から読む。 */
-export type EventCreatePayload = { eventId: string; calendarId: string };
+/**
+ * 予定を作る。中身は実行時に DB の行から読む。
+ * imip: scheduling が mail の CalDAV のカレンダーで、書き戻しが成功した後に送る招待メールの計画。
+ */
+export type EventCreatePayload = {
+  eventId: string;
+  calendarId: string;
+  imip?: ImipPlan | null;
+};
 
 /** 予定を変える。中身は実行時に DB の行から読み、fields の項目を書き戻す。 */
 export type EventUpdatePayload = {
   eventId: string;
   calendarId: string;
   fields: EventFieldName[];
+  imip?: ImipPlan | null;
 };
 
 /** 予定を消す。 */
@@ -227,6 +241,7 @@ export type EventDeletePayload = {
   target: EventOutboxRef;
   /** 消した時刻 (ISO 8601)。 */
   deletedAt: string;
+  imip?: ImipPlan | null;
 };
 
 /** 招待に返事をする。 */
@@ -240,6 +255,7 @@ export type EventRespondPayload = {
    * 予定の行が消えるので、行が無いときはこれで返事をする。段取り 8 より前に積んだ行には無い。
    */
   target?: EventOutboxRef;
+  imip?: ImipPlan | null;
 };
 
 /**
@@ -272,3 +288,92 @@ export const CALENDAR_WRITEBACK_SOURCES: readonly string[] = [
   "microsoft",
   "caldav",
 ];
+
+// ---------------------------------------------------------------------------
+// 招待メール (iMIP、段取り 8b)。設計は calendar-dev/imip-design.md の 5・6 章。
+
+/** 招待メールの送信の操作の種類 (outbox.kind)。送信元のメールアカウントに積み、processSends が送る。 */
+export const IMIP_OUTBOX_KIND = "imip_send";
+
+/** 1 通の招待メールの宛先の上限。超える分は複数通に分ける。 */
+export const IMIP_RECIPIENTS_PER_MESSAGE = 50;
+
+/** 計画の 1 通分 (宛先を 50 件ずつに分ける前)。 */
+export type ImipPlanMessage = {
+  method: ItipMethod;
+  to: MailAddress[];
+  /** "series" = 原本と例外、"occurrence" = その行だけ。 */
+  scope: "series" | "occurrence";
+  /** CANCEL で VEVENT に書く相手 (参加者を外すとき)。省けば全員。 */
+  attendees?: string[];
+  reason: "create" | "update" | "add" | "remove" | "delete" | "respond";
+  /**
+   * その回 (例外の行、または原本の EXDATE に入れた回)。行の回と同じなら省いてよい。
+   * 送信の記録 (ImipSendPayload.imip.recurrenceId) に使う。
+   */
+  recurrenceId?: string | null;
+  /**
+   * 行が消える操作 (削除、1 回だけの取り消し) と返事 (REPLY。書き戻しの前に行が消えても送れるように)
+   * では、計画を作った時点の iCalendar を入れる。
+   */
+  content?: string;
+  /**
+   * CalDAV で、前の書き戻しから後ろの書き戻しへ持ち越したメッセージ (imip レビュー M2)。
+   * 後ろの行で書いた項目による絞り込みはしない。後ろの行が確定して失敗したら invite_failed を残す。
+   */
+  carried?: true;
+};
+
+/** API が変更を受け付けた時点で決める「何を誰に送るか」。CalDAV では event_* の payload の imip に載せる。 */
+export type ImipPlan = {
+  senderAccountId: string;
+  /** 積んだ時刻 (DTSTAMP。ISO 8601)。やり直しても同じ値を使う。 */
+  stamp: string;
+  messages: ImipPlanMessage[];
+};
+
+/** imip_send の payload。 */
+export type ImipSendPayload = {
+  /** calendar 付きのメール。 */
+  message: OutgoingMessage;
+  imip: {
+    method: ItipMethod;
+    reason: ImipPlanMessage["reason"];
+    userId: string;
+    calendarId: string;
+    eventId: string;
+    uid: string;
+    recurrenceId: string | null;
+    sequence: number;
+    title: string | null;
+  };
+};
+
+/**
+ * imip_send の idempotencyKey。baseKey は元の操作のキー (eventCreateKey / eventUpdateKey /
+ * eventDeleteKey / eventRespondKey)、index は計画の中の通し番号 (宛先の分割を含む)。
+ */
+export function imipSendKey(
+  baseKey: string,
+  method: ItipMethod,
+  index: number,
+): string {
+  return `imip:${baseKey}:${method}:${index}`;
+}
+
+/**
+ * 招待メールの送信元にできるアカウントか (imip-design 4.1。send.ts の receive_only と同じ基準)。
+ * メールが有効で、Graph か送信サーバー (SMTP) があり、止められていない (disabled でない)。
+ */
+export function isSendableAccount(account: {
+  mailEnabled: boolean;
+  protocol: string;
+  smtpHost: string | null;
+  status: string;
+}): boolean {
+  return (
+    account.mailEnabled &&
+    account.status !== "disabled" &&
+    (account.protocol === "graph" || account.smtpHost !== null)
+  );
+}

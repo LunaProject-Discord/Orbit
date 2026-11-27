@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { senderIconSources } from "./sender-icon";
 
 describe("senderIconSources", () => {
-  const verified = { verified: true, warnings: [], claimed: null };
+  const verified = { verified: true, warnings: [], claimed: null, version: 2 };
 
   it("確認済みなら BIMI から探す", () => {
     expect(senderIconSources(verified, false)).toEqual(["bimi", "favicon"]);
@@ -19,6 +19,12 @@ describe("senderIconSources", () => {
         { verified: false, warnings: [], claimed: null },
         false,
       ),
+    ).toEqual(["favicon"]);
+  });
+
+  it("古い決まり (版なし) の確認済みには BIMI を使わない (端末の古い控え)", () => {
+    expect(
+      senderIconSources({ verified: true, warnings: [], claimed: null }, false),
     ).toEqual(["favicon"]);
   });
 

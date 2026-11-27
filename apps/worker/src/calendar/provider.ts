@@ -46,6 +46,18 @@ export type ProviderContext = {
   encryptionKey: Buffer;
   /** 開発用に、プライベートな IP の接続先を許す (CalDAV の host-check 用)。 */
   allowPrivateHosts: boolean;
+  /**
+   * CalDAV: カレンダー (calendars.id) ごとの、招待メールの送信元のアドレス (imip-design 4.4)。
+   * 取り込みの self / organizer.self の判定と、ORGANIZER の無い予定に書く主催者に使う。
+   * 土台が同期の周回ごとに解決して入れる。無ければアカウントのアドレスだけで判定する。
+   */
+  imipAddresses?: ReadonlyMap<string, string>;
+  /**
+   * CalDAV: 利用者の全アカウントのアドレス (小文字)。自動スケジュールでないカレンダーの
+   * organizer.self の判定に足す (参加者の self には使わない)。送信元を変えた後も、前の送信元で主催した予定を
+   * 自分の予定として扱うため (imip レビュー M7)。
+   */
+  userAddresses?: ReadonlySet<string>;
   log(message: string): void;
   /**
    * カレンダーの変更通知の状態 (pushChannelId、pushExpiresAt、providerState) を保存する。

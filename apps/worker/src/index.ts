@@ -28,6 +28,7 @@ import {
   webPushTransport,
 } from "./new-mail.js";
 import { buildSearchIndex } from "./search-index.js";
+import { failStaleImipSends } from "./send.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -143,6 +144,20 @@ const sweep = async () => {
 void sweep();
 const sweepTimer = setInterval(sweep, 60 * 60_000);
 
+// 送信元のアカウントの同期が止まっていて (再ログイン待ちなど) 送れない招待メールは、
+// 1 時間たったら失敗として利用者に知らせる (imip レビュー M8)。10 分ごとに確かめる。
+const staleInvites = async () => {
+  try {
+    const count = await failStaleImipSends(db);
+    if (count > 0)
+      console.log(`送れていない招待メール ${count} 通を失敗にしました。`);
+  } catch (error) {
+    console.error("送れていない招待メールを確かめられませんでした。", error);
+  }
+};
+void staleInvites();
+const staleInviteTimer = setInterval(staleInvites, 10 * 60_000);
+
 // ICS の購読を、カレンダーごとの間隔 (既定 1 時間) で取得し直す。1 分ごとに時期を確かめる。
 let refreshing = false;
 const refreshSubscriptions = async () => {
@@ -168,6 +183,7 @@ const subscriptionTimer = setInterval(refreshSubscriptions, 60_000);
 async function shutdown() {
   stopping = true;
   clearInterval(sweepTimer);
+  clearInterval(staleInviteTimer);
   clearInterval(subscriptionTimer);
   await calendarManager.stop();
   await manager.stop();

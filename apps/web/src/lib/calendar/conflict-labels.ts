@@ -228,6 +228,10 @@ export function errorReasonLabel(code: string | null): string {
       return "主催者でない予定は、通知と「予定あり / 空き」だけ変えられます";
     case "no_scheduling":
       return "このカレンダーからは招待を送れません";
+    case "invite_limit":
+      return "招待メールの送信数が上限に達しました。しばらくしてからもう一度保存してください";
+    case "invite_too_many":
+      return "1 回の変更で招待メールを送れる宛先の上限 (200 件) を超えています。参加者を減らしてください";
     default:
       return code.startsWith("http_")
         ? `サーバーの応答 ${code.slice(5)}`
@@ -279,11 +283,43 @@ export function conflictMessage(
       return `${name}のこの回は、繰り返しの変更で無くなっていたので、変更を保存できませんでした。`;
     case "failed":
       return `${name}の変更を保存できませんでした。`;
+    case "invite_failed":
+      return inviteFailedMessage(item, name);
   }
+}
+
+/** 招待メールの送信の失敗の文 (imip-design 12.4)。 */
+function inviteFailedMessage(item: ConflictItem, name: string): string {
+  switch (item.invite?.method) {
+    case "CANCEL":
+      return `${name}の取り消しのメールを送れませんでした。`;
+    case "REPLY":
+      return `${name}への出欠の返事を主催者へ送れませんでした。`;
+    default:
+      return `${name}の招待メールを送れませんでした。`;
+  }
+}
+
+/**
+ * invite_failed の理由。サーバーの理由は「招待メールを送れませんでした: <理由>」の形なので、
+ * 見出しと重ならないように前置きを外す。一部の宛先だけ失敗したときは宛先を出す。
+ */
+function inviteFailedReason(item: ConflictItem): string | null {
+  const to = item.invite?.to ?? [];
+  if (item.invite?.partial && to.length > 0) {
+    const shown = to.slice(0, 3).join("、");
+    return `次の宛先には送れませんでした: ${
+      to.length > 3 ? `${shown} ほか ${to.length - 3} 件` : shown
+    }`;
+  }
+  const reason = item.reason?.trim();
+  if (!reason) return null;
+  return reason.replace(/^[^:：]*送れませんでした\s*[:：]\s*/, "") || null;
 }
 
 /** 説明の下に添える理由 (無ければ null)。 */
 export function conflictReason(item: ConflictItem): string | null {
+  if (item.kind === "invite_failed") return inviteFailedReason(item);
   if (item.source === "server") return item.reason?.trim() || null;
   if (item.kind === "failed") return errorReasonLabel(item.reason);
   return null;
@@ -303,6 +339,8 @@ export function conflictActionLabel(
       return "自分の変更に戻す";
     case "retry":
       return "もう一度試す";
+    case "resend":
+      return "もう一度送る";
     case "delete":
       return item.kind === "create_failed" ? "予定を消す" : "やはり削除する";
     case "dismiss":

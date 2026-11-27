@@ -259,6 +259,70 @@ describe("parseICalendar", () => {
     expect(calendar.events[1]?.uid).toMatch(/^orbit-[0-9a-f]{32}$/);
   });
 
+  it("DTSTAMP、COMMENT、SENT-BY、RSVP を読む (iTIP)", () => {
+    const [event] = parseICalendar(
+      crlf([
+        "BEGIN:VCALENDAR",
+        "METHOD:REPLY",
+        "BEGIN:VEVENT",
+        "UID:r@example.com",
+        "DTSTAMP:20261127T093000Z",
+        "DTSTART:20261201T000000Z",
+        'ORGANIZER;CN=Boss;SENT-BY="mailto:secretary@example.com":mailto:boss@example.com',
+        'ATTENDEE;PARTSTAT=ACCEPTED;RSVP=TRUE;SENT-BY="mailto:Deputy@example.com":mailto:bob@example.com',
+        "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:carol@example.com",
+        "COMMENT:少し遅れます\\, よろしく",
+        "COMMENT:2 行目",
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ]),
+      options,
+    ).events;
+    expect(event?.dtstamp).toBe("2026-11-27T09:30:00Z");
+    expect(event?.comment).toBe("少し遅れます, よろしく\n2 行目");
+    expect(event?.organizer).toEqual({
+      email: "boss@example.com",
+      name: "Boss",
+      sentBy: "secretary@example.com",
+    });
+    expect(event?.attendees).toEqual([
+      {
+        email: "bob@example.com",
+        name: null,
+        role: "required",
+        status: "accepted",
+        sentBy: "Deputy@example.com",
+        rsvp: true,
+      },
+      {
+        email: "carol@example.com",
+        name: null,
+        role: "required",
+        status: "needs_action",
+        sentBy: null,
+        rsvp: false,
+      },
+    ]);
+  });
+
+  it("DTSTAMP と COMMENT が無ければ null、主催者に SENT-BY が無ければ鍵ごと無い", () => {
+    const [event] = parseICalendar(
+      crlf([
+        "BEGIN:VCALENDAR",
+        "BEGIN:VEVENT",
+        "UID:n@example.com",
+        "DTSTART:20261201T000000Z",
+        "ORGANIZER:mailto:boss@example.com",
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ]),
+      options,
+    ).events;
+    expect(event?.dtstamp).toBeNull();
+    expect(event?.comment).toBeNull();
+    expect(event?.organizer).toEqual({ email: "boss@example.com" });
+  });
+
   it("iCalendar でなければ ICalendarError", () => {
     expect(() => parseICalendar("<html></html>", options)).toThrow(
       ICalendarError,

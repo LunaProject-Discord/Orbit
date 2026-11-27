@@ -265,6 +265,87 @@ describe("writeICalendar", () => {
     expect(afterException?.recurrenceId).toBe(exception.recurrenceId);
   });
 
+  it("他人が主催する予定 (取り込んだ招待) は、時刻を変えても SEQUENCE を上げない", () => {
+    const organizer = { email: "sato@example.com", self: false };
+    const base = writeICalendar({
+      base: null,
+      entries: [{ event: event({ sequence: 2, organizer }), fields: "all" }],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    const moved = writeICalendar({
+      base,
+      entries: [
+        {
+          event: event({
+            sequence: 2,
+            organizer,
+            startAt: "2026-12-09T01:00:00Z",
+            endAt: "2026-12-09T02:00:00Z",
+          }),
+          fields: ["time"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(read(moved)[0]?.sequence).toBe(2);
+  });
+
+  it("API が先に上げた SEQUENCE を、もう 1 回上げない (二重上げの修正)", () => {
+    const base = writeICalendar({
+      base: null,
+      entries: [{ event: event({ sequence: 0 }), fields: "all" }],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(base).toMatch(/SEQUENCE:0/);
+    // API が時刻の変更で sequence を 0 → 1 にした行を書き戻す。
+    const moved = writeICalendar({
+      base,
+      entries: [
+        {
+          event: event({
+            sequence: 1,
+            startAt: "2026-12-09T01:00:00Z",
+            endAt: "2026-12-09T02:00:00Z",
+          }),
+          fields: ["time"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(read(moved)[0]?.sequence).toBe(1);
+    // 行の値が基の値と同じ (上げていない) なら、これまでどおり 1 上げる。
+    const same = writeICalendar({
+      base: moved,
+      entries: [
+        {
+          event: event({
+            sequence: 1,
+            startAt: "2026-12-10T01:00:00Z",
+            endAt: "2026-12-10T02:00:00Z",
+          }),
+          fields: ["time"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(read(same)[0]?.sequence).toBe(2);
+    // 時刻を変えない変更では上げない。
+    const renamed = writeICalendar({
+      base: same,
+      entries: [
+        { event: event({ sequence: 2, summary: "改題" }), fields: ["summary"] },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(read(renamed)[0]?.sequence).toBe(2);
+  });
+
   it("例外を差し替え、足し、取り除ける", () => {
     const [master, exception] = read(BASE);
     if (!master || !exception) throw new Error("読めません");

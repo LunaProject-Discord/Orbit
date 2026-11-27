@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   fetchSenderIcon,
+  isVerifiedSender,
   type SenderCheck,
   type SenderIconSource,
 } from "@/lib/api";
@@ -26,7 +27,7 @@ export function senderIconSources(
   if (contact) return gravatar ? ["bimi", "gravatar"] : ["bimi"];
   const clean = check ? check.warnings.length === 0 : false;
   const sources: SenderIconSource[] = [];
-  if (clean && check?.verified) sources.push("bimi");
+  if (isVerifiedSender(check)) sources.push("bimi");
   if (gravatar) sources.push("gravatar");
   if (clean) sources.push("favicon");
   return sources;
