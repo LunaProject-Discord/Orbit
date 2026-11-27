@@ -118,6 +118,8 @@ export function makeCalendarRow(
     providerState: null,
     imipAccountId: null,
     expandedUntil: null,
+    notify: null,
+    remindersHash: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

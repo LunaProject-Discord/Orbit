@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Temporal } from "temporal-polyfill";
 import { instantRecurrenceId } from "./recurrence.js";
+import { ALL_DAY_MIN_MINUTES } from "./reminders.js";
 
 /**
  * iCalendar (RFC 5545) の読み取り。ICS の購読と CalDAV で使う。
@@ -465,29 +466,46 @@ function attendees(component: Component): ParsedAttendee[] {
   return result;
 }
 
-/** VALARM のうち、開始からの相対時刻のものをリマインダーにする。 */
-function reminders(component: Component): ParsedReminder[] | null {
+/**
+ * VALARM の TRIGGER を、Orbit のリマインダーの分 (開始の何分前か) にする。読まないものは null。
+ * - 開始からの相対時刻 (RELATED=START か省略) だけを読む。RELATED=END と絶対時刻
+ *   (VALUE=DATE-TIME) は読まない (書き戻しでもそのまま残す)。
+ * - 時刻のある予定: 開始より前か同時 (-PT15M、PT0S) だけ。開始より後は読まない。
+ * - 終日の予定: 開始日の 0:00 (壁時計) からの相対時刻。開始より後は当日のうち (PT23H59M) まで
+ *   読み、負の分にする (PT9H = 当日 9:00 = -540)。それより後は読まない (設計 13 章の 1 の B)。
+ * 書き出し (icalendar-write.ts) が「Orbit が管理する VALARM」を見分けるのにも使う。
+ */
+export function triggerReminderMinutes(
+  trigger: { value: string; params: Map<string, string> } | undefined,
+  allDay: boolean,
+): number | null {
+  if (!trigger) return null;
+  if (trigger.params.get("VALUE")?.toUpperCase() === "DATE-TIME") return null;
+  if (trigger.params.get("RELATED")?.toUpperCase() === "END") return null;
+  const duration = parseDuration(trigger.value);
+  if (!duration) return null;
+  const minutes = Math.round(
+    -duration.total({
+      unit: "minutes",
+      relativeTo: "2000-01-01T00:00:00[UTC]",
+    }),
+  );
+  // -0 (PT0S) を 0 にする。
+  const value = minutes === 0 ? 0 : minutes;
+  return value < (allDay ? ALL_DAY_MIN_MINUTES : 0) ? null : value;
+}
+
+/** VALARM のうち、開始からの相対時刻のものをリマインダーにする (triggerReminderMinutes)。 */
+function reminders(
+  component: Component,
+  allDay: boolean,
+): ParsedReminder[] | null {
   const alarms = component.children.filter((child) => child.name === "VALARM");
   if (alarms.length === 0) return null;
   const result: ParsedReminder[] = [];
   for (const alarm of alarms) {
-    const trigger = first(alarm, "TRIGGER");
-    if (
-      !trigger ||
-      trigger.params.get("VALUE")?.toUpperCase() === "DATE-TIME"
-    ) {
-      continue;
-    }
-    if (trigger.params.get("RELATED")?.toUpperCase() === "END") continue;
-    const duration = parseDuration(trigger.value);
-    if (!duration) continue;
-    const minutes = Math.round(
-      -duration.total({
-        unit: "minutes",
-        relativeTo: "2000-01-01T00:00:00[UTC]",
-      }),
-    );
-    if (minutes < 0) continue;
+    const minutes = triggerReminderMinutes(first(alarm, "TRIGGER"), allDay);
+    if (minutes === null) continue;
     const action = first(alarm, "ACTION")?.value.trim().toUpperCase();
     result.push({ method: action === "EMAIL" ? "email" : "display", minutes });
   }
@@ -674,7 +692,7 @@ function parseEvent(
     remoteUpdatedAt: modified?.kind === "time" ? modified.instant : null,
     dtstamp: dtstamp?.kind === "time" ? dtstamp.instant : null,
     comment: comments.length > 0 ? comments.join("\n") : null,
-    reminders: reminders(component),
+    reminders: reminders(component, timing.allDay),
     raw,
   };
 }

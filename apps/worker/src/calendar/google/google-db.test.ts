@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import {
   calendars,
   type Database,
+  eventReminders,
   events,
   listEventEtags,
   listEventKeys,
@@ -232,5 +233,67 @@ describe.skipIf(!adminUrl)("Google と土台の取り込み・書き戻し", () 
     expect(
       logs.filter((line) => line.includes("書き込みませんでした")),
     ).toEqual([]);
+  });
+
+  it("終日の負の分 (当日 9:00) は Google に書かず、取り込みでも消さない (Orbit の中だけの通知)", async () => {
+    const id = randomUUID();
+    await db.insert(events).values({
+      id,
+      userId,
+      calendarId,
+      uid: `${id}@orbit`,
+      summary: "休み",
+      allDay: true,
+      startDate: "2026-12-24",
+      endDate: "2026-12-25",
+      useDefaultReminders: false,
+    });
+    await db.insert(eventReminders).values([
+      { eventId: id, method: "display", minutes: -540 },
+      { eventId: id, method: "display", minutes: 900 },
+    ]);
+    await enqueue("event_create", { eventId: id, calendarId });
+    await run();
+    const remoteId = googleEventIdFor(id);
+    // Google の overrides は 0 以上だけ (負の分は書かない)。
+    expect(server.get(PRIMARY, remoteId)?.reminders).toEqual({
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 900 }],
+    });
+    const minutesOf = async () =>
+      (
+        await db
+          .select()
+          .from(eventReminders)
+          .where(eq(eventReminders.eventId, id))
+      )
+        .map((row) => row.minutes)
+        .sort((a, b) => a - b);
+    expect(await minutesOf()).toEqual([-540, 900]);
+    // Google で題名だけ変わっても、負の分は残る。
+    const remote = server.get(PRIMARY, remoteId);
+    if (!remote) throw new Error("Google に予定がありません。");
+    server.put(PRIMARY, { ...remote, summary: "冬休み" });
+    await sync();
+    expect(await minutesOf()).toEqual([-540, 900]);
+    // Google で通知を変えたら、Google の分は Google の値 (前日 17:00) に、負の分は残る。
+    server.put(PRIMARY, {
+      ...(server.get(PRIMARY, remoteId) as typeof remote),
+      reminders: {
+        useDefault: false,
+        overrides: [{ method: "popup", minutes: 420 }],
+      },
+    });
+    await sync();
+    expect(await minutesOf()).toEqual([-540, 420]);
+    // Google でカレンダーの既定に戻したら、負の分も消える。
+    server.put(PRIMARY, {
+      ...(server.get(PRIMARY, remoteId) as typeof remote),
+      reminders: { useDefault: true },
+    });
+    await sync();
+    expect(await minutesOf()).toEqual([]);
+    const [row] = await db.select().from(events).where(eq(events.id, id));
+    expect(row?.useDefaultReminders).toBe(true);
   });
 });

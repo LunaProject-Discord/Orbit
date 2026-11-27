@@ -82,6 +82,33 @@
             android:name=".NotificationActionReceiver"
             android:exported="false" />
 
+        <!-- 予定の通知 (段取り 9)。招待の出欠ボタン (参加 / 未定 / 不参加) が押されたときの処理。 -->
+        <receiver
+            android:name=".EventActionReceiver"
+            android:exported="false" />
+
+        <!-- 予約したリマインダーの時刻が来たとき (AlarmManager から。ReminderScheduler)。 -->
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="false" />
+
+        <!--
+            再起動・アプリの更新・時計やタイムゾーンの変更のあとに、リマインダーを登録し直す。
+            受け取るのは Android (システム) が送る知らせだけなので、exported="false" でも届く
+            (androidx.work の RescheduleReceiver と同じ形)。ほかのアプリからは明示の Intent も送れない。
+        -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
         <!-- 接続先サーバーとログインを、同じ鍵で署名した Orbit のアプリへ公開する (読み取り専用)。 -->
         <provider
             android:name=".SharedConfigProvider"
@@ -105,4 +132,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 13 以降で通知を出すための許可 (利用者が通知を有効にしたときに尋ねる)。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 予定のリマインダーを、電源を入れ直したあとにも登録し直すため (BootReceiver)。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+        正確なアラームの権限は、Mail アプリには付けない (Google Play の方針で USE_EXACT_ALARM は
+        アラーム・カレンダーのアプリに限られる)。リマインダーは不正確なアラーム + サーバーの FCM で鳴らす。
+        段取り 10 の Calendar アプリは USE_EXACT_ALARM を付ける (ReminderScheduler はそのまま使える)。
+    -->
 </manifest>

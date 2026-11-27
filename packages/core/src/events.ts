@@ -1,3 +1,5 @@
+import type { CalendarPushMessage } from "./calendar-notifications.js";
+
 /**
  * プロセス間の通知に使う PostgreSQL の LISTEN / NOTIFY のチャンネル名。
  * - API → ワーカー: メールアカウントが追加・削除された
@@ -149,3 +151,29 @@ export type CalendarSyncNotification = {
   calendarId?: string;
   reason: CalendarSyncReason;
 };
+
+/**
+ * ワーカー → API: 予定の招待・変更・取り消しを知らせる (段取り 9)。API の EventsHub が受け、
+ * SSE の "calendar" イベント (CalendarHubEvent) で開いている画面へ配る。リマインダーは載せない
+ * (端末が自分で鳴らすか、push で届く)。
+ */
+export const CHANNEL_CALENDAR_NOTICE = "calendar_notice";
+
+/**
+ * CHANNEL_CALENDAR_NOTICE の payload。NOTIFY は 8000 バイトまでなので、notifications には
+ * rsvp を付けない (Desktop の SSE には出欠の合言葉を載せない。設計 4.3)。
+ */
+export type CalendarNoticeNotification = {
+  userId: string;
+  notifications: CalendarPushMessage[];
+};
+
+/**
+ * API → ワーカー: 利用者のタイムゾーンか、予定の通知の設定 (終日の通知など) が変わった。
+ * ReminderIndexer がその利用者の終日の job を作り直す。
+ */
+export const CHANNEL_CALENDAR_NOTIFICATION_SETTINGS =
+  "calendar_notification_settings";
+
+/** CHANNEL_CALENDAR_NOTIFICATION_SETTINGS の payload。 */
+export type CalendarNotificationSettingsNotification = { userId: string };

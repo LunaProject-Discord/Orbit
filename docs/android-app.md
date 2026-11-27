@@ -20,6 +20,7 @@ Orbit Mail の Android アプリ (`apps/mobile`) のビルド、プッシュ通�
 | `apps/mobile/scripts/generate-icons.mjs` | `assets/brand/` からアイコンと起動画面の画像を作る |
 | `apps/web/src/lib/native/` | アプリの中でだけ動く処理 (起動画面、戻るボタン、テーマ、通知) |
 | `apps/mobile/android/app/src/main/java/…/OrbitMessagingService.java` ほか | 通知の組み立て (`MailNotifications`) と、通知のボタン・返信欄の処理 (`NotificationActionReceiver`) |
+| `apps/mobile/android/app/src/main/java/…/ReminderScheduler.java` ほか | 予定の通知 (リマインダーの予約 `ReminderScheduler`・`ReminderReceiver`・`BootReceiver`、組み立て `CalendarNotifications`、出欠ボタン `EventActionReceiver`) |
 | `.github/workflows/android.yml` | GitHub Actions でのビルド |
 
 ## 1. GitHub Actions でビルドする (いちばん手軽)
@@ -181,6 +182,24 @@ pnpm --filter @orbit/mobile icons
 - 送り先は、サーバーの `API_PUBLIC_URL` です (`deploy/` の構成では自動で `https://<ドメイン>` になります)。
 - ブラウザー (PWA) の通知にも同じボタンが付きます。ブラウザーが並べられる数 (Chrome は 2 つ) までで、設定で選んだ順に先頭から出ます。
 
+## 予定の通知
+
+Calendar アプリ (`jp.lunaproject.orbit.calendar`) ができるまでは、Mail アプリが予定の通知も受け持ちます。設計は共有フォルダの `calendar-dev/notifications-design.md` (段取り 9) です。
+
+- **リマインダー**は端末が自分で鳴らします。画面 (`apps/web/src/lib/calendar/notifications/`) が 7 日先・64 件までの一覧と文言を作り、`apps/web/src/lib/native/reminders.ts` の橋から `AppShell.scheduleReminders` へ毎回「全部の一覧」を渡します。`ReminderScheduler` が一覧をアプリ専用の保存領域に書いて差分だけ `AlarmManager` に登録し、時刻が来ると `ReminderReceiver` が通知を出します。
+- 電源を入れ直したとき・アプリを更新したとき・時計やタイムゾーンを変えたときは、`BootReceiver` が保存した一覧から登録し直します (ログインしていなければ登録せず、一覧を消します)。終日の予定の時刻の計算し直しは、次にアプリを開いたときに画面が行います。
+- **正確なアラームの権限は付けていません** (Google Play の方針で `USE_EXACT_ALARM` はアラーム・カレンダーのアプリに限られるため)。Android 12 以降は不正確なアラーム (`setAndAllowWhileIdle`) になり、Doze 中は数分遅れることがあります。その分はサーバーが FCM でも送り、同じ tag (`cal-rem:…`) の通知は 1 つにまとまります。鳴らす時刻を 15 分過ぎたもの、予定が終わったものは出しません。Android 11 以前は正確なアラームで予約します。Calendar アプリはマニフェストに `USE_EXACT_ALARM` を書くだけで、同じコードのまま正確なアラームになります。
+- **招待・変更・取り消し**はサーバーから FCM で届きます (`data.kind` が `event-` で始まる)。`OrbitMessagingService` が `CalendarNotifications` へ回します。予定の通知は、アプリを開いていても出します。
+- 端末の予約で出した (または利用者が消した) リマインダーと同じもの (同じ tag で、予約は同じ鳴らす時刻、FCM は同じ予定の終了) は、24 時間のあいだ出し直しません。tag は鳴らす時刻を含まないので、鳴ったあとに予定が延期されたときは、新しい時刻の分を別の通知として出します。FCM が先に届いたときは、同じ tag の予約を取り消します。
+- 組み直しのときに「時刻を過ぎたが、まだ鳴っていない」予約 (不正確なアラームの遅れ) は取り消さずに残します。作った時点で鳴らす時刻を過ぎていた予定 (15 分以内) は、画面が 1 度だけ渡し、すぐに鳴ります。
+- **通知の分類**は「予定のリマインダー」(重要度 高) と「招待と予定の変更」(重要度 標準) の 2 つで、Android の設定で別々に切れます。ロック画面では中身を隠します。
+- 招待の通知には **参加 / 未定 / 不参加** のボタンが付き、アプリを開かずにサーバーの `POST /v1/notification-actions/event` へ出欠を送ります (`EventActionReceiver`)。ログインの代わりに FCM で届いた合言葉 (その予定 1 件の出欠だけを 7 日間変えられる) を使います。送り先は、アプリの接続先サーバー (`SharedConfig` の `serverUrl`) と同じ origin の `…/v1/notification-actions/event` だけを許し、違えばボタンを付けません。転送 (30x) はたどりません。通信は接続 4 秒・読み取り 4 秒で打ち切ります (ボタンの処理に使える約 10 秒の中で、失敗の知らせを出せるように)。送れなかったとき (オフライン、期限切れ、取り消された予定) は「出欠を反映できませんでした」を出し、押すと予定を開きます。
+- 通知を押すと、アプリ専用の URL `jp.lunaproject.orbit.mail://calendar/events/<ID>?o=<回>` でアプリを開きます (宛先を明示した Intent なので、ほかのアプリからこの URL では開けません)。画面は `listenNativeCalendarOpen` (起動中は `appUrlOpen`、通知から起動したときは `AppShell.takeLaunchCalendarUrl`) で受け取り、その予定を表示します。起動時の URL は `MainActivity` が 1 度だけ渡し、履歴から開き直したとき・画面を作り直したときは渡しません (同じ予定をまた開かない)。古いアプリでは `getLaunchUrl` を画面ごとに 1 度だけ使います。
+- **ログアウト・別の利用者でのログイン**では、予約と出ている予定の通知をすべて消します (画面が橋の `clear` を呼ぶほか、`publishSharedConfig` にログインが空で届いたときにアプリ側でも消します)。
+- Calendar アプリが入っている端末では、Mail アプリは予定の通知を出さず、予約もしません (`reminderCapabilities` は `schedule: "none"`)。
+- FCM の予定の通知も、ログインしていなければ出しません (401 のあとに FCM の登録を外せなかったとき)。`BootReceiver` は `exported="false"` です (システムの知らせだけを受ける)。
+- 自動テストはありません。実機で確かめる項目: 画面オフ・Doze 中に鳴る、再起動後に鳴る (`exported="false"` の `BootReceiver` に `BOOT_COMPLETED` が届く)、アプリを強制停止したとき (アラームも FCM も届かない)、タイムゾーンの変更、ログアウト後に鳴らない、ログアウト後に FCM の予定の通知が届いても出ない、FCM と予約が同時に来て 1 つ、出欠ボタン (オンライン・オフライン・電波の悪い場所で失敗の知らせが出る)、鳴ったあとに予定を延期すると新しい時刻にもう一度鳴る、通知から起動 → 履歴から開き直しても同じ予定をまた開かない。
+
 ## 引っ張って更新
 
 メールの一覧をいちばん上で下へ引っ張ると、メールサーバーへの確認をすぐに始め、一覧を取得し直します (スマホのブラウザーでも同じです)。新しく届いたメールは、同期が済みしだい一覧に出ます。
@@ -212,4 +231,5 @@ WebView には PDF ビューアーが無いので、添付の PDF は画面の�
 
 - 画面はステータスバーとナビゲーションバーの内側に表示します (バーの下まで画面を広げてはいません)。
 - アプリを開いている間に届いたメールは、通知を出さず一覧に反映します。
+- 予定のリマインダーは、Android 12 以降は数分遅れることがあります (正確なアラームの権限を持たないため。上の「予定の通知」)。
 - iOS 版はまだありません。同じ `apps/mobile` に `ios/` を足す形で追加できます (プッシュ通知は APNs の対応が別途必要)。

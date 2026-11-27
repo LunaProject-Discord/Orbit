@@ -323,6 +323,46 @@ describe("parseICalendar", () => {
     expect(event?.organizer).toEqual({ email: "boss@example.com" });
   });
 
+  it("終日の VALARM: 開始からの正の TRIGGER は当日のうちなら負の分、RELATED=END と絶対時刻は読まない", () => {
+    const alarm = (trigger: string) => [
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      trigger,
+      "END:VALARM",
+    ];
+    const vevent = (uid: string, start: string, alarms: string[][]) => [
+      "BEGIN:VEVENT",
+      `UID:${uid}`,
+      start,
+      ...alarms.flat(),
+      "END:VEVENT",
+    ];
+    const alarms = [
+      alarm("TRIGGER:PT9H"), // 当日 9:00
+      alarm("TRIGGER;RELATED=START:PT23H59M"), // 当日 23:59
+      alarm("TRIGGER:-PT15H"), // 前日 9:00 (Apple の書き方)
+      alarm("TRIGGER:-P1DT15H"), // 2 日前 9:00
+      alarm("TRIGGER:PT24H"), // 翌日 0:00 (当日より後) は読まない
+      alarm("TRIGGER;RELATED=END:-PT15H"),
+      alarm("TRIGGER;VALUE=DATE-TIME:20261201T000000Z"),
+    ];
+    const calendar = parseICalendar(
+      [
+        "BEGIN:VCALENDAR",
+        ...vevent("d1", "DTSTART;VALUE=DATE:20261201", alarms),
+        ...vevent("t1", "DTSTART:20261201T010000Z", alarms),
+        "END:VCALENDAR",
+      ].join("\r\n"),
+      options,
+    );
+    const [allDay, timed] = calendar.events;
+    expect(allDay?.reminders?.map((item) => item.minutes)).toEqual([
+      -540, -1439, 900, 2340,
+    ]);
+    // 時刻のある予定では、開始より後の TRIGGER は今までどおり読まない。
+    expect(timed?.reminders?.map((item) => item.minutes)).toEqual([900, 2340]);
+  });
+
   it("iCalendar でなければ ICalendarError", () => {
     expect(() => parseICalendar("<html></html>", options)).toThrow(
       ICalendarError,

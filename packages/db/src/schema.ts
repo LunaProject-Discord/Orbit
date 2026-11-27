@@ -402,6 +402,9 @@ export const devicePlatform = pgEnum("device_platform", [
   "ios",
 ]);
 
+/** devices.app の値 (@orbit/core の DeviceApp と同じ)。 */
+export type DeviceAppValue = "mail" | "calendar";
+
 /**
  * スマホアプリを入れた端末。新着メールの通知 (Android は FCM) の送り先を持つ。
  * アプリで通知を有効にしたときに登録し、無効にしたときとログアウトのときに消す。
@@ -418,6 +421,28 @@ export const devices = pgTable(
     platform: devicePlatform().notNull(),
     pushToken: text(),
     lastSeenAt: timestamp({ withTimezone: true }),
+    /**
+     * 登録したアプリ (段取り 9)。Android の Calendar アプリ (段取り 10) は calendar。
+     * enum にしない (enum の値の追加を同じトランザクションで使えない問題を避ける)。
+     */
+    app: text().$type<DeviceAppValue>().notNull().default("mail"),
+    /** 新着メールの通知を送る。 */
+    notifyMail: boolean().notNull().default(true),
+    /**
+     * 予定の通知を送る。古いアプリは予定の通知を正しく出せないので、新しいアプリが
+     * 登録のときに明示して true にしたものにだけ送る (既定 false)。
+     */
+    notifyCalendar: boolean().notNull().default(false),
+    /** 端末の ID (Web の deviceId())。 */
+    installId: uuid(),
+    /**
+     * 端末が自分で予約済みのリマインダーの範囲 (POST /v1/push/devices/reminders)。
+     * coverUntil までの時刻で、job の changeSeq が coverSeq 以下で、exactAlarms なら push を省く。
+     * 送り先を別の利用者に付け替えるときは消す。
+     */
+    reminderCoverUntil: timestamp({ withTimezone: true }),
+    reminderCoverSeq: bigint({ mode: "bigint" }),
+    exactAlarms: boolean().notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [
@@ -442,6 +467,10 @@ export const pushSubscriptions = pgTable(
     p256dh: text().notNull(),
     auth: text().notNull(),
     userAgent: text(),
+    /** 新着メールの通知を送る。 */
+    notifyMail: boolean().notNull().default(true),
+    /** 予定の通知を送る (新しいサービスワーカーが登録のときに true にしたものだけ)。 */
+    notifyCalendar: boolean().notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1181,8 +1210,24 @@ export const userSettings = pgTable("user_settings", {
   senderIconGravatar: boolean().notNull().default(false),
   /** メールを書くときの既定の形式。アカウントごとの指定 (accounts.compose_format) が優先。 */
   composeFormat: text().$type<ComposeFormat>().notNull().default("html"),
+  /**
+   * 利用者のタイムゾーン (IANA 名、段取り 9)。サーバーが終日の予定の通知の時刻を決めるのに使う。
+   * null のあいだは、最初に開いた端末が自分のタイムゾーンを保存する。
+   */
+  timeZone: text(),
+  /** 予定の通知の設定。null は標準の値 (@orbit/core の readCalendarNotificationSettings で読む)。 */
+  calendarNotifications: jsonb().$type<StoredCalendarNotificationSettings>(),
   updatedAt: updatedAt(),
 });
+
+/** user_settings.calendar_notifications (@orbit/core の CalendarNotificationSettings と同じ形)。 */
+export type StoredCalendarNotificationSettings = {
+  invites?: boolean;
+  changes?: boolean;
+  replies?: boolean;
+  allDay?: { minutes: number } | null;
+  detail?: "full" | "private";
+};
 
 /** 署名の決まりの種類。contact は宛先のアドレスごと、thread は会話ごと。 */
 export type SignatureRuleKind = "contact" | "thread";
@@ -1319,6 +1364,16 @@ export const calendars = pgTable(
     }),
     /** 繰り返しの回を event_occurrences に展開済みの範囲の終わり (この日の前日まで)。 */
     expandedUntil: date({ mode: "string" }),
+    /**
+     * 予定の通知 (リマインダー・招待・変更) を出す (段取り 9)。null は種類ごとの既定
+     * (ics・holidays・birthdays はオフ、ほかはオン。@orbit/core の calendarNotifies)。
+     */
+    notify: boolean(),
+    /**
+     * 通知に関わる値 (notify、visible、defaultReminders、timeZone) をつないだもの
+     * (@orbit/core の calendarRemindersFingerprint)。ReminderIndexer が、変わったときだけ作り直す。
+     */
+    remindersHash: text(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1507,9 +1562,11 @@ export const eventOccurrences = pgTable(
     masterId: uuid()
       .notNull()
       .references(() => events.id, { onDelete: "cascade" }),
-    eventId: uuid()
-      .notNull()
-      .references(() => events.id, { onDelete: "cascade" }),
+    /**
+     * 例外の行が消えたときは null になる (原本の回は残る)。ReminderIndexer は null の行の原本だけを
+     * 作り直す (例外の削除で利用者の繰り返す原本を全部作り直さないため。レビュー M8)。
+     */
+    eventId: uuid().references(() => events.id, { onDelete: "set null" }),
     /** この回の元の開始 (events.recurrenceId と同じ書き方)。繰り返さない予定は null。 */
     recurrenceId: text(),
     allDay: boolean().notNull().default(false),
@@ -1523,8 +1580,112 @@ export const eventOccurrences = pgTable(
     index("event_occurrences_user_start_date_idx").on(t.userId, t.startDate),
     index("event_occurrences_master_idx").on(t.masterId),
     index("event_occurrences_event_idx").on(t.eventId),
+    uniqueIndex("event_occurrences_master_recurrence_idx").on(
+      t.masterId,
+      sql`coalesce(${t.recurrenceId}, '')`,
+    ),
   ],
 );
+
+/**
+ * サーバーが push で送るリマインダー (段取り 9)。worker の ReminderIndexer が event_occurrences と
+ * 一緒に作り直し、NotificationDispatcher が fire_at の来たものを送る。
+ * changeSeq は内容 (鳴らす時刻) が最後に変わった changes.seq。端末が予約済みか (coverSeq) と比べる。
+ * 題名だけが変わったときは sentAt を保ち、鳴らす時刻が先へ動いたら sentAt を null に戻す。
+ */
+export const eventReminderJobs = pgTable(
+  "event_reminder_jobs",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    occurrenceId: uuid()
+      .notNull()
+      .references(() => eventOccurrences.id, { onDelete: "cascade" }),
+    /** 開始の何分前か (終日の利用者ごとの既定では負もある)。 */
+    minutes: integer().notNull(),
+    fireAt: timestamp({ withTimezone: true }).notNull(),
+    changeSeq: bigint({ mode: "bigint" }).notNull(),
+    sentAt: timestamp({ withTimezone: true }),
+    /**
+     * NotificationDispatcher が送るために取った時刻。送り終えたら sentAt を付ける。
+     * 取ったまま一定の時間 (worker の停止など) たったものは取り直す。
+     */
+    claimedAt: timestamp({ withTimezone: true }),
+    /** 取った回数。上限に達したら送らずに済ませる (同じ行で worker が落ち続けないように)。 */
+    attempts: integer().notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("event_reminder_jobs_occurrence_minutes_idx").on(
+      t.occurrenceId,
+      t.minutes,
+    ),
+    index("event_reminder_jobs_pending_idx")
+      .on(t.fireAt)
+      .where(sql`${t.sentAt} is null`),
+    index("event_reminder_jobs_user_idx").on(t.userId),
+  ],
+);
+
+/** event_notices.kind の値。 */
+export type EventNoticeKindValue = "invite" | "update" | "cancel";
+
+/** event_notices.snapshot (@orbit/core の EventNoticeSnapshot と同じ形)。 */
+export type StoredEventNoticeSnapshot = {
+  title: string | null;
+  location: string | null;
+  organizer: string | null;
+  sequence: number;
+  rrule?: string | null;
+  timeZone: string | null;
+  /** 記録したときの自分の出欠 (取り消しを不参加の予定で出さないため)。古い行には無い。 */
+  selfStatus?: string | null;
+  allDay: boolean;
+  startAt?: string;
+  endAt?: string;
+  startDate?: string;
+  endDate?: string;
+};
+
+/**
+ * 招待・変更・取り消しの「知らせた内容」と送信待ち (段取り 9)。取り込みが予定を書いた直後に
+ * 足し、NotificationDispatcher が sentAt の無いものを送る。最初の同期や過去の予定は、送信済みの
+ * invite を静かに入れて基準だけ作る。calendarId と eventId は外部キーにしない (行が消えても残す)。
+ * 予定の終了から 7 日たった行は worker が消す。
+ */
+export const eventNotices = pgTable(
+  "event_notices",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    calendarId: uuid().notNull(),
+    eventId: uuid().notNull(),
+    kind: text().$type<EventNoticeKindValue>().notNull(),
+    snapshot: jsonb().$type<StoredEventNoticeSnapshot>().notNull(),
+    createdAt: createdAt(),
+    sentAt: timestamp({ withTimezone: true }),
+    /** 送るために取った時刻 (event_reminder_jobs と同じ)。静かに入れた基準の行は null のまま。 */
+    claimedAt: timestamp({ withTimezone: true }),
+    attempts: integer().notNull().default(0),
+  },
+  (t) => [
+    index("event_notices_event_idx").on(t.eventId, t.createdAt),
+    index("event_notices_pending_idx")
+      .on(t.createdAt)
+      .where(sql`${t.sentAt} is null`),
+    index("event_notices_user_idx").on(t.userId, t.claimedAt),
+  ],
+);
+
+/** worker の処理が読んだ changes の位置 (名前ごと。ReminderIndexer は "reminder-indexer")。 */
+export const workerCursors = pgTable("worker_cursors", {
+  name: text().primaryKey(),
+  seq: bigint({ mode: "bigint" }).notNull(),
+  updatedAt: updatedAt(),
+});
 
 /**
  * 予定の検索用の文書 (タイトル・場所・メモを正規化してつないだもの)。

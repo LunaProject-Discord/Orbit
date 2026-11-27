@@ -8,6 +8,7 @@ import android.net.Uri;
 import androidx.activity.result.ActivityResult;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.content.FileProvider;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -18,6 +19,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
 /** 画面 (Web 側) から呼ぶ、このアプリ専用の小さな機能。 */
 @CapacitorPlugin(name = "AppShell")
@@ -68,8 +70,77 @@ public class AppShellPlugin extends Plugin {
      */
     @PluginMethod
     public void publishSharedConfig(PluginCall call) {
-        SharedConfig.save(getContext(), call.getString("serverUrl", ""), call.getString("sessionToken", ""));
+        String sessionToken = call.getString("sessionToken", "");
+        String previous = SharedConfig.load(getContext()).sessionToken;
+        SharedConfig.save(getContext(), call.getString("serverUrl", ""), sessionToken);
+        // ログアウトした・別の利用者でログインし直したら、予定のリマインダーの予約と、出ている
+        // 予定の通知をすべて消す (前の利用者の予定が通知に出ないようにする。設計 7.2)。
+        // 画面も橋の clear を呼ぶが、画面の処理が途中で終わっても消えるよう、ここでも消す。
+        if (sessionToken == null || sessionToken.isEmpty() || (!previous.isEmpty() && !previous.equals(sessionToken))) {
+            clearCalendarNotifications();
+        }
         call.resolve();
+    }
+
+    /**
+     * 予定のリマインダーの予約の能力 (画面の ReminderCapabilities)。
+     * schedule は、アプリを終了しても鳴る "os"。Calendar アプリ (段取り 10) が入っていれば、
+     * Mail アプリは予約しないので "none"。exact は正確なアラームが使えるか (Mail アプリは
+     * Android 12 以降 false。その分はサーバーの FCM が補う)。
+     */
+    @PluginMethod
+    public void reminderCapabilities(PluginCall call) {
+        JSObject result = new JSObject();
+        boolean handled = CalendarNotifications.handledByOtherApp(getContext());
+        result.put("schedule", handled ? "none" : "os");
+        result.put("exact", !handled && ReminderScheduler.canScheduleExact(getContext()));
+        call.resolve(result);
+    }
+
+    /**
+     * 予定のリマインダーを予約する。items は画面の ScheduledReminder の配列で、毎回「全部の一覧」。
+     * 今ある予約との差分は ReminderScheduler が取る。
+     */
+    @PluginMethod
+    public void scheduleReminders(PluginCall call) {
+        if (CalendarNotifications.handledByOtherApp(getContext())) {
+            ReminderScheduler.clear(getContext());
+            call.resolve();
+            return;
+        }
+        JSArray items = call.getArray("items");
+        if (items == null) {
+            call.reject("items がありません。");
+            return;
+        }
+        CalendarNotifications.ensureChannels(getContext());
+        ReminderScheduler.replaceAll(getContext(), ReminderScheduler.parse(items));
+        call.resolve();
+    }
+
+    /**
+     * 予定の通知から起動したときの URL を、1 度だけ返す (無ければ url は null)。
+     * 履歴から開き直したとき・画面を作り直したときは null (同じ予定をまた開かない)。
+     */
+    @PluginMethod
+    public void takeLaunchCalendarUrl(PluginCall call) {
+        JSObject result = new JSObject();
+        String url = null;
+        if (getActivity() instanceof MainActivity) url = ((MainActivity) getActivity()).takeLaunchCalendarUrl();
+        result.put("url", url == null ? JSONObject.NULL : url);
+        call.resolve(result);
+    }
+
+    /** 予定のリマインダーの予約をすべて消す (ログアウト・利用者の切り替え・401)。 */
+    @PluginMethod
+    public void clearReminders(PluginCall call) {
+        clearCalendarNotifications();
+        call.resolve();
+    }
+
+    private void clearCalendarNotifications() {
+        ReminderScheduler.clear(getContext());
+        CalendarNotifications.cancelAll(getContext());
     }
 
     /** ほかの Orbit のアプリの接続先サーバーとログインを探す。見つからなければ found は false。 */

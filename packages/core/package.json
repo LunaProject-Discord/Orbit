@@ -25,6 +25,21 @@
       "mail-source": "./src/event-invite.ts",
       "types": "./dist/event-invite.d.ts",
       "default": "./dist/event-invite.js"
+    },
+    "./reminders": {
+      "mail-source": "./src/reminders.ts",
+      "types": "./dist/reminders.d.ts",
+      "default": "./dist/reminders.js"
+    },
+    "./calendar-notifications": {
+      "mail-source": "./src/calendar-notifications.ts",
+      "types": "./dist/calendar-notifications.d.ts",
+      "default": "./dist/calendar-notifications.js"
+    },
+    "./event-notification-actions": {
+      "mail-source": "./src/event-notification-actions.ts",
+      "types": "./dist/event-notification-actions.d.ts",
+      "default": "./dist/event-notification-actions.js"
     }
   },
   "scripts": {

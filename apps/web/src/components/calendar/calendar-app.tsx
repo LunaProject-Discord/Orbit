@@ -102,7 +102,19 @@ import {
   type QueuedOp,
   useCalendarData,
 } from "@/lib/calendar/offline";
-import { buildCalendarRoute, parseCalendarRoute } from "@/lib/calendar/route";
+import {
+  findOpeningItem,
+  nextOpeningStep,
+  type OpeningEvent,
+  sameRecurrenceId,
+} from "@/lib/calendar/open-event";
+import {
+  buildCalendarRoute,
+  type CalendarEventTarget,
+  OPEN_CALENDAR_EVENT,
+  parseCalendarEventRoute,
+  parseCalendarRoute,
+} from "@/lib/calendar/route";
 import { canRespondTo } from "@/lib/calendar/rsvp";
 import { listAccounts, useOnline } from "@/lib/offline";
 import { useMediaQuery } from "@/lib/use-media-query";
@@ -201,6 +213,15 @@ export function CalendarApp({ user }: { user: User }) {
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [conflictBusy, setConflictBusy] = useState<ConflictBusy>(null);
   const online = useOnline();
+  /**
+   * 通知から開く予定 (/calendar/events/<ID>?o=<回>、段取り 9)。控えから探して日付を移し
+   * (located)、表示中の回が出たら詳細を開く。控えに無ければ pull してから探し、無ければ閉じる。
+   */
+  const [opening, setOpening] = useState<OpeningEvent | null>(() =>
+    parseCalendarEventRoute(window.location.pathname, window.location.search),
+  );
+  /** URL から開いた詳細の位置 (押した予定の要素が無いので、画面の中ほどに置く)。 */
+  const openAnchorRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     setSidebarShown(readSidebarPreference());
@@ -234,12 +255,29 @@ export function CalendarApp({ user }: { user: User }) {
   }, [shownView, date]);
   useEffect(() => {
     const onPopState = () => {
+      const target = parseCalendarEventRoute(
+        window.location.pathname,
+        window.location.search,
+      );
+      if (target) {
+        setOpening(target);
+        return;
+      }
       const route = parseCalendarRoute(window.location.pathname);
       if (route.view) setView(route.view);
       if (route.date) setDate(route.date);
     };
+    // 通知を押した (カレンダーの画面を開いているとき)。
+    const onOpenEvent = (event: Event) => {
+      const target = (event as CustomEvent<CalendarEventTarget>).detail;
+      if (target) setOpening({ ...target });
+    };
     window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    window.addEventListener(OPEN_CALENDAR_EVENT, onOpenEvent);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener(OPEN_CALENDAR_EVENT, onOpenEvent);
+    };
   }, []);
 
   const range = useMemo(() => viewRange(shownView, date), [shownView, date]);
@@ -272,6 +310,49 @@ export function CalendarApp({ user }: { user: User }) {
       .catch(() => {});
     return () => controller.abort();
   }, [calendars]);
+
+  // 通知から開く予定を控えから探し、その日へ移る。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: data は控えが変わった (同期が進んだ) ときに探し直すため
+  useEffect(() => {
+    if (!opening || opening.located || opening.pulling || !client) return;
+    if (!(client instanceof OfflineCalendarClient)) {
+      setOpening(null);
+      return;
+    }
+    const step = nextOpeningStep(
+      opening,
+      client.reminderSnapshot(),
+      calendars !== null,
+      timeZone,
+    );
+    if (step.type === "wait") return;
+    if (step.type === "close") {
+      // 見つからなければ、カレンダーを開いたままにする。
+      setOpening(null);
+      return;
+    }
+    if (step.type === "pull") {
+      setOpening({ ...opening, pulling: true });
+      void client
+        .pull()
+        .finally(() =>
+          setOpening((current) =>
+            current?.eventId === opening.eventId
+              ? { ...current, pulling: false, pulled: true }
+              : current,
+          ),
+        );
+      return;
+    }
+    setSelected(null);
+    setDate(step.day);
+    setOpening({
+      ...opening,
+      located: true,
+      day: step.day,
+      masterId: step.masterId,
+    });
+  }, [opening, client, calendars, data, timeZone]);
 
   /** 作ったカレンダーなどを、SSE を待たずに取り込む。 */
   const pullNow = useCallback(() => {
@@ -333,6 +414,28 @@ export function CalendarApp({ user }: { user: User }) {
     }
     return result;
   }, [data, eventsById, calendarIndex, timeZone]);
+
+  // 移った日の回が表示に出たら、詳細を開く。
+  useEffect(() => {
+    if (!opening?.located || !opening.day || !data) return;
+    if (
+      Temporal.PlainDate.compare(opening.day, range.from) < 0 ||
+      Temporal.PlainDate.compare(opening.day, range.to) >= 0
+    ) {
+      return;
+    }
+    const item = findOpeningItem(opening, items);
+    setOpening(null);
+    if (window.location.pathname.startsWith("/calendar/events/")) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        buildCalendarRoute(shownView, opening.day),
+      );
+    }
+    const anchor = openAnchorRef.current;
+    if (item && anchor) setSelected({ item, anchor });
+  }, [opening, data, items, range, shownView]);
 
   const holidays = useMemo(() => {
     const set = new Set<string>();
@@ -928,6 +1031,11 @@ export function CalendarApp({ user }: { user: User }) {
         <aside className="w-[312px] shrink-0 border-r">{sidebar}</aside>
       )}
       <main className="relative flex min-w-0 flex-1 flex-col">
+        <span
+          ref={openAnchorRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute top-1/4 left-1/3 size-0"
+        />
         {medium ? (
           <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
             {(!wide || !sidebarShown) && (
@@ -1309,14 +1417,6 @@ export function CalendarApp({ user }: { user: User }) {
       </AlertDialog>
     </div>
   );
-}
-
-/** 同じ時刻を指す recurrenceId か (書き方の違い、.000Z の有無などを無視する)。 */
-function sameRecurrenceId(a: string | null, b: string | null): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  const left = Date.parse(a);
-  return !Number.isNaN(left) && left === Date.parse(b);
 }
 
 /** 同じ回か (原本と recurrenceId で比べる)。 */

@@ -2,6 +2,8 @@
 // - アプリ本体 (HTML、スクリプト、スタイル、フォント) を端末に保存し、オフラインでも画面を開けるようにする。
 // - サーバーからの Web Push を受けて新着メールの通知を出し、通知が押されたらアプリを開く。
 //   通知のボタン (既読にする、アーカイブなど) が押されたら、画面を開かずに操作する。
+// - 予定の通知 (段取り 9。push の data.kind が event- で始まるもの) を出し、押されたら予定を開く。
+//   招待の出欠のボタン (参加 / 未定 / 不参加) が押されたら、画面を開かずに返事をする。
 // メールのデータ (API の応答) は扱わない。そちらは画面側が IndexedDB に保存する。
 
 // アプリ本体の保存先。ビルドのたびに作られる一覧 (precache-manifest.json) の内容を入れる。
@@ -205,12 +207,210 @@ function readActions(data) {
   return { url: actions.url, token: actions.token, buttons };
 }
 
+// ---------------------------------------------------------------------------
+// 予定の通知 (段取り 9)。中身を決める部分は純粋な関数にして、sw.test.ts で確かめる。
+// push の中身は CalendarPushMessage (packages/core/src/calendar-notifications.ts)。
+// ---------------------------------------------------------------------------
+
+const EVENT_ID_PATTERN = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const RECURRENCE_ID_PATTERN = /^[0-9A-Za-z:+.-]{1,64}$/;
+// 出欠のボタン (core の RSVP_BUTTONS と同じ)。並べられる数が 3 つ未満なら参加と不参加の 2 つ。
+const RSVP_BUTTONS = [
+  { action: "accepted", title: "参加" },
+  { action: "tentative", title: "未定" },
+  { action: "declined", title: "不参加" },
+];
+
+// 出欠のボタンが合言葉を送ってよい先: 自分の API の POST /v1/notification-actions/event だけ。
+// API の URL は、画面が登録するときに sw.js?api=<API の URL> で渡す (lib/server-url.ts の
+// serviceWorkerScriptUrl)。渡されていなければ (古い登録)、このサイトの /v1 だけを許す。
+// 同じ決まりを src/lib/calendar/notifications/action-url.ts と Android にも置く。
+const EVENT_ACTION_PATH = "/v1/notification-actions/event";
+
+function apiBase() {
+  try {
+    const value = new URL(self.location.href).searchParams.get("api");
+    if (value) {
+      const url = new URL(value);
+      if (url.protocol === "https:" || url.protocol === "http:") return url;
+    }
+  } catch {
+    // 読めなければ、このサイトの API とみなす。
+  }
+  return new URL(self.location.origin);
+}
+
+function isEventActionUrl(value) {
+  if (typeof value !== "string") return false;
+  let target;
+  try {
+    target = new URL(value);
+  } catch {
+    return false;
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") return false;
+  if (target.username || target.password || target.search || target.hash) {
+    return false;
+  }
+  const api = apiBase();
+  const basePath = api.pathname.replace(/\/+$/, "");
+  return (
+    target.origin === api.origin &&
+    target.pathname === `${basePath}${EVENT_ACTION_PATH}`
+  );
+}
+
+function isCalendarPush(data) {
+  return (
+    !!data && typeof data.kind === "string" && data.kind.startsWith("event-")
+  );
+}
+
+function calendarTarget(eventId, recurrenceId) {
+  if (typeof eventId !== "string" || !EVENT_ID_PATTERN.test(eventId)) {
+    return null;
+  }
+  return {
+    eventId,
+    recurrenceId:
+      typeof recurrenceId === "string" &&
+      RECURRENCE_ID_PATTERN.test(recurrenceId)
+        ? recurrenceId
+        : null,
+  };
+}
+
+// 予定を開く URL (apps/web/src/lib/calendar/route.ts の buildCalendarEventRoute と同じ形)。
+function calendarEventPath(target) {
+  if (!target) return "/calendar";
+  const path = `/calendar/events/${encodeURIComponent(target.eventId)}`;
+  return target.recurrenceId
+    ? `${path}?o=${encodeURIComponent(target.recurrenceId)}`
+    : path;
+}
+
+function rsvpActions(max) {
+  const buttons =
+    max >= RSVP_BUTTONS.length
+      ? RSVP_BUTTONS
+      : RSVP_BUTTONS.filter((button) => button.action !== "tentative");
+  return buttons.slice(0, Math.max(0, max));
+}
+
+// 予定の push から、showNotification に渡す題名と中身を作る。
+function calendarNotification(data, maxActions) {
+  const title =
+    typeof data.title === "string" && data.title ? data.title : "予定の通知";
+  const target = calendarTarget(data.eventId, data.recurrenceId);
+  const rsvp =
+    data.kind === "event-invite" &&
+    target &&
+    data.rsvp &&
+    isEventActionUrl(data.rsvp.url) &&
+    typeof data.rsvp.token === "string"
+      ? { url: data.rsvp.url, token: data.rsvp.token }
+      : null;
+  return {
+    title,
+    options: {
+      body: typeof data.body === "string" ? data.body : "",
+      // 端末の予約と push で同じ tag (置き換わる)。renotify は付けない。
+      tag: typeof data.tag === "string" ? data.tag : undefined,
+      icon: "/icons/icon-192.png",
+      ...(rsvp ? { actions: rsvpActions(maxActions) } : {}),
+      data: {
+        kind: data.kind,
+        eventId: target ? target.eventId : null,
+        recurrenceId: target ? target.recurrenceId : null,
+        title,
+        action: rsvp,
+      },
+    },
+  };
+}
+
+// 出欠のボタンが押された。ログインの情報は使わず、通知に付いていた合言葉で返事をする。
+async function runCalendarAction(notification, status) {
+  const {
+    eventId,
+    recurrenceId,
+    kind,
+    action: target,
+  } = notification.data ?? {};
+  let done = false;
+  try {
+    // 自分の API の受け口でなければ、合言葉を送らない。
+    if (!target || !isEventActionUrl(target.url)) throw new Error("bad url");
+    const response = await fetch(target.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // 転送先へ合言葉を持ち出さない。
+      redirect: "error",
+      body: JSON.stringify({
+        eventId,
+        status,
+        token: target.token,
+        respondedAt: new Date().toISOString(),
+        ...(self.crypto?.randomUUID
+          ? { idempotencyKey: self.crypto.randomUUID() }
+          : {}),
+      }),
+    });
+    // 404 は、ほかの端末ですでに消えた予定。済んだものとして扱う。
+    done = response.ok || response.status === 404;
+  } catch {
+    // 通信できなかった。
+  }
+  if (done) return;
+  // 反映できなかったことを知らせる。押すと、その予定を開く。
+  const title = notification.data?.title;
+  await self.registration.showNotification("出欠を反映できませんでした", {
+    body: typeof title === "string" ? title.replace(/^招待: /, "") : "",
+    tag: notification.tag || undefined,
+    icon: "/icons/icon-192.png",
+    data: { kind, eventId, recurrenceId, title, action: null },
+  });
+}
+
+// 予定の通知が押された。開いている画面があればそこで開き、無ければ予定の URL を開く。
+async function openCalendarFromNotification(data) {
+  const target = calendarTarget(data.eventId, data.recurrenceId);
+  const windows = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of windows) {
+    if (new URL(client.url).origin !== self.location.origin) continue;
+    client.postMessage(
+      target ? { type: "open-event", ...target } : { type: "open-calendar" },
+    );
+    await client.focus().catch(() => {});
+    return;
+  }
+  await self.clients.openWindow(calendarEventPath(target));
+}
+
+function maxNotificationActions() {
+  return typeof Notification !== "undefined" &&
+    typeof Notification.maxActions === "number"
+    ? Notification.maxActions
+    : 2;
+}
+
 self.addEventListener("push", (event) => {
   let data = {};
   try {
     data = event.data ? event.data.json() : {};
   } catch {
     // 形式の違う通知でも、何か届いたことは知らせる。
+  }
+  if (isCalendarPush(data)) {
+    const { title, options } = calendarNotification(
+      data,
+      maxNotificationActions(),
+    );
+    event.waitUntil(self.registration.showNotification(title, options));
+    return;
   }
   const title =
     typeof data.title === "string" && data.title ? data.title : "新着メール";
@@ -276,6 +476,15 @@ async function runNotificationAction(notification, action) {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const calendarData = event.notification.data;
+  if (isCalendarPush(calendarData)) {
+    if (event.action && calendarData.action && calendarData.eventId) {
+      event.waitUntil(runCalendarAction(event.notification, event.action));
+    } else {
+      event.waitUntil(openCalendarFromNotification(calendarData));
+    }
+    return;
+  }
   const messageId = event.notification.data?.messageId ?? null;
   if (event.action && messageId && event.notification.data?.action) {
     event.waitUntil(runNotificationAction(event.notification, event.action));

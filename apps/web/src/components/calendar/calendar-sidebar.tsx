@@ -2,6 +2,9 @@
 
 import { cn } from "cn";
 import {
+  BellIcon,
+  BellOffIcon,
+  BellRingIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
@@ -16,19 +19,33 @@ import {
 import { useState } from "react";
 import type { Temporal } from "temporal-polyfill";
 import { AppSwitcher } from "@/components/brand/app-switcher";
+import { DefaultRemindersDialog } from "@/components/calendar/default-reminders-dialog";
 import { MiniMonth } from "@/components/calendar/mini-month";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
+import { showNotice } from "@/components/mail/toasts";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { User } from "@/lib/api";
-import type { Calendar } from "@/lib/calendar/api";
+import {
+  type Calendar,
+  calendarDefaultRemindersEditable,
+  calendarNotifySupported,
+  type Reminder,
+} from "@/lib/calendar/api";
 import type { CalendarGroup } from "@/lib/calendar/groups";
 import { imipConfigurable } from "@/lib/calendar/imip";
+import {
+  CalendarNotifyUnsupportedError,
+  overlayCalendar,
+  saveCalendarNotify,
+} from "@/lib/calendar/notification-settings";
 import type { SyncStatus } from "@/lib/sync-status";
 
 /** オフライン中に押せないボタンに添える説明。 */
@@ -55,6 +72,7 @@ export function CalendarSidebar({
   onOpenSettings,
   onToggleSidebar,
   onNavigate,
+  onCalendarUpdated,
 }: {
   user: User;
   groups: CalendarGroup[];
@@ -86,7 +104,13 @@ export function CalendarSidebar({
   onToggleSidebar: (() => void) | null;
   /** アプリを切り替える前に呼ぶ。 */
   onNavigate?: () => void;
+  /**
+   * 通知の設定を保存したカレンダー (段取り 9)。渡さなくても、同期で控えが追い付くまで
+   * サイドバーの中で保存した値を出す。
+   */
+  onCalendarUpdated?: (calendar: Calendar) => void;
 }) {
+  const notify = useCalendarNotifyState(onCalendarUpdated);
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
   const toggleGroup = (key: string) =>
     setFolded((current) => {
@@ -171,14 +195,23 @@ export function CalendarSidebar({
                   </p>
                 )}
                 {!isFolded &&
-                  group.calendars.map((calendar) => {
+                  group.calendars.map((listed) => {
+                    const calendar = notify.view(listed);
                     const color = colorOf(calendar);
                     const subscription = calendar.source === "ics";
                     const removable =
                       calendar.source === "local" || subscription;
                     const senderSetting =
                       onChooseSender !== null && imipConfigurable(calendar);
-                    const menu = removable || senderSetting;
+                    // 通知の項目は、サーバーが対応しているとき (応答に notify がある) だけ出す。
+                    const notifySetting = calendarNotifySupported(calendar);
+                    const reminderSetting =
+                      calendarDefaultRemindersEditable(calendar);
+                    const menu = removable || senderSetting || notifySetting;
+                    // 種類の既定ではオンなのに、利用者がオフにしたカレンダーに印を出す。
+                    const muted =
+                      calendar.notify === false &&
+                      calendar.notifyDefault !== false;
                     return (
                       <div
                         key={calendar.id}
@@ -219,6 +252,13 @@ export function CalendarSidebar({
                           >
                             {calendar.name}
                           </span>
+                          {muted && (
+                            <BellOffIcon
+                              role="img"
+                              aria-label="通知オフ"
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                            />
+                          )}
                           {subscription && calendar.lastError && (
                             <CircleAlertIcon
                               className="size-4 shrink-0 text-destructive"
@@ -237,6 +277,33 @@ export function CalendarSidebar({
                               <EllipsisIcon className="size-4" />
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-52">
+                              {notifySetting && (
+                                <DropdownMenuCheckboxItem
+                                  checked={calendar.notify === true}
+                                  disabled={!online}
+                                  title={online ? undefined : NEEDS_CONNECTION}
+                                  onCheckedChange={(checked) =>
+                                    notify.toggle(calendar, checked)
+                                  }
+                                >
+                                  <BellIcon />
+                                  通知
+                                </DropdownMenuCheckboxItem>
+                              )}
+                              {reminderSetting && (
+                                <DropdownMenuItem
+                                  disabled={!online}
+                                  title={online ? undefined : NEEDS_CONNECTION}
+                                  onClick={() => notify.openDefaults(calendar)}
+                                >
+                                  <BellRingIcon />
+                                  既定の通知…
+                                </DropdownMenuItem>
+                              )}
+                              {notifySetting &&
+                                (subscription ||
+                                  senderSetting ||
+                                  removable) && <DropdownMenuSeparator />}
                               {subscription && (
                                 <DropdownMenuItem
                                   disabled={!online}
@@ -294,6 +361,13 @@ export function CalendarSidebar({
           <SyncIndicator status={syncStatus} />
         </div>
       )}
+      <DefaultRemindersDialog
+        calendar={notify.defaults}
+        busy={notify.defaultsBusy}
+        error={notify.defaultsError}
+        onSave={notify.saveDefaults}
+        onClose={notify.closeDefaults}
+      />
       <div className="flex shrink-0 items-center gap-2 border-t py-3 pr-2 pl-4">
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium text-sm">{user.name}</p>
@@ -310,4 +384,82 @@ export function CalendarSidebar({
       </div>
     </div>
   );
+}
+
+/**
+ * カレンダーごとの通知のオン・オフと既定の通知 (段取り 9)。サーバーへ直接保存し、
+ * 同期で控えが追い付くまでは保存した値を重ねて出す。
+ */
+function useCalendarNotifyState(
+  onCalendarUpdated: ((calendar: Calendar) => void) | undefined,
+) {
+  const [saved, setSaved] = useState<ReadonlyMap<string, Calendar>>(new Map());
+  const [pending, setPending] = useState<
+    ReadonlyMap<string, Partial<Calendar>>
+  >(new Map());
+  const [defaults, setDefaults] = useState<Calendar | null>(null);
+  const [defaultsBusy, setDefaultsBusy] = useState(false);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
+
+  const remember = (calendar: Calendar) => {
+    setSaved((current) => new Map(current).set(calendar.id, calendar));
+    onCalendarUpdated?.(calendar);
+  };
+  const withPending = (id: string, value: Partial<Calendar> | null) =>
+    setPending((current) => {
+      const next = new Map(current);
+      if (value) next.set(id, value);
+      else next.delete(id);
+      return next;
+    });
+
+  return {
+    view: (calendar: Calendar) =>
+      overlayCalendar(
+        calendar,
+        saved.get(calendar.id),
+        pending.get(calendar.id),
+      ),
+    toggle: (calendar: Calendar, on: boolean) => {
+      // 押してすぐ画面に反映し、保存できなければ元に戻す。
+      withPending(calendar.id, { notify: on });
+      saveCalendarNotify(calendar, { notify: on })
+        .then(remember)
+        .catch((error) =>
+          showNotice(
+            error instanceof CalendarNotifyUnsupportedError
+              ? "このサーバーでは、カレンダーごとの通知を変えられません。"
+              : "通知の設定を保存できませんでした。もう一度お試しください。",
+          ),
+        )
+        .finally(() => withPending(calendar.id, null));
+    },
+    defaults,
+    defaultsBusy,
+    defaultsError,
+    openDefaults: (calendar: Calendar) => {
+      setDefaultsError(null);
+      setDefaults(calendar);
+    },
+    closeDefaults: () => setDefaults(null),
+    saveDefaults: (reminders: Reminder[]) => {
+      const target = defaults;
+      if (!target) return;
+      setDefaultsBusy(true);
+      setDefaultsError(null);
+      saveCalendarNotify(target, { defaultReminders: reminders })
+        .then((calendar) => {
+          remember(calendar);
+          setDefaults(null);
+        })
+        .catch((error) =>
+          setDefaultsError(
+            error instanceof CalendarNotifyUnsupportedError
+              ? "このサーバーでは、既定の通知を変えられません。"
+              : "保存できませんでした。もう一度お試しください。",
+          ),
+        )
+        .finally(() => setDefaultsBusy(false));
+    },
+  };
 }

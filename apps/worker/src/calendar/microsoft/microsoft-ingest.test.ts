@@ -2,7 +2,8 @@
  * Microsoft のプロバイダを、土台の取り込み (ingestEventDelta) と実際の PostgreSQL で確かめる。
  * Graph は偽物 (fetch の差し替え)。DATABASE_URL が無い環境では実行しない。
  */
-import { type Database, events } from "@orbit/db";
+import { graphEventBody } from "@orbit/core";
+import { calendars, type Database, eventReminders, events } from "@orbit/db";
 import { eq, sql } from "drizzle-orm";
 import {
   afterAll,
@@ -55,6 +56,7 @@ describe.skipIf(!adminUrl)("Microsoft の予定の取り込み (DB)", () => {
   });
 
   beforeEach(async () => {
+    await db.delete(calendars);
     calendar = await insertCalendar(db, userId, account.id, {
       source: "microsoft",
       remoteId: "cal-1",
@@ -119,5 +121,59 @@ describe.skipIf(!adminUrl)("Microsoft の予定の取り込み (DB)", () => {
     graph.remove("master-1");
     await syncCalendar(db, provider, account, calendar.id);
     expect(await rows()).toEqual([]);
+  });
+
+  it("終日の負の分だけのリマインダーは isReminderOn: false で書き、取り込みで DB の負の分を残す", async () => {
+    // 書く側: 負の分 (当日 9:00) だけなら、Graph には通知なしで書く。
+    expect(
+      graphEventBody(
+        {
+          useDefaultReminders: false,
+          reminders: [{ method: "display", minutes: -540 }],
+        } as unknown as Parameters<typeof graphEventBody>[0],
+        ["reminders", "useDefaultReminders"],
+        { raw: null, fallbackTimeZone: "Asia/Tokyo", exception: false },
+      ),
+    ).toEqual({ isReminderOn: false });
+    // 相手側にはそのとおり (通知なし) で入っている。
+    graph.put("cal-1", {
+      id: "holiday",
+      subject: "休み",
+      isAllDay: true,
+      isReminderOn: false,
+      start: { dateTime: "2026-12-24T00:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-12-25T00:00:00.0000000", timeZone: "UTC" },
+    });
+    await syncCalendar(db, provider, account, calendar.id);
+    const [row] = await rows();
+    if (!row) throw new Error("予定がありません。");
+    await db
+      .update(events)
+      .set({ useDefaultReminders: false })
+      .where(eq(events.id, row.id));
+    await db
+      .insert(eventReminders)
+      .values({ eventId: row.id, method: "display", minutes: -540 });
+    const minutesOf = async () =>
+      (
+        await db
+          .select({ minutes: eventReminders.minutes })
+          .from(eventReminders)
+          .where(eq(eventReminders.eventId, row.id))
+      )
+        .map((item) => item.minutes)
+        .sort((a, b) => a - b);
+    // 相手側で題名だけ変わっても、負の分は残る。
+    graph.update("holiday", { subject: "冬休み" });
+    await syncCalendar(db, provider, account, calendar.id);
+    expect((await rows())[0]?.summary).toBe("冬休み");
+    expect(await minutesOf()).toEqual([-540]);
+    // 相手側で通知をオンにしたら、相手側の分 (前日 9:00 = 900 分) と負の分の両方。
+    graph.update("holiday", {
+      isReminderOn: true,
+      reminderMinutesBeforeStart: 900,
+    });
+    await syncCalendar(db, provider, account, calendar.id);
+    expect(await minutesOf()).toEqual([-540, 900]);
   });
 });

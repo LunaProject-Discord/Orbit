@@ -27,7 +27,7 @@ pub(crate) fn is_button_id(id: &str) -> bool {
 }
 
 /// XML の文字列・属性に入れられるようにする。
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
