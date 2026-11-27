@@ -88,7 +88,7 @@ import {
   moveBy,
   moveTo,
 } from "@/lib/mailboxes";
-import type { SpecialView } from "@/lib/route";
+import type { SidebarView } from "@/lib/route";
 import {
   groupSidebar,
   mergeSubsetOrder,
@@ -356,8 +356,8 @@ type Props = {
   draftsSelected: boolean;
   onSelectDrafts: () => void;
   /** フォルダ以外の表示 (スター付き、送信待ち、設定)。その間もフォルダを選択中として扱わない。 */
-  special: SpecialView | null;
-  onSelectSpecial: (view: SpecialView) => void;
+  special: SidebarView | null;
+  onSelectSpecial: (view: SidebarView) => void;
   /** 統合フォルダと、サイドバー上部の項目の並び順。 */
   unified: UnifiedState;
   /** 表示している統合フォルダ。その間もフォルダを選択中として扱わない。 */

@@ -30,7 +30,7 @@ const PROVIDER_NAMES: Record<OAuthProvider, string> = {
 };
 
 /** カレンダーの権限を足したあとに戻る画面 (設定のアカウント)。 */
-const RETURN_TO = "/settings/accounts";
+const RETURN_TO = "/settings/common/accounts";
 
 /**
  * 設定のアカウントの「カレンダーを使う」の行。

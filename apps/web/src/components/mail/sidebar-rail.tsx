@@ -36,7 +36,7 @@ import {
   hoveredOverlayScrollbarOwner,
   overlayScrollbarOwner,
 } from "@/lib/overlay-scrollbars";
-import type { SpecialView } from "@/lib/route";
+import type { SidebarView } from "@/lib/route";
 import {
   groupSidebar,
   orderSections,
@@ -94,12 +94,12 @@ type RailProps = {
   folderView: boolean;
   draftCount: number;
   draftsSelected: boolean;
-  special: SpecialView | null;
+  special: SidebarView | null;
   outgoingCount: number;
   outgoingFailed: boolean;
   onSelect: (accountId: string | null, mailboxId: string | null) => void;
   onSelectDrafts: () => void;
-  onSelectSpecial: (view: SpecialView) => void;
+  onSelectSpecial: (view: SidebarView) => void;
   /** 統合フォルダと、サイドバー上部の項目の並び順。 */
   unified: UnifiedState;
   selectedUnifiedId: string | null;

@@ -52,7 +52,8 @@
 	}
 
 	# Web。Next.js の静的エクスポートなので、/login は login.html を返す。
-	# メールの画面はパス (/accounts/<ID>/folders/<ID> など) をブラウザー側で読み取るので、
+	# 画面はパス (/mail/accounts/<ID>、/calendar/week/<日付>、/settings/<分類>/<ページ> など) を
+	# ブラウザー側で読み取る (以前の /accounts/… なども、画面が /mail/… に書き換える) ので、
 	# 対応するファイルの無いパスには最初の画面 (index.html) を返す。
 	# 拡張子の付いたパス (スクリプトや画像) は対象にせず、無ければ 404 にする。
 	handle {

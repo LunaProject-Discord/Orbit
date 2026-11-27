@@ -15,7 +15,6 @@ import {
   LogOutIcon,
   type LucideIcon,
   MailOpenIcon,
-  MenuIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
@@ -30,6 +29,7 @@ import {
   SunIcon,
   Trash2Icon,
   TypeIcon,
+  XIcon,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
@@ -52,6 +52,12 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -131,11 +137,18 @@ import {
   updatePreferences,
   usePreferences,
 } from "@/lib/preferences";
-import { SETTINGS_CATEGORIES, type SettingsCategory } from "@/lib/route";
 import {
   changeSenderIconGravatar,
   useSenderIconGravatar,
 } from "@/lib/sender-icon-settings";
+import {
+  DEFAULT_SETTINGS_PAGE,
+  SETTINGS_GROUPS,
+  SETTINGS_PAGES,
+  type SettingsGroup,
+  type SettingsPageRef,
+  sameSettingsPage,
+} from "@/lib/settings-route";
 import {
   changeSwipeSettings,
   SWIPE_ACTIONS,
@@ -202,115 +215,155 @@ const shortcuts: [keys: string, action: string][] = [
   ["Z", "直前の削除・移動を元に戻す"],
 ];
 
-/** 設定画面のページ (カテゴリ) の名前と説明。並びは SETTINGS_CATEGORIES の順。 */
-const CATEGORIES: Record<
-  SettingsCategory,
-  { label: string; summary: string; description: string; icon: LucideIcon }
-> = {
-  accounts: {
-    label: "アカウント",
-    summary: "メールアカウントの追加、表示名、色、アイコン",
-    description:
-      "表示名、色、アイコンはすべての端末で共通です。並び順は、サイドバーでドラッグして変えられます。",
-    icon: AtSignIcon,
-  },
-  appearance: {
-    label: "外観",
-    summary: "テーマ、文字の大きさ、アニメーション",
-    description:
-      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
-    icon: PaletteIcon,
-  },
-  fonts: {
-    label: "フォント",
-    summary: "画面とメール本文のフォント",
-    description:
-      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
-    icon: TypeIcon,
-  },
-  list: {
-    label: "メール一覧",
-    summary: "行の間隔、プレビュー、マーク",
-    description:
-      "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
-    icon: ListIcon,
-  },
-  datetime: {
-    label: "日付と時刻",
-    summary: "日付と時刻の形式",
-    description: "このページの設定は、すべての端末で共通です。",
-    icon: Clock3Icon,
-  },
-  reading: {
-    label: "メールの表示",
-    summary:
-      "既読のタイミング、外部の画像、差出人のアイコン、見出し、簡易返信欄",
-    description:
-      "Gravatar を使うかどうかは、すべての端末で共通です。それ以外の設定は、この端末 (ブラウザー) にだけ保存されます。",
-    icon: MailOpenIcon,
-  },
-  actions: {
-    label: "操作",
-    summary: "スワイプ、ショートカットキー",
-    description:
-      "スワイプしたときの操作は、すべての端末で共通です。それ以外の設定は、この端末 (ブラウザー) にだけ保存されます。",
-    icon: PointerIcon,
-  },
-  sidebar: {
-    label: "サイドバー",
-    summary: "項目の並び替え、統合フォルダ",
-    description: "このページの設定は、すべての端末で共通です。",
-    icon: PanelLeftIcon,
-  },
-  notifications: {
-    label: "通知",
-    summary: "新着メールと予定の通知、通知に付けるボタン",
-    description:
-      "通知のオンとオフは端末 (ブラウザー) ごとに切り替えます。予定の通知の内容、カレンダーごとの通知、通知に付けるボタンはすべての端末で共通です。",
-    icon: BellIcon,
-  },
-  signatures: {
-    label: "作成と署名",
-    summary:
-      "メールの形式 (書式付き・テキスト)、アカウント・連絡先・会話ごとの署名",
-    description: "このページの設定は、すべての端末で共通です。",
-    icon: SignatureIcon,
-  },
-  security: {
-    label: "ログインとセキュリティ",
-    summary: "名前、メールアドレス、パスワード、2 段階認証、パスキー",
-    description:
-      "Orbit での名前と、ログインに使うメールアドレス、パスワード、2 段階認証、パスキーを設定します。メールアカウント (Gmail など) の設定とは別です。",
-    icon: ShieldCheckIcon,
-  },
-  system: {
-    label: "同期と端末",
-    summary: "同期の状況、ログアウト、設定の初期化",
-    description:
-      "メールはサーバーが常に同期し、既読や移動などの操作はすべての端末に反映されます。",
-    icon: RefreshCwIcon,
-  },
-  about: {
-    label: "バージョン情報",
-    summary: "アプリと画面の版、画面の更新",
-    description:
-      "アプリと画面の版、接続先のサーバーの版と更新の方針を確認します。アプリでは、アプリ本体と画面の更新もここで確認できます。",
-    icon: InfoIcon,
-  },
+type PageInfo = {
+  label: string;
+  summary: string;
+  description: string;
+  icon: LucideIcon;
 };
 
-/** 広い画面で、ページを選んでいないときに出すページ。 */
-const DEFAULT_CATEGORY: SettingsCategory = "accounts";
+/** 設定の分類の名前。連絡先はアプリが無いのでページも無く、一覧に出さない。 */
+const GROUP_LABELS: Record<SettingsGroup, string> = {
+  common: "共通",
+  mail: "メール",
+  calendar: "カレンダー",
+  contacts: "連絡先",
+};
+
+/** 設定のページの名前と説明。並びは SETTINGS_PAGES の順。 */
+const PAGES: {
+  [G in SettingsGroup]: Record<(typeof SETTINGS_PAGES)[G][number], PageInfo>;
+} = {
+  common: {
+    accounts: {
+      label: "アカウント",
+      summary: "メールアカウントの追加、表示名、色、アイコン",
+      description:
+        "表示名、色、アイコンはすべての端末で共通です。並び順は、サイドバーでドラッグして変えられます。",
+      icon: AtSignIcon,
+    },
+    appearance: {
+      label: "外観",
+      summary: "テーマ、文字の大きさ、アニメーション",
+      description:
+        "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
+      icon: PaletteIcon,
+    },
+    fonts: {
+      label: "フォント",
+      summary: "画面とメール本文のフォント",
+      description:
+        "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
+      icon: TypeIcon,
+    },
+    datetime: {
+      label: "日付と時刻",
+      summary: "日付と時刻の形式",
+      description: "このページの設定は、すべての端末で共通です。",
+      icon: Clock3Icon,
+    },
+    notifications: {
+      label: "この端末の通知",
+      summary: "新着メールと予定の通知のオン・オフ",
+      description:
+        "通知のオンとオフは端末 (ブラウザー) ごとに切り替えます。通知する内容は、メールとカレンダーの「通知」で選べます。",
+      icon: BellIcon,
+    },
+    security: {
+      label: "ログインとセキュリティ",
+      summary: "名前、メールアドレス、パスワード、2 段階認証、パスキー",
+      description:
+        "Orbit での名前と、ログインに使うメールアドレス、パスワード、2 段階認証、パスキーを設定します。メールアカウント (Gmail など) の設定とは別です。",
+      icon: ShieldCheckIcon,
+    },
+    system: {
+      label: "同期と端末",
+      summary: "同期の状況、ログアウト、設定の初期化",
+      description:
+        "メールはサーバーが常に同期し、既読や移動などの操作はすべての端末に反映されます。",
+      icon: RefreshCwIcon,
+    },
+    about: {
+      label: "バージョン情報",
+      summary: "アプリと画面の版、画面の更新",
+      description:
+        "アプリと画面の版、接続先のサーバーの版と更新の方針を確認します。アプリでは、アプリ本体と画面の更新もここで確認できます。",
+      icon: InfoIcon,
+    },
+  },
+  mail: {
+    list: {
+      label: "メール一覧",
+      summary: "行の間隔、プレビュー、マーク",
+      description:
+        "このページの設定は、この端末 (ブラウザー) にだけ保存されます。",
+      icon: ListIcon,
+    },
+    reading: {
+      label: "メールの表示",
+      summary:
+        "既読のタイミング、外部の画像、差出人のアイコン、見出し、簡易返信欄",
+      description:
+        "Gravatar を使うかどうかは、すべての端末で共通です。それ以外の設定は、この端末 (ブラウザー) にだけ保存されます。",
+      icon: MailOpenIcon,
+    },
+    actions: {
+      label: "操作",
+      summary: "スワイプ、ショートカットキー",
+      description:
+        "スワイプしたときの操作は、すべての端末で共通です。それ以外の設定は、この端末 (ブラウザー) にだけ保存されます。",
+      icon: PointerIcon,
+    },
+    sidebar: {
+      label: "サイドバー",
+      summary: "項目の並び替え、統合フォルダ",
+      description: "このページの設定は、すべての端末で共通です。",
+      icon: PanelLeftIcon,
+    },
+    signatures: {
+      label: "作成と署名",
+      summary:
+        "メールの形式 (書式付き・テキスト)、アカウント・連絡先・会話ごとの署名",
+      description: "このページの設定は、すべての端末で共通です。",
+      icon: SignatureIcon,
+    },
+    notifications: {
+      label: "メールの通知",
+      summary: "アカウントごとの通知、通知に付けるボタン",
+      description:
+        "このページの設定は、すべての端末で共通です。この端末で通知するかどうかは、共通の「この端末の通知」で切り替えます。",
+      icon: BellIcon,
+    },
+  },
+  calendar: {
+    notifications: {
+      label: "予定の通知",
+      summary: "招待と変更の通知、終日の予定、カレンダーごとの通知",
+      description:
+        "このページの設定は、すべての端末で共通です。この端末で通知するかどうかは、共通の「この端末の通知」で切り替えます。",
+      icon: BellIcon,
+    },
+  },
+  contacts: {},
+};
+
+function pageInfo(page: SettingsPageRef): PageInfo {
+  return (PAGES[page.group] as Record<string, PageInfo>)[page.page] as PageInfo;
+}
+
+function pageKey(page: SettingsPageRef): string {
+  return `${page.group}/${page.page}`;
+}
 
 type Props = {
   user: User;
   /** 読み込み前は null。 */
   accounts: Account[] | null;
-  /** 開いているページ。null なら設定の最初の画面 (狭い画面ではカテゴリの一覧)。 */
-  category: SettingsCategory | null;
-  onCategoryChange: (category: SettingsCategory | null) => void;
-  /** 狭い画面で、サイドバーを開く。 */
-  onMenu: () => void;
+  /** 開いているページ。null ならページを選んでいない (狭い画面では分類とページの一覧)。 */
+  page: SettingsPageRef | null;
+  onPageChange: (page: SettingsPageRef | null) => void;
+  /** 設定を閉じて、開く前の画面へ戻る。 */
+  onClose: () => void;
   notificationStatus: NotificationStatus;
   notificationBusy: boolean;
   onNotificationChange: (enabled: boolean) => void;
@@ -331,164 +384,230 @@ type Props = {
 };
 
 /**
- * 設定画面。カテゴリごとのページに分かれている。
+ * 設定のダイアログ。共通・メール・カレンダーの分類ごとに、ページに分かれている。
+ * どのアプリから開いても同じダイアログで、背後には開いた元のアプリの画面が残る。
  *
- * 広い画面では、左にカテゴリの一覧、右に選んだページを並べる。狭い画面では、
- * カテゴリの一覧からページへ入り、見出しの「戻る」で一覧へ戻る。どちらの並びにするかは
- * この画面の幅で決める (コンテナクエリ) ので、表示の切り替えは CSS だけで行う。
+ * 広い画面では大きな中央のダイアログで、左に分類とページの一覧、右に選んだページを並べる。
+ * 狭い画面 (スマホ幅) では画面いっぱいに広げ、一覧からページへ入り、見出しの「戻る」で一覧へ
+ * 戻る。どちらの並びにするかはダイアログの幅で決める (コンテナクエリ) ので、表示の切り替えは
+ * CSS だけで行う。
  */
 export function SettingsView(props: Props) {
-  const { category, onCategoryChange, accounts } = props;
-  const shown = category ?? DEFAULT_CATEGORY;
-  const current = CATEGORIES[shown];
+  const { page, onPageChange, accounts, onClose } = props;
+  const calendarSettings = useCalendarNotificationSettings();
+  useEffect(() => {
+    void refreshCalendarNotificationSettings();
+  }, []);
+  // カレンダーの無いサーバー (古いサーバー) では、カレンダーの分類を出さない。
+  const groups = SETTINGS_GROUPS.filter(
+    (group) =>
+      SETTINGS_PAGES[group].length > 0 &&
+      !(group === "calendar" && calendarSettings.status === "unsupported"),
+  );
+  const shown =
+    page && groups.includes(page.group) ? page : DEFAULT_SETTINGS_PAGE;
+  const current = pageInfo(shown);
   const accountProblem =
     accounts?.some((account) => accountProblems[account.status]) ?? false;
 
   return (
-    <section
-      aria-label="設定"
-      className="@container flex min-h-0 min-w-0 flex-1 flex-col"
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
     >
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-        {/* 狭い画面のページでは、メニューの代わりに「戻る」を出す。 */}
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="メニューを開く"
-          aria-controls="mail-sidebar"
-          onClick={props.onMenu}
-          className={cn("-ml-2 md:hidden", category && "hidden")}
-        >
-          <MenuIcon />
-        </Button>
-        {category && (
+      <DialogContent
+        showCloseButton={false}
+        data-settings-dialog=""
+        className={cn(
+          "@container flex flex-col gap-0 overflow-hidden p-0",
+          // 広い画面: 大きな中央のダイアログ。
+          "sm:h-[min(48rem,calc(100dvh-4rem))] sm:w-[min(68rem,calc(100vw-4rem))] sm:max-w-none",
+          // スマホ幅: 画面いっぱい (以前の設定画面の狭い画面と同じ動き)。
+          "max-sm:inset-0 max-sm:h-dvh max-sm:w-full max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:ring-0 max-sm:data-closed:zoom-out-100 max-sm:data-open:zoom-in-100",
+        )}
+      >
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+          {/* 狭い画面のページでは「戻る」を出す。 */}
+          {page && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="設定の一覧へ戻る"
+              onClick={() => onPageChange(null)}
+              className="-ml-2 @3xl:hidden"
+            >
+              <ArrowLeftIcon />
+            </Button>
+          )}
+          <DialogTitle className="min-w-0 flex-1 truncate font-semibold text-lg leading-normal">
+            <span className={cn(page && "@max-3xl:hidden")}>設定</span>
+            {page && (
+              <span className="@3xl:hidden">{pageInfo(shown).label}</span>
+            )}
+          </DialogTitle>
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="設定の一覧へ戻る"
-            onClick={() => onCategoryChange(null)}
-            className="-ml-2 @3xl:hidden"
+            aria-label="設定を閉じる"
+            data-settings-close=""
+            onClick={onClose}
+            className="-mr-2"
           >
-            <ArrowLeftIcon />
+            <XIcon />
           </Button>
-        )}
-        <h1 className="truncate font-semibold text-lg">
-          <span className={cn(category && "@max-3xl:hidden")}>設定</span>
-          {category && <span className="@3xl:hidden">{current.label}</span>}
-        </h1>
-      </header>
-      <div className="flex min-h-0 flex-1">
-        <nav
-          aria-label="設定のカテゴリ"
-          className={cn(
-            "min-h-0 w-full overflow-y-auto p-2 @3xl:w-56 @3xl:shrink-0 @3xl:border-r",
-            category && "@max-3xl:hidden",
-          )}
-        >
-          <ul className="flex flex-col gap-0.5">
-            {SETTINGS_CATEGORIES.map((id) => {
-              const item = CATEGORIES[id];
-              return (
-                <li key={id}>
-                  <button
-                    type="button"
-                    aria-current={shown === id ? "page" : undefined}
-                    data-settings-category={id}
-                    onClick={() => onCategoryChange(id)}
-                    className={cn(
-                      "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 @3xl:py-1.5",
-                      category === id && "bg-muted font-medium",
-                      // ページを選んでいなくても、広い画面では最初のページが出ている。
-                      category === null &&
-                        id === DEFAULT_CATEGORY &&
-                        "@3xl:bg-muted @3xl:font-medium",
-                    )}
-                  >
-                    <item.icon
-                      aria-hidden="true"
-                      className="size-4 shrink-0 text-muted-foreground"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{item.label}</span>
-                      <span className="block truncate font-normal text-muted-foreground text-xs @3xl:hidden">
-                        {item.summary}
-                      </span>
-                    </span>
-                    {id === "accounts" && accountProblem && (
-                      <CircleAlertIcon
-                        role="img"
-                        aria-label="確認が必要なアカウントがあります"
-                        className="size-4 shrink-0 text-destructive"
-                      />
-                    )}
-                    <ChevronRightIcon
-                      aria-hidden="true"
-                      className="size-4 shrink-0 text-muted-foreground @3xl:hidden"
-                    />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-        <div
-          // ページを切り替えたら、先頭から表示する。
-          key={shown}
-          data-settings-page={shown}
-          className={cn(
-            "min-h-0 min-w-0 flex-1 overflow-y-auto",
-            !category && "@max-3xl:hidden",
-          )}
-        >
-          <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-4 sm:p-6">
-            <div className="flex flex-col gap-1">
-              <h2 className="font-semibold text-lg @max-3xl:hidden">
-                {current.label}
-              </h2>
-              <p className="text-muted-foreground text-sm">
-                {current.description}
-              </p>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <nav
+            aria-label="設定のページ"
+            className={cn(
+              "min-h-0 w-full overflow-y-auto p-2 @3xl:w-60 @3xl:shrink-0 @3xl:border-r",
+              page && "@max-3xl:hidden",
+            )}
+          >
+            {groups.map((group) => (
+              <section
+                key={group}
+                aria-labelledby={`settings-group-${group}`}
+                data-settings-group={group}
+                className="mb-2 last:mb-0"
+              >
+                <h2
+                  id={`settings-group-${group}`}
+                  className="px-3 pt-2 pb-1 font-medium text-muted-foreground text-xs"
+                >
+                  {GROUP_LABELS[group]}
+                </h2>
+                <ul className="flex flex-col gap-0.5">
+                  {SETTINGS_PAGES[group].map((id) => {
+                    const ref = { group, page: id } as SettingsPageRef;
+                    const item = pageInfo(ref);
+                    const selected = sameSettingsPage(page, ref);
+                    return (
+                      <li key={id}>
+                        <button
+                          type="button"
+                          aria-current={
+                            sameSettingsPage(shown, ref) ? "page" : undefined
+                          }
+                          data-settings-page-link={pageKey(ref)}
+                          onClick={() => onPageChange(ref)}
+                          className={cn(
+                            "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 @3xl:py-1.5",
+                            selected && "bg-muted font-medium",
+                            // ページを選んでいなくても、広い画面では最初のページが出ている。
+                            page === null &&
+                              sameSettingsPage(ref, DEFAULT_SETTINGS_PAGE) &&
+                              "@3xl:bg-muted @3xl:font-medium",
+                          )}
+                        >
+                          <item.icon
+                            aria-hidden="true"
+                            className="size-4 shrink-0 text-muted-foreground"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{item.label}</span>
+                            <span className="block truncate font-normal text-muted-foreground text-xs @3xl:hidden">
+                              {item.summary}
+                            </span>
+                          </span>
+                          {group === "common" &&
+                            id === "accounts" &&
+                            accountProblem && (
+                              <CircleAlertIcon
+                                role="img"
+                                aria-label="確認が必要なアカウントがあります"
+                                className="size-4 shrink-0 text-destructive"
+                              />
+                            )}
+                          <ChevronRightIcon
+                            aria-hidden="true"
+                            className="size-4 shrink-0 text-muted-foreground @3xl:hidden"
+                          />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </nav>
+          <div
+            // ページを切り替えたら、先頭から表示する。
+            key={pageKey(shown)}
+            data-settings-page={pageKey(shown)}
+            className={cn(
+              "min-h-0 min-w-0 flex-1 overflow-y-auto",
+              !page && "@max-3xl:hidden",
+            )}
+          >
+            <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-4 sm:p-6">
+              <div className="flex flex-col gap-1">
+                <h2 className="font-semibold text-lg @max-3xl:hidden">
+                  {current.label}
+                </h2>
+                <DialogDescription className="text-muted-foreground text-sm">
+                  {current.description}
+                </DialogDescription>
+              </div>
+              <SettingsPage {...props} shown={shown} />
             </div>
-            <SettingsPage {...props} shown={shown} />
           </div>
         </div>
-      </div>
-    </section>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function SettingsPage({
-  shown,
-  ...props
-}: Props & { shown: SettingsCategory }) {
-  switch (shown) {
-    case "accounts":
-      return <AccountsPage {...props} />;
-    case "appearance":
-      return <AppearancePage />;
-    case "fonts":
-      return <FontsPage />;
-    case "list":
-      return <ListPage />;
-    case "datetime":
-      return <DateTimePage />;
-    case "reading":
-      return <ReadingPage />;
-    case "actions":
-      return <ActionsPage />;
-    case "sidebar":
-      return props.sidebarItems;
-    case "notifications":
-      return <NotificationsPage {...props} />;
-    case "signatures":
-      return <SignaturesPage {...props} />;
-    case "security":
-      return <SecuritySettings user={props.user} />;
-    case "system":
-      return <SystemPage {...props} />;
-    case "about":
-      return <AboutSettings />;
+function SettingsPage({ shown, ...props }: Props & { shown: SettingsPageRef }) {
+  switch (shown.group) {
+    case "common":
+      switch (shown.page) {
+        case "accounts":
+          return <AccountsPage {...props} />;
+        case "appearance":
+          return <AppearancePage />;
+        case "fonts":
+          return <FontsPage />;
+        case "datetime":
+          return <DateTimePage />;
+        case "notifications":
+          return <DeviceNotificationsPage {...props} />;
+        case "security":
+          return <SecuritySettings user={props.user} />;
+        case "system":
+          return <SystemPage {...props} />;
+        case "about":
+          return <AboutSettings />;
+      }
+      break;
+    case "mail":
+      switch (shown.page) {
+        case "list":
+          return <ListPage />;
+        case "reading":
+          return <ReadingPage />;
+        case "actions":
+          return <ActionsPage />;
+        case "sidebar":
+          return props.sidebarItems;
+        case "signatures":
+          return <SignaturesPage {...props} />;
+        case "notifications":
+          return <MailNotificationsPage {...props} />;
+      }
+      break;
+    case "calendar":
+      switch (shown.page) {
+        case "notifications":
+          return <CalendarNotificationsPage />;
+      }
+      break;
+    case "contacts":
+      break;
   }
+  return null;
 }
 
 function AccountsPage({
@@ -1053,13 +1172,72 @@ function ActionsPage() {
   );
 }
 
-function NotificationsPage({
-  accounts,
+/** 共通の「この端末の通知」: この端末で新着メールと予定を通知するか。 */
+function DeviceNotificationsPage({
   notificationStatus,
   notificationBusy,
   onNotificationChange,
-  onAccountUpdated,
 }: Props) {
+  const notifying =
+    notificationStatus === "page" || notificationStatus === "push";
+  const canToggleNotification =
+    notificationStatus !== "unsupported" && notificationStatus !== "blocked";
+  const calendarSettings = useCalendarNotificationSettings();
+  useEffect(() => {
+    void refreshCalendarNotificationSettings({ force: true });
+  }, []);
+  const calendarReady = calendarSettings.status === "ready";
+  return (
+    <Section title={calendarReady ? "この端末の通知" : "新着メールの通知"}>
+      <div className="flex items-center gap-3 rounded-lg border p-3">
+        {/* アイコンは説明の行ではなく、1 行目 (オン / オフ) の高さにそろえる。 */}
+        <span className="flex h-5 shrink-0 items-center self-start">
+          {notifying ? (
+            <BellIcon className="size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <BellOffIcon
+              className="size-4 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-sm">
+            {calendarReady ? "新着メール" : "この端末の通知"}:{" "}
+            {notifying ? "オン" : "オフ"}
+          </p>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            {
+              (isNativeApp()
+                ? nativeNotificationDescriptions
+                : isDesktopApp()
+                  ? desktopNotificationDescriptions
+                  : notificationDescriptions)[notificationStatus]
+            }
+          </p>
+        </div>
+        {canToggleNotification && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={notificationBusy}
+            onClick={() => onNotificationChange(!notifying)}
+          >
+            {notifying ? "オフにする" : "オンにする"}
+          </Button>
+        )}
+      </div>
+      {calendarReady && (
+        <DeviceCalendarNotificationCard
+          notificationStatus={notificationStatus}
+        />
+      )}
+    </Section>
+  );
+}
+
+/** メールの「メールの通知」: アカウントごとの通知と、通知に付けるボタン。 */
+function MailNotificationsPage({ accounts, onAccountUpdated }: Props) {
   const [accountError, setAccountError] = useState(false);
   const changeAccountNotify = (account: Account, notifyNewMail: boolean) => {
     // 押してすぐ画面に反映し、保存できなければ元に戻す。
@@ -1085,69 +1263,8 @@ function NotificationsPage({
       toggleNotificationAction(notificationActions, id, on),
     ).then((saved) => setNotificationActionsError(!saved));
   };
-  const notifying =
-    notificationStatus === "page" || notificationStatus === "push";
-  const canToggleNotification =
-    notificationStatus !== "unsupported" && notificationStatus !== "blocked";
-  const calendarSettings = useCalendarNotificationSettings();
-  useEffect(() => {
-    void refreshCalendarNotificationSettings({ force: true });
-  }, []);
-  const calendarReady = calendarSettings.status === "ready";
   return (
     <>
-      <Section title={calendarReady ? "この端末の通知" : "新着メールの通知"}>
-        <div className="flex items-center gap-3 rounded-lg border p-3">
-          {/* アイコンは説明の行ではなく、1 行目 (オン / オフ) の高さにそろえる。 */}
-          <span className="flex h-5 shrink-0 items-center self-start">
-            {notifying ? (
-              <BellIcon className="size-4 shrink-0" aria-hidden="true" />
-            ) : (
-              <BellOffIcon
-                className="size-4 shrink-0 text-muted-foreground"
-                aria-hidden="true"
-              />
-            )}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="font-medium text-sm">
-              {calendarReady ? "新着メール" : "この端末の通知"}:{" "}
-              {notifying ? "オン" : "オフ"}
-            </p>
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              {
-                (isNativeApp()
-                  ? nativeNotificationDescriptions
-                  : isDesktopApp()
-                    ? desktopNotificationDescriptions
-                    : notificationDescriptions)[notificationStatus]
-              }
-            </p>
-          </div>
-          {canToggleNotification && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={notificationBusy}
-              onClick={() => onNotificationChange(!notifying)}
-            >
-              {notifying ? "オフにする" : "オンにする"}
-            </Button>
-          )}
-        </div>
-        {calendarReady && (
-          <DeviceCalendarNotificationCard
-            notificationStatus={notificationStatus}
-          />
-        )}
-      </Section>
-      {calendarReady && <CalendarNotificationSection />}
-      {calendarReady && <CalendarNotifyList />}
-      {calendarSettings.status === "error" && (
-        <p role="alert" className="text-destructive text-xs">
-          予定の通知の設定を読み込めませんでした。通信の状態を確認して、ページを開き直してください。
-        </p>
-      )}
       {accounts && accounts.length > 0 && (
         <Section title="アカウントごとの通知">
           <SettingGroup>
@@ -1220,6 +1337,31 @@ function NotificationsPage({
           </p>
         )}
       </Section>
+    </>
+  );
+}
+
+/** カレンダーの「予定の通知」: 予定の通知の内容と、カレンダーごとの通知。 */
+function CalendarNotificationsPage() {
+  const calendarSettings = useCalendarNotificationSettings();
+  useEffect(() => {
+    void refreshCalendarNotificationSettings({ force: true });
+  }, []);
+  if (calendarSettings.status === "loading") {
+    return <p className="text-muted-foreground text-sm">読み込み中…</p>;
+  }
+  if (calendarSettings.status === "error") {
+    return (
+      <p role="alert" className="text-destructive text-xs">
+        予定の通知の設定を読み込めませんでした。通信の状態を確認して、ページを開き直してください。
+      </p>
+    );
+  }
+  if (calendarSettings.status !== "ready") return null;
+  return (
+    <>
+      <CalendarNotificationSection />
+      <CalendarNotifyList />
     </>
   );
 }

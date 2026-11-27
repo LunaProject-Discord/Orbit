@@ -188,7 +188,8 @@ fn platform_name() -> &'static str {
     }
 }
 
-/// 追加のウィンドウで開ける、アプリの画面のパスかどうか ("/accounts/…/messages/…?q=…" など)。
+/// 追加のウィンドウで開ける、アプリの画面のパスかどうか ("/mail/accounts/…/messages/…?window=message" など)。
+/// 以前の形 ("/accounts/…"、古い画面が渡すもの) も通す (画面が "/mail/…" に書き換える)。
 /// 画面から受け取った値をそのまま URL にしないよう、形を確かめる。
 fn is_app_path(path: &str) -> bool {
     path.len() <= 2048
@@ -473,6 +474,11 @@ mod tests {
             "/accounts/019aa0c2-7b3e-7c11-9d2f-0123456789ab/messages/019aa0c2-7b3e-7c11-9d2f-0123456789ac/single"
         ));
         assert!(is_app_path("/compose/new"));
+        assert!(is_app_path("/mail/compose/new?window=compose&fresh=1"));
+        assert!(is_app_path(
+            "/mail/accounts/019aa0c2-7b3e-7c11-9d2f-0123456789ab/messages/019aa0c2-7b3e-7c11-9d2f-0123456789ac?window=message"
+        ));
+        assert!(is_app_path("/settings/common/accounts"));
         assert!(is_app_path("/?q=%E8%AB%8B%E6%B1%82%E6%9B%B8&unread=1"));
         assert!(!is_app_path("https://example.com/"));
         assert!(!is_app_path("//example.com/"));

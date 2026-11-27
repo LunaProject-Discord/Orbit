@@ -110,7 +110,7 @@ describe("AccountCalendarSetting", () => {
       {
         provider: "google",
         accountId: "account-1",
-        options: { calendar: true, returnTo: "/settings/accounts" },
+        options: { calendar: true, returnTo: "/settings/common/accounts" },
       },
     ]);
   });
