@@ -469,7 +469,7 @@ export function consumeLineMarker(editor: HTMLElement): LineMarker | null {
       next?.nodeName === "BR" ? next : editor.ownerDocument.createElement("br");
     if (br !== next) parent.insertBefore(br, next);
     const index = [...parent.childNodes].indexOf(br as ChildNode);
-    node.remove();
+    parent.removeChild(node);
     placeCaret(parent, index - 1);
   } else {
     placeCaret(node, offset - typed);
