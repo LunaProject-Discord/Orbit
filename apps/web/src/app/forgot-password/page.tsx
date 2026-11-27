@@ -16,6 +16,9 @@ function messageOf(error: unknown): string {
     if (error.status === 429) {
       return "試行回数が多すぎます。しばらく待ってからもう一度お試しください。";
     }
+    if (error.code === "PASSWORD_LOGIN_DISABLED") {
+      return "このサーバーでは、パスワードでのログインが止められているため、パスワードを再設定できません。ログイン画面のほかの方法でログインしてください。";
+    }
     if (error.code === "RESET_PASSWORD_DISABLED") {
       return "このサーバーはメールを送信できないため、パスワードを再設定できません。サーバーの管理者に連絡してください。";
     }

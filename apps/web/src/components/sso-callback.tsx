@@ -29,6 +29,8 @@ function messageOf(error: unknown): string {
   }
   if (error instanceof ApiError) {
     switch (error.code) {
+      case "user_disabled":
+        return "このアカウントは管理者によって無効にされています。管理者にお問い合わせください。";
       case "invalid_state":
         return "ログインの有効期限が切れたか、別の端末やブラウザーで始めたログインです。もう一度最初からお試しください。";
       case "linked_to_other":

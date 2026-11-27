@@ -20,7 +20,18 @@ import {
   type SecurityClient,
   SecurityPanel,
 } from "@/components/mail/security-settings";
+import { showNotice } from "@/components/mail/toasts";
 import { ThemeToggle } from "@/components/theme-toggle";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +43,8 @@ import {
   confirmAdminTwoFactor,
   deleteAdminPasskey,
   disableAdminTwoFactor,
+  disableMember,
+  enableMember,
   fetchAdminSecurity,
   listAdminPasskeys,
   listAdmins,
@@ -58,7 +71,7 @@ const SECTION_INFO: Record<
   users: {
     label: "利用者",
     description:
-      "このサーバーで Orbit (メール・カレンダー・連絡先) を使っている人です。データは利用者ごとに分かれていて、管理画面からも中身は見えません。",
+      "このサーバーで Orbit (メール・カレンダー・連絡先) を使っている人です。データは利用者ごとに分かれていて、管理画面からも中身は見えません。シングルサインオン先で消された人などは、無効にするとログインできなくなります。",
     icon: UsersIcon,
   },
   invitations: {
@@ -306,6 +319,36 @@ function ListState(props: {
 function MemberList() {
   const dateStyle = useDateStyle();
   const { items, error, reload } = useList<Member>(listMembers);
+  /** 無効にする・戻す確認の相手。 */
+  const [target, setTarget] = useState<Member | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function toggle(member: Member) {
+    const disabling = !member.disabledAt;
+    setBusy(member.id);
+    try {
+      if (disabling) await disableMember(member.id);
+      else await enableMember(member.id);
+      showNotice(
+        disabling
+          ? `${member.name} さんを無効にしました。すべての端末からログアウトしました。`
+          : `${member.name} さんを有効に戻しました。`,
+        "info",
+      );
+    } catch (cause) {
+      showNotice(
+        cause instanceof ApiError && cause.status === 404
+          ? "この利用者は、すでに削除されています。"
+          : cause instanceof NetworkError
+            ? "サーバーに接続できませんでした。ネットワークの状態を確認してください。"
+            : "変更できませんでした。時間をおいてもう一度お試しください。",
+      );
+    } finally {
+      setBusy(null);
+      void reload();
+    }
+  }
+
   return (
     <section className="flex flex-col gap-3">
       <ListState
@@ -318,23 +361,76 @@ function MemberList() {
       {items && items.length > 0 && (
         <ul className="flex flex-col divide-y rounded-lg border" data-members>
           {items.map((member) => (
-            <li key={member.id} className="px-3 py-2">
-              <p className="flex items-center gap-2 font-medium text-sm">
-                <span className="truncate">{member.name}</span>
-                {member.twoFactorEnabled && (
-                  <Badge variant="outline" className="shrink-0">
-                    2 段階認証
-                  </Badge>
-                )}
-              </p>
-              <p className="truncate text-muted-foreground text-xs">
-                {member.email} ・ {formatShortDate(member.createdAt, dateStyle)}{" "}
-                に登録
-              </p>
+            <li key={member.id} className="flex items-center gap-2 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="flex items-center gap-2 font-medium text-sm">
+                  <span className="truncate">{member.name}</span>
+                  {member.disabledAt && (
+                    <Badge variant="secondary" className="shrink-0">
+                      無効
+                    </Badge>
+                  )}
+                  {member.twoFactorEnabled && (
+                    <Badge variant="outline" className="shrink-0">
+                      2 段階認証
+                    </Badge>
+                  )}
+                </p>
+                <p className="truncate text-muted-foreground text-xs">
+                  {member.email} ・{" "}
+                  {formatShortDate(member.createdAt, dateStyle)} に登録
+                  {member.disabledAt &&
+                    ` ・ ${formatShortDate(member.disabledAt, dateStyle)} に無効化`}
+                </p>
+              </div>
+              {member.disabledAt !== undefined && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={busy === member.id}
+                  onClick={() => {
+                    if (member.disabledAt) void toggle(member);
+                    else setTarget(member);
+                  }}
+                >
+                  {member.disabledAt ? "有効に戻す" : "無効にする"}
+                </Button>
+              )}
             </li>
           ))}
         </ul>
       )}
+      <AlertDialog
+        open={target !== null}
+        onOpenChange={(open) => {
+          if (!open) setTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {target?.name} さんを無効にしますか？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              すべての端末からログアウトし、パスワード・パスキー・シングルサインオンのどの方法でもログインできなくなります。端末への通知も止まります。メールなどのデータは消えず、あとで有効に戻せます。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const member = target;
+                setTarget(null);
+                if (member) void toggle(member);
+              }}
+            >
+              無効にする
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

@@ -20,6 +20,9 @@ function messageOf(error: unknown): string {
     return "サーバーに接続できませんでした。ネットワークの状態を確認してください。";
   }
   if (error instanceof ApiError) {
+    if (error.code === "PASSWORD_LOGIN_DISABLED") {
+      return "このサーバーでは、パスワードでのログインが止められているため、パスワードを再設定できません。ログイン画面のほかの方法でログインしてください。";
+    }
     if (error.code === "INVALID_TOKEN") {
       return "リンクの有効期限が切れているか、すでに使われています。もう一度、再設定をやり直してください。";
     }

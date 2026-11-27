@@ -23,6 +23,8 @@ function messageOf(error: unknown): string {
     switch (error.code) {
       case "invalid_invitation":
         return "この招待リンクは、期限が切れているか、すでに使われています。招待した人に、新しいリンクの発行を依頼してください。";
+      case "password_login_disabled":
+        return "このサーバーでは、パスワードでのログインが止められているため、招待リンクから登録できません。ログイン画面のほかの方法でログインしてください。";
       case "email_mismatch":
         return "この招待は、別のメールアドレス用です。招待されたメールアドレスを入力してください。";
       case "email_taken":
@@ -43,6 +45,8 @@ type Lookup =
   /** 読み込み前 (静的に書き出した HTML と食い違わないよう、読み込み後に URL を読む)。 */
   | { status: "loading" }
   | { status: "invalid" }
+  /** パスワードでのログインが止められていて、パスワードでは登録できない。 */
+  | { status: "password-disabled" }
   | { status: "unreachable" }
   | { status: "ready"; token: string; email: string | null };
 
@@ -95,7 +99,10 @@ export default function InvitePage() {
           status:
             cause instanceof ApiError && cause.status === 404
               ? "invalid"
-              : "unreachable",
+              : cause instanceof ApiError &&
+                  cause.code === "password_login_disabled"
+                ? "password-disabled"
+                : "unreachable",
         });
       });
     return () => {
@@ -165,15 +172,17 @@ export default function InvitePage() {
     return (
       <AuthShell
         lead={
-          lookup.status === "invalid"
-            ? "この招待リンクは使えません。"
-            : "サーバーに接続できませんでした。"
+          lookup.status === "unreachable"
+            ? "サーバーに接続できませんでした。"
+            : "この招待リンクは使えません。"
         }
       >
         <p className="mt-8 text-sm leading-relaxed">
           {lookup.status === "invalid"
             ? "期限が切れているか、すでに使われています。招待した人に、新しいリンクの発行を依頼してください。"
-            : "ネットワークの状態を確認して、もう一度リンクを開いてください。"}
+            : lookup.status === "password-disabled"
+              ? "このサーバーでは、パスワードでのログインが止められているため、招待リンクから登録できません。ログイン画面のほかの方法 (シングルサインオンなど) でログインしてください。"
+              : "ネットワークの状態を確認して、もう一度リンクを開いてください。"}
         </p>
         <p className="mt-6 text-center text-sm">
           <Link

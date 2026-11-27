@@ -584,6 +584,7 @@ HTML の文字参照 (`&#12354;` など) も文字に戻してから探します
 | `pnpm admin create <名前> <表示名>` | 管理画面 (`/admin`) の管理者を作成 (一般の利用者とは別のアカウント) |
 | `pnpm admin password <名前> [--reset-two-factor]` | 管理者のパスワードを付け直す (復旧用。全端末のログアウトとパスキーの削除も行う) |
 | `pnpm admin list` / `pnpm admin delete <名前>` | 管理者の一覧 / 削除 |
+| `pnpm admin password-login [on\|off]` | 一般の利用者のパスワードでのログインを許す / 止める (引数なしで今の設定。シングルサインオンの設定を誤ったときの復旧用) |
 | `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
 
 ## UI

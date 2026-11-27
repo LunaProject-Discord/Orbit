@@ -430,6 +430,22 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
       });
     });
 
+    it("管理者が無効にした利用者は、IdP で確認できてもログインできない", async () => {
+      await db.execute(
+        sql`update users set disabled_at = now() where email = 'alice@example.com'`,
+      );
+      const response = await login({ id: 1, email: "alice@example.com" });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "user_disabled" });
+      expect(response.headers.get("set-auth-token")).toBeNull();
+      await db.execute(
+        sql`update users set disabled_at = null where email = 'alice@example.com'`,
+      );
+      expect((await login({ id: 1, email: "alice@example.com" })).status).toBe(
+        200,
+      );
+    });
+
     it("許可していないドメインの人は作らない", async () => {
       const response = await login({ id: 2, email: "bob@other.org" });
       expect(response.status).toBe(403);
@@ -639,6 +655,7 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
     it("使える IdP と、パスワードを持っているかを返す", async () => {
       expect(await status(erinToken)).toEqual({
         hasPassword: true,
+        passwordLogin: true,
         providers: [
           expect.objectContaining({ id: providerId, linkedAt: null }),
         ],
@@ -757,6 +774,20 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
         password: "alice-new-password",
       });
       expect(byPassword.status).toBe(200);
+
+      // パスワードでのログインを止めているサーバーでは、パスワードは残る方法に数えない。
+      await db.execute(
+        sql`insert into server_settings (id, password_login) values (true, false)`,
+      );
+      const offRefused = await json(
+        "DELETE",
+        `/v1/security/sso/${providerId}`,
+        undefined,
+        bearer(aliceToken),
+      );
+      expect(offRefused.status).toBe(409);
+      expect((await status(aliceToken)).passwordLogin).toBe(false);
+      await db.execute(sql`delete from server_settings`);
 
       const unlinked = await json(
         "DELETE",

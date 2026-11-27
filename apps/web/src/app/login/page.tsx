@@ -29,10 +29,18 @@ const NETWORK_MESSAGE =
   "サーバーに接続できませんでした。ネットワークの状態を確認してください。";
 const RATE_MESSAGE =
   "試行回数が多すぎます。しばらく待ってからもう一度お試しください。";
+const DISABLED_MESSAGE =
+  "このアカウントは管理者によって無効にされています。管理者にお問い合わせください。";
+const PASSWORD_LOGIN_DISABLED_MESSAGE =
+  "このサーバーでは、パスワードでのログインは使えません。ほかの方法でログインしてください。";
 
 function messageOf(error: unknown): string {
   if (error instanceof NetworkError) return NETWORK_MESSAGE;
   if (error instanceof ApiError) {
+    if (error.code === "USER_DISABLED") return DISABLED_MESSAGE;
+    if (error.code === "PASSWORD_LOGIN_DISABLED") {
+      return PASSWORD_LOGIN_DISABLED_MESSAGE;
+    }
     if (error.status === 401 || error.status === 400) {
       return "メールアドレスまたはパスワードが正しくありません。";
     }
@@ -51,6 +59,8 @@ function twoFactorMessageOf(error: unknown): {
   }
   if (error instanceof ApiError) {
     switch (error.code) {
+      case "USER_DISABLED":
+        return { message: DISABLED_MESSAGE, restart: true };
       case "INVALID_CODE":
       case "INVALID_BACKUP_CODE":
         return { message: "コードが正しくありません。", restart: false };
@@ -81,11 +91,12 @@ function passkeyMessageOf(error: unknown): string | null {
   if (error instanceof NetworkError) return NETWORK_MESSAGE;
   if (error instanceof ApiError) {
     if (error.status === 429) return RATE_MESSAGE;
+    if (error.code === "USER_DISABLED") return DISABLED_MESSAGE;
     if (error.code === "PASSKEY_NOT_FOUND") {
-      return "このパスキーは登録されていません。パスワードでログインしてください。";
+      return "このパスキーは登録されていません。ほかの方法でログインしてください。";
     }
   }
-  return "パスキーでログインできませんでした。パスワードでログインしてください。";
+  return "パスキーでログインできませんでした。ほかの方法でログインしてください。";
 }
 
 function ssoStartMessageOf(error: unknown): string {
@@ -160,6 +171,8 @@ export default function LoginPage() {
   const [server, setServer] = useState<string | null>(null);
   const [canPasskey, setCanPasskey] = useState(false);
   const [canReset, setCanReset] = useState(false);
+  /** パスワードでログインできる (管理者が止めていれば false で、入力欄を出さない)。 */
+  const [passwordLogin, setPasswordLogin] = useState(true);
   const [ssoProviders, setSsoProviders] = useState<SsoProviderOption[]>([]);
   const [notice, setNotice] = useState<ReturnType<typeof noticeOf>>(null);
   useEffect(() => {
@@ -176,8 +189,9 @@ export default function LoginPage() {
     const controller = new AbortController();
     fetchAuthFeatures(controller.signal)
       .then((features) => {
-        setCanReset(features.mail);
+        setCanReset(features.mail && features.passwordLogin);
         setSsoProviders(features.sso);
+        setPasswordLogin(features.passwordLogin);
       })
       .catch(() => {
         // 届かないときは、再設定の案内を出さない。
@@ -200,6 +214,14 @@ export default function LoginPage() {
       }
     } catch (cause) {
       setError(messageOf(cause));
+      // 画面を開いたあとで止められたときは、入力欄を消してほかの方法を出す。
+      if (
+        cause instanceof ApiError &&
+        cause.code === "PASSWORD_LOGIN_DISABLED"
+      ) {
+        setPasswordLogin(false);
+        setCanReset(false);
+      }
       setSubmitting(false);
     }
   }
@@ -366,62 +388,78 @@ export default function LoginPage() {
           {notice.text}
         </p>
       )}
-      <form
-        onSubmit={handlePassword}
-        className="mt-8 flex flex-col gap-5"
-        aria-describedby={error ? errorId : undefined}
-      >
-        <div className="flex flex-col gap-2">
-          <Label htmlFor={emailId}>メールアドレス</Label>
-          <Input
-            id={emailId}
-            type="email"
-            autoComplete="username"
-            required
-            autoFocus
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            aria-invalid={error ? true : undefined}
-          />
-        </div>
-        <div className="flex flex-col gap-2">
-          <div className="flex items-baseline justify-between gap-2">
-            <Label htmlFor={passwordId}>パスワード</Label>
-            {canReset && (
-              <Link
-                href="/forgot-password"
-                className="text-muted-foreground text-sm underline underline-offset-4"
-              >
-                パスワードを忘れた場合
-              </Link>
-            )}
+      {passwordLogin && (
+        <form
+          onSubmit={handlePassword}
+          className="mt-8 flex flex-col gap-5"
+          aria-describedby={error ? errorId : undefined}
+        >
+          <div className="flex flex-col gap-2">
+            <Label htmlFor={emailId}>メールアドレス</Label>
+            <Input
+              id={emailId}
+              type="email"
+              autoComplete="username"
+              required
+              autoFocus
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              aria-invalid={error ? true : undefined}
+            />
           </div>
-          <Input
-            id={passwordId}
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            aria-invalid={error ? true : undefined}
-          />
-        </div>
-        {error && (
-          <p id={errorId} role="alert" className="text-destructive text-sm">
-            {error}
-          </p>
-        )}
-        <Button type="submit" size="lg" disabled={submitting}>
-          {submitting ? "ログイン中…" : "ログイン"}
-        </Button>
-      </form>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor={passwordId}>パスワード</Label>
+              {canReset && (
+                <Link
+                  href="/forgot-password"
+                  className="text-muted-foreground text-sm underline underline-offset-4"
+                >
+                  パスワードを忘れた場合
+                </Link>
+              )}
+            </div>
+            <Input
+              id={passwordId}
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              aria-invalid={error ? true : undefined}
+            />
+          </div>
+          {error && (
+            <p id={errorId} role="alert" className="text-destructive text-sm">
+              {error}
+            </p>
+          )}
+          <Button type="submit" size="lg" disabled={submitting}>
+            {submitting ? "ログイン中…" : "ログイン"}
+          </Button>
+        </form>
+      )}
+      {!passwordLogin && error && (
+        <p id={errorId} role="alert" className="mt-8 text-destructive text-sm">
+          {error}
+        </p>
+      )}
+      {!passwordLogin && !canPasskey && ssoProviders.length === 0 && (
+        <p className="mt-8 rounded-lg border bg-muted/50 p-3 text-sm">
+          このサーバーでは、パスワードでのログインは使えません。使えるログインの方法がないため、管理者にお問い合わせください。
+        </p>
+      )}
       {(canPasskey || ssoProviders.length > 0) && (
         <>
-          <div className="my-5 flex items-center gap-3 text-muted-foreground text-xs">
-            <span className="h-px flex-1 bg-border" />
-            または
-            <span className="h-px flex-1 bg-border" />
-          </div>
+          {passwordLogin ? (
+            <div className="my-5 flex items-center gap-3 text-muted-foreground text-xs">
+              <span className="h-px flex-1 bg-border" />
+              または
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          ) : (
+            <div className="mt-8" />
+          )}
           <div className="flex flex-col gap-3">
             {ssoProviders.map((provider) => (
               <Button

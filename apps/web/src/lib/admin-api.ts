@@ -226,6 +226,8 @@ export type Member = {
   email: string;
   name: string;
   twoFactorEnabled: boolean;
+  /** 管理者が無効にした日時。古いサーバーは返さない。 */
+  disabledAt?: string | null;
   createdAt: string;
 };
 
@@ -265,6 +267,37 @@ export async function listMembers(signal?: AbortSignal): Promise<Member[]> {
     signal,
   });
   return users;
+}
+
+/** 利用者を無効にする (全端末からログアウトさせ、ログインできなくする)。 */
+export async function disableMember(id: string): Promise<void> {
+  await adminFetch(`/v1/admin/users/${id}/disable`, { method: "POST" });
+}
+
+/** 無効にした利用者を戻す。 */
+export async function enableMember(id: string): Promise<void> {
+  await adminFetch(`/v1/admin/users/${id}/enable`, { method: "POST" });
+}
+
+export type LoginSettings = {
+  /** 一般の利用者がパスワードでログインできる。 */
+  passwordLogin: boolean;
+  /** 有効な IdP の数。 */
+  enabledSsoProviders: number;
+  /** パスワードでしかログインできない (有効な IdP の結び付きもパスキーも無い) 利用者の数。 */
+  withoutOtherMethod: number;
+};
+
+export async function fetchLoginSettings(
+  signal?: AbortSignal,
+): Promise<LoginSettings> {
+  return adminJson("/v1/admin/login-settings", { signal });
+}
+
+export async function updateLoginSettings(input: {
+  passwordLogin: boolean;
+}): Promise<LoginSettings> {
+  return adminJson("/v1/admin/login-settings", { method: "PUT", body: input });
 }
 
 export async function listAdmins(signal?: AbortSignal): Promise<AdminMember[]> {
