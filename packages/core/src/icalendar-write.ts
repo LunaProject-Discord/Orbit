@@ -1,6 +1,6 @@
 import { Temporal } from "temporal-polyfill";
 import type { EventFieldName } from "./event-merge.js";
-import { parseICalendar } from "./icalendar.js";
+import { parseICalendar, triggerReminderMinutes } from "./icalendar.js";
 import {
   basicDate,
   type Component,
@@ -21,6 +21,7 @@ import {
   vtimezoneComponent,
 } from "./icalendar-lines.js";
 import { normalizeRecurrenceId } from "./recurrence.js";
+import { clampReminderMinutes } from "./reminders.js";
 
 /**
  * iCalendar (RFC 5545) の書き出し。CalDAV への書き戻しで使う。
@@ -281,13 +282,36 @@ function fieldLines(
   }
 }
 
-/** parseICalendar がリマインダーとして読む VALARM か (開始からの相対時刻)。 */
-function isManagedAlarm(alarm: Component): boolean {
+/**
+ * parseICalendar がリマインダーとして読む VALARM か (triggerReminderMinutes が値を返すもの)。
+ * allDay は基にした VEVENT が終日か。読まない VALARM (RELATED=END、絶対時刻、開始より後の
+ * 時刻など) は、書き戻しでもそのまま残す。
+ */
+function isManagedAlarm(alarm: Component, allDay: boolean): boolean {
   const trigger = alarm.props.find((entry) => entry.name === "TRIGGER");
-  if (!trigger) return false;
-  if (trigger.params.get("VALUE")?.toUpperCase() === "DATE-TIME") return false;
-  if (trigger.params.get("RELATED")?.toUpperCase() === "END") return false;
-  return true;
+  return triggerReminderMinutes(trigger, allDay) !== null;
+}
+
+/** VEVENT の DTSTART が日付 (終日) か。 */
+function isAllDayComponent(component: Component): boolean {
+  const dtstart = component.props.find((entry) => entry.name === "DTSTART");
+  if (!dtstart) return false;
+  return (
+    dtstart.params.get("VALUE")?.toUpperCase() === "DATE" ||
+    /^\d{8}$/.test(dtstart.value.trim())
+  );
+}
+
+/**
+ * リマインダーの分を TRIGGER の値にする。開始より前は -PT15M の形 (今までと同じ)。
+ * 終日の予定の負の分 (当日 0:00 より後) は、開始からの正の相対時刻 (-540 → PT9H) にする。
+ */
+function triggerValue(minutes: number): string {
+  if (minutes >= 0) return `-PT${minutes}M`;
+  const after = -minutes;
+  const hours = Math.floor(after / 60);
+  const rest = after % 60;
+  return `PT${hours > 0 ? `${hours}H` : ""}${rest > 0 || hours === 0 ? `${rest}M` : ""}`;
 }
 
 function alarmComponents(
@@ -299,25 +323,28 @@ function alarmComponents(
   const seen = new Set<string>();
   const alarms: Component[] = [];
   for (const reminder of event.reminders) {
-    const minutes = Math.max(0, Math.round(reminder.minutes));
+    // 終日は -1439 まで (当日 23:59)、時刻のある予定は 0 (開始) まで。
+    const minutes = clampReminderMinutes(reminder.minutes, event.allDay);
+    if (minutes === null) continue;
     const email = reminder.method === "email" && alarmEmail;
     const key = `${email ? "email" : "display"}:${minutes}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const description = escapeICalText(event.summary ?? "リマインダー");
+    const trigger = line("TRIGGER", triggerValue(minutes));
     alarms.push({
       name: "VALARM",
       props: email
         ? [
             line("ACTION", "EMAIL"),
-            line("TRIGGER", `-PT${minutes}M`),
+            trigger,
             line("SUMMARY", description),
             line("DESCRIPTION", description),
             line("ATTENDEE", `mailto:${alarmEmail}`),
           ]
         : [
             line("ACTION", "DISPLAY"),
-            line("TRIGGER", `-PT${minutes}M`),
+            trigger,
             line("DESCRIPTION", description),
           ],
       children: [],
@@ -462,10 +489,13 @@ function writeVEvent(
   ];
   let children = base?.children ?? [];
   if (fields.includes("reminders") || fields.includes("useDefaultReminders")) {
+    // 消すのは、基にした VEVENT を読んだときにリマインダーになった VALARM だけ。
+    const baseAllDay = base ? isAllDayComponent(base) : event.allDay;
     children = [
       ...children.filter(
         (childComponent) =>
-          childComponent.name !== "VALARM" || !isManagedAlarm(childComponent),
+          childComponent.name !== "VALARM" ||
+          !isManagedAlarm(childComponent, baseAllDay),
       ),
       ...alarmComponents(event, options.alarmEmail),
     ];

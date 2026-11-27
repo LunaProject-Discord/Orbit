@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import {
   calendars,
   type Database,
+  eventReminders,
   events,
   listEventEtags,
   listEventKeys,
@@ -259,6 +260,77 @@ describe.skipIf(!adminUrl)("CalDAV と土台の取り込み・書き戻し", () 
       .where(and(eq(events.calendarId, calendarId), isNull(events.remoteId)));
     expect(pending).toHaveLength(0);
     expect(logs.filter((line) => line.includes("失敗"))).toEqual([]);
+  });
+
+  it("終日の負の分 (当日 9:00) は TRIGGER:PT9H で書き、書き戻しと取り込みを往復しても変わらない", async () => {
+    await sync();
+    const id = randomUUID();
+    await db.insert(events).values({
+      id,
+      userId,
+      calendarId,
+      uid: `${id}@orbit`,
+      summary: "休み",
+      allDay: true,
+      startDate: "2026-12-24",
+      endDate: "2026-12-25",
+      useDefaultReminders: false,
+    });
+    await db.insert(eventReminders).values([
+      { eventId: id, method: "display", minutes: -540 },
+      { eventId: id, method: "display", minutes: 900 },
+    ]);
+    const minutesOf = async () =>
+      (
+        await db
+          .select()
+          .from(eventReminders)
+          .where(eq(eventReminders.eventId, id))
+      )
+        .map((row) => row.minutes)
+        .sort((a, b) => a - b);
+    const href = `/cal/user/work/${id}.ics`;
+    await enqueue("event_create", { eventId: id, calendarId });
+    expect(await run()).toMatchObject({ done: 1, failed: 0 });
+    let stored = server.resources.get(href)?.data ?? "";
+    expect(stored).toContain("TRIGGER:PT9H");
+    expect(stored).toContain("TRIGGER:-PT900M");
+    await sync();
+    expect(await minutesOf()).toEqual([-540, 900]);
+
+    // 別の項目を書き戻しても VALARM は変わらない。
+    await db
+      .update(events)
+      .set({
+        summary: "冬休み",
+        fieldUpdatedAt: { summary: new Date().toISOString() },
+      })
+      .where(eq(events.id, id));
+    await enqueue("event_update", {
+      eventId: id,
+      calendarId,
+      fields: ["summary"],
+    });
+    expect(await run()).toMatchObject({ done: 1, failed: 0 });
+    stored = server.resources.get(href)?.data ?? "";
+    expect(stored.match(/BEGIN:VALARM/g)).toHaveLength(2);
+    await sync();
+    expect(await minutesOf()).toEqual([-540, 900]);
+
+    // リマインダーを書き戻しても (読んだ値のまま) 同じ。
+    await enqueue("event_update", {
+      eventId: id,
+      calendarId,
+      fields: ["reminders"],
+    });
+    expect(await run()).toMatchObject({ done: 1, failed: 0 });
+    await sync();
+    expect(await minutesOf()).toEqual([-540, 900]);
+
+    // 相手側で当日 10:00 に変えたら -600 で読む。
+    server.putDirect(href, stored.replace("TRIGGER:PT9H", "TRIGGER:PT10H"));
+    await sync();
+    expect(await minutesOf()).toEqual([-600, 900]);
   });
 
   it("全件同期で iCalendar を読めなくなったリソースの行は消さない", async () => {

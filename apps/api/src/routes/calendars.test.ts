@@ -371,6 +371,93 @@ describe.skipIf(!adminUrl)("予定の API", () => {
     ).toBe(400);
   });
 
+  it("終日の予定だけ、開始より後のリマインダー (負の分、-1439 まで) を受け付ける", async () => {
+    const allDayTime = {
+      allDay: true,
+      startDate: "2026-12-20",
+      endDate: "2026-12-21",
+    };
+    const timedTime = {
+      allDay: false,
+      startAt: "2026-12-20T10:00:00+09:00",
+      endAt: "2026-12-20T11:00:00+09:00",
+      startTimeZone: "Asia/Tokyo",
+    };
+    const created = await call("POST", "/events", {
+      calendarId,
+      summary: "休み",
+      time: allDayTime,
+      useDefaultReminders: false,
+      reminders: [
+        { method: "display", minutes: -540 },
+        { method: "display", minutes: 900 },
+      ],
+    });
+    expect(created.status).toBe(201);
+    expect((created.body.event as Json).reminders).toEqual([
+      { method: "display", minutes: -540 },
+      { method: "display", minutes: 900 },
+    ]);
+    const id = (created.body.event as Json).id as string;
+    const reminderOf = (minutes: number) => [{ method: "display", minutes }];
+    // -1439 (当日 23:59) までは通り、それより小さい値は断る。
+    expect(
+      (
+        await call("PATCH", `/events/${id}`, {
+          changes: { reminders: reminderOf(-1439) },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call("PATCH", `/events/${id}`, {
+          changes: { reminders: reminderOf(-1440) },
+        })
+      ).status,
+    ).toBe(400);
+    // 時刻のある予定では今までどおり負を断る (作成、時刻と一緒の変更、時刻のある予定の変更)。
+    expect(
+      (
+        await call("POST", "/events", {
+          calendarId,
+          time: timedTime,
+          useDefaultReminders: false,
+          reminders: reminderOf(-540),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await call("PATCH", `/events/${id}`, {
+          changes: { time: timedTime, reminders: reminderOf(-540) },
+        })
+      ).status,
+    ).toBe(400);
+    const timed = await call("POST", "/events", {
+      calendarId,
+      time: timedTime,
+      useDefaultReminders: false,
+      reminders: reminderOf(10),
+    });
+    expect(timed.status).toBe(201);
+    const timedId = (timed.body.event as Json).id as string;
+    expect(
+      (
+        await call("PATCH", `/events/${timedId}`, {
+          changes: { reminders: reminderOf(-540) },
+        })
+      ).status,
+    ).toBe(400);
+    // 時刻のある予定を終日にするのと一緒なら通る。
+    expect(
+      (
+        await call("PATCH", `/events/${timedId}`, {
+          changes: { time: allDayTime, reminders: reminderOf(-540) },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
   it("項目ごとに変更をまとめ、後から変えた方を残す", async () => {
     const created = await call("POST", "/events", {
       calendarId,

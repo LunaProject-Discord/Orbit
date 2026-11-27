@@ -785,4 +785,126 @@ describe("writeICalendar (レビューの指摘)", () => {
     });
     expect(same).toContain("X-ALT-DESC");
   });
+
+  it("終日の負の分は正の TRIGGER (PT9H) で書き、読み直しても同じ値 (往復)", () => {
+    const allDay = event({
+      allDay: true,
+      startAt: null,
+      endAt: null,
+      startDate: "2026-12-24",
+      endDate: "2026-12-25",
+      startTimeZone: null,
+      endTimeZone: null,
+      reminders: [
+        { method: "display", minutes: -540 },
+        { method: "display", minutes: -1439 },
+        { method: "display", minutes: -90 },
+        { method: "display", minutes: 900 },
+        { method: "display", minutes: -5000 }, // -1439 に丸める (重なるので 1 つ)
+      ],
+    });
+    const text = writeICalendar({
+      base: null,
+      entries: [{ event: allDay, fields: "all" }],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).toContain("TRIGGER:PT9H\r\n");
+    expect(text).toContain("TRIGGER:PT23H59M\r\n");
+    expect(text).toContain("TRIGGER:PT1H30M\r\n");
+    expect(text).toContain("TRIGGER:-PT900M\r\n");
+    const [parsed] = read(text);
+    expect(parsed?.reminders?.map((item) => item.minutes)).toEqual([
+      -540, -1439, -90, 900,
+    ]);
+    // 読んだ値でもう一度書いても変わらない (CalDAV の書き戻しの往復)。
+    const again = writeICalendar({
+      base: text,
+      entries: [
+        {
+          event: parsed as ICalEventData,
+          fields: ["reminders", "useDefaultReminders"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(read(again)[0]?.reminders).toEqual(parsed?.reminders);
+    expect(again.match(/BEGIN:VALARM/g)).toHaveLength(4);
+  });
+
+  it("時刻のある予定の負の分は 0 (開始の時刻) に丸める", () => {
+    const text = writeICalendar({
+      base: null,
+      entries: [
+        {
+          event: event({ reminders: [{ method: "display", minutes: -540 }] }),
+          fields: "all",
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).toContain("TRIGGER:-PT0M\r\n");
+    expect(read(text)[0]?.reminders).toEqual([
+      { method: "display", minutes: 0 },
+    ]);
+  });
+
+  it("終日の予定のリマインダーを変えても、読まない VALARM (RELATED=END、絶対時刻、翌日以降) は残す", () => {
+    const base = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Example//EN",
+      "BEGIN:VEVENT",
+      "UID:d1",
+      "DTSTAMP:20261101T000000Z",
+      "DTSTART;VALUE=DATE:20261224",
+      "DTEND;VALUE=DATE:20261225",
+      "SUMMARY:休み",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "TRIGGER:PT9H",
+      "END:VALARM",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "TRIGGER;RELATED=END:-PT1H",
+      "END:VALARM",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "TRIGGER;VALUE=DATE-TIME:20261223T000000Z",
+      "END:VALARM",
+      "BEGIN:VALARM",
+      "ACTION:DISPLAY",
+      "TRIGGER:PT30H",
+      "END:VALARM",
+      "END:VEVENT",
+      "END:VCALENDAR",
+      "",
+    ].join("\r\n");
+    const [master] = read(base);
+    expect(master?.reminders).toEqual([{ method: "display", minutes: -540 }]);
+    const text = writeICalendar({
+      base,
+      entries: [
+        {
+          event: {
+            ...(master as ICalEventData),
+            reminders: [{ method: "display", minutes: -720 }],
+          },
+          fields: ["reminders"],
+        },
+      ],
+      defaultTimeZone: "Asia/Tokyo",
+      now: NOW,
+    });
+    expect(text).not.toContain("TRIGGER:PT9H\r\n");
+    expect(text).toContain("TRIGGER:PT12H\r\n");
+    expect(text).toContain("TRIGGER;RELATED=END:-PT1H");
+    expect(text).toContain("TRIGGER;VALUE=DATE-TIME:20261223T000000Z");
+    expect(text).toContain("TRIGGER:PT30H");
+    expect(read(text)[0]?.reminders).toEqual([
+      { method: "display", minutes: -720 },
+    ]);
+  });
 });

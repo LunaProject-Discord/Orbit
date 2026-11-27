@@ -3,6 +3,7 @@ import { Temporal } from "temporal-polyfill";
 import { GRAPH_WEBHOOK_PATH } from "./graph-webhook.js";
 import type { ParsedAttendee, ParsedEvent } from "./icalendar.js";
 import { instantRecurrenceId, normalizeRecurrenceId } from "./recurrence.js";
+import { nonNegativeReminders, reminderMinMinutes } from "./reminders.js";
 
 /**
  * Microsoft Graph の予定 (event) と Orbit の予定の形の相互変換。純粋な関数だけを置く。
@@ -845,13 +846,17 @@ export function parseGraphEvent(
       ? normalizeRecurrenceId(event.lastModifiedDateTime)
       : null,
     // Graph には「カレンダーの既定」が無いので、予定ごとのリマインダーとして持つ。
+    // 終日の予定も Orbit と同じ「開始日の 0:00 から何分前か」(Outlook の既定 1080 = 前日 6:00)。
     reminders:
       event.isReminderOn === false
         ? []
         : [
             {
               method: "display",
-              minutes: Math.max(0, event.reminderMinutesBeforeStart ?? 15),
+              minutes: Math.max(
+                reminderMinMinutes(allDay),
+                event.reminderMinutesBeforeStart ?? 15,
+              ),
             },
           ],
     raw: options.raw ?? JSON.stringify(event),
@@ -997,13 +1002,19 @@ export function graphEventBody(
     if (input.useDefaultReminders) {
       // Graph には既定のリマインダーが無い。オンにだけして、時間は相手側に任せる。
       body.isReminderOn = true;
-    } else if (input.reminders.length === 0) {
-      body.isReminderOn = false;
     } else {
-      body.isReminderOn = true;
-      body.reminderMinutesBeforeStart = Math.min(
-        ...input.reminders.map((reminder) => reminder.minutes),
-      );
+      // reminderMinutesBeforeStart は「開始の何分前か」で、負の値は書けない (推測。公式資料は
+      // 未確認)。終日の予定の負の分 (当日 9:00 など) は Orbit の中だけの通知にして書かない
+      // (取り込みでは worker の mergeRemoteEvents が DB の値を残す。設計 13 章の 1 の B)。
+      const writable = nonNegativeReminders(input.reminders);
+      if (writable.length === 0) {
+        body.isReminderOn = false;
+      } else {
+        body.isReminderOn = true;
+        body.reminderMinutesBeforeStart = Math.min(
+          ...writable.map((reminder) => reminder.minutes),
+        );
+      }
     }
   }
   if (has("attendees")) {
