@@ -10,7 +10,7 @@
  * DATABASE_URL が無い環境では実行しない (CI では必ず実行する)。接続先に確認用の DB を作り、終わったら消す。
  */
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -626,6 +626,14 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
         undefined,
         404,
       ],
+      // メールの招待 (8a のカード、8b の反映)
+      ["GET", `/messages/${a.message}/invite`, undefined, 404],
+      [
+        "POST",
+        `/messages/${a.message}/invite/apply`,
+        { expect: "import" },
+        404,
+      ],
       [
         "POST",
         "/messages/actions",
@@ -825,6 +833,160 @@ describe.skipIf(!adminUrl)("利用者どうしのデータの分離", () => {
       { status: "declined", respondedAt: now },
     );
     expect(own.status).toBe(200);
+  });
+
+  it("メールの招待の反映は、他の利用者のカレンダーにも予定にも届かない", async () => {
+    const [calendar] = await db
+      .insert(calendars)
+      .values({
+        userId: a.userId,
+        source: "local",
+        name: "alice-private-local",
+      })
+      .returning({ id: calendars.id });
+    const calendarId = calendar?.id as string;
+    // B にも取り込み先がある (A のカレンダーを指定したときに、取り込み先が無い扱いで済ませない)。
+    await db
+      .insert(calendars)
+      .values({ userId: b.userId, source: "local", name: "bob-local" });
+    // A が主催する予定と、A が取り込んだ予定 (B のメールと同じ UID)。
+    const [organized, imported] = await db
+      .insert(events)
+      .values([
+        {
+          userId: a.userId,
+          calendarId,
+          uid: "alice-private-organized@orbit",
+          summary: "alice-private-organized",
+          startAt: new Date("2027-03-01T01:00:00Z"),
+          endAt: new Date("2027-03-01T02:00:00Z"),
+          organizer: { email: "alice-private@example.com", self: true },
+        },
+        {
+          userId: a.userId,
+          calendarId,
+          uid: "alice-private-imported@remote",
+          summary: "alice-private-imported",
+          startAt: new Date("2027-03-02T01:00:00Z"),
+          endAt: new Date("2027-03-02T02:00:00Z"),
+          organizer: { email: "boss@example.com", self: false },
+        },
+      ])
+      .returning({ id: events.id });
+    await db.insert(eventAttendees).values([
+      { eventId: organized?.id as string, email: "sender@example.com" },
+      {
+        eventId: imported?.id as string,
+        email: "alice-private@example.com",
+        self: true,
+      },
+    ]);
+    const eventsOfA = async () =>
+      (
+        await db.execute(
+          sql`select to_jsonb(e) as row from events e where user_id = ${a.userId} order by id`,
+        )
+      ).rows;
+    const attendeesOfA = async () =>
+      (
+        await db.execute(
+          sql`select to_jsonb(t) as row from event_attendees t join events e on e.id = t.event_id where e.user_id = ${a.userId} order by t.id`,
+        )
+      ).rows;
+    const before = await eventsOfA();
+    const attendeesBefore = await attendeesOfA();
+    /** B のメール (差出人は sender@example.com、認証済み) に招待を付ける。 */
+    const inviteOfB = async (method: string, uid: string, extra: string[]) => {
+      const [message] = await db
+        .insert(messages)
+        .values({
+          accountId: b.account,
+          threadKey: randomUUID(),
+          from: [
+            {
+              address:
+                method === "REPLY" ? "sender@example.com" : "boss@example.com",
+            },
+          ],
+          senderCheck: { verified: true, warnings: [], claimed: null },
+          receivedAt: new Date(),
+          hasAttachments: true,
+        })
+        .returning({ id: messages.id });
+      const content = [
+        "BEGIN:VCALENDAR",
+        `METHOD:${method}`,
+        "BEGIN:VEVENT",
+        `UID:${uid}`,
+        "DTSTAMP:20270101T000000Z",
+        "DTSTART:20270301T010000Z",
+        "SEQUENCE:5",
+        ...extra,
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+      const [attachment] = await db
+        .insert(attachments)
+        .values({
+          messageId: message?.id as string,
+          filename: "invite.ics",
+          contentType: "text/calendar",
+          size: Buffer.byteLength(content),
+          partId: "2",
+        })
+        .returning({ id: attachments.id });
+      await mkdir(join(dir, b.userId), { recursive: true });
+      await writeFile(join(dir, b.userId, attachment?.id as string), content);
+      return message?.id as string;
+    };
+    const reply = await inviteOfB("REPLY", "alice-private-organized@orbit", [
+      "ORGANIZER:mailto:alice-private@example.com",
+      "ATTENDEE;PARTSTAT=ACCEPTED:mailto:sender@example.com",
+    ]);
+    const update = await inviteOfB("REQUEST", "alice-private-imported@remote", [
+      "ORGANIZER:mailto:boss@example.com",
+      "SUMMARY:overwritten",
+    ]);
+    const cancel = await inviteOfB("CANCEL", "alice-private-imported@remote", [
+      "ORGANIZER:mailto:boss@example.com",
+    ]);
+    const calls: [string, unknown, number][] = [
+      [reply, { expect: "apply_reply" }, 409],
+      [update, { expect: "update" }, 409],
+      [update, { expect: "import", calendarId }, 404],
+      [cancel, { expect: "remove" }, 200],
+    ];
+    for (const [messageId, body, status] of calls) {
+      const shown = await (
+        await request(tokenB, "GET", `/messages/${messageId}/invite`)
+      ).text();
+      for (const secret of [
+        a.userId,
+        calendarId,
+        organized?.id,
+        imported?.id,
+      ]) {
+        expect(shown).not.toContain(secret as string);
+      }
+      const response = await request(
+        tokenB,
+        "POST",
+        `/messages/${messageId}/invite/apply`,
+        body,
+      );
+      const text = await response.text();
+      expect(response.status, `${JSON.stringify(body)}: ${text}`).toBe(status);
+      for (const secret of [
+        a.userId,
+        calendarId,
+        organized?.id,
+        imported?.id,
+      ]) {
+        expect(text).not.toContain(secret as string);
+      }
+    }
+    expect(await eventsOfA()).toEqual(before);
+    expect(await attendeesOfA()).toEqual(attendeesBefore);
   });
 
   it("返信元に他の利用者のメールを指定しても、その内容は使われない", async () => {
