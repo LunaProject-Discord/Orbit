@@ -21,7 +21,7 @@ import {
 } from "@/lib/native/oauth";
 
 /** 結び付けのあとに戻る、設定の「ログインとセキュリティ」。 */
-const SECURITY_SETTINGS = "/settings/security";
+const SECURITY_SETTINGS = "/settings/common/security";
 
 function messageOf(error: unknown): string {
   if (error instanceof NetworkError) {
