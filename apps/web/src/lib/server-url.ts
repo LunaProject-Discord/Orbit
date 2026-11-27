@@ -81,6 +81,16 @@ export function apiUrl(): string {
   );
 }
 
+/**
+ * サービスワーカーを登録する URL。API の URL を付けて渡し、サービスワーカーは通知の出欠のボタンが
+ * 合言葉を送る先を、この API の POST /v1/notification-actions/event だけに絞る
+ * (public/sw.js の isEventActionUrl、段取り 9 のレビュー M4)。登録する所はすべてこれを使う
+ * (URL が違うと、登録のたびにサービスワーカーが入れ替わる)。
+ */
+export function serviceWorkerScriptUrl(): string {
+  return `/sw.js?api=${encodeURIComponent(apiUrl())}`;
+}
+
 /** 接続先を保存する。null で消す (ビルド時の初期値に戻る)。 */
 export function setServerUrl(url: string | null) {
   try {

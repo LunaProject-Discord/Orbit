@@ -94,11 +94,12 @@
 
         <!--
             再起動・アプリの更新・時計やタイムゾーンの変更のあとに、リマインダーを登録し直す。
-            受け取るのは Android だけが送れる知らせなので、exported でもほかのアプリからは呼べない。
+            受け取るのは Android (システム) が送る知らせだけなので、exported="false" でも届く
+            (androidx.work の RescheduleReceiver と同じ形)。ほかのアプリからは明示の Intent も送れない。
         -->
         <receiver
             android:name=".BootReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />

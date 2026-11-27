@@ -1,9 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   parseNativeCalendarUrl,
   parseNativeCapabilities,
+  takeNativeLaunchUrl,
   toNativeReminder,
 } from "./reminders";
+
+const shell = vi.hoisted(() => ({
+  takeLaunchCalendarUrl: vi.fn(async (): Promise<unknown> => ({ url: null })),
+}));
+
+vi.mock("@/lib/native/app", () => ({
+  isNativeApp: () => true,
+  loadAppShell: async () => ({ AppShell: shell }),
+}));
 
 const ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
 
@@ -94,5 +104,35 @@ describe("parseNativeCalendarUrl", () => {
     expect(
       parseNativeCalendarUrl(`https://example.com/calendar/events/${ID}`),
     ).toBeNull();
+  });
+});
+
+describe("takeNativeLaunchUrl (L7)", () => {
+  it("新しいアプリは Java 側が 1 度だけ渡す URL を使い、getLaunchUrl は使わない", async () => {
+    const getLaunchUrl = vi.fn(
+      async () => "jp.lunaproject.orbit.mail://calendar",
+    );
+    shell.takeLaunchCalendarUrl.mockResolvedValueOnce({
+      url: `jp.lunaproject.orbit.mail://calendar/events/${ID}`,
+    });
+    expect(await takeNativeLaunchUrl(getLaunchUrl)).toBe(
+      `jp.lunaproject.orbit.mail://calendar/events/${ID}`,
+    );
+    // 画面を作り直した・履歴から開き直した: Java 側はもう渡さない。
+    shell.takeLaunchCalendarUrl.mockResolvedValueOnce({ url: null });
+    expect(await takeNativeLaunchUrl(getLaunchUrl)).toBeUndefined();
+    expect(getLaunchUrl).not.toHaveBeenCalled();
+  });
+
+  it("古いアプリ (メソッドが無い) では getLaunchUrl をこの画面で 1 度だけ使う", async () => {
+    const getLaunchUrl = vi.fn(
+      async () => "jp.lunaproject.orbit.mail://calendar",
+    );
+    shell.takeLaunchCalendarUrl.mockRejectedValue(new Error("not implemented"));
+    expect(await takeNativeLaunchUrl(getLaunchUrl)).toBe(
+      "jp.lunaproject.orbit.mail://calendar",
+    );
+    expect(await takeNativeLaunchUrl(getLaunchUrl)).toBeUndefined();
+    expect(getLaunchUrl).toHaveBeenCalledTimes(1);
   });
 });

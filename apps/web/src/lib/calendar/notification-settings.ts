@@ -131,6 +131,16 @@ export function useCalendarNotificationSettings(): CalendarNotificationSettingsS
   );
 }
 
+/**
+ * 設定が変わったら呼ぶ (予約の仕組み = notifications/index.ts が受けて組み直す)。
+ * 戻り値の関数で解除する。
+ */
+export function onCalendarNotificationSettingsChange(
+  listener: () => void,
+): () => void {
+  return subscribe(listener);
+}
+
 /** いまの設定 (部品の外から読むとき)。 */
 export function currentCalendarNotificationSettings(): CalendarNotificationSettingsState {
   return state;
@@ -271,13 +281,6 @@ export function overlayCalendar(
 // 端末ごとのオン・オフ (localStorage)
 // ---------------------------------------------------------------------------
 
-/**
- * 端末の設定が変わったときに window へ出すイベント。登録の旗 (notifyCalendar) と
- * 予約 (ReminderAgent) を持つ側 (D1) が受けて組み直す。
- */
-export const DEVICE_CALENDAR_NOTIFICATIONS_EVENT =
-  "orbit:calendar-notifications-change";
-
 /** 保存した値から決める。未設定はメールの通知と同じ (設計 3.4、13 章の 14 推奨 A)。 */
 export function deviceCalendarEnabledFrom(
   stored: string | null,
@@ -318,16 +321,11 @@ export function useStoredDeviceCalendarNotifications(): string | null {
 /**
  * この端末の予定の通知を切り替える。保存と、送り先の登録 (calendar の旗) の組み直しは
  * lib/notifications.ts の setCalendarNotificationsEnabled が行い、予約 (ReminderAgent) は
- * onCalendarNotificationsChange で組み直される。ここでは画面の描き直しとイベントだけを足す。
+ * onCalendarNotificationsChange で組み直される。ここでは画面の描き直しだけを足す。
  */
 export function setDeviceCalendarNotifications(enabled: boolean) {
   void setCalendarNotificationsEnabled(enabled).finally(() => {
     for (const listener of deviceListeners) listener();
   });
   for (const listener of deviceListeners) listener();
-  window.dispatchEvent(
-    new CustomEvent(DEVICE_CALENDAR_NOTIFICATIONS_EVENT, {
-      detail: { enabled },
-    }),
-  );
 }

@@ -5,22 +5,23 @@ import {
 } from "@orbit/core/calendar-notifications";
 import type { RsvpStatus } from "@orbit/core/event-invite";
 import { REMINDER_COVER_REPORT_MIN_INTERVAL_MS } from "@orbit/core/reminders";
-import {
-  getCalendarNotificationSettings,
-  reportReminderCover,
-  saveCalendarNotificationSettings,
-} from "@/lib/api";
+import { reportReminderCover } from "@/lib/api";
 import { localTimeZone } from "@/lib/calendar/dates";
+import {
+  changeCalendarNotificationSettings,
+  currentCalendarNotificationSettings,
+  onCalendarNotificationSettingsChange,
+  refreshCalendarNotificationSettings,
+} from "@/lib/calendar/notification-settings";
 import {
   ReminderAgent,
   type ReminderAgentSettings,
   type ReminderCoverResult,
   type ReminderSource,
 } from "@/lib/calendar/notifications/agent";
-import {
-  type CalendarActionPayload,
-  DESKTOP_CALENDAR_EVENTS,
-  type ReminderBridge,
+import type {
+  CalendarActionPayload,
+  ReminderBridge,
 } from "@/lib/calendar/notifications/bridge";
 import {
   getCalendarClient,
@@ -29,7 +30,7 @@ import {
 } from "@/lib/calendar/offline";
 import { openCalendarEvent, toCalendarEventTarget } from "@/lib/calendar/route";
 import { canRespondTo } from "@/lib/calendar/rsvp";
-import { isDesktopApp, listenDesktop } from "@/lib/desktop/app";
+import { isDesktopApp } from "@/lib/desktop/app";
 import { subscribeEvents } from "@/lib/events";
 import { isNativeApp } from "@/lib/native/app";
 import {
@@ -40,6 +41,7 @@ import {
   parseCalendarEvent,
   setCalendarHandledElsewhere,
   showCalendarNotification,
+  syncNotifications,
 } from "@/lib/notifications";
 import { deviceId } from "@/lib/sync-status";
 
@@ -56,6 +58,8 @@ import { deviceId } from "@/lib/sync-status";
  * - 通知を押したとき: サービスワーカーの open-event、Desktop の desktop://open-event で予定を開く。
  *   Desktop の出欠のボタン (desktop://calendar-action) は、端末の控えから返事をする。
  * - ログアウト・利用者の切り替え・401 で clearCalendarReminders を呼び、予約を消す。
+ * - 設定 (終日の既定・内容を出すか) は lib/calendar/notification-settings.ts の置き場を読み、
+ *   設定画面で変わったらすぐに組み直す。古いサーバー (設定の項目が無い) では予約しない。
  */
 
 type BridgeKind = "desktop" | "native" | "web";
@@ -64,6 +68,10 @@ type BridgeKind = "desktop" | "native" | "web";
 const OWNER_KEY = "calendar.reminders.owner";
 /** Android の FCM の送り先 (lib/native/push.ts が保存する値)。予約の範囲の報告に使う。 */
 const NATIVE_TOKEN_KEY = "mail.push-device-token";
+/** 新しい招待の通知の前に、その予定を控えに入れるために待つ上限 (Desktop の出欠のボタン)。 */
+export const INVITE_PULL_WAIT_MS = 2_500;
+/** つながり直したときに送り先を登録し直す間隔の下限。 */
+const RESYNC_MIN_INTERVAL_MS = 60_000;
 
 function readStorage(key: string): string | null {
   try {
@@ -138,17 +146,24 @@ async function openSource(userId: string): Promise<ReminderSource | null> {
 
 /**
  * Android の予約の範囲をサーバーへ報告する。1 分に 1 回まで (続けて来たら最後の値を後で送る)。
+ * 送り先のトークンがまだ無ければ (起動直後に FCM の登録が終わっていない)、1 分後にもう一度見る。
  */
-function createCoverReporter() {
+export function createCoverReporter(
+  readToken: () => string | null = () => readStorage(NATIVE_TOKEN_KEY),
+) {
   let lastAt = 0;
   let pending: ReminderCoverResult | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const send = () => {
     timer = null;
     const report = pending;
+    if (!report) return;
+    const token = readToken();
+    if (!token) {
+      timer = setTimeout(send, REMINDER_COVER_REPORT_MIN_INTERVAL_MS);
+      return;
+    }
     pending = null;
-    const token = readStorage(NATIVE_TOKEN_KEY);
-    if (!report || !token) return;
     lastAt = Date.now();
     void reportReminderCover({
       token,
@@ -177,7 +192,7 @@ function createCoverReporter() {
   };
 }
 
-class CalendarNotificationRuntime {
+export class CalendarNotificationRuntime {
   private stopped = false;
   private source: ReminderSource | null = null;
   private agent: ReminderAgent | null = null;
@@ -185,9 +200,10 @@ class CalendarNotificationRuntime {
   private bridge: ReminderBridge | null = null;
   private stopSse: (() => void) | null = null;
   private readonly cleanups: (() => void)[] = [];
-  private settings: CalendarNotificationSettings =
-    DEFAULT_CALENDAR_NOTIFICATION_SETTINGS;
   private savedTimeZone = false;
+  /** 予約しない (kind = null) と決めたあと、OS に残った予約を消したか。 */
+  private idleCleared = false;
+  private lastResyncAt = 0;
   private reconciling: Promise<void> | null = null;
   private reconcileAgain = false;
   private readonly cover = createCoverReporter();
@@ -197,59 +213,92 @@ class CalendarNotificationRuntime {
   async start(): Promise<void> {
     const owner = readStorage(OWNER_KEY);
     if (owner && owner !== this.userId) {
-      await clearPlatformBridge();
-      writeStorage(OWNER_KEY, null);
+      // 前の利用者の予約を消す。消せなければ印を残し、次に開いたときにもう一度消す。
+      if (await clearPlatformBridge({ closeShown: true })) {
+        writeStorage(OWNER_KEY, null);
+      }
     }
     if (this.stopped) return;
     if (isDesktopApp() && !(await isMainDesktopWindow())) return;
+    // 通知の状態がまだ決まっていない (メールの画面を通らずに /calendar を開いた)。
+    // 状態を決め、送り先の calendar の旗も立て直す。
+    if (currentNotificationStatus() === null) {
+      void syncNotifications().catch(() => {});
+    }
     this.listenOpen();
     this.source = await openSource(this.userId);
     if (this.stopped || !this.source) return;
     this.cleanups.push(
       onNotificationStatusChange(() => this.reconcile()),
       onCalendarNotificationsChange(() => this.reconcile()),
+      // 設定画面で終日の既定・内容を出すかを変えたら、すぐに組み直す。
+      onCalendarNotificationSettingsChange(() => {
+        this.reconcile();
+        this.agent?.refresh();
+      }),
     );
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
-      // 旅行などでタイムゾーンが変わっていれば、ここで組み直す。
-      void this.loadSettings().then(() => this.agent?.refresh());
+      // ほかの端末で変えた設定を読み直す。旅行などでタイムゾーンが変わっていれば、ここで組み直す。
+      this.refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
     this.cleanups.push(() =>
       document.removeEventListener("visibilitychange", onVisible),
     );
+    const onOnline = () => this.resyncRegistration();
+    window.addEventListener("online", onOnline);
+    this.cleanups.push(() => window.removeEventListener("online", onOnline));
     await this.loadSettings();
     this.reconcile();
   }
 
-  /** 設定画面で設定を保存したあと。 */
+  /** 設定を読み直して組み直す。 */
   refresh(): void {
     void this.loadSettings().then(() => this.agent?.refresh());
   }
 
+  /**
+   * つながり直したら、送り先の登録 (calendar の旗) をやり直す。端末の予定の通知を
+   * オフラインで切り替えたとき、サーバーの旗が古いまま残らないように。
+   */
+  private resyncRegistration(): void {
+    if (this.stopped || platformBridgeKind() === "desktop") return;
+    const now = Date.now();
+    if (now - this.lastResyncAt < RESYNC_MIN_INTERVAL_MS) return;
+    this.lastResyncAt = now;
+    void syncNotifications().catch(() => {});
+  }
+
+  private settings(): CalendarNotificationSettings {
+    const state = currentCalendarNotificationSettings();
+    return state.status === "ready"
+      ? state.value.calendarNotifications
+      : DEFAULT_CALENDAR_NOTIFICATION_SETTINGS;
+  }
+
   private agentSettings(): ReminderAgentSettings {
+    const settings = this.settings();
     return {
       timeZone: localTimeZone(),
-      allDay: this.settings.allDay,
-      detail: this.settings.detail,
+      allDay: settings.allDay,
+      detail: settings.detail,
     };
   }
 
   private async loadSettings(): Promise<void> {
-    try {
-      const { calendarNotifications, timeZone } =
-        await getCalendarNotificationSettings();
-      this.settings = calendarNotifications;
-      // タイムゾーンが未設定なら、最初に開いた端末が自分のタイムゾーンを保存する (設計 6.2)。
-      if (timeZone === null && !this.savedTimeZone) {
-        this.savedTimeZone = true;
-        await saveCalendarNotificationSettings({
-          calendarNotifications,
-          timeZone: localTimeZone(),
-        }).catch(() => {});
-      }
-    } catch {
-      // 読めなければ、前に読んだ値 (または標準の値) で予約する。
+    await refreshCalendarNotificationSettings({ force: true }).catch(() => {});
+    const state = currentCalendarNotificationSettings();
+    // タイムゾーンが未設定なら、最初に開いた端末が自分のタイムゾーンを保存する (設計 6.2)。
+    if (
+      state.status === "ready" &&
+      state.value.timeZone === null &&
+      !this.savedTimeZone
+    ) {
+      this.savedTimeZone = true;
+      await changeCalendarNotificationSettings({
+        timeZone: localTimeZone(),
+      }).catch(() => false);
     }
   }
 
@@ -271,8 +320,17 @@ class CalendarNotificationRuntime {
       });
   }
 
+  /** いまの reconcile が終わるのを待つ (テスト用)。 */
+  async settled(): Promise<void> {
+    while (this.reconciling) await this.reconciling;
+  }
+
   private wantedKind(): BridgeKind | null {
     if (!calendarNotificationsEnabled()) return null;
+    // 古いサーバー (予定の通知の設定が無い) では予約しない。設定画面に切る欄が出ないため。
+    if (currentCalendarNotificationSettings().status === "unsupported") {
+      return null;
+    }
     const kind = platformBridgeKind();
     // Web Push が届くブラウザーでは予約しない (サーバーの push に任せる)。
     if (kind === "web" && currentNotificationStatus() !== "page") return null;
@@ -282,33 +340,37 @@ class CalendarNotificationRuntime {
   private async reconcileOnce(): Promise<void> {
     if (this.stopped || !this.source) return;
     const kind = this.wantedKind();
-    if (kind !== this.agentKind) {
-      await this.stopAgent(true);
-      if (kind === null && platformBridgeKind() !== "web") {
-        // 通知を切った端末に、OS の予約が残らないようにする。
-        await clearPlatformBridge();
+    const changed = kind !== this.agentKind;
+    if (changed) await this.stopAgent(true);
+    if (kind === null) {
+      // 通知を切った端末・予約しない端末に、OS の予約が残らないようにする
+      // (起動直後にも 1 度。前に消せなかった予約が残っているかもしれない)。
+      if (
+        (changed || !this.idleCleared) &&
+        platformBridgeKind() !== "web" &&
+        !this.stopped
+      ) {
+        this.idleCleared = await clearPlatformBridge();
       }
-      if (kind !== null && !this.stopped) {
-        const bridge = await createBridge(kind);
-        if (this.stopped) return;
-        const agent = new ReminderAgent({
-          source: this.source,
-          bridge,
-          settings: () => this.agentSettings(),
-          onScheduled:
-            kind === "native"
-              ? (result) => this.cover.report(result)
-              : undefined,
-        });
-        this.bridge = bridge;
-        this.agent = agent;
-        this.agentKind = kind;
-        writeStorage(OWNER_KEY, this.userId);
-        const started = await agent.start();
-        if (kind === "native") {
-          // Calendar アプリが入っている端末では none (予定の通知は Calendar アプリが受け持つ)。
-          setCalendarHandledElsewhere(!started);
-        }
+    } else if (changed && !this.stopped) {
+      this.idleCleared = false;
+      const bridge = await createBridge(kind);
+      if (this.stopped) return;
+      const agent = new ReminderAgent({
+        source: this.source,
+        bridge,
+        settings: () => this.agentSettings(),
+        onScheduled:
+          kind === "native" ? (result) => this.cover.report(result) : undefined,
+      });
+      this.bridge = bridge;
+      this.agent = agent;
+      this.agentKind = kind;
+      writeStorage(OWNER_KEY, this.userId);
+      const started = await agent.start();
+      if (kind === "native") {
+        // Calendar アプリが入っている端末では none (予定の通知は Calendar アプリが受け持つ)。
+        setCalendarHandledElsewhere(!started);
       }
     }
     this.syncSse();
@@ -328,7 +390,7 @@ class CalendarNotificationRuntime {
           if (event.event !== "calendar") return;
           for (const message of parseCalendarEvent(event.data)) {
             void showCalendarNotification(message, (eventId) =>
-              this.canRespond(eventId),
+              this.canRespondAfterPull(eventId),
             );
           }
         },
@@ -338,6 +400,12 @@ class CalendarNotificationRuntime {
       this.stopSse();
       this.stopSse = null;
     }
+  }
+
+  private findEvent(eventId: string) {
+    return this.source
+      ?.reminderSnapshot()
+      ?.events.find((item) => item.id === eventId);
   }
 
   /** 通知から出欠を返してよい予定か (Desktop のボタン)。 */
@@ -351,39 +419,57 @@ class CalendarNotificationRuntime {
     return !!calendar && !calendar.readOnly && canRespondTo(event, calendar);
   }
 
+  /**
+   * 新しい招待は、取り込みの change (→ pull) と calendar がほぼ同時に届くので、控えにまだ
+   * 予定が無いことが多い。無ければ pull を待ってから (上限 INVITE_PULL_WAIT_MS) 判定する。
+   */
+  private async canRespondAfterPull(eventId: string): Promise<boolean> {
+    const source = this.source;
+    if (!this.findEvent(eventId) && source?.pull) {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      await Promise.race([
+        source.pull().catch(() => {}),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, INVITE_PULL_WAIT_MS);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+    }
+    return this.canRespond(eventId);
+  }
+
   /** 通知を押したとき・出欠のボタンを押したときの知らせを受ける。 */
   private listenOpen(): void {
     if (isDesktopApp()) {
-      this.cleanups.push(
-        listenDesktop<CalendarActionPayload>(
-          DESKTOP_CALENDAR_EVENTS.calendarAction,
-          (payload) => this.respondFromNotification(payload),
-        ),
-      );
       // 通知から起動した直後の分も拾うため、desktop://open-event は合図として受け、
       // 中身は take_pending_open_event で受け取る (lib/desktop/reminders.ts)。
       let cancelledDesktop = false;
-      let removeDesktop: (() => void) | null = null;
+      const removers: (() => void)[] = [];
       void import("@/lib/desktop/reminders").then(
-        ({ listenDesktopOpenEvent }) => {
-          const stop = listenDesktopOpenEvent((target) =>
-            openCalendarEvent(
-              toCalendarEventTarget(target.eventId, target.recurrenceId),
+        ({ listenDesktopOpenEvent, listenDesktopCalendarAction }) => {
+          const stops = [
+            listenDesktopOpenEvent((target) =>
+              openCalendarEvent(
+                toCalendarEventTarget(target.eventId, target.recurrenceId),
+              ),
             ),
-          );
-          if (cancelledDesktop) stop();
-          else removeDesktop = stop;
+            listenDesktopCalendarAction((payload) =>
+              this.respondFromNotification(payload),
+            ),
+          ];
+          if (cancelledDesktop) for (const stop of stops) stop();
+          else removers.push(...stops);
         },
       );
       this.cleanups.push(() => {
         cancelledDesktop = true;
-        removeDesktop?.();
+        for (const remove of removers.splice(0)) remove();
       });
       return;
     }
     if (isNativeApp()) {
       // Android: 通知を押すと jp.lunaproject.orbit.mail://calendar/events/<id>?o=<回> で開く
-      // (起動中は appUrlOpen、通知から起動したときは getLaunchUrl)。
+      // (起動中は appUrlOpen、通知から起動したときは Java 側が 1 度だけ渡す URL)。
       let cancelled = false;
       let remove: (() => void) | null = null;
       void import("@/lib/native/reminders").then(
@@ -440,9 +526,7 @@ class CalendarNotificationRuntime {
       return;
     }
     const client = getCalendarClient();
-    const event = this.source
-      ?.reminderSnapshot()
-      ?.events.find((item) => item.id === target.eventId);
+    const event = this.findEvent(target.eventId);
     try {
       if (!client || !event) throw new Error("not found");
       // オフラインなら送信待ちに積まれ、届くようになったら送られる。
@@ -458,15 +542,22 @@ class CalendarNotificationRuntime {
     }
   }
 
-  private async stopAgent(clear: boolean): Promise<void> {
+  /** Agent を止める。clear なら予約も消す。消せたか (Agent が無ければ true)。 */
+  private async stopAgent(clear: boolean): Promise<boolean> {
     const agent = this.agent;
     this.agent = null;
     this.agentKind = null;
     this.bridge = null;
     this.cover.stop();
-    if (!agent) return;
-    if (clear) await agent.clear().catch(() => {});
-    else agent.stop();
+    if (!agent) return true;
+    if (!clear) {
+      agent.stop();
+      return true;
+    }
+    return agent.clear().then(
+      () => true,
+      () => false,
+    );
   }
 
   /** 止める (予約は残す)。 */
@@ -478,26 +569,44 @@ class CalendarNotificationRuntime {
     for (const cleanup of this.cleanups.splice(0)) cleanup();
   }
 
-  /** 止めて、予約を消す。 */
-  async clear(): Promise<void> {
+  /** 止めて、予約と出ている予定の通知を消す。消せたか。 */
+  async clear(): Promise<boolean> {
     this.stopped = true;
     const hadBridge = this.bridge !== null;
-    await this.stopAgent(true);
+    const cleared = await this.stopAgent(true);
     this.stopSse?.();
     this.stopSse = null;
     for (const cleanup of this.cleanups.splice(0)) cleanup();
-    if (!hadBridge) await clearPlatformBridge();
+    // Agent が無かった (予約しない端末)、または Agent で消せなかったときも、橋を作って消す。
+    // Web は出ている予定の通知 (push で届いたものも) を閉じる。
+    const platform = await clearPlatformBridge({ closeShown: true });
+    return (hadBridge && cleared) || platform;
   }
 }
 
-/** Desktop・Android の OS に残った予約を消す (Web は画面を閉じれば消えるので何もしない)。 */
-async function clearPlatformBridge(): Promise<void> {
+/**
+ * OS に残った予約を消す。消せたか。
+ * Web は予約が画面を閉じれば消えるので、closeShown のときだけ出ている予定の通知を閉じる
+ * (ログアウト。共用の PC で前の利用者の予定の題名が通知センターに残らないように)。
+ */
+async function clearPlatformBridge(
+  options: { closeShown?: boolean } = {},
+): Promise<boolean> {
   const kind = platformBridgeKind();
-  if (kind === "web") return;
   try {
+    if (kind === "web") {
+      if (!options.closeShown) return true;
+      const { closeCalendarNotifications, createSharedShownReminders } =
+        await import("@/lib/calendar/notifications/web-bridge");
+      createSharedShownReminders().clear();
+      await closeCalendarNotifications(await existingRegistration());
+      return true;
+    }
     await (await createBridge(kind)).clear();
+    return true;
   } catch {
     // 消せなくても、ログアウトは続ける。
+    return false;
   }
 }
 
@@ -526,19 +635,22 @@ export function startCalendarNotifications(userId: string): () => void {
   };
 }
 
-/** 設定 (終日の通知・内容を出すか) を保存したあとに呼ぶ。読み直して組み直す。 */
-export function refreshCalendarNotifications(): void {
-  runtime?.refresh();
+/** 動いている仕組み (テスト用)。 */
+export function currentCalendarNotificationRuntime(): CalendarNotificationRuntime | null {
+  return runtime;
 }
 
 /**
  * ログアウト・401・利用者の切り替えで呼ぶ。予約を消し、通知の仕組みを止める
  * (OS に残った予約が次の利用者に出ないようにする。設計 7 章の 2)。
+ * 予約した利用者の印 (OWNER_KEY) は、消せたときだけ外す (消せなければ、次に別の利用者が
+ * 開いたときにもう一度消す)。
  */
 export async function clearCalendarReminders(): Promise<void> {
   const current = runtime;
   runtime = null;
-  writeStorage(OWNER_KEY, null);
-  if (current) await current.clear();
-  else await clearPlatformBridge();
+  const cleared = current
+    ? await current.clear()
+    : await clearPlatformBridge({ closeShown: true });
+  if (cleared) writeStorage(OWNER_KEY, null);
 }

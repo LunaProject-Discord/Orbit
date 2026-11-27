@@ -19,6 +19,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
 /** 画面 (Web 側) から呼ぶ、このアプリ専用の小さな機能。 */
 @CapacitorPlugin(name = "AppShell")
@@ -115,6 +116,19 @@ public class AppShellPlugin extends Plugin {
         CalendarNotifications.ensureChannels(getContext());
         ReminderScheduler.replaceAll(getContext(), ReminderScheduler.parse(items));
         call.resolve();
+    }
+
+    /**
+     * 予定の通知から起動したときの URL を、1 度だけ返す (無ければ url は null)。
+     * 履歴から開き直したとき・画面を作り直したときは null (同じ予定をまた開かない)。
+     */
+    @PluginMethod
+    public void takeLaunchCalendarUrl(PluginCall call) {
+        JSObject result = new JSObject();
+        String url = null;
+        if (getActivity() instanceof MainActivity) url = ((MainActivity) getActivity()).takeLaunchCalendarUrl();
+        result.put("url", url == null ? JSONObject.NULL : url);
+        call.resolve(result);
     }
 
     /** 予定のリマインダーの予約をすべて消す (ログアウト・利用者の切り替え・401)。 */

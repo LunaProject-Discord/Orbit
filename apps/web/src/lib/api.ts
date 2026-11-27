@@ -6,12 +6,10 @@
 
 import {
   type CalendarNotificationSettings,
-  type CalendarNotificationSettingsBody,
   type DeviceRegistrationFlags,
   PUSH_DEVICE_REMINDERS_PATH,
   type PushSubscriptionFlags,
   type ReminderCoverReport,
-  readCalendarNotificationSettings,
 } from "@orbit/core/calendar-notifications";
 import type {
   InviteApplyRequest,
@@ -1703,38 +1701,6 @@ export type SharedSettings = {
   /** 利用者のタイムゾーン (段取り 9)。null は未設定。古いサーバーには無い (undefined)。 */
   timeZone?: string | null;
 };
-
-/**
- * 予定の通知の設定とタイムゾーン (GET /v1/settings の一部)。形の合わない項目は標準の値にする。
- * timeZone が undefined なら、サーバーがまだ対応していない (保存しに行かない)。
- */
-export async function getCalendarNotificationSettings(
-  signal?: AbortSignal,
-): Promise<{
-  calendarNotifications: CalendarNotificationSettings;
-  timeZone: string | null | undefined;
-}> {
-  const settings = await getSettings(signal);
-  return {
-    calendarNotifications: readCalendarNotificationSettings(
-      settings.calendarNotifications,
-    ),
-    timeZone:
-      typeof settings.timeZone === "string" || settings.timeZone === null
-        ? settings.timeZone
-        : undefined,
-  };
-}
-
-/** 予定の通知の設定とタイムゾーンを保存する (PUT /v1/settings/calendar-notifications)。 */
-export async function saveCalendarNotificationSettings(
-  body: CalendarNotificationSettingsBody,
-): Promise<void> {
-  await apiFetch("/v1/settings/calendar-notifications", {
-    method: "PUT",
-    body,
-  });
-}
 
 /** どの端末でも同じにする設定を取得する。 */
 export async function getSettings(

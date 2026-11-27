@@ -103,9 +103,14 @@ import {
   useCalendarData,
 } from "@/lib/calendar/offline";
 import {
+  findOpeningItem,
+  nextOpeningStep,
+  type OpeningEvent,
+  sameRecurrenceId,
+} from "@/lib/calendar/open-event";
+import {
   buildCalendarRoute,
   type CalendarEventTarget,
-  eventTargetDate,
   OPEN_CALENDAR_EVENT,
   parseCalendarEventRoute,
   parseCalendarRoute,
@@ -143,17 +148,6 @@ function readSidebarPreference(): boolean {
     return true;
   }
 }
-
-/** 通知から開く予定と、探す途中の状態。 */
-type OpeningEvent = CalendarEventTarget & {
-  /** 控えに無かったので pull している / した。 */
-  pulling?: boolean;
-  pulled?: boolean;
-  /** 控えで見つけ、その日へ移った。 */
-  located?: boolean;
-  day?: Temporal.PlainDate;
-  masterId?: string;
-};
 
 type EditorState = {
   title: string;
@@ -325,30 +319,19 @@ export function CalendarApp({ user }: { user: User }) {
       setOpening(null);
       return;
     }
-    const snapshot = client.reminderSnapshot();
-    if (!snapshot) {
-      // 初回の同期が終わるまで待つ (終われば data が変わって、ここが動き直す)。
-      if (calendars !== null && !opening.pulled) {
-        setOpening({ ...opening, pulling: true });
-        void client
-          .pull()
-          .finally(() =>
-            setOpening((current) =>
-              current?.eventId === opening.eventId
-                ? { ...current, pulling: false, pulled: true }
-                : current,
-            ),
-          );
-      }
+    const step = nextOpeningStep(
+      opening,
+      client.reminderSnapshot(),
+      calendars !== null,
+      timeZone,
+    );
+    if (step.type === "wait") return;
+    if (step.type === "close") {
+      // 見つからなければ、カレンダーを開いたままにする。
+      setOpening(null);
       return;
     }
-    const event = snapshot.events.find((item) => item.id === opening.eventId);
-    if (!event) {
-      if (opening.pulled) {
-        // 見つからなければ、カレンダーを開いたままにする。
-        setOpening(null);
-        return;
-      }
+    if (step.type === "pull") {
       setOpening({ ...opening, pulling: true });
       void client
         .pull()
@@ -361,18 +344,13 @@ export function CalendarApp({ user }: { user: User }) {
         );
       return;
     }
-    const day = eventTargetDate(event, opening.recurrenceId, timeZone);
-    if (!day) {
-      setOpening(null);
-      return;
-    }
     setSelected(null);
-    setDate(day);
+    setDate(step.day);
     setOpening({
       ...opening,
       located: true,
-      day,
-      masterId: event.parentId ?? event.id,
+      day: step.day,
+      masterId: step.masterId,
     });
   }, [opening, client, calendars, data, timeZone]);
 
@@ -446,15 +424,7 @@ export function CalendarApp({ user }: { user: User }) {
     ) {
       return;
     }
-    const item = items.find((candidate) =>
-      opening.recurrenceId
-        ? candidate.local.occurrence.masterId === opening.masterId &&
-          sameRecurrenceId(
-            candidate.local.occurrence.recurrenceId,
-            opening.recurrenceId,
-          )
-        : candidate.event.id === opening.eventId,
-    );
+    const item = findOpeningItem(opening, items);
     setOpening(null);
     if (window.location.pathname.startsWith("/calendar/events/")) {
       window.history.replaceState(
@@ -1447,14 +1417,6 @@ export function CalendarApp({ user }: { user: User }) {
       </AlertDialog>
     </div>
   );
-}
-
-/** 同じ時刻を指す recurrenceId か (書き方の違い、.000Z の有無などを無視する)。 */
-function sameRecurrenceId(a: string | null, b: string | null): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  const left = Date.parse(a);
-  return !Number.isNaN(left) && left === Date.parse(b);
 }
 
 /** 同じ回か (原本と recurrenceId で比べる)。 */
