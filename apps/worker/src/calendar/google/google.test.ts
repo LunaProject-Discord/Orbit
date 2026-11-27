@@ -616,6 +616,62 @@ describe("Google への書き込み", () => {
     });
   });
 
+  it("まだ相手側に無い回が見つからなくても、原本があれば rejected にし、原本も無ければ gone", async () => {
+    const { server, provider, ctx, calendar } = setup();
+    const master = server.put(PRIMARY, {
+      id: "wk",
+      summary: "毎週",
+      start: { dateTime: "2026-12-01T10:00:00+09:00", timeZone: "Asia/Tokyo" },
+      end: { dateTime: "2026-12-01T11:00:00+09:00", timeZone: "Asia/Tokyo" },
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    });
+    const masterSnapshot = makeEventSnapshot({
+      remoteId: "wk",
+      uid: "wk@google.com",
+      rrule: "FREQ=WEEKLY",
+      raw: JSON.stringify(master),
+    });
+    // 2026-12-04 は毎週の回に当たらない。
+    server.missingInstances.add("wk_20261204T010000Z");
+    const ref = {
+      remoteId: "wk",
+      etag: null,
+      uid: "wk@google.com",
+      recurrenceId: "2026-12-04T01:00:00Z",
+      parentRemoteId: "wk",
+    };
+    const write = {
+      event: makeEventSnapshot({
+        uid: "wk@google.com",
+        recurrenceId: "2026-12-04T01:00:00Z",
+        parentId: masterSnapshot.id,
+        summary: "この回だけ",
+      }),
+      master: masterSnapshot,
+      exceptions: [],
+      fields: ["summary"],
+    };
+    const result = await provider.updateEvent(ctx, calendar, ref, write);
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "その回が相手側にありません。",
+    });
+
+    // 原本が削除済み (cancelled) なら gone。
+    server.put(PRIMARY, { ...master, status: "cancelled" });
+    const gone = await provider.updateEvent(ctx, calendar, ref, write);
+    expect(gone).toEqual({ status: "gone" });
+
+    // 原本が 404 でも gone。
+    const missing = await provider.updateEvent(
+      ctx,
+      calendar,
+      { ...ref, remoteId: "nope", parentRemoteId: "nope" },
+      write,
+    );
+    expect(missing).toEqual({ status: "gone" });
+  });
+
   it("出欠は attendeesOmitted で自分の返事だけを書く", async () => {
     const { server, provider, ctx, calendar } = setup();
     server.put(PRIMARY, {

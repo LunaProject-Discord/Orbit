@@ -181,6 +181,20 @@ async function findInstance(
   return direct && matches(direct) ? direct : null;
 }
 
+/**
+ * 回が見つからないときの結果。原本が残っていれば rejected (原本まで消させない)、
+ * 原本も無ければ gone。
+ */
+async function missingInstance(
+  ctx: ProviderContext,
+  calendarId: string,
+  masterId: string,
+): Promise<WriteResult> {
+  const master = await getGoogleEvent(ctx, calendarId, masterId);
+  if (!master || isDeleted(master)) return { status: "gone" };
+  return { status: "rejected", reason: "その回が相手側にありません。" };
+}
+
 /** 回を、変えた内容で上書きする (例外を作る)。取り消しは status: cancelled にする。 */
 async function writeInstance(
   ctx: ProviderContext,
@@ -192,7 +206,7 @@ async function writeInstance(
   fields: readonly string[],
 ): Promise<WriteResult> {
   const instance = await findInstance(ctx, calendarId, masterId, recurrenceId);
-  if (!instance) return { status: "gone" };
+  if (!instance) return missingInstance(ctx, calendarId, masterId);
   const body =
     event.status === "cancelled"
       ? { status: "cancelled" }

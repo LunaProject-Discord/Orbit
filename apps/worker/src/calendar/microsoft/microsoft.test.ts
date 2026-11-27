@@ -739,6 +739,147 @@ describe("Microsoft への書き戻し", () => {
     expect(result.events[0]?.uid).toBeUndefined();
   });
 
+  it("まだ相手側に無い回の例外で、回が無くても原本があれば rejected (原本を消させない)", async () => {
+    const { graph, provider, ctx, calendar } = setup();
+    seedRecurring(graph);
+    const master = makeEventSnapshot({
+      remoteId: "master-1",
+      uid: "series-uid",
+      rrule: "FREQ=WEEKLY;BYDAY=MO",
+    });
+    // 2026-12-21 の回は相手側で取り消し済み。
+    const exception = makeEventSnapshot({
+      uid: "series-uid",
+      recurrenceId: "2026-12-21T01:00:00Z",
+      summary: "この回だけ",
+    });
+    const ref = {
+      remoteId: "master-1",
+      etag: null,
+      uid: "series-uid",
+      recurrenceId: "2026-12-21T01:00:00Z",
+      parentRemoteId: "master-1",
+    };
+    const write = {
+      event: exception,
+      master,
+      exceptions: [],
+      fields: ["summary"],
+    };
+    const result = await provider.updateEvent(ctx, calendar, ref, write);
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "その回が相手側にありません。",
+    });
+    expect(graph.requests.some((r) => r.method === "PATCH")).toBe(false);
+
+    // 原本も消えていれば gone。
+    graph.remove("master-1");
+    const gone = await provider.updateEvent(ctx, calendar, ref, write);
+    expect(gone).toEqual({ status: "gone" });
+  });
+
+  it("断ったあと Outlook が予定を消しても (404)、返事は成功にする", async () => {
+    const { graph, provider, ctx, calendar } = setup();
+    graph.removeOnDecline = true;
+    const stored = graph.put("cal-1", {
+      subject: "招待",
+      start: { dateTime: "2026-12-01T01:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-12-01T02:00:00.0000000", timeZone: "UTC" },
+    });
+    const ref = {
+      remoteId: stored.id,
+      etag: null,
+      uid: "u",
+      recurrenceId: null,
+      parentRemoteId: null,
+    };
+    const result = await provider.respond(ctx, calendar, ref, {
+      status: "declined",
+      comment: null,
+    });
+    expect(result).toEqual({ status: "ok", events: [] });
+    expect(graph.events.has(stored.id)).toBe(false);
+
+    // 承諾のあとに消えていれば、これまでどおり gone。
+    const other = graph.put("cal-1", {
+      subject: "招待 2",
+      start: { dateTime: "2026-12-02T01:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-12-02T02:00:00.0000000", timeZone: "UTC" },
+    });
+    graph.removeOnDecline = false;
+    const accepted = await provider.respond(
+      ctx,
+      calendar,
+      { ...ref, remoteId: other.id },
+      { status: "accepted", comment: null },
+    );
+    expect(accepted.status).toBe("ok");
+  });
+
+  it("会議室など (non_participant) の参加者は resource で送る", async () => {
+    const { graph, provider, ctx, calendar } = setup();
+    const stored = graph.put("cal-1", {
+      subject: "会議",
+      start: { dateTime: "2026-12-01T01:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-12-01T02:00:00.0000000", timeZone: "UTC" },
+      attendees: [
+        {
+          emailAddress: { address: "room@example.com", name: "会議室 A" },
+          type: "resource",
+        },
+      ],
+    });
+    const attendee = (email: string, role: string) =>
+      ({
+        id: email,
+        eventId: "e",
+        email,
+        name: null,
+        role,
+        status: "needs_action",
+        self: false,
+      }) as never;
+    const result = await provider.updateEvent(
+      ctx,
+      calendar,
+      {
+        remoteId: stored.id,
+        etag: stored["@odata.etag"] ?? null,
+        uid: "ical",
+        recurrenceId: null,
+        parentRemoteId: null,
+      },
+      {
+        event: makeEventSnapshot({
+          remoteId: stored.id,
+          raw: JSON.stringify(graph.view(stored)),
+          attendees: [
+            attendee("room@example.com", "non_participant"),
+            attendee("a@example.com", "required"),
+            attendee("b@example.com", "optional"),
+          ],
+        }),
+        master: null,
+        exceptions: [],
+        fields: ["attendees"],
+      },
+    );
+    expect(result.status).toBe("ok");
+    const patch = graph.requests.find((r) => r.method === "PATCH");
+    expect(
+      (patch?.body as { attendees: { type: string }[] }).attendees.map(
+        (item) => item.type,
+      ),
+    ).toEqual(["resource", "required", "optional"]);
+    if (result.status === "ok") {
+      expect(
+        result.events[0]?.attendees.find((a) => a.email === "room@example.com")
+          ?.role,
+      ).toBe("non_participant");
+    }
+  });
+
   it("出欠を返し、返したあとの姿を返す", async () => {
     const { graph, provider, ctx, calendar } = setup();
     const stored = graph.put("cal-1", {

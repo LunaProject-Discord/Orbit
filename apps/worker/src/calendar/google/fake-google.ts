@@ -32,6 +32,8 @@ export class FakeGoogleCalendar {
   readonly stopped: Json[] = [];
   /** 受け付けるアクセストークン。 */
   validTokens = new Set(["test-token"]);
+  /** 規則に当たらない回のつもりで、無いことにする回の ID。 */
+  missingInstances = new Set<string>();
   private readonly events = new Map<string, Map<string, GoogleEvent>>();
   private readonly changed = new Map<string, Map<string, number>>();
   private version = 0;
@@ -332,7 +334,7 @@ export class FakeGoogleCalendar {
     id: string,
   ): GoogleEvent | undefined {
     const match = /^(.+)_(\d{8})(?:T(\d{6})Z)?$/.exec(id);
-    if (!match) return undefined;
+    if (!match || this.missingInstances.has(id)) return undefined;
     const master = this.get(calendarId, match[1] as string);
     if (!master?.recurrence || master.status === "cancelled") return undefined;
     const date = match[2] as string;

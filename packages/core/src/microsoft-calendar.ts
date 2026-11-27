@@ -989,10 +989,17 @@ export function graphEventBody(
         address: attendee.email,
         ...(attendee.name ? { name: attendee.name } : {}),
       },
-      type: attendee.role === "optional" ? "optional" : "required",
+      type: graphAttendeeType(attendee.role),
     }));
   }
   return body;
+}
+
+/** 参加者の役割を Graph の type にする。会議室など (non_participant) は resource。 */
+function graphAttendeeType(role: string) {
+  if (role === "optional") return "optional";
+  if (role === "non_participant") return "resource";
+  return "required";
 }
 
 // ---------------------------------------------------------------------------
