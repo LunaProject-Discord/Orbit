@@ -16,8 +16,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit migrate",
-    "migrate:deploy": "node dist/migrate.js"
+    "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts --dev",
+    "migrate:deploy": "node dist/migrate.js",
+    "migrate:kit": "drizzle-kit migrate"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
@@ -27,6 +28,7 @@
     "@types/node": "^22.20.5",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

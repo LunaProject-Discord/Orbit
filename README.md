@@ -568,7 +568,7 @@ HTML の文字参照 (`&#12354;` など) も文字に戻してから探します
 | `pnpm test` | 単体テスト (Vitest) |
 | `pnpm lint` / `pnpm format` | Biome による検査 / 整形 |
 | `pnpm db:generate` | スキーマの変更からマイグレーションを生成 |
-| `pnpm db:migrate` | マイグレーションを適用 |
+| `pnpm db:migrate` | マイグレーションを適用 (接続先・未適用の一覧を表示し、失敗したときは失敗したマイグレーションと SQL、PostgreSQL のエラー内容を表示) |
 | `pnpm --filter @orbit/db migrate:deploy` | ビルド済みの出力でマイグレーションを適用 (本番用。drizzle-kit が不要) |
 | `pnpm user:create <メール> <表示名> [--admin]` | ログイン用の利用者を作成 (最初の 1 人と `--admin` 付きは管理者) |
 | `pnpm user:password <メール> [--reset-two-factor]` | 利用者のパスワードを付け直す (ログインできなくなったときの復旧用。`--reset-two-factor` で 2 段階認証も解除) |
