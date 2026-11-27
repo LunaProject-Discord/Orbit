@@ -802,6 +802,8 @@ export type AuthFeatures = {
   mail: boolean;
   /** ログイン画面に出す IdP (シングルサインオン)。 */
   sso: SsoProviderOption[];
+  /** パスワードでログインできる (管理者が止めていない)。 */
+  passwordLogin: boolean;
 };
 
 export type SsoProviderOption = { id: string; name: string };
@@ -814,8 +816,12 @@ export async function fetchAuthFeatures(
     signal,
     handle401: false,
   });
-  // 古いサーバーは sso を返さない。
-  return { mail: data.mail === true, sso: data.sso ?? [] };
+  // 古いサーバーは sso と passwordLogin を返さない。
+  return {
+    mail: data.mail === true,
+    sso: data.sso ?? [],
+    passwordLogin: data.passwordLogin !== false,
+  };
 }
 
 // ---------------------------------------------------------------------------

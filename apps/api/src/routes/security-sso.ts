@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Auth } from "../auth.js";
 import { type AppEnv, withoutCookies } from "../context.js";
+import { passwordLoginEnabled } from "../lib/login-policy.js";
 import { clientAddress, createRateWindow } from "../lib/rate-window.js";
 import {
   ssoAuthorizeUrl,
@@ -86,11 +87,14 @@ export function securitySsoRoutes({
         ),
       hasPassword(db, userId),
     ]);
+    const passwordLogin = await passwordLoginEnabled(db);
     const linked = new Map(
       links.map((link) => [link.providerId.slice(PREFIX.length), link]),
     );
     return c.json({
       hasPassword: credential,
+      /** パスワードでログインできるサーバーか (管理者が止めていれば false)。 */
+      passwordLogin,
       providers: providers
         // 無効な IdP は、結び付けたものだけ (解除できるように) 出す。
         .filter((provider) => provider.enabled || linked.has(provider.id))
@@ -210,27 +214,30 @@ export function securitySsoRoutes({
       await tx.execute(
         sql`select 1 from users where id = ${userId} for update`,
       );
-      const [password, otherLinks, passkeyRow] = await Promise.all([
-        hasPassword(tx, userId),
-        tx
-          .select({ value: count() })
-          .from(authAccounts)
-          // sso:<id> の id で、有効な IdP だけを数える。
-          .innerJoin(ssoProviders, eq(authAccounts.providerId, sqlSsoKey()))
-          .where(
-            and(
-              eq(authAccounts.userId, userId),
-              ne(authAccounts.providerId, providerKey),
-              eq(ssoProviders.enabled, true),
+      const [password, passwordAllowed, otherLinks, passkeyRow] =
+        await Promise.all([
+          hasPassword(tx, userId),
+          // パスワードでのログインが止められていれば、パスワードは残る方法に数えない。
+          passwordLoginEnabled(tx),
+          tx
+            .select({ value: count() })
+            .from(authAccounts)
+            // sso:<id> の id で、有効な IdP だけを数える。
+            .innerJoin(ssoProviders, eq(authAccounts.providerId, sqlSsoKey()))
+            .where(
+              and(
+                eq(authAccounts.userId, userId),
+                ne(authAccounts.providerId, providerKey),
+                eq(ssoProviders.enabled, true),
+              ),
             ),
-          ),
-        tx
-          .select({ value: count() })
-          .from(passkeys)
-          .where(eq(passkeys.userId, userId)),
-      ]);
+          tx
+            .select({ value: count() })
+            .from(passkeys)
+            .where(eq(passkeys.userId, userId)),
+        ]);
       const remaining =
-        password ||
+        (password && passwordAllowed) ||
         (otherLinks[0]?.value ?? 0) > 0 ||
         (passkeyRow[0]?.value ?? 0) > 0;
       if (!remaining) return null;

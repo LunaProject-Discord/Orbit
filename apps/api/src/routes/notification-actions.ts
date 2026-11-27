@@ -23,6 +23,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { respondToEvent } from "../lib/event-respond.js";
+import { isUserDisabled } from "../lib/login-policy.js";
 import {
   enqueueMessageAction,
   type MessageAction,
@@ -119,14 +120,13 @@ export function notificationActionRoutes({
       .innerJoin(accounts, eq(accounts.id, messages.accountId))
       .where(eq(messages.id, messageId));
     if (!owner) return "not_found" as const;
-    return verifyNotificationAction(
-      encryptionKey,
-      owner.userId,
-      messageId,
-      token,
-    )
-      ? owner.userId
-      : null;
+    if (
+      !verifyNotificationAction(encryptionKey, owner.userId, messageId, token)
+    ) {
+      return null;
+    }
+    // 無効にされた利用者の通知からは、操作させない。
+    return (await isUserDisabled(db, owner.userId)) ? null : owner.userId;
   }
 
   /**
@@ -182,7 +182,8 @@ export function notificationActionRoutes({
           owner.userId,
           eventId,
           token,
-        )
+        ) ||
+        (await isUserDisabled(db, owner.userId))
       ) {
         return c.json({ error: "invalid_token" }, 403);
       }

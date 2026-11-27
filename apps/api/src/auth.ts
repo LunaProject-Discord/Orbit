@@ -10,7 +10,9 @@ import {
 } from "@orbit/db";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { APIError } from "better-auth/api";
 import { bearer, twoFactor } from "better-auth/plugins";
+import { isUserDisabled } from "./lib/login-policy.js";
 import { ssoSignIn } from "./lib/sso-sign-in.js";
 import type { SystemMailer } from "./lib/system-mail.js";
 
@@ -133,13 +135,34 @@ export function createAuth({
               });
             },
           },
-          user: {
-            // 申し込みは /v1/security/email がパスワードを確かめてから受け付け、
-            // 新しいアドレスへ届くリンクを開いた時点で変更する。
-            changeEmail: { enabled: true },
-          },
         }
       : {}),
+    user: {
+      // 申し込みは /v1/security/email がパスワードを確かめてから受け付け、
+      // 新しいアドレスへ届くリンクを開いた時点で変更する。
+      ...(mailer ? { changeEmail: { enabled: true } } : {}),
+      additionalFields: {
+        // 管理者が無効にした日時。セッションの確認 (requireUser) で読む。利用者は変えられない。
+        disabledAt: { type: "date", required: false, input: false },
+      },
+    },
+    databaseHooks: {
+      session: {
+        create: {
+          // 無効にされた利用者には、どの方法 (パスワード、パスキー、IdP、2 段階認証の後) でも
+          // セッションを作らない。パスワードなどの確認が済んだ後に断るので、
+          // 無効かどうかは本人の確認ができた人にしか分からない。
+          before: async (session) => {
+            if (await isUserDisabled(db, session.userId)) {
+              throw new APIError("FORBIDDEN", {
+                message: "this user is disabled",
+                code: "USER_DISABLED",
+              });
+            }
+          },
+        },
+      },
+    },
     plugins: [
       // Web / Tauri / Capacitor で同じ方式を使えるよう、セッショントークンを
       // Authorization: Bearer で受け付ける。

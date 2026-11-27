@@ -4,6 +4,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   customType,
   date,
   index,
@@ -72,6 +73,11 @@ export const users = pgTable("users", {
   image: text(),
   /** 2 段階認証を有効にしているか (Better Auth の twoFactor プラグインが読み書きする)。 */
   twoFactorEnabled: boolean().notNull().default(false),
+  /**
+   * 管理者が無効にした日時。無効の利用者はログインできず、API も使えない
+   * (無効にしたときに全端末のセッションと通知の送り先を消す)。データは残す。
+   */
+  disabledAt: timestamp({ withTimezone: true }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -398,6 +404,24 @@ export const ssoProviders = pgTable("sso_providers", {
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
+
+/**
+ * サーバー全体の設定 (管理者が管理画面で変える)。行は 1 つだけ (id = true)。
+ * 行が無いときは各列の既定値として扱う。
+ */
+export const serverSettings = pgTable(
+  "server_settings",
+  {
+    id: boolean().primaryKey().default(true),
+    /**
+     * 一般の利用者がパスワードでログインできる (パスワードの再設定、招待での登録も含む)。
+     * false にしても管理者のログインには関係しない。戻すコマンドは admin password-login on。
+     */
+    passwordLogin: boolean().notNull().default(true),
+    updatedAt: updatedAt(),
+  },
+  (t) => [check("server_settings_single_row", sql`${t.id}`)],
+);
 
 export const devicePlatform = pgEnum("device_platform", [
   "web",

@@ -379,6 +379,20 @@
       "when": 1795804130686,
       "tag": "0053_sso_link_per_user",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1795804921260,
+      "tag": "0054_server_settings_user_disable",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1795817127954,
+      "tag": "0055_disabled_user_guard",
+      "breakpoints": true
     }
   ]
 }

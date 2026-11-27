@@ -17,6 +17,7 @@ function setup(
   owner: string | null,
   ok = true,
   reply: NotificationReplyResult = { ok: true, id: "o1" },
+  disabled = false,
 ) {
   const queued: [string, MessageAction][] = [];
   const replies: [string, string, string, string][] = [];
@@ -26,6 +27,8 @@ function setup(
         innerJoin: () => ({
           where: async () => (owner ? [{ userId: owner }] : []),
         }),
+        // 利用者が無効にされているか (isUserDisabled)。
+        where: async () => [{ disabledAt: disabled ? new Date() : null }],
       }),
     }),
   } as unknown as Database;
@@ -85,6 +88,29 @@ describe("通知のボタンの受け口", () => {
       expect(response.status).toBe(403);
     }
     expect(queued).toEqual([]);
+  });
+
+  it("管理者が無効にした利用者の通知からは、操作も返信もできない", async () => {
+    const { queued, replies, post, postReply } = setup(
+      userId,
+      true,
+      undefined,
+      true,
+    );
+    const token = signNotificationAction(key, userId, messageId);
+    expect((await post({ messageId, action: "read", token })).status).toBe(403);
+    expect(
+      (
+        await postReply({
+          messageId,
+          token,
+          text: "返信",
+          idempotencyKey: "01a1fcb1-b4bb-71cc-9452-cd6f31df8799",
+        })
+      ).status,
+    ).toBe(403);
+    expect(queued).toEqual([]);
+    expect(replies).toEqual([]);
   });
 
   it("もう無いメールは 404", async () => {

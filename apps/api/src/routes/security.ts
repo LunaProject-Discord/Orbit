@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Auth } from "../auth.js";
 import { type AppEnv, withoutCookies } from "../context.js";
+import { passwordLoginEnabled } from "../lib/login-policy.js";
 import { listEnabledSsoProviders } from "../lib/sso-providers.js";
 import type { SystemMailer } from "../lib/system-mail.js";
 import { hasPassword, isFreshSession } from "./security-sso.js";
@@ -53,6 +54,8 @@ export function authFeatureRoutes({
       mail: mailEnabled,
       /** ログイン画面に出す IdP (SSO)。 */
       sso: await listEnabledSsoProviders(db),
+      /** パスワードでログインできる (管理者が止めていない)。 */
+      passwordLogin: await passwordLoginEnabled(db),
     }),
   );
   return app;

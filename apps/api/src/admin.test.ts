@@ -501,6 +501,322 @@ describe.skipIf(!adminUrl)("管理者アカウントの API", () => {
     });
   });
 
+  describe("利用者の無効化とパスワードでのログインの停止", () => {
+    const email = "disable-me@example.com";
+    let token = "";
+    let userId = "";
+    const signIn = (address = email, password = PASSWORD) =>
+      json("POST", "/v1/auth/sign-in/email", { email: address, password });
+    const countRows = async (table: string) => {
+      const result = await db.execute(
+        sql.raw(
+          `select count(*)::int as n from ${table} where user_id = '${userId}'`,
+        ),
+      );
+      return (result.rows[0] as { n: number }).n;
+    };
+
+    it("無効にすると全端末からログアウトし、ログインも API も使えない。戻すとログインできる", async () => {
+      token = (await adminLogin("root")).token as string;
+      const { user } = await signUp.api.signUpEmail({
+        body: { email, name: "無効にする人", password: PASSWORD },
+      });
+      userId = user.id;
+      const first = await signIn();
+      const userToken = first.headers.get("set-auth-token") as string;
+      expect(userToken).toBeTruthy();
+      await db.execute(sql`insert into push_subscriptions
+        (user_id, endpoint, p256dh, auth)
+        values (${userId}, 'https://push.example.com/1', 'k', 'a')`);
+      await db.execute(sql`insert into devices (user_id, name, platform, push_token)
+        values (${userId}, '端末', 'android', 'fcm-token')`);
+
+      // 一般の利用者のトークンでは無効にできない。
+      expect(
+        (
+          await json(
+            "POST",
+            `/v1/admin/users/${userId}/disable`,
+            undefined,
+            bearer(userToken),
+          )
+        ).status,
+      ).toBe(401);
+
+      const disabled = await json(
+        "POST",
+        `/v1/admin/users/${userId}/disable`,
+        undefined,
+        bearer(token),
+      );
+      expect(disabled.status).toBe(204);
+      expect(
+        (await json("GET", "/v1/me", undefined, bearer(userToken))).status,
+      ).toBe(401);
+      expect(await countRows("sessions")).toBe(0);
+      expect(await countRows("push_subscriptions")).toBe(0);
+      expect(await countRows("devices")).toBe(0);
+
+      // ログインと無効化が重なっても、DB がセッションと通知の送り先を作らせない。
+      for (const statement of [
+        sql`insert into sessions (user_id, token, expires_at) values (${userId}, ${`raced-${randomUUID()}`}, now() + interval '1 day')`,
+        sql`insert into push_subscriptions (user_id, endpoint, p256dh, auth) values (${userId}, 'https://push.example.com/2', 'k', 'a')`,
+        sql`insert into devices (user_id, name, platform) values (${userId}, '端末', 'android')`,
+      ]) {
+        const error = await db.execute(statement).then(
+          () => null,
+          (cause: unknown) => cause as { cause?: { constraint?: string } },
+        );
+        expect(error?.cause?.constraint).toBe("user_disabled");
+      }
+      // 無効にする前に申し込んだメールアドレスの変更も、完了させない (中身だけを読んで断る)。
+      const fakeToken = `x.${Buffer.from(JSON.stringify({ email, updateTo: "new@example.com" })).toString("base64url")}.y`;
+      const verify = await json(
+        "GET",
+        `/v1/auth/verify-email?token=${fakeToken}`,
+      );
+      expect(verify.status).toBe(403);
+
+      // 正しいパスワードでも、セッションは作らない。
+      const again = await signIn();
+      expect(again.status).toBe(403);
+      expect(((await again.json()) as { code: string }).code).toBe(
+        "USER_DISABLED",
+      );
+      expect(again.headers.get("set-auth-token")).toBeNull();
+      expect(await countRows("sessions")).toBe(0);
+      // パスワードが違えば、無効かどうかは分からない (通常の失敗)。
+      const wrong = await signIn(email, "wrong password wrong");
+      expect(wrong.status).toBe(401);
+
+      const list = (await (
+        await json("GET", "/v1/admin/users", undefined, bearer(token))
+      ).json()) as { users: { id: string; disabledAt: string | null }[] };
+      expect(list.users.find((u) => u.id === userId)?.disabledAt).toBeTruthy();
+
+      // 2 回目も 204 (何も変わらない)。
+      expect(
+        (
+          await json(
+            "POST",
+            `/v1/admin/users/${userId}/disable`,
+            undefined,
+            bearer(token),
+          )
+        ).status,
+      ).toBe(204);
+
+      const enabled = await json(
+        "POST",
+        `/v1/admin/users/${userId}/enable`,
+        undefined,
+        bearer(token),
+      );
+      expect(enabled.status).toBe(204);
+      const back = await signIn();
+      expect(back.status).toBe(200);
+      const backToken = back.headers.get("set-auth-token") as string;
+      expect(
+        (await json("GET", "/v1/me", undefined, bearer(backToken))).status,
+      ).toBe(200);
+    });
+
+    it("無効にした時点で残っていたセッションも、API では通さない", async () => {
+      const login = await signIn();
+      const userToken = login.headers.get("set-auth-token") as string;
+      // セッションを消す前にログインが割り込んだ場合を、列だけ変えて再現する。
+      await db.execute(
+        sql`update users set disabled_at = now() where id = ${userId}`,
+      );
+      expect(
+        (await json("GET", "/v1/me", undefined, bearer(userToken))).status,
+      ).toBe(401);
+      await db.execute(
+        sql`update users set disabled_at = null where id = ${userId}`,
+      );
+      expect(
+        (await json("GET", "/v1/me", undefined, bearer(userToken))).status,
+      ).toBe(200);
+    });
+
+    it("いない利用者は 404、ID の形が違えば 400", async () => {
+      const missing = randomUUID();
+      for (const action of ["disable", "enable"]) {
+        expect(
+          (
+            await json(
+              "POST",
+              `/v1/admin/users/${missing}/${action}`,
+              undefined,
+              bearer(token),
+            )
+          ).status,
+        ).toBe(404);
+      }
+      expect(
+        (
+          await json(
+            "POST",
+            "/v1/admin/users/not-a-uuid/disable",
+            undefined,
+            bearer(token),
+          )
+        ).status,
+      ).toBe(400);
+    });
+
+    it("パスワードでのログインを止めると、ログイン・再設定・招待での登録を断る。戻すと使える", async () => {
+      const existing = await signIn();
+      const existingToken = existing.headers.get("set-auth-token") as string;
+
+      const before = await json(
+        "GET",
+        "/v1/admin/login-settings",
+        undefined,
+        bearer(token),
+      );
+      expect(before.status).toBe(200);
+      const beforeBody = (await before.json()) as {
+        passwordLogin: boolean;
+        enabledSsoProviders: number;
+        withoutOtherMethod: number;
+      };
+      expect(beforeBody.passwordLogin).toBe(true);
+      expect(beforeBody.enabledSsoProviders).toBe(0);
+      expect(beforeBody.withoutOtherMethod).toBeGreaterThanOrEqual(1);
+
+      // 一般の利用者のトークンでは変えられない。
+      expect(
+        (
+          await json(
+            "PUT",
+            "/v1/admin/login-settings",
+            { passwordLogin: false },
+            bearer(existingToken),
+          )
+        ).status,
+      ).toBe(401);
+
+      const invitation = (await (
+        await json(
+          "POST",
+          "/v1/admin/invitations",
+          { label: "停止中" },
+          bearer(token),
+        )
+      ).json()) as { url: string };
+      const inviteToken = new URL(invitation.url).searchParams.get(
+        "token",
+      ) as string;
+
+      // パスワードを確かめた後の、2 段階認証のコード待ちの値。
+      await db.execute(
+        sql`insert into verifications (identifier, value, expires_at) values ('2fa-pending', ${userId}, now() + interval '10 minutes')`,
+      );
+      const off = await json(
+        "PUT",
+        "/v1/admin/login-settings",
+        { passwordLogin: false },
+        bearer(token),
+      );
+      expect(off.status).toBe(200);
+      expect(
+        ((await off.json()) as { passwordLogin: boolean }).passwordLogin,
+      ).toBe(false);
+
+      const pending = await db.execute(
+        sql`select count(*)::int as n from verifications where identifier = '2fa-pending'`,
+      );
+      expect((pending.rows[0] as { n: number }).n).toBe(0);
+
+      const denied = await signIn();
+      expect(denied.status).toBe(403);
+      expect(((await denied.json()) as { code: string }).code).toBe(
+        "PASSWORD_LOGIN_DISABLED",
+      );
+      // 書き方を変えても通らない。
+      for (const path of [
+        "/v1/auth//sign-in/email",
+        "/v1/auth/sign-in/email/",
+        "/v1/auth/SIGN-IN/EMAIL",
+        "/v1/auth/sign-in%2Femail",
+      ]) {
+        const response = await json("POST", path, {
+          email,
+          password: PASSWORD,
+        });
+        expect(response.status, path).not.toBe(200);
+        expect(response.headers.get("set-auth-token"), path).toBeNull();
+      }
+      expect(
+        (
+          await json("POST", "/v1/auth/request-password-reset", {
+            email,
+            redirectTo: `${ORIGIN}/reset-password`,
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await json("POST", "/v1/auth/reset-password", {
+            token: "x",
+            newPassword: "new password new password",
+          })
+        ).status,
+      ).toBe(403);
+
+      const features = (await (
+        await json("GET", "/v1/auth-features")
+      ).json()) as { passwordLogin: boolean };
+      expect(features.passwordLogin).toBe(false);
+
+      const lookup = await json(
+        "GET",
+        `/v1/invitations/lookup?token=${encodeURIComponent(inviteToken)}`,
+      );
+      expect(lookup.status).toBe(403);
+      expect(((await lookup.json()) as { error: string }).error).toBe(
+        "password_login_disabled",
+      );
+      const accept = await json("POST", "/v1/invitations/accept", {
+        token: inviteToken,
+        email: "invited-while-off@example.com",
+        name: "招待",
+        password: PASSWORD,
+      });
+      expect(accept.status).toBe(403);
+      // 使えない招待のままにしない (戻したら使える)。
+      const [unused] = (
+        await db.execute(
+          sql`select count(*)::int as n from invitations where used_at is null and label = '停止中'`,
+        )
+      ).rows as { n: number }[];
+      expect(unused?.n).toBe(1);
+
+      // ログイン済みの端末はそのまま使える。
+      expect(
+        (await json("GET", "/v1/me", undefined, bearer(existingToken))).status,
+      ).toBe(200);
+
+      const on = await json(
+        "PUT",
+        "/v1/admin/login-settings",
+        { passwordLogin: true },
+        bearer(token),
+      );
+      expect(on.status).toBe(200);
+      expect((await signIn()).status).toBe(200);
+      expect(
+        (
+          await json(
+            "GET",
+            `/v1/invitations/lookup?token=${encodeURIComponent(inviteToken)}`,
+          )
+        ).status,
+      ).toBe(200);
+    });
+  });
+
   describe("2 段階認証", () => {
     it("有効にすると、ログインは twoFactorRedirect になり、コードでログインできる", async () => {
       const created = await createAdmin(db, adminSignUp, {

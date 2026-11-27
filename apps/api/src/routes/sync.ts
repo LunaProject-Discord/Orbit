@@ -23,7 +23,15 @@ const eventsQuery = z.object({
 export function syncRoutes({
   db,
   hub,
-}: Pick<RouteDeps, "db"> & { hub: EventsHub }) {
+  stillSignedIn = async () => true,
+}: Pick<RouteDeps, "db"> & {
+  hub: EventsHub;
+  /**
+   * 接続したときのセッションが、まだ使えるか (ログアウト・利用者の無効化で使えなくなる)。
+   * 開いたままの接続に、通知の内容を流し続けないために確かめる。
+   */
+  stillSignedIn?: (headers: Headers) => Promise<boolean>;
+}) {
   const app = new Hono<AppEnv>();
 
   /** 変更番号 since より後の変更を古い順に返す。 */
@@ -69,14 +77,34 @@ export function syncRoutes({
         data: JSON.stringify({ seq: (row?.seq ?? 0n).toString() }),
       });
 
+      const headers = c.req.raw.headers;
+      let closed = false;
+      let close = () => {};
+      /** セッションが使えなくなっていれば接続を閉じる。閉じたら false。 */
+      const check = async () => {
+        if (closed) return false;
+        if (await stillSignedIn(headers).catch(() => true)) return true;
+        close();
+        return false;
+      };
+
       // 端末の数が変わるたびに devices が届く。最初の値は、ここで直接送る。
       const unsubscribe = hub.subscribe(
         userId,
         (event) => {
           const { type, ...data } = event;
-          stream
-            .writeSSE({ event: type, data: JSON.stringify(data) })
-            .catch(() => {});
+          const send = () =>
+            stream
+              .writeSSE({ event: type, data: JSON.stringify(data) })
+              .catch(() => {});
+          // メールの差出人・件名や予定の中身を含むものは、送る前にセッションを確かめる。
+          if (type === "mail" || type === "calendar") {
+            void check().then((ok) => {
+              if (ok) return send();
+            });
+          } else if (!closed) {
+            void send();
+          }
         },
         device,
       );
@@ -86,16 +114,23 @@ export function syncRoutes({
       });
       await new Promise<void>((resolve) => {
         // プロキシに切られないよう、定期的に空のイベントを送る。
+        // そのついでに、セッションがまだ使えるかを確かめる。
         const ping = setInterval(() => {
-          stream.writeSSE({ event: "ping", data: "" }).catch(() => {});
+          void check().then((ok) => {
+            if (ok)
+              stream.writeSSE({ event: "ping", data: "" }).catch(() => {});
+          });
         }, 25_000);
-        let done = false;
         const cleanup = () => {
-          if (done) return;
-          done = true;
+          if (closed) return;
+          closed = true;
           clearInterval(ping);
           unsubscribe();
           resolve();
+        };
+        close = () => {
+          cleanup();
+          stream.close().catch(() => {});
         };
         stream.onAbort(cleanup);
         // 配信を始める前 (上の問い合わせの途中) に端末が接続を切っていると、切断の知らせは

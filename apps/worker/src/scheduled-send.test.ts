@@ -130,4 +130,42 @@ describe.skipIf(!adminUrl)("予約送信", () => {
       .where(eq(outbox.id, row?.id as string));
     expect(done?.status).toBe("done");
   });
+  it("管理者が無効にした利用者のメールは送らず、有効に戻すと送る", async () => {
+    const message: OutgoingMessage = {
+      from: { address: "me@example.com" },
+      to: [{ address: "you@example.com" }],
+      cc: [],
+      bcc: [],
+      subject: "無効",
+      text: "本文",
+      messageId: "<disabled@example.com>",
+      date: "2026-01-01T00:00:00.000Z",
+      inReplyTo: null,
+      references: [],
+    };
+    await db.insert(outbox).values({
+      accountId: account.id,
+      kind: "send",
+      payload: { message, sourceMessageId: null, mode: "new" },
+      idempotencyKey: randomUUID(),
+      runAfter: new Date(Date.now() - 1_000),
+    });
+    const sent: OutgoingMessage[] = [];
+    const send = async (outgoing: OutgoingMessage) => {
+      sent.push(outgoing);
+      return { status: "sent" as const };
+    };
+    await db.execute(
+      sql`update users set disabled_at = now() where id = ${account.userId}`,
+    );
+    const blocked = await processSends(db, account, send, () => {});
+    expect(blocked.sent).toBe(0);
+    expect(sent).toHaveLength(0);
+    await db.execute(
+      sql`update users set disabled_at = null where id = ${account.userId}`,
+    );
+    const resumed = await processSends(db, account, send, () => {});
+    expect(resumed.sent).toBe(1);
+    expect(sent[0]?.messageId).toBe(message.messageId);
+  });
 });

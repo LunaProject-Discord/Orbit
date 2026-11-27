@@ -49,10 +49,13 @@ import { Switch } from "@/components/ui/switch";
 import {
   createSsoProvider,
   deleteSsoProvider,
+  fetchLoginSettings,
+  type LoginSettings,
   listSsoProviders,
   type SsoProvider,
   type SsoProviderInput,
   type SsoTokenAuthMethod,
+  updateLoginSettings,
   updateSsoProvider,
 } from "@/lib/admin-api";
 import { ApiError, NetworkError } from "@/lib/api";
@@ -211,6 +214,9 @@ export function SsoSettings() {
         )}
       </section>
 
+      {/* IdP の数や結び付きで影響が変わるので、一覧を読み直すたびに数え直す。 */}
+      <PasswordLoginSection refreshKey={data} />
+
       <ProviderDialog
         target={editing}
         onClose={() => setEditing(null)}
@@ -259,6 +265,120 @@ export function SsoSettings() {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/**
+ * 一般の利用者のパスワードでのログインを許すか。止めると、ログイン画面からパスワードの入力欄が消え、
+ * パスワードの再設定と招待リンクでの登録も使えなくなる。管理者のログインには関係しない。
+ */
+function PasswordLoginSection({ refreshKey }: { refreshKey: unknown }) {
+  const switchId = useId();
+  const [settings, setSettings] = useState<LoginSettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey が変わったら数え直す
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchLoginSettings(controller.signal)
+      .then((value) => {
+        setSettings(value);
+        setError(null);
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        // 古いサーバー (この設定が無い) では出さない。
+        if (cause instanceof ApiError && cause.status === 404) return;
+        setError(messageOf(cause));
+      });
+    return () => controller.abort();
+  }, [refreshKey]);
+
+  async function save(passwordLogin: boolean) {
+    setSaving(true);
+    try {
+      setSettings(await updateLoginSettings({ passwordLogin }));
+      showNotice(
+        passwordLogin
+          ? "パスワードでのログインを許可しました。"
+          : "パスワードでのログインを止めました。",
+        "info",
+      );
+    } catch (cause) {
+      showNotice(messageOf(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!settings && !error) return null;
+  return (
+    <section className="flex flex-col gap-3" data-password-login>
+      <div className="flex flex-col gap-1">
+        <h3 className="font-semibold text-base">パスワードでのログイン</h3>
+        <p className="text-muted-foreground text-sm">
+          止めると、一般の利用者はシングルサインオンかパスキーでだけログインできます。パスワードの再設定と、招待リンクからの登録も使えなくなります。ログイン済みの端末はそのまま使えます。管理者のログインには影響しません。
+        </p>
+      </div>
+      {error && (
+        <p role="alert" className="text-destructive text-sm">
+          {error}
+        </p>
+      )}
+      {settings && (
+        <div className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
+          <Label htmlFor={switchId} className="min-w-0 flex-1 font-normal">
+            一般の利用者がパスワードでログインできる
+          </Label>
+          <Switch
+            id={switchId}
+            checked={settings.passwordLogin}
+            disabled={saving}
+            onCheckedChange={(checked) => {
+              if (checked) void save(true);
+              else setConfirming(true);
+            }}
+          />
+        </div>
+      )}
+      {settings && !settings.passwordLogin && (
+        <p className="text-muted-foreground text-xs">
+          管理画面を使えないときは、サーバーで「admin password-login
+          on」を実行しても元に戻せます (docs/sso.md を参照)。
+        </p>
+      )}
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              パスワードでのログインを止めますか？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {settings && settings.enabledSsoProviders === 0
+                ? "有効なシングルサインオンがありません。パスキーを登録していない利用者は、ログインできなくなります。"
+                : settings && settings.withoutOtherMethod > 0
+                  ? `シングルサインオンを結び付けておらず、パスキーも登録していない利用者が ${settings.withoutOtherMethod} 人います。この人たちは、メールアドレスを信頼する設定のシングルサインオンで結び付くか、自動で作る設定でない限り、ログインできなくなります。`
+                  : "すべての利用者が、シングルサインオンかパスキーでログインできます。"}
+              ログイン済みの端末は、そのまま使えます。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirming(false);
+                void save(false);
+              }}
+            >
+              止める
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   );
 }
 

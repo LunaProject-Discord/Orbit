@@ -10,7 +10,12 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type { AdminAuth } from "./admin-auth.js";
 import type { Auth } from "./auth.js";
-import { type AppEnv, type RouteDeps, requireUser } from "./context.js";
+import {
+  type AppEnv,
+  type RouteDeps,
+  requireUser,
+  withoutCookies,
+} from "./context.js";
 import type { SetupCode } from "./lib/admin-setup.js";
 import {
   AUTH_STATE_HEADER,
@@ -18,6 +23,11 @@ import {
   withAuthStateHeader,
 } from "./lib/auth-state.js";
 import type { EventsHub } from "./lib/events-hub.js";
+import {
+  isPasswordLoginPath,
+  passwordLoginEnabled,
+  verifyEmailForDisabledUser,
+} from "./lib/login-policy.js";
 import {
   createSenderIconService,
   defaultIconDeps,
@@ -181,9 +191,32 @@ export function createApp({
     ssoRoutes({ db, auth, encryptionKey, webOrigin, clients: ssoClients }),
   );
   // Better Auth が Cookie で持つ途中の値は、X-Auth-State ヘッダーで受け渡す。
-  v1.on(["GET", "POST"], "/auth/*", async (c) =>
-    withAuthStateHeader(await auth.handler(withAuthStateCookie(c.req.raw))),
-  );
+  v1.on(["GET", "POST"], "/auth/*", async (c) => {
+    // 管理者がパスワードでのログインを止めているときは、ログインと再設定を受け付けない。
+    const path = new URL(c.req.url).pathname.slice("/v1/auth".length);
+    if (isPasswordLoginPath(path) && !(await passwordLoginEnabled(db))) {
+      return c.json(
+        {
+          code: "PASSWORD_LOGIN_DISABLED",
+          message: "password login is disabled",
+        },
+        403,
+      );
+    }
+    // 無効にされた利用者は、無効にする前に申し込んだメールアドレスの変更も完了させない。
+    if (
+      path === "/verify-email" &&
+      (await verifyEmailForDisabledUser(db, c.req.query("token") ?? null))
+    ) {
+      return c.json(
+        { code: "USER_DISABLED", message: "this user is disabled" },
+        403,
+      );
+    }
+    return withAuthStateHeader(
+      await auth.handler(withAuthStateCookie(c.req.raw)),
+    );
+  });
   v1.route("/", authFeatureRoutes({ db, mailEnabled: mailer !== null }));
 
   // Microsoft Graph から直接呼ばれる。ログインの代わりに、通知に付く合言葉で確かめる。
@@ -310,7 +343,22 @@ export function createApp({
   authed.route("/messages", searchRoutes(deps));
   authed.route("/messages", messageInviteRoutes({ db, hub }));
   authed.route("/messages", messageRoutes({ db, hub }));
-  authed.route("/", syncRoutes({ db, hub }));
+  authed.route(
+    "/",
+    syncRoutes({
+      db,
+      hub,
+      stillSignedIn: async (headers) => {
+        const session = await auth.api.getSession({
+          headers: withoutCookies(headers),
+        });
+        const disabledAt = (
+          session?.user as { disabledAt?: Date | null } | undefined
+        )?.disabledAt;
+        return session !== null && !disabledAt;
+      },
+    }),
+  );
   v1.route("/", authed);
 
   app.route("/v1", v1);
