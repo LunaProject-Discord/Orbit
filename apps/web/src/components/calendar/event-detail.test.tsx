@@ -1,8 +1,14 @@
 // @vitest-environment happy-dom
+
+import { DEFAULT_CALENDAR_NOTIFICATION_SETTINGS } from "@orbit/core/calendar-notifications";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EventDetail, rsvpNote } from "@/components/calendar/event-detail";
+import {
+  EventDetail,
+  eventReminderLabels,
+  rsvpNote,
+} from "@/components/calendar/event-detail";
 import { RsvpButtons } from "@/components/calendar/rsvp-buttons";
 import type { DisplayItem } from "@/components/calendar/types";
 import type { Attendee, Calendar, CalendarEvent } from "@/lib/calendar/api";
@@ -239,5 +245,64 @@ describe("rsvpNote", () => {
         calendar({ source: "caldav", scheduling: "server" }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("予定の詳細の通知の表示", () => {
+  const ready = (allDay: { minutes: number } | null) => ({
+    status: "ready" as const,
+    value: {
+      calendarNotifications: {
+        ...DEFAULT_CALENDAR_NOTIFICATION_SETTINGS,
+        allDay,
+      },
+      timeZone: "Asia/Tokyo",
+    },
+  });
+  const cal = calendar({
+    defaultReminders: [{ method: "display", minutes: 10 }],
+  });
+
+  it("時刻のある予定は今までどおり", () => {
+    expect(
+      eventReminderLabels(
+        { useDefaultReminders: true, reminders: [] },
+        false,
+        cal,
+        ready(null),
+      ),
+    ).toEqual(["10 分前に通知"]);
+  });
+
+  it("終日の予定の既定は、利用者ごとの終日の既定", () => {
+    const value = { useDefaultReminders: true, reminders: [] };
+    expect(
+      eventReminderLabels(value, true, cal, ready({ minutes: -540 })),
+    ).toEqual(["当日 9:00に通知"]);
+    expect(eventReminderLabels(value, true, cal, ready(null))).toEqual([]);
+    // 古いサーバーでは、今までどおりカレンダーの既定 (表示は終日の形)。
+    expect(
+      eventReminderLabels(value, true, cal, {
+        status: "unsupported",
+        value: null,
+      }),
+    ).toEqual(["1 日前 23:50に通知"]);
+  });
+
+  it("終日の予定ごとの通知は「1 日前 9:00」の形", () => {
+    expect(
+      eventReminderLabels(
+        {
+          useDefaultReminders: false,
+          reminders: [
+            { method: "display", minutes: 900 },
+            { method: "email", minutes: -480 },
+          ],
+        },
+        true,
+        cal,
+        ready({ minutes: -540 }),
+      ),
+    ).toEqual(["1 日前 9:00に通知", "当日 8:00にメール"]);
   });
 });

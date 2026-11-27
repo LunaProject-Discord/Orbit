@@ -1,6 +1,7 @@
 "use client";
 
 import type { InviteRole } from "@orbit/core/event-invite";
+import { clampReminderMinutes } from "@orbit/core/reminders";
 import { cn } from "cn";
 import {
   BellIcon,
@@ -42,9 +43,21 @@ import {
   inviteFormView,
 } from "@/lib/calendar/event-form";
 import { blockedSenderAddress, inviteSenderAddress } from "@/lib/calendar/imip";
+import {
+  ALL_DAY_REMINDER_DAYS,
+  ALL_DAY_REMINDER_NEW,
+  allDayDaysLabel,
+  allDayReminderParts,
+  allDayReminderText,
+  allDayReminderValue,
+  parseTimeInput,
+  refreshCalendarNotificationSettings,
+  timeInputValue,
+  useCalendarNotificationSettings,
+} from "@/lib/calendar/notification-settings";
 import { describeRule } from "@/lib/calendar/recurrence-label";
 
-const REMINDER_MINUTES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
+export const REMINDER_MINUTES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
 
 function timeZoneLabel(timeZone: string): string {
   const offset = new Intl.DateTimeFormat("ja-JP", {
@@ -123,6 +136,10 @@ export function EventEditor({
   useEffect(() => {
     setForm(initial);
   }, [initial]);
+  const notificationSettings = useCalendarNotificationSettings();
+  useEffect(() => {
+    if (open) void refreshCalendarNotificationSettings();
+  }, [open]);
   if (!form) return null;
   const set = <K extends keyof EventForm>(key: K, value: EventForm[K]) =>
     setForm((current) => (current ? { ...current, [key]: value } : current));
@@ -199,6 +216,24 @@ export function EventEditor({
     value: String(minutes),
     label: reminderLabel({ method: "display", minutes }),
   }));
+  // 予定の通知に対応したサーバーだけが、終日の予定の「当日 ○時」(負の分) を受け付ける。
+  const notificationsReady = notificationSettings.status === "ready";
+  const allDayDefault = notificationsReady
+    ? notificationSettings.value.calendarNotifications.allDay
+    : null;
+  // Google・Microsoft には当日の時刻 (負の分) を書けないので、Orbit の中だけで鳴らす (A2)。
+  const providerName =
+    selectedCalendar?.source === "google"
+      ? "Google カレンダー"
+      : selectedCalendar?.source === "microsoft"
+        ? "Outlook"
+        : null;
+  const orbitOnlyNote =
+    form.allDay &&
+    providerName &&
+    form.reminders.some((reminder) => reminder.minutes < 0)
+      ? `当日の時刻の通知は ${providerName} には登録されず、Orbit だけで通知します。`
+      : null;
   const updateReminder = (index: number, reminder: Reminder | null) => {
     const list = [...form.reminders];
     if (reminder) list[index] = reminder;
@@ -291,7 +326,25 @@ export function EventEditor({
                 <Checkbox
                   disabled={locked}
                   checked={form.allDay}
-                  onCheckedChange={(checked) => set("allDay", checked === true)}
+                  onCheckedChange={(checked) =>
+                    setForm((current) =>
+                      current
+                        ? {
+                            ...current,
+                            allDay: checked === true,
+                            // 時刻のある予定に当日の時刻 (負の分) は使えないので、予定の時刻にする。
+                            reminders: current.reminders.map((reminder) => ({
+                              ...reminder,
+                              minutes:
+                                clampReminderMinutes(
+                                  reminder.minutes,
+                                  checked === true,
+                                ) ?? 0,
+                            })),
+                          }
+                        : current,
+                    )
+                  }
                 />
                 終日
               </label>
@@ -434,7 +487,18 @@ export function EventEditor({
                   set("useDefaultReminders", checked === true)
                 }
               />
-              カレンダーの既定の通知を使う
+              {form.allDay && notificationsReady
+                ? "終日の予定の既定の通知を使う"
+                : "カレンダーの既定の通知を使う"}
+              {form.allDay && notificationsReady && (
+                <span className="text-muted-foreground">
+                  (
+                  {allDayDefault
+                    ? allDayReminderText(allDayDefault.minutes)
+                    : "通知しない"}
+                  )
+                </span>
+              )}
             </label>
             {!form.useDefaultReminders && (
               <div className="flex flex-col gap-2">
@@ -444,27 +508,40 @@ export function EventEditor({
                     key={index}
                     className="flex items-center gap-1"
                   >
-                    <SimpleSelect
-                      label="通知"
-                      value={String(reminder.minutes)}
-                      options={
-                        REMINDER_MINUTES.includes(reminder.minutes)
-                          ? reminderOptions
-                          : [
-                              ...reminderOptions,
-                              {
-                                value: String(reminder.minutes),
-                                label: reminderLabel(reminder),
-                              },
-                            ]
-                      }
-                      onChange={(value) =>
-                        updateReminder(index, {
-                          method: reminder.method,
-                          minutes: Number(value),
-                        })
-                      }
-                    />
+                    {form.allDay ? (
+                      <AllDayReminderInput
+                        minutes={reminder.minutes}
+                        allowSameDay={notificationsReady}
+                        onChange={(minutes) =>
+                          updateReminder(index, {
+                            method: reminder.method,
+                            minutes,
+                          })
+                        }
+                      />
+                    ) : (
+                      <SimpleSelect
+                        label="通知"
+                        value={String(reminder.minutes)}
+                        options={
+                          REMINDER_MINUTES.includes(reminder.minutes)
+                            ? reminderOptions
+                            : [
+                                ...reminderOptions,
+                                {
+                                  value: String(reminder.minutes),
+                                  label: reminderLabel(reminder),
+                                },
+                              ]
+                        }
+                        onChange={(value) =>
+                          updateReminder(index, {
+                            method: reminder.method,
+                            minutes: Number(value),
+                          })
+                        }
+                      />
+                    )}
                     <Button
                       type="button"
                       variant="ghost"
@@ -485,13 +562,28 @@ export function EventEditor({
                     onClick={() =>
                       set("reminders", [
                         ...form.reminders,
-                        { method: "display", minutes: 10 },
+                        {
+                          method: "display",
+                          minutes: form.allDay
+                            ? notificationsReady
+                              ? ALL_DAY_REMINDER_NEW
+                              : 900
+                            : 10,
+                        },
                       ])
                     }
                   >
                     <PlusIcon />
                     通知を追加
                   </Button>
+                )}
+                {orbitOnlyNote && (
+                  <p
+                    className="text-muted-foreground text-xs"
+                    data-orbit-only-reminder
+                  >
+                    {orbitOnlyNote}
+                  </p>
                 )}
               </div>
             )}
@@ -561,5 +653,61 @@ export function EventEditor({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * 終日の予定の通知 1 つ: 「何日前 (当日・1 日前…)」と「何時何分」(段取り 9)。
+ * 値は開始日の 0:00 の何分前か (当日 9:00 = -540、1 日前 9:00 = 900)。
+ * allowSameDay が false (古いサーバー) なら、負の分になる「当日」は選べない。
+ */
+function AllDayReminderInput({
+  minutes,
+  allowSameDay,
+  onChange,
+}: {
+  minutes: number;
+  allowSameDay: boolean;
+  onChange: (minutes: number) => void;
+}) {
+  const parts = allDayReminderParts(minutes);
+  const days = parts.daysBefore;
+  const choices = ALL_DAY_REMINDER_DAYS.filter(
+    (value) => allowSameDay || value > 0,
+  );
+  if (!choices.includes(days)) choices.push(days);
+  choices.sort((a, b) => a - b);
+  const change = (next: Partial<typeof parts>) => {
+    let value = allDayReminderValue({ ...parts, ...next });
+    // 当日を選べないときは、当日 0:00 (0 分) より後にしない。
+    if (!allowSameDay && value < 0) value = 0;
+    onChange(value);
+  };
+  return (
+    <div
+      className="flex min-w-0 flex-wrap items-center gap-1"
+      data-all-day-reminder
+    >
+      <SimpleSelect
+        label="通知の日"
+        value={String(days)}
+        options={choices.map((value) => ({
+          value: String(value),
+          label: allDayDaysLabel(value),
+        }))}
+        onChange={(value) => change({ daysBefore: Number(value) })}
+      />
+      <Input
+        type="time"
+        aria-label="通知の時刻"
+        step={300}
+        value={timeInputValue(parts)}
+        onChange={(event) => {
+          const next = parseTimeInput(event.target.value);
+          if (next !== null) change(next);
+        }}
+        className="w-auto tabular-nums"
+      />
+    </div>
   );
 }

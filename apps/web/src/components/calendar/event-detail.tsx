@@ -13,6 +13,7 @@ import {
   VideoIcon,
   XIcon,
 } from "lucide-react";
+import { useEffect } from "react";
 import { PendingBadge } from "@/components/calendar/pending-badge";
 import {
   RsvpButtons,
@@ -30,6 +31,13 @@ import type {
 import type { PendingState } from "@/lib/calendar/conflict-labels";
 import { formatMonthDayWeekday, formatTimeRange } from "@/lib/calendar/dates";
 import type { ImipAccount } from "@/lib/calendar/imip";
+import {
+  allDayDefault,
+  allDayReminderLabel,
+  type CalendarNotificationSettingsState,
+  refreshCalendarNotificationSettings,
+  useCalendarNotificationSettings,
+} from "@/lib/calendar/notification-settings";
 import { describeRule } from "@/lib/calendar/recurrence-label";
 import {
   canRespondTo,
@@ -58,6 +66,34 @@ export function reminderLabel(reminder: Reminder): string {
             ? `${minutes / 60} 時間前`
             : `${minutes} 分前`;
   return reminder.method === "email" ? `${unit}にメール` : `${unit}に通知`;
+}
+
+/**
+ * 予定の通知の表示。終日の予定は「当日 9:00 に通知」の形で出し、既定の通知は
+ * カレンダーの既定ではなく利用者ごとの「終日の予定の通知」を使う (段取り 9、設計 2.1)。
+ * サーバーが予定の通知に対応していない (古いサーバー) ときは、今までどおりカレンダーの既定。
+ */
+export function eventReminderLabels(
+  event: Pick<CalendarEvent, "useDefaultReminders" | "reminders">,
+  allDay: boolean,
+  calendar: Pick<Calendar, "defaultReminders"> | undefined,
+  settings: CalendarNotificationSettingsState,
+): string[] {
+  if (!allDay) {
+    const list = event.useDefaultReminders
+      ? (calendar?.defaultReminders ?? [])
+      : event.reminders;
+    return list.map(reminderLabel);
+  }
+  if (!event.useDefaultReminders)
+    return event.reminders.map(allDayReminderLabel);
+  if (settings.status === "unsupported") {
+    return (calendar?.defaultReminders ?? []).map(allDayReminderLabel);
+  }
+  const fallback = allDayDefault(settings);
+  return fallback
+    ? [allDayReminderLabel({ method: "display", minutes: fallback.minutes })]
+    : [];
 }
 
 /**
@@ -168,9 +204,18 @@ function DetailBody({
     !item.readOnly &&
     event.status !== "cancelled" &&
     canRespondTo(event, calendar, accounts);
-  const reminders = event.useDefaultReminders
-    ? (calendar?.defaultReminders ?? [])
-    : event.reminders;
+  const notificationSettings = useCalendarNotificationSettings();
+  useEffect(() => {
+    if (local.allDay) void refreshCalendarNotificationSettings();
+  }, [local.allDay]);
+  const reminders = eventReminderLabels(
+    event,
+    local.allDay,
+    calendar,
+    notificationSettings,
+  );
+  // カレンダーの通知がオフなら、通知の時刻に添えて知らせる (段取り 9、設計 2.5)。
+  const muted = calendar?.notify === false;
   const counts = event.attendees.reduce(
     (acc, attendee) => {
       acc[attendee.status] = (acc[attendee.status] ?? 0) + 1;
@@ -263,7 +308,16 @@ function DetailBody({
         {reminders.length > 0 && (
           <p className="flex items-start gap-3">
             <BellIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-            <span>{reminders.map(reminderLabel).join("、")}</span>
+            <span>
+              <span className={cn(muted && "text-muted-foreground")}>
+                {reminders.join("、")}
+              </span>
+              {muted && (
+                <span className="block text-muted-foreground text-xs">
+                  このカレンダーの通知はオフです
+                </span>
+              )}
+            </span>
           </p>
         )}
         <p className="flex items-center gap-3">
