@@ -26,6 +26,7 @@ import {
 import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { recordChanges, type Tx } from "../changes.js";
 import { lostValues, recordEventConflict } from "./conflicts.js";
+import { noteRemoteEvents } from "./invite-notices.js";
 import type {
   AccountRow,
   CalendarProvider,
@@ -738,6 +739,14 @@ export async function ingestEventDelta(
         ]);
       }
     }
+    // 新しい招待・招待された予定の変更と取り消しを見つけて記録する (段取り 9)。
+    await noteRemoteEvents(tx, {
+      account,
+      calendar,
+      upserted: written.upserted,
+      deleted,
+      now,
+    });
     return { ...written, deleted };
   });
   for (const event of dropped) {

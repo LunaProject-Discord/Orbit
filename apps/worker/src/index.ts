@@ -9,13 +9,21 @@ import {
   loadMicrosoftOAuthConfig,
   loadWebPushConfig,
   notificationActionUrl,
+  notificationEventActionUrl,
   type SendPayload,
   sweepAttachments,
 } from "@orbit/core";
 import { createDb, drafts, outbox } from "@orbit/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { AccountManager } from "./account-manager.js";
+import {
+  CalendarPushSender,
+  calendarFcmTransport,
+  calendarWebPushTransport,
+} from "./calendar/calendar-push.js";
 import { CalendarSyncManager } from "./calendar/manager.js";
+import { NotificationDispatcher } from "./calendar/notification-dispatcher.js";
+import { ReminderIndexer } from "./calendar/reminder-indexer.js";
 import {
   refreshDueSubscriptions,
   SUBSCRIPTION_BATCH,
@@ -75,6 +83,21 @@ const calendarManager = new CalendarSyncManager(db, databaseUrl, {
   allowPrivateHosts: process.env.ALLOW_PRIVATE_MAIL_HOSTS === "true",
 });
 await calendarManager.start();
+// 予定の通知 (段取り 9)。同期とは別に動かし、同期の失敗と切り離す。
+// Indexer が changes を追って回と job を作り直し、Dispatcher が時刻の来たものを送る。
+const eventActionUrl = notificationEventActionUrl(process.env.API_PUBLIC_URL);
+const notificationDispatcher = new NotificationDispatcher(db, {
+  push: new CalendarPushSender(db, {
+    webPush: webPush ? calendarWebPushTransport(webPush) : null,
+    fcm: fcm ? calendarFcmTransport(fcm) : null,
+  }),
+  rsvp: eventActionUrl ? { key: encryptionKey, url: eventActionUrl } : null,
+});
+const reminderIndexer = new ReminderIndexer(db, databaseUrl, {
+  onIndexed: () => notificationDispatcher.wake(),
+});
+reminderIndexer.start();
+notificationDispatcher.start();
 console.log(
   `同期ワーカーを起動しました (同期中のアカウント: ${manager.count} 件、カレンダー: ${calendarManager.count} 件)`,
 );
@@ -185,6 +208,8 @@ async function shutdown() {
   clearInterval(sweepTimer);
   clearInterval(staleInviteTimer);
   clearInterval(subscriptionTimer);
+  await notificationDispatcher.stop();
+  await reminderIndexer.stop();
   await calendarManager.stop();
   await manager.stop();
   await pool.end();
