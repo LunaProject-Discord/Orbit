@@ -47,7 +47,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { AccountDot } from "@/lib/account-icons";
+import { AccountMark } from "@/lib/account-icons";
 import {
   type Account,
   ApiError,
@@ -447,6 +447,10 @@ export function ComposeWindow({
       : RECEIVE_ONLY_SEND_ERROR;
   // 差出人の選択肢。今の差出人が受信専用なら、選べない項目として残して表示だけする。
   const fromChoices = canSend || !account ? senders : [...senders, account];
+  /** アイコンを選んだアカウントがあれば、色の点も同じ幅に置いて、名前の頭をそろえる。 */
+  const fromMarkClass = fromChoices.some((item) => item.icon !== null)
+    ? "size-5"
+    : undefined;
   const pendingFiles = draft.forwardAttachments?.files ?? [];
   const uploading = uploads.length > 0 || pendingFiles.length > 0;
 
@@ -767,12 +771,7 @@ export function ComposeWindow({
         )}
 
         <Row label="差出人" htmlFor={`${id}-from`}>
-          <div className="relative min-w-0 max-w-full">
-            <AccountDot
-              accounts={accounts}
-              accountId={draft.accountId}
-              className="pointer-events-none absolute top-1/2 left-3 z-10 size-2 -translate-y-1/2"
-            />
+          <div className="min-w-0 max-w-full">
             <Select
               items={fromChoices.map((item) => ({
                 value: item.id,
@@ -787,9 +786,29 @@ export function ComposeWindow({
               <SelectTrigger
                 id={`${id}-from`}
                 size="sm"
-                className="w-auto max-w-full pl-7 *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate"
+                className="w-auto max-w-full *:data-[slot=select-value]:min-w-0"
               >
-                <SelectValue />
+                <SelectValue>
+                  {(value: string | null) => {
+                    const item = fromChoices.find(
+                      (choice) => choice.id === value,
+                    );
+                    if (!item) return null;
+                    return (
+                      <>
+                        <AccountMark
+                          accounts={accounts}
+                          account={item}
+                          size="sm"
+                          className={fromMarkClass}
+                        />
+                        <span className="min-w-0 truncate">
+                          {fromLabel(item)}
+                        </span>
+                      </>
+                    );
+                  }}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent
                 align="start"
@@ -802,10 +821,11 @@ export function ComposeWindow({
                     disabled={!canSendFrom(item)}
                   >
                     <span className="flex items-center gap-2">
-                      <AccountDot
+                      <AccountMark
                         accounts={accounts}
-                        accountId={item.id}
-                        className="size-2"
+                        account={item}
+                        size="sm"
+                        className={fromMarkClass}
                       />
                       {fromLabel(item)}
                     </span>

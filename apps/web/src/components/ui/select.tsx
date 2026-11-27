@@ -12,6 +12,7 @@ import {
   useSheetClose,
   useSheetSwipe,
 } from "@/components/ui/menu-sheet";
+import { popupCollisionPadding } from "@/lib/desktop/title-bar-height";
 
 function Select<Value, Multiple extends boolean | undefined = false>({
   actionsRef,
@@ -100,7 +101,10 @@ function SelectContent({
         align={align}
         alignOffset={alignOffset}
         alignItemWithTrigger={alignItemWithTrigger && !narrow}
-        className={cn("isolate z-50", sheetPositioner)}
+        collisionPadding={popupCollisionPadding(5)}
+        // デスクトップ版のタイトルバー (z-[60]) より手前に出す。選んでいる項目をボタンに重ねる
+        // 出し方では、上のほうの項目がタイトルバーの位置に来ることがあり、後ろに隠れると選べないため。
+        className={cn("isolate z-[70]", sheetPositioner)}
       >
         <SelectPrimitive.Popup
           data-slot="select-content"

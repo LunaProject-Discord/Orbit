@@ -11,6 +11,7 @@ import {
   useSheetClose,
   useSheetSwipe,
 } from "@/components/ui/menu-sheet";
+import { popupCollisionPadding } from "@/lib/desktop/title-bar-height";
 
 function Popover({ actionsRef, ...props }: PopoverPrimitive.Root.Props) {
   const sheet = useSheetClose(actionsRef);
@@ -35,7 +36,7 @@ function PopoverContent({
   alignOffset = 0,
   side = "bottom",
   sideOffset = 4,
-  collisionPadding = 8,
+  collisionPadding,
   anchor,
   initialFocus,
   ...props
@@ -61,9 +62,10 @@ function PopoverContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
-        collisionPadding={collisionPadding}
+        collisionPadding={collisionPadding ?? popupCollisionPadding()}
         anchor={anchor}
-        className={cn("isolate z-50", sheetPositioner)}
+        // デスクトップ版のタイトルバー (z-[60]) より手前に出す。
+        className={cn("isolate z-[70]", sheetPositioner)}
       >
         <PopoverPrimitive.Popup
           data-slot="popover-content"
