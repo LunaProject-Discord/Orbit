@@ -156,6 +156,20 @@ export const desktopWindow = {
       return false;
     }
   },
+  /** マウスのボタンを押している間、ウィンドウを動かす (上部の行の空き部分を押したとき)。 */
+  async startDragging() {
+    await (await currentWindow()).startDragging().catch(() => {});
+  },
+  /**
+   * 上部の行の空き部分をダブルクリックしたときの動き。macOS はシステム設定
+   * (「タイトルバーをダブルクリックしたとき」) に従い、ほかの OS は最大化と元に戻すを切り替える
+   * (apps/desktop の title_bar_double_click)。古いアプリで呼べなければ、最大化を切り替える。
+   */
+  async titleBarDoubleClick() {
+    if (desktopPlatform() !== "macos") return desktopWindow.toggleMaximize();
+    const done = await invokeDesktop<boolean>("title_bar_double_click");
+    if (done !== true) await desktopWindow.toggleMaximize();
+  },
   /** OS のウィンドウの名前 (タスクバーや Alt+Tab に出る) を変える。 */
   async setTitle(title: string) {
     await (await currentWindow()).setTitle(title).catch(() => {});

@@ -171,7 +171,6 @@ import {
   isEditableTarget,
   resolveDesktopKey,
 } from "@/lib/desktop/browser-keys";
-import { setTitleBarMenu } from "@/lib/desktop/title-bar-menu";
 import { type DraftSaveResult, DraftSaver } from "@/lib/draft-saver";
 import { type ServerEvent, subscribeEvents } from "@/lib/events";
 import { formatFullDate } from "@/lib/format";
@@ -274,11 +273,7 @@ import {
   renameCategory,
   reorderCategories,
 } from "@/lib/sidebar-categories";
-import {
-  loadSidebarFolded,
-  SIDEBAR_FOLD_KEY_LABEL,
-  storeSidebarFolded,
-} from "@/lib/sidebar-fold";
+import { loadSidebarFolded, storeSidebarFolded } from "@/lib/sidebar-fold";
 import {
   findContactRule,
   findThreadRule,
@@ -608,23 +603,6 @@ const MailView = memo(function MailView({
     storeSidebarFolded(!sidebarFolded);
     setSidebarFolded(!sidebarFolded);
   };
-  // デスクトップ版のタイトルバーのハンバーガーメニュー。
-  // 広い画面ではサイドバーの折りたたみ (F9 と同じ)、狭い画面では引き出しの開閉。
-  const titleBarMenuRef = useRef(() => {});
-  titleBarMenuRef.current = () => {
-    if (window.matchMedia("(min-width: 48rem)").matches) toggleSidebarFolded();
-    else setSidebarOpen((open) => !open);
-  };
-  useEffect(() => {
-    if (standaloneCompose || standaloneMessage || !isDesktopApp()) return;
-    setTitleBarMenu({
-      label: "サイドバーの表示を切り替える",
-      shortcut: SIDEBAR_FOLD_KEY_LABEL,
-      expanded: !sidebarFolded || sidebarOpen,
-      onClick: () => titleBarMenuRef.current(),
-    });
-  }, [standaloneCompose, standaloneMessage, sidebarFolded, sidebarOpen]);
-  useEffect(() => () => setTitleBarMenu(null), []);
   const asideRef = useRef<HTMLElement>(null);
   const sidebarPeek = useSidebarPeek(asideRef, sidebarFolded);
 
@@ -3833,6 +3811,7 @@ const MailView = memo(function MailView({
         )}
       />
       <aside
+        data-titlebar-off={standaloneCompose ? "" : undefined}
         ref={asideRef}
         id="mail-sidebar"
         className={cn(
@@ -3841,7 +3820,8 @@ const MailView = memo(function MailView({
           sidebarFolded
             ? // relative では top がずらす量になるので、タイトルバーの分を 0 に戻す (デスクトップ版で帯が下がっていた)。
               "md:relative md:top-0 md:w-12 md:max-w-none md:shrink-0"
-            : "md:static md:z-auto md:w-64",
+            : // macOS のデスクトップ版は、ロゴの行の左に信号機ボタンが入る分だけ広い (globals.css の --sidebar-width)。
+              "md:static md:z-auto md:w-(--sidebar-width)",
           sidebarOpen
             ? "translate-x-0"
             : "invisible -translate-x-full md:visible",
@@ -3882,7 +3862,7 @@ const MailView = memo(function MailView({
           className={cn(
             "h-full border-r",
             sidebarFolded &&
-              "md:absolute md:inset-y-0 md:left-0 md:w-64 md:shadow-xl md:transition-[opacity,translate,visibility] md:duration-150",
+              "md:absolute md:inset-y-0 md:left-0 md:w-(--sidebar-width) md:shadow-xl md:transition-[opacity,translate,visibility] md:duration-150",
             sidebarFolded &&
               !sidebarPeek &&
               "md:pointer-events-none md:invisible md:-translate-x-2 md:opacity-0",
@@ -4000,7 +3980,12 @@ const MailView = memo(function MailView({
         </div>
       </aside>
 
-      <main className="flex min-h-0 min-w-0 flex-1">
+      <main
+        className="flex min-h-0 min-w-0 flex-1"
+        // 作成専用のウィンドウでは、作成画面がこの上を覆うので、ここの上部の行はタイトルバーにしない
+        // (細いタイトルバーを出す)。
+        data-titlebar-off={standaloneCompose ? "" : undefined}
+      >
         {/* 一覧とメールの表示。広い画面では横に並べるか、設定で上下に並べる。 */}
         <div
           className={cn(
@@ -4083,12 +4068,26 @@ const MailView = memo(function MailView({
                 />
               ) : showSearch && !medium && (searchScreen || searching) ? (
                 // スマホの検索画面。アプリバーを検索欄にする。
-                <header className="flex h-14 shrink-0 items-center border-b px-4">
+                <header
+                  data-titlebar=""
+                  className="flex h-14 shrink-0 items-center border-b px-4"
+                >
                   {searchBox("screen")}
                 </header>
               ) : (
-                <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+                <header
+                  data-titlebar=""
+                  className="flex h-14 shrink-0 items-center gap-2 border-b px-4"
+                >
                   {menuButton("-ml-2 pointer-coarse:-ml-2.5")}
+                  {/* macOS で帯に折りたたんでいるときは、信号機ボタンが帯に重なるので、開くボタンをここに出す。 */}
+                  {sidebarFolded && (
+                    <SidebarFoldButton
+                      folded
+                      onToggle={toggleSidebarFolded}
+                      className="-ml-2 hidden md:in-[[data-desktop=macos]]:inline-flex"
+                    />
+                  )}
                   <h1 className="min-w-0 shrink truncate font-semibold text-lg">
                     {heading}
                   </h1>
@@ -4390,7 +4389,10 @@ const MailView = memo(function MailView({
             ) : (
               <>
                 {showSearch && wide && !messageBelow && (
-                  <div className="flex h-14 shrink-0 items-center justify-end border-b px-4">
+                  <div
+                    data-titlebar=""
+                    className="flex h-14 shrink-0 items-center justify-end border-b px-4"
+                  >
                     {searchBox("popup")}
                   </div>
                 )}

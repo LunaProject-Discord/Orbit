@@ -823,7 +823,10 @@ export function MessageView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 一覧の見出しと高さを揃えた、操作用のツールバー。 */}
-      <div className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:px-4">
+      <div
+        data-titlebar=""
+        className="flex h-14 shrink-0 items-center gap-1 border-b px-2 sm:px-4"
+      >
         {!standalone && (
           <Button
             variant="ghost"

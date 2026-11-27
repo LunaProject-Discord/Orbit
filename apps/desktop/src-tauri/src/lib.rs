@@ -10,6 +10,7 @@ mod reminder_xml;
 mod reminders;
 mod settings;
 mod system_menu;
+mod title_bar;
 #[cfg(windows)]
 mod toast;
 mod toast_xml;
@@ -244,7 +245,15 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
         // メインウィンドウより少し小さく開き、重なっても見分けやすくする。
         config.width = 1000.0;
         config.height = 720.0;
+        // 作成専用のウィンドウには上部の行が無く、画面側が細いタイトルバーを出すので、
+        // macOS の信号機ボタンは OS の既定の位置に置く (src/title_bar.rs)。
+        if title_bar::is_compose_path(path) {
+            config.traffic_light_position = None;
+        }
     }
+    // 信号機ボタンを上部の行の高さに下げたか。画面側は、上部の行が無い画面で出す細いタイトルバーを
+    // その高さにそろえる (globals.css の data-desktop-lights)。
+    let lights_inset = cfg!(target_os = "macos") && config.traffic_light_position.is_some();
 
     // 画面が描かれる前に、デスクトップ版であることを html に印を付けて伝える
     // (タイトルバーの分の余白を最初から確保し、表示がずれないようにする)。
@@ -253,6 +262,7 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
   var mark = function () {{
     var html = document.documentElement;
     html.dataset.desktop = "{platform}";
+    if ({lights_inset}) html.dataset.desktopLights = "inset";
     // スペルチェックの波線と翻訳の提案を出さない (入力欄は html の指定を引き継ぐ)。
     html.spellcheck = false;
     html.setAttribute("translate", "no");
@@ -264,7 +274,8 @@ fn create_window(app: &AppHandle, label: &str, path: Option<&str>) -> tauri::Res
     mark();
   }}).observe(document, {{ childList: true }});
 }})();"#,
-        platform = platform_name()
+        platform = platform_name(),
+        lights_inset = lights_inset
     );
 
     let navigation_handle = app.clone();
@@ -330,6 +341,7 @@ pub fn run() {
             browser::save_file,
             fonts::list_fonts,
             system_menu::show_system_menu,
+            title_bar::title_bar_double_click,
             web_bundle::app_update_info,
             web_bundle::app_update_fetch_manifest,
             web_bundle::app_update_download,
