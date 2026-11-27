@@ -5,13 +5,23 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { AddAccountDialog } from "@/components/mail/add-account-dialog";
+import { showNotice } from "@/components/mail/toasts";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { ApiError, NetworkError } from "@/lib/api";
+import {
+  ApiError,
+  completeSsoLink,
+  NetworkError,
+  pendingSsoMode,
+  type SsoMode,
+} from "@/lib/api";
 import {
   appOAuthUrl,
   isAppOAuthReturn,
   usesAppOAuth,
 } from "@/lib/native/oauth";
+
+/** 結び付けのあとに戻る、設定の「ログインとセキュリティ」。 */
+const SECURITY_SETTINGS = "/settings/security";
 
 function messageOf(error: unknown): string {
   if (error instanceof NetworkError) {
@@ -21,6 +31,12 @@ function messageOf(error: unknown): string {
     switch (error.code) {
       case "invalid_state":
         return "ログインの有効期限が切れたか、別の端末やブラウザーで始めたログインです。もう一度最初からお試しください。";
+      case "linked_to_other":
+        return "この IdP のアカウントは、すでに別の Orbit の利用者に結び付いています。";
+      case "already_linked":
+        return "この IdP には、すでに別のアカウントを結び付けています。先に解除してください。";
+      case "SESSION_NOT_FRESH":
+        return "安全のため、ログインしてから時間が経った端末では結び付けられません。ログインし直してからお試しください。";
       case "provider_unavailable":
         return "このログイン方法は現在使えません。管理者にお問い合わせください。";
       case "email_missing":
@@ -66,13 +82,23 @@ export function SsoCallback() {
   /** 作ったばかりの利用者に、メールアカウントの追加を案内する。 */
   const [suggest, setSuggest] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  /** URL から受け取った code と state。設定画面からの結び付け (link) はログインを待って送る。 */
+  const [received, setReceived] = useState<{
+    mode: SsoMode;
+    code: string;
+    state: string;
+  } | null>(null);
+  /** 設定画面から始めた結び付けか (表示の文言を変える)。 */
+  const [linking, setLinking] = useState(false);
+  /** URL は 1 回だけ読む (読んだら消す)。 */
+  const read = useRef(false);
   /** code は 1 回しか使えないので、二重に送らない。 */
-  const started = useRef(false);
-  const { completeSso } = auth;
+  const sent = useRef(false);
+  const { completeSso, status } = auth;
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
+    if (read.current) return;
+    read.current = true;
     if (!usesAppOAuth() && isAppOAuthReturn(window.location.search)) {
       const url = appOAuthUrl("sso", window.location.search);
       // code を履歴やリファラーに残さない。
@@ -82,6 +108,8 @@ export function SsoCallback() {
       window.location.assign(url);
       return;
     }
+    const mode = pendingSsoMode() ?? "login";
+    setLinking(mode === "link");
     const params = new URLSearchParams(window.location.search);
     window.history.replaceState(null, "", window.location.pathname);
     if (params.get("error")) {
@@ -96,7 +124,31 @@ export function SsoCallback() {
       );
       return;
     }
-    completeSso(code, state)
+    setReceived({ mode, code, state });
+  }, []);
+
+  useEffect(() => {
+    if (!received || sent.current) return;
+    if (received.mode === "link") {
+      // 結び付けはログイン中の利用者に対して行う。ログインの確認を待つ。
+      if (status === "loading") return;
+      sent.current = true;
+      if (status !== "signed-in") {
+        setError(
+          "ログインの有効期限が切れました。ログインし直してから、もう一度お試しください。",
+        );
+        return;
+      }
+      completeSsoLink(received.code, received.state)
+        .then((provider) => {
+          showNotice(`${provider.name} を結び付けました。`, "info");
+          router.replace(SECURITY_SETTINGS);
+        })
+        .catch((cause) => setError(messageOf(cause)));
+      return;
+    }
+    sent.current = true;
+    completeSso(received.code, received.state)
       .then((result) => {
         if (result.twoFactor) {
           router.replace("/login?step=two-factor");
@@ -107,7 +159,7 @@ export function SsoCallback() {
         }
       })
       .catch((cause) => setError(messageOf(cause)));
-  }, [completeSso, router]);
+  }, [received, status, completeSso, router]);
 
   if (appUrl) {
     return (
@@ -153,20 +205,22 @@ export function SsoCallback() {
     <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
       {error ? (
         <>
-          <h1 className="font-semibold text-xl">ログインできませんでした</h1>
+          <h1 className="font-semibold text-xl">
+            {linking ? "結び付けられませんでした" : "ログインできませんでした"}
+          </h1>
           <p role="alert" className="max-w-md text-muted-foreground text-sm">
             {error}
           </p>
           <Link
-            href="/login"
+            href={linking ? SECURITY_SETTINGS : "/login"}
             className={buttonVariants({ variant: "outline" })}
           >
-            ログイン画面に戻る
+            {linking ? "設定に戻る" : "ログイン画面に戻る"}
           </Link>
         </>
       ) : (
         <output className="text-muted-foreground text-sm">
-          ログインしています…
+          {linking ? "結び付けています…" : "ログインしています…"}
         </output>
       )}
     </main>

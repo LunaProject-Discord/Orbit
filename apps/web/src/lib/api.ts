@@ -826,7 +826,47 @@ export async function fetchAuthFeatures(
  * ログインを始めた端末だけが知る合言葉。サーバーは指紋だけを state に入れ、戻ってきたときに
  * 照合する (ほかの人が始めたログインの続きを踏ませる攻撃を防ぐ)。戻ってくるまで端末に預ける。
  */
-const SSO_BINDING_KEY = "orbit.sso-binding.v1";
+const SSO_PENDING_KEY = "orbit.sso-pending.v1";
+
+/** ログイン (login) か、設定画面からの結び付け (link) か。 */
+export type SsoMode = "login" | "link";
+
+type SsoPending = { binding: string; mode: SsoMode };
+
+/** IdP から戻ってきたときに、この端末が始めたのがどちらかを見る (消さない)。 */
+export function pendingSsoMode(): SsoMode | null {
+  try {
+    const raw = window.localStorage.getItem(SSO_PENDING_KEY);
+    const value = raw ? (JSON.parse(raw) as Partial<SsoPending>) : null;
+    return value?.mode === "login" || value?.mode === "link"
+      ? value.mode
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 預けた合言葉を取り出して消す (1 回だけ使う)。始めたものと違えば null。 */
+function takeSsoBinding(mode: SsoMode): string | null {
+  try {
+    const raw = window.localStorage.getItem(SSO_PENDING_KEY);
+    window.localStorage.removeItem(SSO_PENDING_KEY);
+    const value = raw ? (JSON.parse(raw) as Partial<SsoPending>) : null;
+    return value?.mode === mode && typeof value.binding === "string"
+      ? value.binding
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 合言葉を作って端末に預ける。預けられない端末では、戻ってきても照合できないので始めない。 */
+function newSsoBinding(mode: SsoMode): string {
+  const binding = randomBinding();
+  const pending: SsoPending = { binding, mode };
+  window.localStorage.setItem(SSO_PENDING_KEY, JSON.stringify(pending));
+  return binding;
+}
 
 function randomBinding(): string {
   const bytes = new Uint8Array(32);
@@ -841,9 +881,7 @@ function randomBinding(): string {
 
 /** IdP のログイン画面の URL を取得する (合言葉を端末に預ける)。 */
 export async function startSsoLogin(providerId: string): Promise<string> {
-  const binding = randomBinding();
-  // 預けられない端末では、戻ってきても照合できないので始めない。
-  window.localStorage.setItem(SSO_BINDING_KEY, binding);
+  const binding = newSsoBinding("login");
   const { url } = await apiJson<{ url: string }>("/v1/auth/sso/start", {
     method: "POST",
     body: {
@@ -872,13 +910,7 @@ export async function completeSsoLogin(
   code: string,
   state: string,
 ): Promise<SsoLoginResult> {
-  let binding: string | null = null;
-  try {
-    binding = window.localStorage.getItem(SSO_BINDING_KEY);
-    window.localStorage.removeItem(SSO_BINDING_KEY);
-  } catch {
-    // 読めなければ、下で invalid_state として扱う。
-  }
+  const binding = takeSsoBinding("login");
   if (!binding) throw new ApiError(400, "invalid_state", null);
   const response = await apiFetch("/v1/auth/sso/callback", {
     method: "POST",
@@ -909,7 +941,67 @@ export type SecurityStatus = {
   passkeyCount: number;
   /** サーバーが利用者へメールを送れるか。 */
   mail: boolean;
+  /** パスワードを持っているか (IdP で作った利用者は持たない)。古いサーバーは返さない。 */
+  hasPassword?: boolean;
 };
+
+/** パスワードを持たない利用者 (IdP で作った人) が、パスワードを設定する。 */
+export async function setPassword(newPassword: string): Promise<void> {
+  await apiFetch("/v1/security/password", {
+    method: "POST",
+    body: { newPassword },
+  });
+}
+
+/** 設定画面に出す IdP (シングルサインオン) と、結び付けたかどうか。 */
+export type SsoLink = {
+  id: string;
+  name: string;
+  /** 管理者が無効にした (結び付けていれば、解除だけできる)。 */
+  enabled: boolean;
+  /** 結び付けた日時。結び付けていなければ null。 */
+  linkedAt: string | null;
+};
+
+export async function fetchSsoLinks(signal?: AbortSignal): Promise<SsoLink[]> {
+  const { providers } = await apiJson<{ providers: SsoLink[] }>(
+    "/v1/security/sso",
+    { signal },
+  );
+  return providers;
+}
+
+/** 結び付けを始める (IdP のログイン画面の URL を返す)。戻り先は /oauth/sso。 */
+export async function startSsoLink(providerId: string): Promise<string> {
+  const binding = newSsoBinding("link");
+  const { url } = await apiJson<{ url: string }>("/v1/security/sso/link", {
+    method: "POST",
+    body: {
+      providerId,
+      binding,
+      ...(usesAppOAuth() ? { app: true } : {}),
+    },
+  });
+  return url;
+}
+
+/** IdP から戻ってきた code と state で、ログイン中の利用者に結び付ける。 */
+export async function completeSsoLink(
+  code: string,
+  state: string,
+): Promise<{ name: string }> {
+  const binding = takeSsoBinding("link");
+  if (!binding) throw new ApiError(400, "invalid_state", null);
+  const { provider } = await apiJson<{ provider: { name: string } }>(
+    "/v1/security/sso/link/callback",
+    { method: "POST", body: { code, state, binding } },
+  );
+  return provider;
+}
+
+export async function unlinkSso(providerId: string): Promise<void> {
+  await apiFetch(`/v1/security/sso/${providerId}`, { method: "DELETE" });
+}
 
 export async function fetchSecurity(
   signal?: AbortSignal,

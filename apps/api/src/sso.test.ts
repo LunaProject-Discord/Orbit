@@ -588,6 +588,197 @@ describe.skipIf(!adminUrl)("IdP (SSO) でのログイン", () => {
     });
   });
 
+  describe("設定画面からの結び付け", () => {
+    let erinToken: string;
+
+    /** 結び付けを始め、IdP から戻ってくるところまで。 */
+    const startLink = async (token: string) => {
+      const binding = randomBytes(32).toString("base64url");
+      const response = await json(
+        "POST",
+        "/v1/security/sso/link",
+        { providerId, binding },
+        bearer(token),
+      );
+      expect(response.status).toBe(200);
+      const { url } = (await response.json()) as { url: string };
+      return {
+        state: new URL(url).searchParams.get("state") as string,
+        binding,
+      };
+    };
+    const link = async (token: string, profile: Profile) => {
+      const { state, binding } = await startLink(token);
+      return json(
+        "POST",
+        "/v1/security/sso/link/callback",
+        { code: idp.issue(profile), state, binding },
+        bearer(token),
+      );
+    };
+    const status = async (token: string) =>
+      (await (
+        await json("GET", "/v1/security/sso", undefined, bearer(token))
+      ).json()) as {
+        hasPassword: boolean;
+        providers: { id: string; linkedAt: string | null }[];
+      };
+
+    beforeAll(async () => {
+      await signUp.api.signUpEmail({
+        body: { email: "erin@example.com", name: "Erin", password: PASSWORD },
+      });
+      const signIn = await json("POST", "/v1/auth/sign-in/email", {
+        email: "erin@example.com",
+        password: PASSWORD,
+      });
+      erinToken = signIn.headers.get("set-auth-token") as string;
+      expect(erinToken).toBeTruthy();
+    });
+
+    it("使える IdP と、パスワードを持っているかを返す", async () => {
+      expect(await status(erinToken)).toEqual({
+        hasPassword: true,
+        providers: [
+          expect.objectContaining({ id: providerId, linkedAt: null }),
+        ],
+      });
+    });
+
+    it("結び付けの state ではログインできない", async () => {
+      const { state, binding } = await startLink(erinToken);
+      const response = await json("POST", "/v1/auth/sso/callback", {
+        code: idp.issue({ id: 500, email: "erin@example.com" }),
+        state,
+        binding,
+      });
+      expect(await response.json()).toEqual({ error: "invalid_state" });
+    });
+
+    it("ほかの利用者のセッションでは続きを完了できない", async () => {
+      const { state, binding } = await startLink(erinToken);
+      const alice = await login({ id: 1, email: "alice@example.com" });
+      const aliceToken = alice.headers.get("set-auth-token") as string;
+      const response = await json(
+        "POST",
+        "/v1/security/sso/link/callback",
+        { code: idp.issue({ id: 500 }), state, binding },
+        bearer(aliceToken),
+      );
+      expect(await response.json()).toEqual({ error: "invalid_state" });
+    });
+
+    it("結び付けると、IdP でその利用者としてログインできる", async () => {
+      const response = await link(erinToken, {
+        id: 500,
+        email: "someone-else@example.com",
+      });
+      expect(response.status).toBe(200);
+      expect((await status(erinToken)).providers[0]?.linkedAt).toBeTruthy();
+      const signIn = await login({ id: 500, email: "x@example.com" });
+      const token = signIn.headers.get("set-auth-token") as string;
+      const me = await json("GET", "/v1/me", undefined, bearer(token));
+      expect(await me.json()).toMatchObject({
+        user: { email: "erin@example.com" },
+      });
+    });
+
+    it("同じ IdP には 1 つだけ、ほかの人のものは結び付けられない", async () => {
+      const second = await link(erinToken, { id: 501 });
+      expect(second.status).toBe(409);
+      expect(await second.json()).toEqual({ error: "already_linked" });
+
+      const alice = await login({ id: 1, email: "alice@example.com" });
+      const aliceToken = alice.headers.get("set-auth-token") as string;
+      const taken = await link(aliceToken, { id: 500 });
+      expect(await taken.json()).toEqual({ error: "linked_to_other" });
+    });
+
+    it("ほかにログインの方法が無ければ解除できず、パスワードを設定すれば解除できる", async () => {
+      const alice = await login({ id: 1, email: "alice@example.com" });
+      const aliceToken = alice.headers.get("set-auth-token") as string;
+      expect((await status(aliceToken)).hasPassword).toBe(false);
+      const refused = await json(
+        "DELETE",
+        `/v1/security/sso/${providerId}`,
+        undefined,
+        bearer(aliceToken),
+      );
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: "last_login_method" });
+
+      // ログインしてから時間が経ったセッションでは、パスワードも結び付けも変えられない。
+      await db.execute(
+        sql`update sessions set created_at = now() - interval '2 days' where user_id = (select id from users where email = 'alice@example.com')`,
+      );
+      const stale = await json(
+        "POST",
+        "/v1/security/password",
+        { newPassword: "alice-new-password" },
+        bearer(aliceToken),
+      );
+      expect(stale.status).toBe(403);
+      expect(await stale.json()).toEqual({ error: "SESSION_NOT_FRESH" });
+      const staleUnlink = await json(
+        "DELETE",
+        `/v1/security/sso/${providerId}`,
+        undefined,
+        bearer(aliceToken),
+      );
+      expect(staleUnlink.status).toBe(403);
+      await db.execute(
+        sql`update sessions set created_at = now() where user_id = (select id from users where email = 'alice@example.com')`,
+      );
+      // Better Auth の受け口からは、ログインの方法を外せない。
+      const betterAuthUnlink = await json(
+        "POST",
+        "/v1/auth/unlink-account",
+        { providerId: `sso:${providerId}` },
+        bearer(aliceToken),
+      );
+      expect(betterAuthUnlink.status).toBe(404);
+
+      const set = await json(
+        "POST",
+        "/v1/security/password",
+        { newPassword: "alice-new-password" },
+        bearer(aliceToken),
+      );
+      expect(set.status).toBe(200);
+      const again = await json(
+        "POST",
+        "/v1/security/password",
+        { newPassword: "alice-other-password" },
+        bearer(aliceToken),
+      );
+      expect(await again.json()).toEqual({ error: "PASSWORD_ALREADY_SET" });
+      const byPassword = await json("POST", "/v1/auth/sign-in/email", {
+        email: "alice@example.com",
+        password: "alice-new-password",
+      });
+      expect(byPassword.status).toBe(200);
+
+      const unlinked = await json(
+        "DELETE",
+        `/v1/security/sso/${providerId}`,
+        undefined,
+        bearer(aliceToken),
+      );
+      expect(unlinked.status).toBe(204);
+      expect((await status(aliceToken)).providers[0]?.linkedAt).toBeNull();
+      // 元に戻す (後のテストは結び付いた人数を数える)。
+      expect((await link(aliceToken, { id: 1 })).status).toBe(200);
+      // erin の結び付けは解く。
+      const erin = await json(
+        "DELETE",
+        `/v1/security/sso/${providerId}`,
+        undefined,
+        bearer(erinToken),
+      );
+      expect(erin.status).toBe(204);
+    });
+  });
+
   describe("無効化と削除", () => {
     it("一覧に結び付いた人数が出る", async () => {
       const list = (await (await asAdmin("GET", "/v1/admin/sso")).json()) as {

@@ -9,8 +9,19 @@ const mocks = vi.hoisted(() => ({
   replace: vi.fn(),
   assign: vi.fn(),
   completeSso: vi.fn(),
+  completeSsoLink: vi.fn(),
+  mode: null as "login" | "link" | null,
+  status: "signed-out" as string,
   appReturn: false,
 }));
+
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  completeSsoLink: mocks.completeSsoLink,
+  pendingSsoMode: () => mocks.mode,
+}));
+
+vi.mock("@/components/mail/toasts", () => ({ showNotice: () => {} }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: mocks.replace }),
@@ -25,7 +36,7 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("@/components/auth-provider", () => ({
-  useAuth: () => ({ status: "signed-out", completeSso: mocks.completeSso }),
+  useAuth: () => ({ status: mocks.status, completeSso: mocks.completeSso }),
 }));
 
 vi.mock("@/components/mail/add-account-dialog", () => ({
@@ -65,6 +76,9 @@ describe("SsoCallback", () => {
     mocks.replace.mockClear();
     mocks.completeSso.mockReset();
     mocks.appReturn = false;
+    mocks.mode = null;
+    mocks.status = "signed-out";
+    mocks.completeSsoLink.mockReset();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -126,5 +140,23 @@ describe("SsoCallback", () => {
       "jp.lunaproject.orbit.mail://oauth/sso?code=c&state=app~s",
     );
     assign.mockRestore();
+  });
+
+  it("設定画面から始めた結び付けは、ログイン中の利用者に結び付けて設定へ戻る", async () => {
+    mocks.mode = "link";
+    mocks.status = "signed-in";
+    mocks.completeSsoLink.mockResolvedValue({ name: "Mailcow" });
+    await render();
+    expect(mocks.completeSso).not.toHaveBeenCalled();
+    expect(mocks.completeSsoLink).toHaveBeenCalledWith("c", "s");
+    expect(mocks.replace).toHaveBeenCalledWith("/settings/security");
+  });
+
+  it("結び付けの途中でログインが切れていたら、送らずに知らせる", async () => {
+    mocks.mode = "link";
+    mocks.status = "signed-out";
+    await render();
+    expect(mocks.completeSsoLink).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("結び付けられませんでした");
   });
 });

@@ -1,15 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import {
-  buildSsoAuthorizeUrl,
-  createPkce,
-  exchangeSsoCode,
-  fetchSsoProfile,
-  openSsoState,
-  SSO_STATE_TTL_MS,
-  SsoError,
-  sealSsoState,
-  ssoBindingHash,
-} from "@orbit/core";
+import { openSsoState } from "@orbit/core";
 import type { Database } from "@orbit/db";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -21,29 +11,29 @@ import {
 } from "../lib/auth-state.js";
 import { clientAddress, createRateWindow } from "../lib/rate-window.js";
 import {
+  ssoAuthorizeUrl,
+  ssoBinding,
+  ssoProfileFromCode,
+  stripAppPrefix,
+} from "../lib/sso-flow.js";
+import {
   findEnabledSsoProvider,
   type SsoClientResolver,
   ssoRedirectUri,
 } from "../lib/sso-providers.js";
 import { resolveSsoUser } from "../lib/sso-users.js";
 
-/** アプリから始めたログインの state に付ける目印 (routes/accounts.ts、Web の lib/native/oauth.ts と同じ)。 */
-const APP_STATE_PREFIX = "app~";
-
-/** 端末が預かる合言葉。32 バイト以上の乱数を base64url で。 */
-const binding = z.string().regex(/^[A-Za-z0-9_-]{43,128}$/);
-
-const startBody = z.object({
+export const ssoStartBody = z.object({
   providerId: z.uuid(),
-  binding,
+  binding: ssoBinding,
   /** アプリ (Desktop / Android) から始めた。戻り先の Web のページがアプリへ引き渡す。 */
   app: z.boolean().default(false),
 });
 
-const callbackBody = z.object({
+export const ssoCallbackBody = z.object({
   code: z.string().min(1).max(4096),
   state: z.string().min(1).max(4096),
-  binding,
+  binding: ssoBinding,
 });
 
 type Deps = {
@@ -53,12 +43,6 @@ type Deps = {
   webOrigin: string;
   clients: SsoClientResolver;
 };
-
-function stripAppPrefix(state: string): string {
-  return state.startsWith(APP_STATE_PREFIX)
-    ? state.slice(APP_STATE_PREFIX.length)
-    : state;
-}
 
 /**
  * IdP (SSO) でのログイン。/v1/auth/sso の下に置く (画面は /v1/auth/* と同じく、
@@ -84,44 +68,27 @@ export function ssoRoutes({
   const startLimit = createRateWindow({ limit: 30, windowMs: 60_000 });
   const callbackLimit = createRateWindow({ limit: 30, windowMs: 60_000 });
 
-  app.post("/start", zValidator("json", startBody), async (c) => {
+  app.post("/start", zValidator("json", ssoStartBody), async (c) => {
     if (!startLimit.take(clientAddress(c.req.raw.headers))) {
       return c.json({ error: "too_many_requests" }, 429);
     }
     const body = c.req.valid("json");
     const provider = await findEnabledSsoProvider(db, body.providerId);
     if (!provider) return c.json({ error: "provider_unavailable" }, 404);
-    let client: Awaited<ReturnType<SsoClientResolver["resolve"]>>;
-    try {
-      client = await clients.resolve(provider);
-    } catch (error) {
-      console.error(
-        `IdP (${provider.name}) の設定を読めませんでした:`,
-        error instanceof Error ? error.message : error,
-      );
-      return c.json({ error: "provider_unreachable" }, 502);
-    }
-    const pkce = provider.usePkce ? createPkce() : null;
-    const state = sealSsoState(
-      {
-        provider: provider.id,
-        verifier: pkce?.verifier ?? null,
-        binding: ssoBindingHash(body.binding),
-        mode: "login",
-        expiresAt: Date.now() + SSO_STATE_TTL_MS,
-      },
+    const url = await ssoAuthorizeUrl({
+      provider,
+      clients,
       encryptionKey,
-    );
-    const url = buildSsoAuthorizeUrl({
-      client,
       redirectUri,
-      state: body.app ? `${APP_STATE_PREFIX}${state}` : state,
-      challenge: pkce?.challenge ?? null,
+      binding: body.binding,
+      app: body.app,
+      mode: "login",
     });
+    if (!url) return c.json({ error: "provider_unreachable" }, 502);
     return c.json({ url });
   });
 
-  app.post("/callback", zValidator("json", callbackBody), async (c) => {
+  app.post("/callback", zValidator("json", ssoCallbackBody), async (c) => {
     if (!callbackLimit.take(clientAddress(c.req.raw.headers))) {
       return c.json({ error: "too_many_requests" }, 429);
     }
@@ -137,28 +104,15 @@ export function ssoRoutes({
     const provider = await findEnabledSsoProvider(db, state.provider);
     if (!provider) return c.json({ error: "provider_unavailable" }, 404);
 
-    let profile: Awaited<ReturnType<typeof fetchSsoProfile>>;
-    try {
-      const client = await clients.resolve(provider);
-      const { accessToken } = await exchangeSsoCode({
-        client,
-        code: body.code,
-        redirectUri,
-        verifier: state.verifier,
-      });
-      profile = await fetchSsoProfile({ client, accessToken });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error(
-        `IdP (${provider.name}) でのログインに失敗しました:`,
-        detail,
-      );
-      const code =
-        error instanceof SsoError && error.code === "no_subject"
-          ? "profile_invalid"
-          : "sso_failed";
-      return c.json({ error: code }, 502);
-    }
+    const fetched = await ssoProfileFromCode({
+      provider,
+      clients,
+      redirectUri,
+      code: body.code,
+      verifier: state.verifier,
+    });
+    if (!fetched.ok) return c.json({ error: fetched.error }, 502);
+    const { profile } = fetched;
 
     const result = await resolveSsoUser(db, provider, profile);
     if (!result.ok) return c.json({ error: result.error }, 403);
