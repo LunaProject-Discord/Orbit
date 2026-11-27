@@ -20,6 +20,11 @@
       "mail-source": "./src/event-merge.ts",
       "types": "./dist/event-merge.d.ts",
       "default": "./dist/event-merge.js"
+    },
+    "./event-invite": {
+      "mail-source": "./src/event-invite.ts",
+      "types": "./dist/event-invite.d.ts",
+      "default": "./dist/event-invite.js"
     }
   },
   "scripts": {
