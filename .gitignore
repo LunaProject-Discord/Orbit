@@ -26,3 +26,6 @@ next-env.d.ts
 
 # 自動更新の記録 (deploy/update.sh)
 /deploy/.update-state
+
+# pdf.js のワーカーや CMap など (apps/web/scripts/copy-pdfjs.mjs が node_modules から写す)
+/apps/web/public/pdfjs

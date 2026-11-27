@@ -6,6 +6,7 @@ import {
   previewOf,
   referencedContentIds,
   replaceCidReferences,
+  safeMimeType,
   splitAttachments,
   withoutInvitePart,
 } from "@/lib/attachments";
@@ -148,5 +149,49 @@ describe("招待の添付", () => {
     expect(withoutInvitePart([body, ics, pdf])).toEqual([ics, pdf]);
     const named = file({ contentType: "text/calendar", filename: "a.ics" });
     expect(withoutInvitePart([named])).toEqual([named]);
+  });
+});
+
+describe("safeMimeType", () => {
+  it("拡張子から種類を選ぶ (メールに書かれた種類より優先する)", () => {
+    expect(safeMimeType(file({ filename: "見積書.PDF" }))).toBe(
+      "application/pdf",
+    );
+    expect(
+      safeMimeType(file({ filename: "写真.jpg", contentType: "text/html" })),
+    ).toBe("image/jpeg");
+    expect(safeMimeType(file({ filename: "議事録.docx" }))).toBe(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+  });
+
+  it("拡張子で決まらなければ、既知の種類だけをメールから使う", () => {
+    expect(safeMimeType(file({ contentType: "application/pdf" }))).toBe(
+      "application/pdf",
+    );
+    expect(safeMimeType(file({ contentType: "Image/PNG; name=a.png" }))).toBe(
+      "image/png",
+    );
+    expect(safeMimeType(file({ contentType: "image/jpg" }))).toBe("image/jpeg");
+  });
+
+  it("危ない種類や分からない種類は application/octet-stream にする", () => {
+    expect(
+      safeMimeType(file({ filename: "請求書.html", contentType: "text/html" })),
+    ).toBe("application/octet-stream");
+    expect(
+      safeMimeType(
+        file({
+          filename: "update.apk",
+          contentType: "application/vnd.android.package-archive",
+        }),
+      ),
+    ).toBe("application/octet-stream");
+    expect(
+      safeMimeType(
+        file({ filename: "logo.svg", contentType: "image/svg+xml" }),
+      ),
+    ).toBe("application/octet-stream");
+    expect(safeMimeType(file({}))).toBe("application/octet-stream");
   });
 });
