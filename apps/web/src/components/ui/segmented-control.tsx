@@ -28,6 +28,8 @@ export function SegmentedControl<T extends string>({
     <div
       role="group"
       aria-label={label}
+      // デスクトップ版で上部の行 (タイトルバー) に置いたとき、ボタンの間の余白でウィンドウを動かさない。
+      data-titlebar-nodrag=""
       className={cn(
         "shrink-0 rounded-lg bg-muted p-1",
         fill ? "grid auto-cols-fr grid-flow-col" : "flex",

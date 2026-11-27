@@ -51,21 +51,62 @@
 
 @layer base {
   /*
-   * デスクトップ版 (Tauri) では、上端に自前のタイトルバー (components/desktop/title-bar.tsx) を置く。
-   * アプリ側が画面を描く前に html へ data-desktop を付けるので、その分だけ画面全体を下げる。
-   * 画面いっぱいに固定する要素は、top にこの変数を使う。ブラウザーとスマホアプリでは 0。
+   * デスクトップ版 (Tauri) のウィンドウ枠 (components/desktop/title-bar.tsx)。
+   * 各アプリの上部の行 (data-titlebar) をタイトルバーとして使い、上端にそれが無い画面
+   * (ログイン、作成専用のウィンドウなど) だけ、細いタイトルバーを出す。
+   * --titlebar-height は細いタイトルバーの高さで、上部の行を使っている間 (html[data-titlebar-integrated]) と
+   * ブラウザー・スマホアプリでは 0。画面いっぱいに固定する要素は、top にこの変数を使う。
+   * --desktop-caption-height は、右上のキャプションボタン (Windows / Linux) と左上の信号機 (macOS) が
+   * 占める高さ。上部の行を使っている間は行の高さ (56px)。
+   * アプリ側が画面を描く前に html へ data-desktop を付けるので、最初は細いタイトルバーの分を空けておく。
    */
   :root {
     --titlebar-height: 0px;
+    --desktop-caption-height: 0px;
+    /* 広い画面のサイドバーの幅。 */
+    --sidebar-width: 16rem;
+  }
+
+  /*
+   * macOS のデスクトップ版は、サイドバーのロゴの行の左端に信号機ボタンが入る。ロゴの高さは変えずに
+   * 「信号機・開閉ボタン・ロゴ ⌄」を収めるため、サイドバーを広げる。
+   */
+  html[data-desktop="macos"] {
+    --sidebar-width: 20rem;
   }
 
   html[data-desktop] {
-    --titlebar-height: 2.25rem;
+    --desktop-bar-height: 2.25rem;
+    --titlebar-height: var(--desktop-bar-height);
+    --desktop-caption-height: var(--desktop-bar-height);
   }
 
   /* Windows 11 の枠のキャプションボタンと同じ高さ (32px)。 */
   html[data-desktop="windows"] {
-    --titlebar-height: 2rem;
+    --desktop-bar-height: 2rem;
+  }
+
+  /* macOS で信号機を上部の行の高さに下げたウィンドウ (apps/desktop の trafficLightPosition) は、細いタイトルバーも同じ高さにする。 */
+  html[data-desktop="macos"][data-desktop-lights="inset"] {
+    --desktop-bar-height: 3.5rem;
+  }
+
+  html[data-desktop][data-titlebar-integrated] {
+    --titlebar-height: 0px;
+    --desktop-caption-height: 3.5rem;
+  }
+
+  /* 上部の行のうち、キャプションボタン・信号機にかかる行の先頭と末尾に空ける余白 (lib/desktop/title-bar-rows.ts)。 */
+  html[data-desktop] [data-titlebar-start]::before {
+    content: "";
+    flex: none;
+    width: var(--titlebar-start);
+  }
+
+  html[data-desktop] [data-titlebar-end]::after {
+    content: "";
+    flex: none;
+    width: var(--titlebar-end);
   }
 
   /*

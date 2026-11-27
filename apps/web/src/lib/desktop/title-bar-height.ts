@@ -1,5 +1,5 @@
 /**
- * デスクトップ版の自前のタイトルバー (components/desktop/title-bar.tsx) の高さ (px)。
+ * デスクトップ版の細いタイトルバー (components/desktop/title-bar.tsx) の高さ (px)。上部の行がタイトルバーを兼ねている間は 0。
  * 高さは globals.css の --titlebar-height (rem か px で書く)。ブラウザーとスマホアプリでは 0。
  */
 export function titleBarHeight(): number {

@@ -1,10 +1,9 @@
 "use client";
 
 import { cn } from "cn";
-import { CopyIcon, MenuIcon, MinusIcon, SquareIcon, XIcon } from "lucide-react";
-import { type MouseEvent, type ReactNode, useEffect, useState } from "react";
+import { CopyIcon, MinusIcon, SquareIcon, XIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { OrbitMark } from "@/components/brand/orbit-logo";
-import { Hint } from "@/components/hint";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -19,11 +18,16 @@ import {
   isDesktopApp,
   showSystemMenu,
 } from "@/lib/desktop/app";
+import { titleBarHeight } from "@/lib/desktop/title-bar-height";
+import { useTitleBarTitle, windowTitle } from "@/lib/desktop/title-bar-menu";
 import {
-  useTitleBarMenu,
-  useTitleBarTitle,
-  windowTitle,
-} from "@/lib/desktop/title-bar-menu";
+  type CaptionArea,
+  isTopRow,
+  isWindowDragTarget,
+  type RowBox,
+  rowInsets,
+  TITLE_BAR_ROW_ATTRIBUTE,
+} from "@/lib/desktop/title-bar-rows";
 
 /**
  * Windows のキャプションボタンの字形 (Segoe Fluent Icons / Segoe MDL2 Assets)。
@@ -33,13 +37,24 @@ import {
  * (あおいさんの判断)。色だけは Windows 11 の標準色にそろえている。
  */
 const CAPTION_GLYPHS = {
-  minimize: "\uE921",
-  maximize: "\uE922",
-  restore: "\uE923",
-  close: "\uE8BB",
+  minimize: "",
+  maximize: "",
+  restore: "",
+  close: "",
 } as const;
 
 type Caption = keyof typeof CAPTION_GLYPHS;
+
+/** キャプションボタン 1 つの幅 (Windows 11 の枠のボタンと同じ 46px。Linux も同じにする)。 */
+const CAPTION_BUTTON_WIDTH = 46;
+/** キャプションボタンと、上部の行の中身との間。 */
+const CAPTION_GAP = 8;
+/**
+ * macOS の信号機ボタンの右端 + 間 (px)。apps/desktop の tauri.macos.conf.json の
+ * trafficLightPosition (x 20) に、ボタン 3 つ分 (間隔 20px、幅 14px) と間 14px を足した値。
+ * 行の先頭のボタンは -ml-2 で左へ寄せているので、アイコンはここから 8px 右に来る。
+ */
+const MAC_TRAFFIC_LIGHTS_END = 88;
 
 /** Linux には OS 共通のアイコンのフォントが無いので、アプリのアイコンで描く。 */
 function CaptionIcon({ kind }: { kind: Caption }) {
@@ -79,21 +94,22 @@ function CaptionButton({
       // キーボードの移動先には入れない (OS のウィンドウ枠のボタンと同じ扱い)。
       tabIndex={-1}
       onClick={onClick}
+      style={{ width: CAPTION_BUTTON_WIDTH }}
       className={cn(
         "flex h-full items-center justify-center outline-none transition-colors duration-100",
-        windows ? "w-[46px]" : "w-11",
         // Windows 11 の TextFillColorPrimary (前面) / TextFillColorDisabled (後ろ)。
-        windows &&
-          (active
+        windows
+          ? active
             ? "text-black/[0.8956] dark:text-white"
-            : "text-black/[0.3614] dark:text-white/[0.3628]"),
+            : "text-black/[0.3614] dark:text-white/[0.3628]"
+          : !active && "text-foreground/50",
         kind === "close"
           ? // Windows 11 の閉じるボタンの色。
             "hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90 active:text-white/80"
           : windows
             ? // Windows 11 の SubtleFillColorSecondary / Tertiary。
               "hover:bg-black/[0.0373] active:bg-black/[0.0241] dark:active:bg-white/[0.0419] dark:hover:bg-white/[0.0605]"
-            : "hover:bg-sidebar-accent",
+            : "hover:bg-accent",
       )}
     >
       {windows ? (
@@ -111,22 +127,26 @@ function CaptionButton({
   );
 }
 
-/** Linux の右クリックで出す、システムメニューの代わり (OS のメニューを呼び出す手段が無いため)。 */
+/**
+ * Linux の右クリックで出す、システムメニューの代わり (OS のメニューを呼び出す手段が無いため)。
+ * 上部の行はアプリのあちこちにあるので、見えない受け口に右クリックを送り、押した位置に出す
+ * (text-context-menu.tsx と同じ作り)。
+ */
 function LinuxSystemMenu({
   maximized,
-  children,
+  triggerRef,
 }: {
   maximized: boolean;
-  children: ReactNode;
+  triggerRef: React.RefObject<HTMLDivElement | null>;
 }) {
   return (
     <ContextMenu>
-      {children}
-      <ContextMenuContent
-        className="min-w-48"
-        // タイトルバー (z-[60]) より手前に出す。
-        positionerClassName="z-[70]"
-      >
+      <ContextMenuTrigger
+        ref={triggerRef}
+        aria-hidden="true"
+        className="pointer-events-none fixed top-0 left-0 size-0"
+      />
+      <ContextMenuContent finalFocus={false} className="min-w-48">
         <ContextMenuItem
           disabled={!maximized}
           onClick={desktopWindow.toggleMaximize}
@@ -149,20 +169,185 @@ function LinuxSystemMenu({
   );
 }
 
+const INTEGRATED_ATTRIBUTE = "data-titlebar-integrated";
+
+function setInset(
+  row: HTMLElement,
+  side: "start" | "end",
+  value: number | null,
+) {
+  const attribute = `data-titlebar-${side}`;
+  const property = `--titlebar-${side}`;
+  if (value === null) {
+    if (!row.hasAttribute(attribute)) return;
+    row.removeAttribute(attribute);
+    row.style.removeProperty(property);
+    return;
+  }
+  const next = `${value}px`;
+  if (row.getAttribute(attribute) === next) return;
+  row.setAttribute(attribute, next);
+  row.style.setProperty(property, next);
+}
+
 /**
- * デスクトップ版のウィンドウ枠 (タイトルバー)。ブラウザーでは何も出さない。
- * 左から、ハンバーガーメニュー (サイドバーの開閉)、アプリのアイコン、アプリ名、
- * Windows / Linux は右端に最小化・最大化・閉じるボタン (OS の枠を外しているため)。
- * macOS は OS の信号機ボタンが左上に重なるので、その分を空けてからハンバーガーメニューを置き、名前は中央に出す。
- * 右クリックでは、OS のシステムメニュー (元のサイズに戻す・移動・最小化・最大化・閉じる) を出す。
- * 高さは globals.css の --titlebar-height。
+ * 上部の行 (data-titlebar) を見張り、ボタンにかかる行に余白を空ける。
+ * 上端に行があるか (細いタイトルバーが要らないか) を html の data-titlebar-integrated で示す。
+ * 戻り値の関数で止める。
+ */
+function watchTitleBarRows(platform: DesktopPlatform): () => void {
+  const root = document.documentElement;
+  const mac = platform === "macos";
+  let frame = 0;
+  const resizeObserver = new ResizeObserver(() => schedule());
+
+  const measure = () => {
+    frame = 0;
+    const area: CaptionArea = {
+      viewportWidth: root.clientWidth,
+      reserveLeft: mac ? MAC_TRAFFIC_LIGHTS_END : 0,
+      reserveRight: mac ? 0 : CAPTION_BUTTON_WIDTH * 3 + CAPTION_GAP,
+      // 細いタイトルバーを出している間は、その下の行も上端の行として扱う。
+      maxTop: titleBarHeight(),
+    };
+    let integrated = false;
+    for (const row of document.querySelectorAll<HTMLElement>(
+      `[${TITLE_BAR_ROW_ATTRIBUTE}]`,
+    )) {
+      const kind = row.getAttribute(TITLE_BAR_ROW_ATTRIBUTE);
+      // 細いタイトルバーそのもの。
+      if (kind === "bar" || kind === "false") continue;
+      resizeObserver.observe(row);
+      const rect = row.getBoundingClientRect();
+      const style = getComputedStyle(row);
+      const box: RowBox = {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
+        paddingRight: Number.parseFloat(style.paddingRight) || 0,
+        gap: Number.parseFloat(style.columnGap) || 0,
+      };
+      // data-titlebar-off の中 (ほかの画面に覆われている行) は、タイトルバーにしない。
+      const visible =
+        style.visibility !== "hidden" &&
+        row.closest("[data-titlebar-off]") === null;
+      if (visible && isTopRow(box, area)) integrated = true;
+      const insets =
+        visible && kind !== "drag"
+          ? rowInsets(box, area)
+          : { start: null, end: null };
+      setInset(row, "start", insets.start);
+      setInset(row, "end", insets.end);
+    }
+    if (integrated !== root.hasAttribute(INTEGRATED_ATTRIBUTE)) {
+      root.toggleAttribute(INTEGRATED_ATTRIBUTE, integrated);
+      // 細いタイトルバーの分だけ行の位置が変わるので、測り直す。
+      schedule();
+    }
+  };
+  function schedule() {
+    if (frame === 0) frame = requestAnimationFrame(measure);
+  }
+
+  // 画面の切り替え、サイドバーの開閉、幅の変更のたびに測り直す。
+  const mutationObserver = new MutationObserver(schedule);
+  mutationObserver.observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["class", "hidden", "data-open", "data-closed"],
+  });
+  window.addEventListener("resize", schedule);
+  document.addEventListener("transitionend", schedule, true);
+  measure();
+  return () => {
+    if (frame !== 0) cancelAnimationFrame(frame);
+    mutationObserver.disconnect();
+    resizeObserver.disconnect();
+    window.removeEventListener("resize", schedule);
+    document.removeEventListener("transitionend", schedule, true);
+    root.removeAttribute(INTEGRATED_ATTRIBUTE);
+  };
+}
+
+/**
+ * 上部の行の空き部分の操作。ドラッグでウィンドウを動かし、ダブルクリックで最大化する
+ * (macOS はシステム設定に従う)。右クリックでは、Windows は OS のシステムメニュー、Linux はその代わりのメニューを出す。
+ * Tauri の data-tauri-drag-region は macOS のダブルクリックを常に最大化にするので使わず、同じ決まりで自前で受け持つ。
+ */
+function watchWindowDrag(
+  platform: DesktopPlatform,
+  openLinuxMenu: (x: number, y: number) => void,
+): () => void {
+  const mac = platform === "macos";
+  let pressed: { x: number; y: number } | null = null;
+  const onMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0 || (event.detail !== 1 && event.detail !== 2)) {
+      return;
+    }
+    if (!isWindowDragTarget(event.composedPath())) return;
+    // macOS では、OS と同じく離したときに動かす (離す前に動かしたらやめる)。
+    if (mac && event.detail === 2) {
+      pressed = { x: event.clientX, y: event.clientY };
+      return;
+    }
+    // 文字の選択を始めない。
+    event.preventDefault();
+    if (event.detail === 2) void desktopWindow.titleBarDoubleClick();
+    else void desktopWindow.startDragging();
+  };
+  const onMouseUp = (event: MouseEvent) => {
+    const start = pressed;
+    pressed = null;
+    if (
+      event.button === 0 &&
+      event.detail === 2 &&
+      start?.x === event.clientX &&
+      start.y === event.clientY &&
+      isWindowDragTarget(event.composedPath())
+    ) {
+      void desktopWindow.titleBarDoubleClick();
+    }
+  };
+  const onContextMenu = (event: MouseEvent) => {
+    if (!isWindowDragTarget(event.composedPath())) return;
+    // 文字のメニュー (text-context-menu.tsx) や、行を囲むメニューには渡さない。
+    event.preventDefault();
+    event.stopPropagation();
+    if (platform === "windows") showSystemMenu();
+    else if (platform === "linux") openLinuxMenu(event.clientX, event.clientY);
+  };
+  document.addEventListener("mousedown", onMouseDown);
+  if (mac) document.addEventListener("mouseup", onMouseUp);
+  document.addEventListener("contextmenu", onContextMenu, true);
+  return () => {
+    document.removeEventListener("mousedown", onMouseDown);
+    document.removeEventListener("mouseup", onMouseUp);
+    document.removeEventListener("contextmenu", onContextMenu, true);
+  };
+}
+
+/**
+ * デスクトップ版のウィンドウ枠。ブラウザーでは何も出さない。
+ *
+ * 各アプリの上部の行 (data-titlebar を付けたヘッダーやサイドバーのロゴの行) をタイトルバーとして使う。
+ * - Windows / Linux は、最小化・最大化・閉じるのボタンを画面の右上 (上部の行の右端) に重ねる。高さは上部の行と同じ。
+ * - macOS は OS の信号機ボタン (titleBarStyle Overlay) が左上に出るので、ボタンは置かない。
+ * - 上端に上部の行が無い画面 (ログイン、作成専用のウィンドウなど) では、細いタイトルバー
+ *   (アイコンと名前) を出す。高さは globals.css の --titlebar-height。
+ * 上部の行の余白の空け方とドラッグの決まりは lib/desktop/title-bar-rows.ts。
  */
 export function DesktopTitleBar() {
   const [platform, setPlatform] = useState<DesktopPlatform | null>(null);
   const [maximized, setMaximized] = useState(false);
   /** ウィンドウが前面にあるか。後ろにあるときは、OS の枠と同じく文字とアイコンを薄くする。 */
   const [active, setActive] = useState(true);
-  const menu = useTitleBarMenu();
+  /** 上端に上部の行があるか (細いタイトルバーを出さないか)。 */
+  const [integrated, setIntegrated] = useState(false);
+  const linuxMenuRef = useRef<HTMLDivElement>(null);
   const title = windowTitle(useTitleBarTitle());
 
   useEffect(() => {
@@ -184,6 +369,37 @@ export function DesktopTitleBar() {
     };
   }, []);
 
+  // 上部の行の余白と、細いタイトルバーを出すかどうか。
+  useEffect(() => {
+    if (!platform) return;
+    const root = document.documentElement;
+    const stop = watchTitleBarRows(platform);
+    const sync = () => setIntegrated(root.hasAttribute(INTEGRATED_ATTRIBUTE));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributeFilter: [INTEGRATED_ATTRIBUTE] });
+    return () => {
+      observer.disconnect();
+      stop();
+    };
+  }, [platform]);
+
+  useEffect(() => {
+    if (!platform) return;
+    return watchWindowDrag(platform, (x, y) => {
+      // 見えない受け口に右クリックを送り、押した位置にメニューを出す。
+      linuxMenuRef.current?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          button: 2,
+        }),
+      );
+    });
+  }, [platform]);
+
   // OS のウィンドウの名前 (タスクバーや Alt+Tab に出る) も合わせる。
   useEffect(() => {
     if (!platform) return;
@@ -193,50 +409,33 @@ export function DesktopTitleBar() {
   if (!platform) return null;
   const mac = platform === "macos";
 
-  const onContextMenu = (event: MouseEvent<HTMLDivElement>) => {
-    // 右クリックの標準のメニュー (と、アプリの文字のメニュー) の代わりに、OS のメニューを出す。
-    event.preventDefault();
-    showSystemMenu();
-  };
-
-  const hamburger = menu && (
-    <Hint label={menu.label} shortcut={menu.shortcut}>
-      <button
-        type="button"
-        aria-label={menu.label}
-        aria-expanded={menu.expanded}
-        aria-controls="mail-sidebar"
-        onClick={menu.onClick}
-        className={cn(
-          // 幅は折りたたんだサイドバーの帯 (w-12) と同じにして、帯のアイコンと縦に揃える。
-          "flex h-full w-12 shrink-0 items-center justify-center outline-none transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent",
-          mac && "ml-[72px] w-10 rounded-md",
-        )}
-      >
-        <MenuIcon className="size-4" />
-      </button>
-    </Hint>
-  );
-
-  const content = (
+  return (
     <>
-      {hamburger}
-      <span
-        className={cn(
-          "pointer-events-none flex min-w-0 items-center gap-2",
-          mac
-            ? "absolute inset-x-0 justify-center"
-            : hamburger
-              ? "ml-1"
-              : "ml-3",
-        )}
-      >
-        <OrbitMark className="size-4 shrink-0" />
-        <span className="truncate text-xs">{title}</span>
-      </span>
-      <span data-tauri-drag-region className="h-full flex-1" />
+      {!integrated && (
+        <div
+          {...{ [TITLE_BAR_ROW_ATTRIBUTE]: "bar" }}
+          className={cn(
+            "fixed inset-x-0 top-0 z-[60] flex h-(--titlebar-height) select-none items-center border-b bg-sidebar text-sidebar-foreground",
+            !active && "text-sidebar-foreground/50",
+          )}
+          style={mac ? undefined : { paddingRight: CAPTION_BUTTON_WIDTH * 3 }}
+        >
+          <span
+            className={cn(
+              "pointer-events-none flex min-w-0 items-center gap-2",
+              mac ? "absolute inset-x-0 justify-center" : "ml-3",
+            )}
+          >
+            <OrbitMark className="size-4 shrink-0" />
+            <span className="truncate text-xs">{title}</span>
+          </span>
+        </div>
+      )}
       {!mac && (
-        <>
+        <div
+          // 上部の行があるときはその高さ (56px)、無いときは細いタイトルバーの高さ。
+          className="fixed top-0 right-0 z-[60] flex h-(--desktop-caption-height) select-none"
+        >
           <CaptionButton
             kind="minimize"
             label="最小化"
@@ -258,36 +457,11 @@ export function DesktopTitleBar() {
             platform={platform}
             active={active}
           />
-        </>
+        </div>
+      )}
+      {platform === "linux" && (
+        <LinuxSystemMenu maximized={maximized} triggerRef={linuxMenuRef} />
       )}
     </>
-  );
-
-  const className = cn(
-    "fixed inset-x-0 top-0 z-[60] flex h-(--titlebar-height) select-none items-center border-b bg-sidebar text-sidebar-foreground",
-    !active && "text-sidebar-foreground/50",
-  );
-
-  if (platform === "linux") {
-    return (
-      <LinuxSystemMenu maximized={maximized}>
-        <ContextMenuTrigger
-          render={<div data-tauri-drag-region className={className} />}
-        >
-          {content}
-        </ContextMenuTrigger>
-      </LinuxSystemMenu>
-    );
-  }
-
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: OS のウィンドウ枠と同じく、右クリックでシステムメニューを出すだけ
-    <div
-      data-tauri-drag-region
-      onContextMenu={platform === "windows" ? onContextMenu : undefined}
-      className={className}
-    >
-      {content}
-    </div>
   );
 }

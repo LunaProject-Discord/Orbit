@@ -425,10 +425,13 @@ export function SettingsView(props: Props) {
           // 広い画面: 大きな中央のダイアログ。
           "sm:h-[min(48rem,calc(100dvh-4rem))] sm:w-[min(68rem,calc(100vw-4rem))] sm:max-w-none",
           // スマホ幅: 画面いっぱい (以前の設定画面の狭い画面と同じ動き)。
-          "max-sm:inset-0 max-sm:h-dvh max-sm:w-full max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:ring-0 max-sm:data-closed:zoom-out-100 max-sm:data-open:zoom-in-100",
+          "max-sm:inset-0 max-sm:top-(--titlebar-height) max-sm:h-[calc(100dvh-var(--titlebar-height))] max-sm:w-full max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:ring-0 max-sm:data-closed:zoom-out-100 max-sm:data-open:zoom-in-100",
         )}
       >
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+        <header
+          data-titlebar=""
+          className="flex h-14 shrink-0 items-center gap-2 border-b px-4"
+        >
           {/* 狭い画面のページでは「戻る」を出す。 */}
           {page && (
             <Button

@@ -350,12 +350,20 @@ export function SidebarRail({
         className,
       )}
     >
-      {/* サイドバーと同じく、デスクトップ版ではタイトルバーのハンバーガーを使う。 */}
-      <div className="flex h-14 shrink-0 items-center in-[[data-desktop]]:hidden">
-        <SidebarFoldButton folded onToggle={onToggleFold} />
+      {/* デスクトップ版では、この行もタイトルバーを兼ねる (ドラッグだけ。幅が狭く、ボタンの分の余白は空けられない)。
+          macOS では信号機ボタンがこの帯に重なるので、開くボタンは一覧の見出しの左端に出す (mail-app.tsx)。 */}
+      <div
+        data-titlebar="drag"
+        className="flex h-14 w-full shrink-0 items-center justify-center"
+      >
+        <SidebarFoldButton
+          folded
+          onToggle={onToggleFold}
+          className="in-[[data-desktop=macos]]:hidden"
+        />
       </div>
       {onCompose && (
-        <div className="shrink-0 pb-2 in-[[data-desktop]]:pt-2">
+        <div className="shrink-0 pb-2">
           <RailComposeButton accounts={accounts ?? []} onCompose={onCompose} />
         </div>
       )}
