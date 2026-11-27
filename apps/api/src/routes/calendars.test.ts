@@ -167,7 +167,8 @@ describe.skipIf(!adminUrl)("予定の API", () => {
         c.set("user", { id, email, name: email });
         await next();
       });
-      target.route("/calendars", calendarRoutes({ db }));
+      // 書き戻しに対応していない場合を確かめるため、既定の一覧 (CALENDAR_WRITEBACK_SOURCES) は使わない。
+      target.route("/calendars", calendarRoutes({ db, writebackSources: [] }));
       return target;
     };
     app = build(user.id, "owner@example.com");

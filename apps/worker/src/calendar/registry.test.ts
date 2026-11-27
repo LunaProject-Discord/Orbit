@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CalendarNotImplementedError } from "./provider.js";
 import { calendarProviderFor } from "./registry.js";
 import { FakeCalendarProvider } from "./testing/fake-provider.js";
 import {
   describeCalendarProviderContract,
-  makeCalendarRow,
   makeProviderContext,
 } from "./testing/provider-contract.js";
 
@@ -42,33 +40,6 @@ describe("calendarProviderFor", () => {
     expect(calendarProviderFor(base)).toBeNull();
     expect(calendarProviderFor({ ...base, provider: "gmail" })).toBeNull();
     expect(calendarProviderFor({ ...base, provider: "microsoft" })).toBeNull();
-  });
-
-  it("雛形のプロバイダは、すべて CalendarNotImplementedError を投げる", async () => {
-    const ctx = makeProviderContext();
-    const calendar = makeCalendarRow();
-    for (const account of [
-      { ...base, provider: "gmail", authType: "oauth2" },
-      { ...base, protocol: "graph" },
-      { ...base, provider: "icloud" },
-    ] as const) {
-      const provider = calendarProviderFor(account);
-      if (!provider) throw new Error("プロバイダがありません。");
-      await expect(provider.listCalendars(ctx)).rejects.toBeInstanceOf(
-        CalendarNotImplementedError,
-      );
-      await expect(
-        provider.syncEvents(ctx, calendar, {
-          syncToken: null,
-          pageCursor: null,
-          knownEtags: async () => new Map(),
-          knownEvents: async () => new Map(),
-        }),
-      ).rejects.toBeInstanceOf(CalendarNotImplementedError);
-      expect(() => provider.parseRaw("", calendar)).toThrow(
-        CalendarNotImplementedError,
-      );
-    }
   });
 });
 

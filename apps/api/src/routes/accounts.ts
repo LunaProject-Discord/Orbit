@@ -244,8 +244,15 @@ const publicColumns = {
   createdAt: accounts.createdAt,
 };
 
-/** 読み出す列。publicColumns に、calendarConsent を導くための列を足したもの。 */
-const accountColumns = { ...publicColumns, oauthScopes: accounts.oauthScopes };
+/**
+ * 読み出す列。publicColumns に、calendarConsent と hasCalendarSource を導くための列を足したもの。
+ * calendar-accounts-caldav.ts でも使う。
+ */
+export const accountColumns = {
+  ...publicColumns,
+  oauthScopes: accounts.oauthScopes,
+  caldavUrl: accounts.caldavUrl,
+};
 type AccountColumns = {
   [K in keyof typeof accountColumns]: (typeof accounts.$inferSelect)[K];
 };
@@ -280,12 +287,34 @@ export function calendarConsentOf(
   return "not_applicable";
 }
 
-/** クライアントへ返す形にする。許可されたスコープそのものは返さない。 */
-function publicAccount({ oauthScopes, ...row }: AccountColumns) {
+/**
+ * クライアントへ返す形にする。許可されたスコープと CalDAV の URL そのものは返さない。
+ * hasCalendarSource: CalDAV の起点 (caldavUrl) があるか。カレンダーだけのアカウントを見分けるのに使う。
+ */
+export function publicAccount({
+  oauthScopes,
+  caldavUrl,
+  ...row
+}: AccountColumns) {
   return {
     ...row,
+    hasCalendarSource: caldavUrl !== null,
     calendarConsent: calendarConsentOf({ ...row, oauthScopes }),
   };
+}
+
+/**
+ * OAuth のログイン (追加と再ログイン) の後のカレンダーの設定。
+ * - カレンダーの権限を求めて許可された: オンにする。
+ * - 権限が無い: オフにする (再ログインで外された場合に、オンのまま残さない)。
+ * - 求めずに許可された (以前の許可が残っている): 今の設定のまま。
+ */
+function calendarSettingsAfterLogin(
+  requested: boolean,
+  granted: boolean,
+): { calendarEnabled?: boolean } {
+  if (!granted) return { calendarEnabled: false };
+  return requested ? { calendarEnabled: true } : {};
 }
 
 type Tx = Parameters<Parameters<RouteDeps["db"]["transaction"]>[0]>[0];
@@ -730,17 +759,20 @@ export function accountRoutes(
         user.id,
       );
       // 同意画面でカレンダーの権限を外されたら、メールだけで追加する (calendarGranted: false)。
+      // 再ログインで外された場合も、使えない権限でカレンダーをオンのまま残さない。
       const calendarGranted = hasMicrosoftCalendarScope(scope);
       const oauth = {
         credentialsEncrypted,
         oauthScopes: scope || null,
-        ...(opened.calendar && calendarGranted
-          ? { calendarEnabled: true }
-          : {}),
+        ...calendarSettingsAfterLogin(opened.calendar, calendarGranted),
       };
       const result = await db.transaction(async (tx) => {
         const sameAddress = await tx
-          .select({ id: accounts.id, protocol: accounts.protocol })
+          .select({
+            id: accounts.id,
+            protocol: accounts.protocol,
+            calendarEnabled: accounts.calendarEnabled,
+          })
           .from(accounts)
           .where(
             and(
@@ -789,7 +821,12 @@ export function accountRoutes(
           op: "upsert",
         });
         await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${row.id})`);
-        return { account: row, created: !existing };
+        return {
+          account: row,
+          created: !existing,
+          calendarDisabled:
+            existing?.calendarEnabled === true && !calendarGranted,
+        };
       });
       if (!result) {
         return c.json({ error: "account_exists" }, 409);
@@ -798,6 +835,8 @@ export function accountRoutes(
         {
           account: publicAccount(result.account),
           calendarGranted,
+          calendarRequested: opened.calendar,
+          calendarDisabled: result.calendarDisabled,
         },
         result.created ? 201 : 200,
       );
@@ -942,12 +981,19 @@ export function accountRoutes(
         oauthScopes: scope || null,
       };
       // 同意画面でカレンダーの権限だけ外された場合は、メールだけで追加する (calendarGranted: false)。
+      // 再ログインで外された場合も、使えない権限でカレンダーをオンのまま残さない。
       const calendarGranted = hasGoogleCalendarScope(scope);
-      const calendarSettings =
-        opened.calendar && calendarGranted ? { calendarEnabled: true } : {};
+      const calendarSettings = calendarSettingsAfterLogin(
+        opened.calendar,
+        calendarGranted,
+      );
       const result = await db.transaction(async (tx) => {
         const sameAddress = await tx
-          .select({ id: accounts.id, provider: accounts.provider })
+          .select({
+            id: accounts.id,
+            provider: accounts.provider,
+            calendarEnabled: accounts.calendarEnabled,
+          })
           .from(accounts)
           .where(
             and(
@@ -995,7 +1041,12 @@ export function accountRoutes(
           op: "upsert",
         });
         await tx.execute(sql`select pg_notify(${CHANNEL_ACCOUNTS}, ${row.id})`);
-        return { account: row, created: !existing };
+        return {
+          account: row,
+          created: !existing,
+          calendarDisabled:
+            existing?.calendarEnabled === true && !calendarGranted,
+        };
       });
       if (!result) {
         return c.json({ error: "account_exists" }, 409);
@@ -1004,6 +1055,8 @@ export function accountRoutes(
         {
           account: publicAccount(result.account),
           calendarGranted,
+          calendarRequested: opened.calendar,
+          calendarDisabled: result.calendarDisabled,
         },
         result.created ? 201 : 200,
       );

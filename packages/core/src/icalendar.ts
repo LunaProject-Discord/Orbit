@@ -195,7 +195,7 @@ function parseComponents(lines: string[]): Component {
 
 /** TEXT の値のエスケープを戻す。 */
 function unescapeText(value: string): string {
-  return value.replace(/\\([;,nN])/g, (_, char: string) =>
+  return value.replace(/\\([\\;,nN])/g, (_, char: string) =>
     char === "n" || char === "N" ? "\n" : char,
   );
 }

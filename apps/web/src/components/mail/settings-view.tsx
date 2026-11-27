@@ -34,6 +34,7 @@ import {
 import { useTheme } from "next-themes";
 import { useEffect, useId, useState } from "react";
 import { AboutSettings } from "@/components/mail/about-settings";
+import { AccountCalendarSetting } from "@/components/mail/account-calendar-setting";
 import {
   AccountServerDialog,
   canEditServer,
@@ -1540,6 +1541,8 @@ function AccountCard({
           />
         </div>
       </div>
+
+      <AccountCalendarSetting account={account} onUpdated={onUpdated} />
 
       {/* 接続先を手で設定したアカウントだけ。Gmail や iCloud は新しい TLS に対応している。 */}
       {(account.protocol === "imap" || account.protocol === "pop3") &&

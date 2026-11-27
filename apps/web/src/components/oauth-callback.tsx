@@ -83,6 +83,15 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
    * このページでは追加せず、受け取った内容をアプリへ引き渡す (アプリへ戻る URL を入れる)。
    */
   const [appUrl, setAppUrl] = useState<string | null>(null);
+  /**
+   * カレンダーの権限を求めたのに許可されなかったとき。ログイン (追加) 自体は済んでいるので、
+   * 知らせてから、戻り先へ進んでもらう。disabled は、使っていたカレンダーをサーバーがオフにしたこと。
+   */
+  const [calendarDenied, setCalendarDenied] = useState<{
+    created: boolean;
+    disabled: boolean;
+    returnTo: string;
+  } | null>(null);
 
   useEffect(() => {
     if (started.current) return;
@@ -114,7 +123,20 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
       return;
     }
     completeOAuthLogin(provider, code, state)
-      .then(() => router.replace("/"))
+      .then((result) => {
+        if (
+          result.calendarDisabled ||
+          (result.calendarRequested && result.calendarGranted === false)
+        ) {
+          setCalendarDenied({
+            created: !result.reauth,
+            disabled: result.calendarDisabled,
+            returnTo: result.returnTo,
+          });
+          return;
+        }
+        router.replace(result.returnTo);
+      })
       .catch((cause) => setError(messageOf(provider, cause)));
   }, [signedIn, router, provider]);
 
@@ -129,6 +151,31 @@ export function OAuthCallback({ provider }: { provider: OAuthProvider }) {
         <a href={appUrl} className={buttonVariants()}>
           Orbit に戻る
         </a>
+      </main>
+    );
+  }
+
+  if (calendarDenied) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+        <h1 className="font-semibold text-xl">
+          カレンダーへのアクセスが許可されませんでした
+        </h1>
+        <p role="alert" className="max-w-md text-muted-foreground text-sm">
+          {calendarDenied.disabled
+            ? "カレンダーの権限が外されたので、カレンダーをオフにしました。"
+            : calendarDenied.created
+              ? `${name} アカウントは、メールだけで追加しました。`
+              : `${name} へのログインは済みましたが、カレンダーは使わないままです。`}
+          カレンダーを使うには、設定のアカウントで「カレンダーを使う」をオンにし、
+          {name} の確認画面でカレンダーへのアクセスを許可してください。
+        </p>
+        <Link
+          href={calendarDenied.returnTo}
+          className={buttonVariants({ variant: "outline" })}
+        >
+          {calendarDenied.returnTo === "/" ? "受信トレイに戻る" : "設定に戻る"}
+        </Link>
       </main>
     );
   }
