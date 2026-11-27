@@ -14,4 +14,5 @@ export * from "./notification-reply.js";
 export * from "./notifications.js";
 export * from "./outbox.js";
 export * from "./pop3.js";
+export * from "./recurrence.js";
 export * from "./sender-auth.js";
