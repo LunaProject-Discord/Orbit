@@ -77,10 +77,13 @@ pub(crate) fn is_event_id(value: &str) -> bool {
         })
 }
 
+/// 回の ID の長さの上限 (画面の route.ts・sw.js、Android と同じ 64 文字)。
+pub(crate) const MAX_RECURRENCE_ID_LEN: usize = 64;
+
 /// 回の ID の形かどうか ("2026-10-26T13:00:00Z" か "2026-10-26"。ほかの書き方も少し許す)。
 pub(crate) fn is_recurrence_id(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 40
+        && value.len() <= MAX_RECURRENCE_ID_LEN
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '+' | '.'))
@@ -538,5 +541,12 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(notification.kind, "event-cancel");
+    }
+
+    #[test]
+    fn 回の_id_は_64_文字まで受け付ける() {
+        // 画面 (route.ts・sw.js) と Android と同じ上限 (L6)。
+        assert!(is_recurrence_id(&"2".repeat(MAX_RECURRENCE_ID_LEN)));
+        assert!(!is_recurrence_id(&"2".repeat(MAX_RECURRENCE_ID_LEN + 1)));
     }
 }

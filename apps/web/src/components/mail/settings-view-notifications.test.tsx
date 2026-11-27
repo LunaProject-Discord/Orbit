@@ -5,10 +5,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/mail/settings-view";
 import type { Calendar } from "@/lib/calendar/api";
-import { resetCalendarNotificationSettingsForTest } from "@/lib/calendar/notification-settings";
+import {
+  onCalendarNotificationSettingsChange,
+  resetCalendarNotificationSettingsForTest,
+} from "@/lib/calendar/notification-settings";
 import { CALENDAR_NOTIFICATIONS_STORAGE_KEY } from "@/lib/calendar/notifications/bridge";
 import { calendar } from "@/lib/calendar/offline/test-support";
-import type { NotificationStatus } from "@/lib/notifications";
+import {
+  type NotificationStatus,
+  onCalendarNotificationsChange,
+} from "@/lib/notifications";
 
 const api = vi.hoisted(() => ({
   settings: null as unknown,
@@ -123,7 +129,7 @@ describe("設定 → 通知 の予定の通知", () => {
 
   it("この端末の予定の通知を切り替えて保存し、知らせる", async () => {
     const listener = vi.fn();
-    window.addEventListener("orbit:calendar-notifications-change", listener);
+    const stop = onCalendarNotificationsChange(listener);
     await render();
     const button = [
       ...container.querySelectorAll<HTMLButtonElement>(
@@ -135,13 +141,18 @@ describe("設定 → 通知 の予定の通知", () => {
       window.localStorage.getItem(CALENDAR_NOTIFICATIONS_STORAGE_KEY),
     ).toBe("off");
     expect(text()).toContain("予定: オフ");
-    expect(listener).toHaveBeenCalledTimes(1);
-    window.removeEventListener("orbit:calendar-notifications-change", listener);
+    // 予約の仕組み (notifications/index.ts) が受けて組み直す。
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+    stop();
   });
 
-  it("共通の設定を変えると全体を保存する", async () => {
+  it("共通の設定を変えると全体を保存し、予約の仕組みに知らせる (M3)", async () => {
     await render();
+    const changed = vi.fn();
+    const stop = onCalendarNotificationSettingsChange(changed);
     await act(async () => switchOf("新しい招待")?.click());
+    expect(changed).toHaveBeenCalled();
+    stop();
     expect(api.saveSettings).toHaveBeenCalledWith({
       calendarNotifications: {
         ...DEFAULT_CALENDAR_NOTIFICATION_SETTINGS,

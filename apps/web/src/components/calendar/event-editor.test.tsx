@@ -4,7 +4,10 @@ import { DEFAULT_CALENDAR_NOTIFICATION_SETTINGS } from "@orbit/core/calendar-not
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EventEditor } from "@/components/calendar/event-editor";
+import {
+  EventEditor,
+  switchedReminders,
+} from "@/components/calendar/event-editor";
 import type { Calendar, CalendarEvent } from "@/lib/calendar/api";
 import { toLocal } from "@/lib/calendar/dates";
 import { type EventForm, eventFormOf } from "@/lib/calendar/event-form";
@@ -233,6 +236,28 @@ describe("編集画面の終日の予定の通知", () => {
     ),
   ];
 
+  it("時刻あり → 終日に切り替えると、10 分前は終日の既定に置き換わる (L10)", () => {
+    ready({ minutes: 900 });
+    renderAllDay({
+      allDay: false,
+      useDefaultReminders: false,
+      reminders: [
+        { method: "display", minutes: 10 },
+        { method: "display", minutes: 60 },
+      ],
+    });
+    const allDayBox = [
+      ...document.body.querySelectorAll<HTMLElement>('[role="checkbox"]'),
+    ].find((element) => element.closest("label")?.textContent === "終日");
+    // Base UI の Checkbox は、隠れた input を押すと切り替わる。
+    const input = allDayBox?.closest("label")?.querySelector("input");
+    if (!input) throw new Error("終日の欄が無い");
+    act(() => input.click());
+    // 「1 日前 23:50」(10 分) ではなく、終日の既定 (前日 9:00)。同じ値は 1 つにまとめる。
+    expect(days()).toEqual(["1 日前"]);
+    expect(times().map((element) => element.value)).toEqual(["09:00"]);
+  });
+
   it("既定の通知は、利用者ごとの終日の既定を指す", () => {
     ready({ minutes: 900 });
     renderAllDay({ useDefaultReminders: true, reminders: [] });
@@ -331,5 +356,35 @@ describe("編集画面の終日の予定の通知", () => {
       calendar({ source: "google" }),
     );
     expect(text()).not.toContain("Orbit だけで通知します");
+  });
+});
+
+describe("switchedReminders (終日 ⇄ 時刻ありの切り替え)", () => {
+  const display = (minutes: number) => ({
+    method: "display" as const,
+    minutes,
+  });
+
+  it("終日へは終日の既定、時刻ありへは 10 分前に置き換える", () => {
+    expect(switchedReminders([display(10)], false, true, -540)).toEqual([
+      display(-540),
+    ]);
+    // 逆 (前日 9:00 = 900) は「15 時間前」にせず 10 分前にする。
+    expect(switchedReminders([display(900)], true, false, -540)).toEqual([
+      display(10),
+    ]);
+    // メールの通知は種類を残す。
+    expect(
+      switchedReminders(
+        [display(10), { method: "email", minutes: 30 }],
+        false,
+        true,
+        900,
+      ),
+    ).toEqual([display(900), { method: "email", minutes: 900 }]);
+    // 切り替えていなければそのまま。
+    expect(switchedReminders([display(10)], false, false, 900)).toEqual([
+      display(10),
+    ]);
   });
 });

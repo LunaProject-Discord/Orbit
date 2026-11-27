@@ -13,11 +13,9 @@
  * POST /v1/push/devices/reminders などの報告はしない。
  */
 
-import type { CalendarPushMessage } from "@orbit/core/calendar-notifications";
 import type { RsvpStatus } from "@orbit/core/event-invite";
 import type {
   CalendarActionPayload,
-  DesktopCalendarNotification,
   ReminderBridge,
   ReminderCapabilities,
   ScheduledReminder,
@@ -77,38 +75,6 @@ export function createDesktopReminderBridge(): ReminderBridge {
       await invokeDesktop(DESKTOP_REMINDER_COMMANDS.clear);
     },
   };
-}
-
-/**
- * SSE で受けた招待・変更・取り消しを、notify_calendar に渡す形にする。
- * rsvp (出欠のボタン) は、招待で、主催者に返事が届くカレンダーのときだけ画面が true にする (設計 2.4)。
- */
-export function toDesktopCalendarNotification(
-  message: CalendarPushMessage,
-  options: { rsvp: boolean },
-): DesktopCalendarNotification {
-  return {
-    kind: message.kind,
-    title: message.title,
-    body: message.body,
-    tag: message.tag,
-    eventId: message.eventId,
-    recurrenceId: message.recurrenceId ?? null,
-    expiresAt: message.expiresAt ?? null,
-    rsvp:
-      options.rsvp &&
-      message.kind === "event-invite" &&
-      message.eventId !== null,
-  };
-}
-
-/** 招待・変更・取り消しを OS の通知で出す (メインウィンドウの分だけ出る)。 */
-export function notifyDesktopCalendar(
-  notification: DesktopCalendarNotification,
-): Promise<null> {
-  return invokeDesktop<null>(DESKTOP_REMINDER_COMMANDS.notify, {
-    notification,
-  });
 }
 
 /**

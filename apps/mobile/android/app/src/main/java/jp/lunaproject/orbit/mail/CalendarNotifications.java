@@ -26,7 +26,9 @@ import org.json.JSONObject;
  * 決まり (設計 3.3・3.4・7・9 章):
  *   - 通知は tag で見分け、番号はすべて同じ (MailNotifications と同じ)。同じ tag は置き換わる。
  *   - リマインダーの tag (cal-rem:…) は、端末の予約でも FCM でも同じ値になる。
- *     この 24 時間に出した tag は覚えておき、後から来た同じ tag は出さない (消した通知が出直さない)。
+ *     この 24 時間に出した tag は、鳴らす時刻 (予約) と予定の終了 (FCM) と一緒に覚えておき、
+ *     後から来た同じもの (同じ tag で同じ時刻) は出さない (消した通知が出直さない)。
+ *     tag は鳴らす時刻を含まないので、予定の時刻が動いたものは別の通知として出す (レビュー H1)。
  *   - 文言は画面 (TypeScript) かサーバーが作る。ここは表示するだけ (出欠の失敗の知らせを除く)。
  *   - 分類は 2 つ: 予定のリマインダー (重要度 高) と、招待と予定の変更 (重要度 標準)。
  *     ロック画面では中身を隠す (新着メールの通知と同じ)。
@@ -78,7 +80,7 @@ final class CalendarNotifications {
         if (!item.body.isEmpty()) builder.setStyle(new NotificationCompat.BigTextStyle().bigText(item.body));
         if (item.expiresAt > now) builder.setTimeoutAfter(item.expiresAt - now);
         post(context, item.tag, builder);
-        rememberShown(context, item.tag, now);
+        rememberShown(context, item.tag, item.fireAt, item.expiresAt, now);
     }
 
     /**
@@ -87,6 +89,9 @@ final class CalendarNotifications {
      * channel、rsvpUrl?、rsvpToken? (招待の出欠ボタン)。
      */
     static void showPush(Context context, Map<String, String> data) {
+        // ログインしていなければ出さない (401 のあとに FCM の登録を外せなかったとき、
+        // 前の利用者の予定が出ないようにする。レビュー L8)。
+        if (!SharedConfig.load(context).usable()) return;
         String kind = orEmpty(data.get("kind"));
         String title = orEmpty(data.get("title"));
         String body = orEmpty(data.get("body"));
@@ -101,8 +106,9 @@ final class CalendarNotifications {
 
         boolean reminder = "event-reminder".equals(kind) || tag.startsWith(REMINDER_TAG_PREFIX);
         if (reminder) {
-            // 端末の予約で既に出した (消した) 通知は、出し直さない。
-            if (wasShownRecently(context, tag, now)) {
+            // 端末の予約で既に出した (消した) 通知は、出し直さない。FCM の data には鳴らす時刻が無いので、
+            // 予定の終了 (expiresAt) が同じなら同じ通知とみなす (延期された予定は終了も動く)。
+            if (wasPushShown(context, tag, expiresAt, now)) {
                 ReminderScheduler.cancelOne(context, tag);
                 return;
             }
@@ -123,11 +129,17 @@ final class CalendarNotifications {
 
         String rsvpUrl = data.get("rsvpUrl");
         String rsvpToken = data.get("rsvpToken");
-        if ("event-invite".equals(kind) && eventId != null && notEmpty(rsvpUrl) && notEmpty(rsvpToken)) {
+        // 出欠の送り先が自分の API の受け口でなければ、ボタンを付けない (レビュー M4)。
+        if (
+            "event-invite".equals(kind) &&
+            eventId != null &&
+            EventActionReceiver.allowedUrl(context, rsvpUrl) &&
+            notEmpty(rsvpToken)
+        ) {
             addRsvpActions(context, builder, tag, eventId, recurrenceId, rsvpUrl, rsvpToken, title);
         }
         post(context, tag, builder);
-        if (reminder) rememberShown(context, tag, now);
+        if (reminder) rememberShown(context, tag, 0, expiresAt, now);
     }
 
     /** 出欠をサーバーへ反映できなかったことを知らせる。押すと、その予定を開く (設計 2.4・9 章)。 */
@@ -248,20 +260,84 @@ final class CalendarNotifications {
     // 出した tag の記録 (設計 3.3)
     // -----------------------------------------------------------------------
 
-    static boolean wasShownRecently(Context context, String tag, long now) {
-        long at = shown(context).getLong(tag, 0);
-        return at > 0 && now - at < SHOWN_TTL_MS;
+    /**
+     * 出した記録 1 件。値は "出した時刻|鳴らす時刻|予定の終了" (鳴らす時刻は FCM で出したとき 0 = 不明)。
+     * 前の版の記録 (出した時刻だけの Long) は、tag だけで同じものとみなす。
+     */
+    static final class Shown {
+
+        final long shownAt;
+        final long fireAt;
+        final long expiresAt;
+        final boolean legacy;
+
+        Shown(long shownAt, long fireAt, long expiresAt, boolean legacy) {
+            this.shownAt = shownAt;
+            this.fireAt = fireAt;
+            this.expiresAt = expiresAt;
+            this.legacy = legacy;
+        }
+
+        static Shown parse(Object value) {
+            if (value instanceof Long) return new Shown((Long) value, 0, 0, true);
+            if (!(value instanceof String)) return null;
+            String[] parts = ((String) value).split("\\|");
+            if (parts.length != 3) return null;
+            try {
+                return new Shown(Long.parseLong(parts[0]), Long.parseLong(parts[1]), Long.parseLong(parts[2]), false);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+
+        String format() {
+            return shownAt + "|" + fireAt + "|" + expiresAt;
+        }
+
+        boolean fresh(long now) {
+            return shownAt > 0 && now - shownAt < SHOWN_TTL_MS;
+        }
+
+        /** 端末の予約 (鳴らす時刻と予定の終了が分かる) が、この記録と同じ通知か。 */
+        boolean matchesScheduled(long otherFireAt, long otherExpiresAt) {
+            if (legacy) return true;
+            if (fireAt > 0) return fireAt == otherFireAt;
+            // FCM で出した記録 (鳴らす時刻が不明) は、予定の終了で比べる。
+            return expiresAt == otherExpiresAt;
+        }
+
+        /** FCM (鳴らす時刻が無い) が、この記録と同じ通知か。 */
+        boolean matchesPush(long otherExpiresAt) {
+            return legacy || expiresAt == otherExpiresAt;
+        }
     }
 
-    private static void rememberShown(Context context, String tag, long now) {
+    private static Shown shownRecord(Context context, String tag, long now) {
+        Shown record = Shown.parse(shown(context).getAll().get(tag));
+        return record != null && record.fresh(now) ? record : null;
+    }
+
+    /** 端末の予約したリマインダーを、もう出したか (同じ tag で同じ時刻)。 */
+    static boolean wasShownRecently(Context context, ReminderScheduler.Item item, long now) {
+        Shown record = shownRecord(context, item.tag, now);
+        return record != null && record.matchesScheduled(item.fireAt, item.expiresAt);
+    }
+
+    /** FCM で届いたリマインダーを、もう出したか (同じ tag で同じ予定の終了)。 */
+    static boolean wasPushShown(Context context, String tag, long expiresAt, long now) {
+        Shown record = shownRecord(context, tag, now);
+        return record != null && record.matchesPush(expiresAt);
+    }
+
+    private static void rememberShown(Context context, String tag, long fireAt, long expiresAt, long now) {
         SharedPreferences preferences = shown(context);
         SharedPreferences.Editor editor = preferences.edit();
-        // 24 時間を過ぎた記録は捨てる (増え続けないようにする)。
+        // 24 時間を過ぎた記録と読めない記録は捨てる (増え続けないようにする)。
         for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
-            Object value = entry.getValue();
-            if (!(value instanceof Long) || now - (Long) value >= SHOWN_TTL_MS) editor.remove(entry.getKey());
+            Shown record = Shown.parse(entry.getValue());
+            if (record == null || !record.fresh(now)) editor.remove(entry.getKey());
         }
-        editor.putLong(tag, now).apply();
+        editor.putString(tag, new Shown(now, fireAt, expiresAt, false).format()).apply();
     }
 
     private static SharedPreferences shown(Context context) {

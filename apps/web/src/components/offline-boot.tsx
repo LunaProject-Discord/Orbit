@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { isDesktopApp } from "@/lib/desktop/app";
 import { isNativeApp } from "@/lib/native/app";
+import { serviceWorkerScriptUrl } from "@/lib/server-url";
 
 /**
  * サービスワーカーを登録し、アプリ本体を端末に保存させる (オフラインでも画面を開けるようにする)。
@@ -16,7 +17,7 @@ export function OfflineBoot() {
       return;
     }
     navigator.serviceWorker
-      .register("/sw.js")
+      .register(serviceWorkerScriptUrl())
       .then(() => navigator.serviceWorker.ready)
       .then((registration) => {
         registration.active?.postMessage({ type: "refresh-shell" });

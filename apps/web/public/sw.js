@@ -212,6 +212,45 @@ const RSVP_BUTTONS = [
   { action: "declined", title: "不参加" },
 ];
 
+// 出欠のボタンが合言葉を送ってよい先: 自分の API の POST /v1/notification-actions/event だけ。
+// API の URL は、画面が登録するときに sw.js?api=<API の URL> で渡す (lib/server-url.ts の
+// serviceWorkerScriptUrl)。渡されていなければ (古い登録)、このサイトの /v1 だけを許す。
+// 同じ決まりを src/lib/calendar/notifications/action-url.ts と Android にも置く。
+const EVENT_ACTION_PATH = "/v1/notification-actions/event";
+
+function apiBase() {
+  try {
+    const value = new URL(self.location.href).searchParams.get("api");
+    if (value) {
+      const url = new URL(value);
+      if (url.protocol === "https:" || url.protocol === "http:") return url;
+    }
+  } catch {
+    // 読めなければ、このサイトの API とみなす。
+  }
+  return new URL(self.location.origin);
+}
+
+function isEventActionUrl(value) {
+  if (typeof value !== "string") return false;
+  let target;
+  try {
+    target = new URL(value);
+  } catch {
+    return false;
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") return false;
+  if (target.username || target.password || target.search || target.hash) {
+    return false;
+  }
+  const api = apiBase();
+  const basePath = api.pathname.replace(/\/+$/, "");
+  return (
+    target.origin === api.origin &&
+    target.pathname === `${basePath}${EVENT_ACTION_PATH}`
+  );
+}
+
 function isCalendarPush(data) {
   return (
     !!data && typeof data.kind === "string" && data.kind.startsWith("event-")
@@ -258,7 +297,7 @@ function calendarNotification(data, maxActions) {
     data.kind === "event-invite" &&
     target &&
     data.rsvp &&
-    typeof data.rsvp.url === "string" &&
+    isEventActionUrl(data.rsvp.url) &&
     typeof data.rsvp.token === "string"
       ? { url: data.rsvp.url, token: data.rsvp.token }
       : null;
@@ -291,9 +330,13 @@ async function runCalendarAction(notification, status) {
   } = notification.data ?? {};
   let done = false;
   try {
+    // 自分の API の受け口でなければ、合言葉を送らない。
+    if (!target || !isEventActionUrl(target.url)) throw new Error("bad url");
     const response = await fetch(target.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // 転送先へ合言葉を持ち出さない。
+      redirect: "error",
       body: JSON.stringify({
         eventId,
         status,

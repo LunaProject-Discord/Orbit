@@ -79,14 +79,30 @@ pub(crate) struct Timer {
 
 impl Timer {
     /// 一覧を入れ替える。鳴らしたものは入れない。
-    pub(crate) fn replace(&mut self, items: Vec<ScheduledReminder>) {
-        self.items = items
+    ///
+    /// 前の一覧のうち「時刻を過ぎたが、まだ鳴らしていない」もの (スリープ明けで、タイマーが
+    /// 目覚める前に組み直された) は、遅れすぎ・終わった予定でなければ残す。画面 (Agent) は過ぎた
+    /// ものを 1 度しか渡さないため (レビュー M5)。同じ tag が新しい一覧にあれば、そちらを使う。
+    pub(crate) fn replace(&mut self, items: Vec<ScheduledReminder>, now: i64) {
+        let tags: HashSet<&str> = items.iter().map(|item| item.tag.as_str()).collect();
+        let kept: Vec<ScheduledReminder> = std::mem::take(&mut self.items)
+            .into_iter()
+            .filter(|item| {
+                !tags.contains(item.tag.as_str())
+                    && item.fire_at <= now
+                    && now - item.fire_at <= LATE_MS
+                    && now < item.expires_at
+                    && !self.fired.contains_key(&fire_key(item))
+            })
+            .collect();
+        let fresh: Vec<ScheduledReminder> = items
             .into_iter()
             .filter(|item| !self.fired.contains_key(&fire_key(item)))
             .collect();
+        self.items = kept.into_iter().chain(fresh).collect();
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     /// OS に預けた (予約した) ものとして覚える。あとで時刻を過ぎて一覧に残っていても、タイマーでは鳴らさない。
     pub(crate) fn mark_fired(&mut self, item: &ScheduledReminder) {
         self.fired.insert(fire_key(item), item.expires_at);
@@ -172,11 +188,17 @@ pub(crate) fn plan_schedule(
 ) -> SchedulePlan {
     let mut plan = SchedulePlan::default();
     let mut wanted: HashMap<ScheduledEntry, &ScheduledReminder> = HashMap::new();
+    let present: HashSet<&ScheduledEntry> = existing.iter().collect();
     for item in items {
-        if item.fire_at <= now + SCHEDULE_LEAD_MS {
+        let entry = ScheduledEntry::of(item);
+        // 間際 (5 秒以内) でも、同じ予約が OS にまだあれば外さずに OS に任せる
+        // (外すとタイマーにも渡らず鳴らない。レビュー M1)。
+        if item.fire_at <= now + SCHEDULE_LEAD_MS
+            && !(item.fire_at > now && present.contains(&entry))
+        {
             plan.due.push(item.clone());
         } else {
-            wanted.insert(ScheduledEntry::of(item), item);
+            wanted.insert(entry, item);
         }
     }
     let mut kept = HashSet::new();
@@ -367,10 +389,13 @@ pub(crate) fn schedule_reminders(
                     .use_timer
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = windows_toast::clear_scheduled(&app);
+                // OS に預けた印 (mark_fired) を消す。残すと、OS から外した分がタイマーでも鳴らない (L5)。
+                reminders.with_timer(Timer::clear);
             }
         }
     }
-    reminders.with_timer(|timer| timer.replace(items));
+    let now = now_ms();
+    reminders.with_timer(|timer| timer.replace(items, now));
     Ok(())
 }
 
@@ -538,7 +563,7 @@ mod windows_toast {
                 .filter(|item| !timer.was_fired(item) && !shown.contains(&toast_tag(&item.tag)))
                 .cloned()
                 .collect();
-            timer.replace(due);
+            timer.replace(due, now);
         });
         Ok(())
     }
@@ -677,17 +702,17 @@ mod tests {
     #[test]
     fn 時刻の来たものだけを一度だけ鳴らす() {
         let mut timer = Timer::default();
-        timer.replace(vec![item("a", NOW), item("b", NOW + 5 * MINUTE)]);
+        timer.replace(vec![item("a", NOW), item("b", NOW + 5 * MINUTE)], NOW);
         assert!(timer.take_due(NOW - 1).is_empty());
         let due = timer.take_due(NOW);
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].title, "a");
         // 画面が同じ一覧で組み直しても、鳴らしたものは鳴らさない。
-        timer.replace(vec![item("a", NOW), item("b", NOW + 5 * MINUTE)]);
+        timer.replace(vec![item("a", NOW), item("b", NOW + 5 * MINUTE)], NOW);
         assert!(timer.take_due(NOW + MINUTE).is_empty());
         assert_eq!(timer.take_due(NOW + 5 * MINUTE)[0].title, "b");
         // 時刻が動けば、別の通知として鳴らす。
-        timer.replace(vec![item("a", NOW + 10 * MINUTE)]);
+        timer.replace(vec![item("a", NOW + 10 * MINUTE)], NOW);
         assert_eq!(timer.take_due(NOW + 10 * MINUTE).len(), 1);
     }
 
@@ -696,11 +721,14 @@ mod tests {
         let mut timer = Timer::default();
         let mut ended = item("ended", NOW - MINUTE);
         ended.expires_at = NOW;
-        timer.replace(vec![
-            item("late", NOW - 16 * MINUTE),
-            item("ok", NOW - 14 * MINUTE),
-            ended,
-        ]);
+        timer.replace(
+            vec![
+                item("late", NOW - 16 * MINUTE),
+                item("ok", NOW - 14 * MINUTE),
+                ended,
+            ],
+            NOW,
+        );
         let due = timer.take_due(NOW);
         let names: Vec<_> = due.iter().map(|i| i.title.as_str()).collect();
         assert_eq!(names, ["ok"]);
@@ -711,19 +739,19 @@ mod tests {
     fn 次に確かめるまでの時間() {
         let mut timer = Timer::default();
         assert_eq!(timer.next_wait(NOW), TICK);
-        timer.replace(vec![item("a", NOW + 1_000)]);
+        timer.replace(vec![item("a", NOW + 1_000)], NOW);
         assert_eq!(timer.next_wait(NOW), Duration::from_millis(1_000));
-        timer.replace(vec![item("a", NOW + 10 * MINUTE)]);
+        timer.replace(vec![item("a", NOW + 10 * MINUTE)], NOW);
         assert_eq!(timer.next_wait(NOW), TICK);
     }
 
     #[test]
     fn 消すと覚えていたものも忘れる() {
         let mut timer = Timer::default();
-        timer.replace(vec![item("a", NOW)]);
+        timer.replace(vec![item("a", NOW)], NOW);
         assert_eq!(timer.take_due(NOW).len(), 1);
         timer.clear();
-        timer.replace(vec![item("a", NOW)]);
+        timer.replace(vec![item("a", NOW)], NOW);
         assert_eq!(timer.take_due(NOW).len(), 1);
     }
 
@@ -750,6 +778,60 @@ mod tests {
         assert_eq!(plan.remove, vec![1, 2, 3]);
         assert_eq!(plan.add, vec![moved_after, new]);
         assert_eq!(plan.due, vec![soon]);
+    }
+
+    #[test]
+    fn 間際の予約が_os_にあれば外さずに任せる() {
+        // 10:00:00 に鳴る予約がある。9:59:57 に別の予定が変わって組み直された (M1)。
+        let soon = item("soon", NOW + 3_000);
+        let other = item("other", NOW + 20 * MINUTE);
+        let existing = vec![ScheduledEntry::of(&soon)];
+        let plan = plan_schedule(&[soon.clone(), other.clone()], &existing, NOW);
+        assert!(plan.remove.is_empty());
+        assert!(plan.due.is_empty());
+        assert_eq!(plan.add, vec![other]);
+        // 時刻を過ぎていれば OS が出したはずなので、予約は外す (タイマーには渡すが、印で絞られる)。
+        let past = item("past", NOW - 1_000);
+        let plan = plan_schedule(
+            std::slice::from_ref(&past),
+            &[ScheduledEntry::of(&past)],
+            NOW,
+        );
+        assert_eq!(plan.remove, vec![0]);
+        assert_eq!(plan.due, vec![past]);
+    }
+
+    #[test]
+    fn 組み直しでも時刻を過ぎて未表示のものは残す() {
+        // 10:00 に鳴る予定。スリープ明けの 10:05、タイマーが目覚める前に組み直された (M5)。
+        let mut timer = Timer::default();
+        timer.replace(vec![item("a", NOW), item("moved", NOW)], NOW - 2 * MINUTE);
+        // 画面は過ぎたものを渡さない。moved は先へ動いた。
+        timer.replace(vec![item("moved", NOW + 30 * MINUTE)], NOW + 5 * MINUTE);
+        let due = timer.take_due(NOW + 5 * MINUTE);
+        let names: Vec<_> = due.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(names, ["a"]);
+        // 鳴らしたものは、次の組み直しでも残さない。15 分を過ぎたものも残さない。
+        timer.replace(vec![], NOW + 6 * MINUTE);
+        assert!(timer.take_due(NOW + 6 * MINUTE).is_empty());
+        let mut late = Timer::default();
+        late.replace(vec![item("late", NOW)], NOW - MINUTE);
+        late.replace(vec![], NOW + 16 * MINUTE);
+        assert!(late.take_due(NOW + 16 * MINUTE).is_empty());
+    }
+
+    #[test]
+    fn タイマーへ切り替えるときは預けた印を消す() {
+        // Windows で途中まで OS に預けたあと予約に失敗した (L5)。clear してから入れ直せば鳴る。
+        let mut timer = Timer::default();
+        let a = item("a", NOW + MINUTE);
+        timer.mark_fired(&a);
+        timer.replace(vec![a.clone()], NOW);
+        assert!(timer.take_due(NOW + MINUTE).is_empty());
+        timer.mark_fired(&a);
+        timer.clear();
+        timer.replace(vec![a], NOW);
+        assert_eq!(timer.take_due(NOW + MINUTE).len(), 1);
     }
 
     #[test]

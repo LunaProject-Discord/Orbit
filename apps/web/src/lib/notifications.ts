@@ -14,6 +14,7 @@ import {
   savePushSubscription,
   setPushRegistrationFlags,
 } from "@/lib/api";
+import { isEventActionUrl } from "@/lib/calendar/notifications/action-url";
 import {
   CALENDAR_NOTIFICATIONS_STORAGE_KEY,
   type CalendarNotificationData,
@@ -37,6 +38,7 @@ import {
   isNotificationAction,
   NOTIFICATION_ACTIONS,
 } from "@/lib/notification-actions";
+import { apiUrl, serviceWorkerScriptUrl } from "@/lib/server-url";
 import { deviceId } from "@/lib/sync-status";
 
 /**
@@ -244,7 +246,7 @@ function supported(): boolean {
 async function registerWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!("serviceWorker" in navigator)) return null;
   try {
-    return await navigator.serviceWorker.register("/sw.js");
+    return await navigator.serviceWorker.register(serviceWorkerScriptUrl());
   } catch {
     return null;
   }
@@ -666,15 +668,30 @@ export function parseCalendarEvent(data: string): CalendarPushMessage[] {
   }
 }
 
+/** 出欠のボタンの送り先と合言葉。自分の API の受け口でなければ null (ボタンを付けない。M4)。 */
+function calendarRsvpAction(
+  message: CalendarPushMessage,
+  apiBase: string,
+): { url: string; token: string } | null {
+  const rsvp = message.rsvp;
+  if (message.kind !== "event-invite" || !rsvp) return null;
+  if (typeof rsvp.token !== "string" || !isEventActionUrl(rsvp.url, apiBase)) {
+    return null;
+  }
+  return { url: rsvp.url, token: rsvp.token };
+}
+
 /** Web の通知の data (サービスワーカーの notificationclick が読む形)。 */
 export function calendarNotificationData(
   message: CalendarPushMessage,
+  apiBase: string = apiUrl(),
 ): CalendarNotificationData {
+  const action = calendarRsvpAction(message, apiBase);
   return {
     kind: message.kind,
     eventId: message.eventId,
     recurrenceId: message.recurrenceId ?? null,
-    ...(message.rsvp ? { action: message.rsvp } : {}),
+    ...(action ? { action } : {}),
   };
 }
 
@@ -712,13 +729,13 @@ export function toDesktopCalendarNotification(
  */
 export async function showCalendarNotification(
   message: CalendarPushMessage,
-  canRespond: (eventId: string) => boolean = () => false,
+  canRespond: (eventId: string) => boolean | Promise<boolean> = () => false,
 ): Promise<void> {
   if (isDesktopApp()) {
     const rsvp =
       message.kind === "event-invite" &&
       message.eventId !== null &&
-      canRespond(message.eventId);
+      (await Promise.resolve(canRespond(message.eventId)).catch(() => false));
     await invokeDesktop(DESKTOP_REMINDER_COMMANDS.notify, {
       notification: toDesktopCalendarNotification(message, rsvp),
     });
@@ -727,23 +744,26 @@ export async function showCalendarNotification(
   if (!supported() || Notification.permission !== "granted") return;
   const maxActions = (Notification as { maxActions?: unknown }).maxActions;
   const max = typeof maxActions === "number" ? maxActions : 2;
+  const data = calendarNotificationData(message);
   const options: NotificationOptions & {
     actions?: { action: string; title: string }[];
   } = {
     body: message.body,
     tag: message.tag,
     icon: "/icons/icon-192.png",
-    data: calendarNotificationData(message),
-    ...(message.kind === "event-invite" && message.rsvp
-      ? { actions: rsvpActions(max) }
-      : {}),
+    data,
   };
   try {
     const registration = await existingRegistration();
     if (registration?.active) {
-      await registration.showNotification(message.title, options);
+      // ボタンはサービスワーカーの通知だけが持てる (押されたら sw.js が返事を送る)。
+      await registration.showNotification(message.title, {
+        ...options,
+        ...(data.action ? { actions: rsvpActions(max) } : {}),
+      });
       return;
     }
+    // new Notification は actions を受け付けない (渡すと例外になり、何も出ない)。
     const shown = new Notification(message.title, options);
     shown.onclick = () => {
       window.focus();

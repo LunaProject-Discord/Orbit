@@ -143,12 +143,26 @@ describe("予定の通知 (段取り 9)", () => {
   });
 
   it("通知の data と Desktop の形", () => {
-    expect(calendarNotificationData(invite)).toEqual({
+    expect(calendarNotificationData(invite, "https://api.example")).toEqual({
       kind: "event-invite",
       eventId: ID,
       recurrenceId: null,
       action: invite.rsvp,
     });
+    // 自分の API の受け口でなければ、出欠の送り先を通知に入れない (M4)。
+    for (const url of [
+      "https://evil.example/v1/notification-actions/event",
+      "https://api.example/v1/other",
+      "https://api.example/v1/notification-actions/event?x=1",
+      "javascript:alert(1)",
+    ]) {
+      expect(
+        calendarNotificationData(
+          { ...invite, rsvp: { url, token: "t" } },
+          "https://api.example",
+        ).action,
+      ).toBeUndefined();
+    }
     expect(toDesktopCalendarNotification(invite, true)).toEqual({
       kind: "event-invite",
       title: "招待: 定例会議",

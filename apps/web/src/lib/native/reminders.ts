@@ -18,12 +18,16 @@ import { isNativeApp, loadAppShell } from "@/lib/native/app";
  * Calendar アプリ (段取り 10) が入っている端末では schedule = "none" を返し、予約しない。
  */
 
+/** 通知から起動したときの予定の URL を、1 度だけ受け取る AppShell のメソッド (MainActivity が持つ)。 */
+export const TAKE_LAUNCH_CALENDAR_URL_METHOD = "takeLaunchCalendarUrl";
+
 type NativeReminderShell = {
   [NATIVE_REMINDER_METHODS.schedule](options: {
     items: ScheduledReminder[];
   }): Promise<void>;
   [NATIVE_REMINDER_METHODS.clear](): Promise<void>;
   [NATIVE_REMINDER_METHODS.capabilities](): Promise<unknown>;
+  [TAKE_LAUNCH_CALENDAR_URL_METHOD](): Promise<unknown>;
 };
 
 const NONE: ReminderCapabilities = { schedule: "none", exact: false };
@@ -97,8 +101,34 @@ export function createNativeReminderBridge(): ReminderBridge {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CALENDAR_URL = DESKTOP_EVENT_URL_PREFIX.replace(/\/events\/$/, "");
 
-/** 起動時の URL (getLaunchUrl) は 1 回だけ使う (画面を作り直すたびに同じ予定を開かない)。 */
+/**
+ * 古いアプリ (takeLaunchCalendarUrl が無い) で、起動時の URL (getLaunchUrl) を使ったか。
+ * 画面の中の値なので、画面を作り直すと消える (新しいアプリは Java 側で 1 度だけ渡す)。
+ */
 let launchUrlUsed = false;
+
+/**
+ * 通知から起動したときの URL を受け取る。新しいアプリは Java 側 (MainActivity) が 1 度だけ渡し、
+ * 履歴から開き直したときや画面を作り直したときは渡さない。古いアプリは getLaunchUrl を
+ * この画面で 1 度だけ使う。
+ */
+export async function takeNativeLaunchUrl(
+  getLaunchUrl: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+  try {
+    const native = await shell();
+    const result = await native[TAKE_LAUNCH_CALENDAR_URL_METHOD]();
+    if (result && typeof result === "object" && "url" in result) {
+      const url = (result as { url: unknown }).url;
+      return typeof url === "string" && url ? url : undefined;
+    }
+  } catch {
+    // 古いアプリ (メソッドが無い)。下で getLaunchUrl を使う。
+  }
+  if (launchUrlUsed) return undefined;
+  launchUrlUsed = true;
+  return getLaunchUrl();
+}
 
 /** カレンダーを開いてほしい (まとめた招待の通知など、予定が 1 つに決まらないとき)。 */
 export type OpenCalendarMessage = { type: "open-calendar" };
@@ -155,9 +185,9 @@ export function listenNativeCalendarOpen(
         return;
       }
       remove = () => void handle.remove();
-      if (launchUrlUsed) return;
-      launchUrlUsed = true;
-      deliver((await App.getLaunchUrl())?.url);
+      deliver(
+        await takeNativeLaunchUrl(async () => (await App.getLaunchUrl())?.url),
+      );
     } catch {
       // 受け取れなくても、通知からアプリは開く (今の画面のまま)。
     }

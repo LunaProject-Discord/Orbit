@@ -22,7 +22,6 @@ import {
   listenDesktopCalendarAction,
   listenDesktopOpenEvent,
   TAKE_PENDING_OPEN_EVENT_COMMAND,
-  toDesktopCalendarNotification,
 } from "./reminders";
 
 type TauriWindow = { __TAURI_INTERNALS__?: unknown };
@@ -90,36 +89,6 @@ describe("createDesktopReminderBridge", () => {
     });
     await bridge.clear();
     expect(invoke).toHaveBeenLastCalledWith("clear_reminders", undefined);
-  });
-});
-
-describe("toDesktopCalendarNotification", () => {
-  it("ボタンは招待で予定のあるものだけ", () => {
-    const invite = {
-      kind: "event-invite" as const,
-      title: "招待: 定例会議",
-      body: "山田 太郎 さんから",
-      tag: `cal-inv:${ID}`,
-      eventId: ID,
-    };
-    expect(toDesktopCalendarNotification(invite, { rsvp: true })).toEqual({
-      ...invite,
-      recurrenceId: null,
-      expiresAt: null,
-      rsvp: true,
-    });
-    expect(
-      toDesktopCalendarNotification(
-        { ...invite, kind: "event-update" },
-        { rsvp: true },
-      ).rsvp,
-    ).toBe(false);
-    expect(
-      toDesktopCalendarNotification(
-        { ...invite, eventId: null },
-        { rsvp: true },
-      ).rsvp,
-    ).toBe(false);
   });
 });
 

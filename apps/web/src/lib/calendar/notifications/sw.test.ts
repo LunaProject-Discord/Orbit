@@ -15,13 +15,16 @@ const ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
 
 type Listener = (event: unknown) => void;
 
-function loadWorker(windows: { url: string }[] = []) {
+/** 画面が登録する URL (sw.js?api=<API の URL>)。 */
+const SW_HREF = `https://orbit.example/sw.js?api=${encodeURIComponent("https://api.example")}`;
+
+function loadWorker(windows: { url: string }[] = [], href = SW_HREF) {
   const listeners: Record<string, Listener> = {};
   const posted: unknown[] = [];
   const opened: string[] = [];
   const shown: { title: string; options: Record<string, unknown> }[] = [];
   const self = {
-    location: { origin: "https://orbit.example" },
+    location: { origin: new URL(href).origin, href },
     addEventListener: (type: string, listener: Listener) => {
       listeners[type] = listener;
     },
@@ -204,5 +207,117 @@ describe("sw.js の予定の通知", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("よそのサイトの URL ならボタンを付けず、押されても合言葉を送らない (M4)", async () => {
+    const { exports } = loadWorker();
+    for (const url of [
+      "https://evil.example/v1/notification-actions/event",
+      "https://api.example/v1/notification-actions/other",
+      "https://api.example/v1/notification-actions/event?next=x",
+      "https://user:pass@api.example/v1/notification-actions/event",
+      "http://api.example:8080/v1/notification-actions/event",
+    ]) {
+      const built = exports.calendarNotification(
+        { ...invite, rsvp: { url, token: "t" } },
+        3,
+      );
+      expect(built.options.actions).toBeUndefined();
+      expect((built.options.data as { action: unknown }).action).toBeNull();
+    }
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const worker = loadWorker();
+      // 古い通知 (検査の前に出たもの) の data に、よその URL が入っていた。
+      await worker.dispatch("notificationclick", {
+        action: "accepted",
+        notification: {
+          tag: `cal-inv:${ID}`,
+          data: {
+            kind: "event-invite",
+            eventId: ID,
+            recurrenceId: null,
+            title: "招待: 定例会議",
+            action: {
+              url: "https://evil.example/v1/notification-actions/event",
+              token: "t",
+            },
+          },
+          close: () => {},
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(worker.shown[0]?.title).toBe("出欠を反映できませんでした");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("API の URL が渡されていない古い登録では、このサイトの /v1 だけを許す", () => {
+    const { exports } = loadWorker([], "https://orbit.example/sw.js");
+    expect(
+      exports.calendarNotification(
+        {
+          ...invite,
+          rsvp: {
+            url: "https://orbit.example/v1/notification-actions/event",
+            token: "t",
+          },
+        },
+        2,
+      ).options.actions,
+    ).toHaveLength(2);
+    expect(
+      exports.calendarNotification(invite, 2).options.actions,
+    ).toBeUndefined();
+  });
+
+  it("出欠は転送をたどらずに送り、404 は済んだものとして扱う", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { dispatch, shown } = loadWorker();
+      await dispatch("notificationclick", {
+        action: "declined",
+        notification: {
+          tag: `cal-inv:${ID}`,
+          data: {
+            kind: "event-invite",
+            eventId: ID,
+            recurrenceId: null,
+            title: "招待: 定例会議",
+            action: invite.rsvp,
+          },
+          close: () => {},
+        },
+      });
+      const [, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ];
+      expect(init.redirect).toBe("error");
+      expect(shown).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("ボタンの無い失敗の知らせを押すと、その予定を開く", async () => {
+    const { dispatch, opened } = loadWorker();
+    await dispatch("notificationclick", {
+      action: "",
+      notification: {
+        data: {
+          kind: "event-invite",
+          eventId: ID,
+          recurrenceId: "2026-11-28",
+          title: "招待: 定例会議",
+          action: null,
+        },
+        close: () => {},
+      },
+    });
+    expect(opened).toEqual([`/calendar/events/${ID}?o=2026-11-28`]);
   });
 });

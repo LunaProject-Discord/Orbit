@@ -122,6 +122,9 @@ final class ReminderScheduler {
     /**
      * 予約を items にそろえる。items に無くなった予約は取り消し、残りは登録し直す
      * (同じ tag の PendingIntent は置き換わるので、何度呼んでも同じ結果になる)。
+     *
+     * 今ある予約のうち「時刻を過ぎたが、まだ鳴っていない」もの (不正確なアラームが遅れている) は、
+     * items に同じ tag が無ければ残す。画面は過ぎたものを 1 度しか渡さないため (レビュー M5)。
      */
     static synchronized void replaceAll(Context context, List<Item> items) {
         long now = System.currentTimeMillis();
@@ -130,8 +133,15 @@ final class ReminderScheduler {
         for (Item item : items) {
             if (item == null || item.stale(now) || !tags.add(item.tag)) continue;
             // 既に出した (利用者が消したかもしれない) 通知は、もう一度は予約しない。
-            if (CalendarNotifications.wasShownRecently(context, item.tag, now)) continue;
+            // 同じ tag でも鳴らす時刻が動いたもの (予定の延期) は、別の通知として予約する (H1)。
+            if (CalendarNotifications.wasShownRecently(context, item, now)) continue;
             wanted.add(item);
+        }
+        for (Item old : load(context)) {
+            if (old.fireAt > now || old.stale(now) || tags.contains(old.tag)) continue;
+            if (CalendarNotifications.wasShownRecently(context, old, now)) continue;
+            tags.add(old.tag);
+            wanted.add(old);
         }
         Collections.sort(wanted, (a, b) -> Long.compare(a.fireAt, b.fireAt));
         if (wanted.size() > MAX_ITEMS) wanted = new ArrayList<>(wanted.subList(0, MAX_ITEMS));

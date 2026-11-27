@@ -28,7 +28,7 @@ public class ReminderReceiver extends BroadcastReceiver {
         // Doze などで大きく遅れたもの・予定が終わったものは出さない (設計 2.1)。
         if (item.stale(now)) return;
         // 同じ tag の FCM が先に届いて出ていれば、出し直さない。
-        if (CalendarNotifications.wasShownRecently(context, tag, now)) return;
+        if (CalendarNotifications.wasShownRecently(context, item, now)) return;
         CalendarNotifications.showReminder(context, item);
     }
 }

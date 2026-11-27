@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildDeviceReminders,
+  type HandedReminders,
   ReminderAgent,
   type ReminderAgentSettings,
   type ReminderSnapshot,
@@ -298,5 +299,64 @@ describe("ReminderAgent", () => {
     source.set(snapshot({ events: [] }));
     await vi.advanceTimersByTimeAsync(10_000);
     expect(calls).toHaveLength(1);
+  });
+
+  it("作った時点で時刻を過ぎていた (15 分以内) ものは 1 度だけ渡す。起動し直しても渡さない (L12)", async () => {
+    // 9:55 に「10:00 開始・10 分前に通知」を作った (鳴らす時刻 9:50 を過ぎている)。
+    const at = Date.parse("2026-03-02T00:55:00.000Z");
+    let stored = new Map<string, number>();
+    const handed: HandedReminders = {
+      load: () => new Map(stored),
+      save: (value) => {
+        stored = new Map(value);
+      },
+      clear: () => {
+        stored = new Map();
+      },
+    };
+    const { bridge, calls } = fakeBridge();
+    const source = fakeSource(snapshot());
+    const agent = new ReminderAgent({
+      source,
+      bridge,
+      settings: () => SETTINGS,
+      now: () => at,
+      handed,
+    });
+    await agent.start();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.map((item) => item.fireAt)).toEqual([
+      Date.parse("2026-03-02T00:50:00.000Z"),
+    ]);
+    // 次の組み直しでは渡さない (橋が「過ぎたが未表示」を自分で残す)。
+    source.set(snapshot({ cursor: "43" }));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(calls.at(-1)).toEqual([]);
+    agent.stop();
+    // アプリを起動し直した (橋の印は消えている)。もう渡さないので二重に鳴らない。
+    const again = fakeBridge();
+    const restarted = new ReminderAgent({
+      source: fakeSource(snapshot()),
+      bridge: again.bridge,
+      settings: () => SETTINGS,
+      now: () => at,
+      handed,
+    });
+    await restarted.start();
+    expect(again.calls).toEqual([[]]);
+    restarted.stop();
+    // 15 分を過ぎたものは、渡したことが無くても渡さない。
+    stored = new Map();
+    const late = fakeBridge();
+    const lateAgent = new ReminderAgent({
+      source: fakeSource(snapshot()),
+      bridge: late.bridge,
+      settings: () => SETTINGS,
+      now: () => Date.parse("2026-03-02T01:06:00.000Z"),
+      handed,
+    });
+    await lateAgent.start();
+    expect(late.calls).toEqual([[]]);
+    lateAgent.stop();
   });
 });

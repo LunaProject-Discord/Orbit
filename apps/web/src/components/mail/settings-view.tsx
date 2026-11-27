@@ -1241,7 +1241,7 @@ function NotificationsPage({
 /** この端末で、予定の通知がどこまで届くか (設計 10 章の 1)。 */
 function deviceCalendarDescription(status: NotificationStatus): string {
   if (isNativeApp()) {
-    return "予定の通知を出します。アプリを閉じていても届きます。";
+    return "予定の通知を出します。アプリを閉じていても届きますが、リマインダーは数分遅れることがあります。";
   }
   if (isDesktopApp()) {
     const windows =

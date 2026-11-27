@@ -88,6 +88,31 @@ function Field({
 const ATTENDEE_BOX =
   "flex min-h-9 w-full min-w-0 items-center rounded-md border border-input bg-transparent px-1.5 py-1 shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30";
 
+/**
+ * 終日 ⇄ 時刻ありを切り替えたときの、予定ごとの通知 (レビュー L10)。分の意味が変わる
+ * (時刻ありは開始の何分前、終日は開始日の 0:00 の何分前) ので、値はそのまま使わず、
+ * 終日なら allDayMinutes (終日の予定の既定)、時刻ありなら 10 分前に置き換える。同じ値は 1 つにまとめる。
+ */
+export function switchedReminders(
+  reminders: readonly Reminder[],
+  wasAllDay: boolean,
+  allDay: boolean,
+  allDayMinutes: number,
+): Reminder[] {
+  if (wasAllDay === allDay) return [...reminders];
+  const minutes =
+    clampReminderMinutes(allDay ? allDayMinutes : 10, allDay) ?? 0;
+  const seen = new Set<string>();
+  return reminders
+    .map((reminder) => ({ ...reminder, minutes }))
+    .filter((reminder) => {
+      const key = `${reminder.method}:${reminder.minutes}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 /** 予定の作成・編集。 */
 export function EventEditor({
   open,
@@ -221,6 +246,10 @@ export function EventEditor({
   const allDayDefault = notificationsReady
     ? notificationSettings.value.calendarNotifications.allDay
     : null;
+  // 終日に切り替えたときの通知の値: 終日の予定の既定 (オフなら当日 9:00)。古いサーバーは前日 9:00。
+  const switchedAllDayMinutes = notificationsReady
+    ? (allDayDefault?.minutes ?? ALL_DAY_REMINDER_NEW)
+    : 900;
   // Google・Microsoft には当日の時刻 (負の分) を書けないので、Orbit の中だけで鳴らす (A2)。
   const providerName =
     selectedCalendar?.source === "google"
@@ -332,15 +361,12 @@ export function EventEditor({
                         ? {
                             ...current,
                             allDay: checked === true,
-                            // 時刻のある予定に当日の時刻 (負の分) は使えないので、予定の時刻にする。
-                            reminders: current.reminders.map((reminder) => ({
-                              ...reminder,
-                              minutes:
-                                clampReminderMinutes(
-                                  reminder.minutes,
-                                  checked === true,
-                                ) ?? 0,
-                            })),
+                            reminders: switchedReminders(
+                              current.reminders,
+                              current.allDay,
+                              checked === true,
+                              switchedAllDayMinutes,
+                            ),
                           }
                         : current,
                     )

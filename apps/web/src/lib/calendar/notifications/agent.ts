@@ -10,6 +10,7 @@ import {
   DEVICE_REMINDER_REFRESH_MS,
   DEVICE_REMINDER_WINDOW_MS,
   planReminders,
+  REMINDER_LATE_LIMIT_MS,
   type ReminderCalendar,
   type ReminderEvent,
   selectDeviceReminders,
@@ -29,6 +30,11 @@ import type {
  *
  * 組み直す時機: 開始時、控えが変わったとき、設定やタイムゾーンが変わったとき (refresh)、
  * 6 時間ごと (7 日の窓を進める)。続けて来たら 500 ms でまとめる。
+ *
+ * 鳴らす時刻を少し (15 分以内) 過ぎたもの: 設計 2.1 では鳴らす。橋にまだ渡したことが無いもの
+ * (作った時点で時刻を過ぎていた予定など) だけを 1 度渡し、橋がすぐに出す。渡したことのあるものは
+ * 渡さない (橋が「過ぎたがまだ出していない」ものを自分で残す。起動し直した橋で二重に出さない)。
+ * 渡した印は localStorage に置く (HandedReminders)。
  */
 
 /** Agent が読む控え。OfflineCalendarClient がこの形を持つ。 */
@@ -44,7 +50,91 @@ export type ReminderSource = {
   reminderSnapshot(): ReminderSnapshot | null;
   /** 控えが変わったら呼ぶ。購読しているあいだ、控えは SSE の change で最新に保たれる。 */
   subscribe(listener: () => void): () => void;
+  /** 控えを今すぐ最新にする (新しい招待の通知の前に、その予定を控えに入れるため)。 */
+  pull?(): Promise<unknown>;
 };
+
+/** 橋に渡した印 (tag@鳴らす時刻 → 鳴らす時刻)。 */
+export type HandedReminders = {
+  load(): Map<string, number>;
+  save(value: Map<string, number>): void;
+  clear(): void;
+};
+
+/** 橋に渡した印を置く localStorage の鍵。 */
+export const HANDED_REMINDERS_STORAGE_KEY = "calendar.reminders.handed";
+
+/** localStorage に置く印 (使えなければ、この画面の中だけで覚える)。 */
+export function createStoredHandedReminders(): HandedReminders {
+  let memory = new Map<string, number>();
+  const storage = (() => {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  })();
+  return {
+    load() {
+      try {
+        const raw = storage?.getItem(HANDED_REMINDERS_STORAGE_KEY);
+        if (!raw) return new Map(memory);
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return new Map(memory);
+        return new Map(
+          Object.entries(parsed as Record<string, unknown>).filter(
+            (entry): entry is [string, number] => typeof entry[1] === "number",
+          ),
+        );
+      } catch {
+        return new Map(memory);
+      }
+    },
+    save(value) {
+      memory = new Map(value);
+      try {
+        storage?.setItem(
+          HANDED_REMINDERS_STORAGE_KEY,
+          JSON.stringify(Object.fromEntries(value)),
+        );
+      } catch {
+        // 書けなくても、この画面の中では覚えている。
+      }
+    },
+    clear() {
+      memory = new Map();
+      try {
+        storage?.removeItem(HANDED_REMINDERS_STORAGE_KEY);
+      } catch {
+        // 消せなくても、印は 15 分で使われなくなる。
+      }
+    },
+  };
+}
+
+function handedKey(item: Pick<ScheduledReminder, "tag" | "fireAt">): string {
+  return `${item.tag}@${item.fireAt}`;
+}
+
+/**
+ * 橋に渡す一覧を決める。時刻を過ぎたもの (15 分以内) は、まだ渡したことが無いものだけ。
+ * 戻り値の handed は、渡したあとに覚える印 (15 分より前のものは捨てる)。
+ */
+export function selectUnhanded(
+  items: readonly ScheduledReminder[],
+  handed: ReadonlyMap<string, number>,
+  now: number,
+): { items: ScheduledReminder[]; handed: Map<string, number> } {
+  const next = new Map<string, number>();
+  for (const [key, fireAt] of handed) {
+    if (fireAt >= now - REMINDER_LATE_LIMIT_MS) next.set(key, fireAt);
+  }
+  const selected = items.filter(
+    (item) => item.fireAt > now || !handed.has(handedKey(item)),
+  );
+  for (const item of selected) next.set(handedKey(item), item.fireAt);
+  return { items: selected, handed: next };
+}
 
 /** 予約に使う利用者の設定。 */
 export type ReminderAgentSettings = {
@@ -72,6 +162,8 @@ export type ReminderAgentOptions = {
   now?: () => number;
   /** 橋に渡したあとに呼ぶ (予約の範囲の報告に使う)。 */
   onScheduled?: (result: ReminderCoverResult) => void;
+  /** 橋に渡した印の置き場 (既定は localStorage)。 */
+  handed?: HandedReminders;
   debounceMs?: number;
   refreshMs?: number;
 };
@@ -120,6 +212,7 @@ export function toReminderEvent(event: CalendarEvent): ReminderEvent {
 /**
  * 控えから、端末に予約する一覧を作る。文言の「今日」は鳴らす時刻で決める
  * (前の日に予約しても、鳴ったときに正しい言い方になるように)。
+ * 鳴らす時刻を 15 分以内に過ぎた、まだ終わっていない予定のものも含める (設計 2.1)。
  */
 export function buildDeviceReminders(
   snapshot: ReminderSnapshot,
@@ -132,7 +225,7 @@ export function buildDeviceReminders(
     calendars: snapshot.calendars.map(toReminderCalendar),
     events: snapshot.events.map(toReminderEvent),
     settings: { timeZone: settings.timeZone, allDay: settings.allDay },
-    from: now,
+    from: now - REMINDER_LATE_LIMIT_MS,
     to,
   });
   const { reminders, coverUntil } = selectDeviceReminders(planned, {
@@ -175,9 +268,11 @@ export class ReminderAgent {
   private again = false;
   private stopped = false;
   private lastSent: string | null = null;
+  private readonly handed: HandedReminders;
 
   constructor(private readonly options: ReminderAgentOptions) {
     this.now = options.now ?? Date.now;
+    this.handed = options.handed ?? createStoredHandedReminders();
   }
 
   /** 動かし始める。橋が予約できない (none) なら動かさずに false。 */
@@ -232,10 +327,13 @@ export class ReminderAgent {
     const snapshot = this.options.source.reminderSnapshot();
     const capabilities = this.capabilities;
     if (!snapshot || !capabilities) return;
-    const { items, coverUntil } = buildDeviceReminders(
-      snapshot,
-      this.options.settings(),
-      this.now(),
+    const now = this.now();
+    const built = buildDeviceReminders(snapshot, this.options.settings(), now);
+    const { coverUntil } = built;
+    const { items, handed } = selectUnhanded(
+      built.items,
+      this.handed.load(),
+      now,
     );
     const signature = JSON.stringify(items);
     if (signature !== this.lastSent) {
@@ -243,6 +341,7 @@ export class ReminderAgent {
       if (this.stopped) return;
       this.lastSent = signature;
     }
+    this.handed.save(handed);
     this.options.onScheduled?.({
       coverUntil,
       coverSeq: snapshot.cursor,
@@ -267,6 +366,7 @@ export class ReminderAgent {
     this.stop();
     await this.running?.catch(() => {});
     this.lastSent = null;
+    this.handed.clear();
     await this.options.bridge.clear();
   }
 }
