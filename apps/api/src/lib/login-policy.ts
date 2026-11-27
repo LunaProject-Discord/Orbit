@@ -5,8 +5,9 @@ import {
   serverSettings,
   sessions,
   users,
+  verifications,
 } from "@orbit/db";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, like, sql } from "drizzle-orm";
 
 /**
  * パスワードでのログインに関わる Better Auth の受け口 (/v1/auth の下)。
@@ -52,13 +53,23 @@ export async function setPasswordLogin(
   db: Database,
   enabled: boolean,
 ): Promise<void> {
-  await db
-    .insert(serverSettings)
-    .values({ id: true, passwordLogin: enabled })
-    .onConflictDoUpdate({
-      target: serverSettings.id,
-      set: { passwordLogin: enabled, updatedAt: sql`now()` },
-    });
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(serverSettings)
+      .values({ id: true, passwordLogin: enabled })
+      .onConflictDoUpdate({
+        target: serverSettings.id,
+        set: { passwordLogin: enabled, updatedAt: sql`now()` },
+      });
+    if (!enabled) {
+      // パスワードを確かめた後、2 段階認証のコードを待っている途中の値も捨てる
+      // (止めた後にコードを入れてログインを終えられないように)。IdP でのログインの途中の値も
+      // 同じ形なので消えるが、その人はログインをやり直せばよい。
+      await tx
+        .delete(verifications)
+        .where(like(verifications.identifier, "2fa-%"));
+    }
+  });
 }
 
 /**
@@ -86,7 +97,8 @@ export async function disableUser(
   userId: string,
 ): Promise<"ok" | "not_found" | "already"> {
   return db.transaction(async (tx) => {
-    // ログインの最中 (セッションを作る直前) と重ならないよう、利用者の行を押さえる。
+    // 利用者の行を押さえる。セッションと通知の送り先を作る処理は、DB のトリガー
+    // (マイグレーション 0055) がこの行を FOR SHARE で読むので、ここが終わるまで待ってから断られる。
     const [row] = await tx
       .select({ disabledAt: users.disabledAt })
       .from(users)
@@ -119,9 +131,46 @@ export async function enableUser(
     .from(users)
     .where(eq(users.id, userId));
   if (!exists) return false;
-  await db
-    .update(users)
-    .set({ disabledAt: null })
-    .where(and(eq(users.id, userId), isNotNull(users.disabledAt)));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({ disabledAt: null })
+      .where(and(eq(users.id, userId), isNotNull(users.disabledAt)));
+    // 無効のあいだに残ったものがあっても使わせない (端末ではログインし直してもらう)。
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+    await tx
+      .delete(pushSubscriptions)
+      .where(eq(pushSubscriptions.userId, userId));
+    await tx.delete(devices).where(eq(devices.userId, userId));
+  });
   return true;
+}
+
+/**
+ * メールアドレスの変更の確認 (/verify-email のリンク) が、無効にされた利用者のものか。
+ * リンクの合言葉 (JWT) は DB に無いので、中身の email (今のアドレス) で利用者を探す。
+ * 署名の確認は Better Auth が行う。ここは断るかどうかを決めるだけなので、中身を読むだけにする。
+ */
+export async function verifyEmailForDisabledUser(
+  db: Pick<Database, "select">,
+  token: string | null,
+): Promise<boolean> {
+  const payload = token?.split(".")[1];
+  if (!payload) return false;
+  let email: unknown;
+  try {
+    email = (
+      JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+        email?: unknown;
+      }
+    ).email;
+  } catch {
+    return false;
+  }
+  if (typeof email !== "string" || email === "") return false;
+  const [row] = await db
+    .select({ disabledAt: users.disabledAt })
+    .from(users)
+    .where(sql`lower(${users.email}) = ${email.toLowerCase()}`);
+  return row?.disabledAt != null;
 }

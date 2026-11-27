@@ -18,6 +18,7 @@ import {
   messageMailboxes,
   messages,
   outbox,
+  users,
 } from "@orbit/db";
 import { and, asc, eq, inArray, lt, min, notInArray, or } from "drizzle-orm";
 import {
@@ -100,6 +101,14 @@ export async function processSends(
   /** まだ時刻になっていない送信 (予約、やり直し待ち) のうち、いちばん早い時刻。無ければ null。 */
   nextRunAt: Date | null;
 }> {
+  // 管理者が無効にした利用者のメールは送らない (送信待ちは残し、有効に戻すと送る)。
+  const [owner] = await db
+    .select({ disabledAt: users.disabledAt })
+    .from(users)
+    .where(eq(users.id, account.userId));
+  if (owner?.disabledAt) {
+    return { sent: 0, failed: 0, queued: false, nextRunAt: null };
+  }
   const rows = await db
     .select()
     .from(outbox)

@@ -345,8 +345,8 @@ function PasswordLoginSection({ refreshKey }: { refreshKey: unknown }) {
       )}
       {settings && !settings.passwordLogin && (
         <p className="text-muted-foreground text-xs">
-          この画面を開けなくなったときは、サーバーで「admin password-login
-          on」を実行すると元に戻せます (docs/sso.md を参照)。
+          管理画面を使えないときは、サーバーで「admin password-login
+          on」を実行しても元に戻せます (docs/sso.md を参照)。
         </p>
       )}
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
@@ -360,7 +360,7 @@ function PasswordLoginSection({ refreshKey }: { refreshKey: unknown }) {
                 ? "有効なシングルサインオンがありません。パスキーを登録していない利用者は、ログインできなくなります。"
                 : settings && settings.withoutOtherMethod > 0
                   ? `シングルサインオンを結び付けておらず、パスキーも登録していない利用者が ${settings.withoutOtherMethod} 人います。この人たちは、メールアドレスを信頼する設定のシングルサインオンで結び付くか、自動で作る設定でない限り、ログインできなくなります。`
-                  : "すべての利用者が、シングルサインオンかパスキーでログインできます。"}{" "}
+                  : "すべての利用者が、シングルサインオンかパスキーでログインできます。"}
               ログイン済みの端末は、そのまま使えます。
             </AlertDialogDescription>
           </AlertDialogHeader>

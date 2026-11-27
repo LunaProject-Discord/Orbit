@@ -557,6 +557,26 @@ describe.skipIf(!adminUrl)("管理者アカウントの API", () => {
       expect(await countRows("push_subscriptions")).toBe(0);
       expect(await countRows("devices")).toBe(0);
 
+      // ログインと無効化が重なっても、DB がセッションと通知の送り先を作らせない。
+      for (const statement of [
+        sql`insert into sessions (user_id, token, expires_at) values (${userId}, ${`raced-${randomUUID()}`}, now() + interval '1 day')`,
+        sql`insert into push_subscriptions (user_id, endpoint, p256dh, auth) values (${userId}, 'https://push.example.com/2', 'k', 'a')`,
+        sql`insert into devices (user_id, name, platform) values (${userId}, '端末', 'android')`,
+      ]) {
+        const error = await db.execute(statement).then(
+          () => null,
+          (cause: unknown) => cause as { cause?: { constraint?: string } },
+        );
+        expect(error?.cause?.constraint).toBe("user_disabled");
+      }
+      // 無効にする前に申し込んだメールアドレスの変更も、完了させない (中身だけを読んで断る)。
+      const fakeToken = `x.${Buffer.from(JSON.stringify({ email, updateTo: "new@example.com" })).toString("base64url")}.y`;
+      const verify = await json(
+        "GET",
+        `/v1/auth/verify-email?token=${fakeToken}`,
+      );
+      expect(verify.status).toBe(403);
+
       // 正しいパスワードでも、セッションは作らない。
       const again = await signIn();
       expect(again.status).toBe(403);
@@ -689,6 +709,10 @@ describe.skipIf(!adminUrl)("管理者アカウントの API", () => {
         "token",
       ) as string;
 
+      // パスワードを確かめた後の、2 段階認証のコード待ちの値。
+      await db.execute(
+        sql`insert into verifications (identifier, value, expires_at) values ('2fa-pending', ${userId}, now() + interval '10 minutes')`,
+      );
       const off = await json(
         "PUT",
         "/v1/admin/login-settings",
@@ -699,6 +723,11 @@ describe.skipIf(!adminUrl)("管理者アカウントの API", () => {
       expect(
         ((await off.json()) as { passwordLogin: boolean }).passwordLogin,
       ).toBe(false);
+
+      const pending = await db.execute(
+        sql`select count(*)::int as n from verifications where identifier = '2fa-pending'`,
+      );
+      expect((pending.rows[0] as { n: number }).n).toBe(0);
 
       const denied = await signIn();
       expect(denied.status).toBe(403);
