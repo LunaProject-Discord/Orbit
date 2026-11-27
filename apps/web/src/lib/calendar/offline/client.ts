@@ -1,3 +1,4 @@
+import { inviteRole } from "@orbit/core/event-invite";
 import { normalizeRecurrenceId } from "@orbit/core/recurrence";
 import { ApiError, NetworkError } from "@/lib/api";
 import type * as calendarApi from "@/lib/calendar/api";
@@ -128,6 +129,7 @@ const SERVER_ACTIONS: Record<CalendarConflict["kind"], ConflictAction[]> = {
 type ServerSnapshot = EventFields & {
   parentId?: string | null;
   recurrenceId?: string | null;
+  organizer?: CalendarEvent["organizer"];
 };
 
 export function snapshotEvent(
@@ -143,6 +145,7 @@ export function snapshotEvent(
   const {
     parentId = null,
     recurrenceId = null,
+    organizer = null,
     ...fields
   } = raw as ServerSnapshot;
   if (!fields.time) return null;
@@ -157,6 +160,9 @@ export function snapshotEvent(
   );
   return {
     ...event,
+    // eventFromInput は参加者がいると自分を主催者にするが、記録の主催者は分からない
+    // (招待された予定かもしれない)。記録に無ければ null にして、復元で招待を送らない。
+    organizer,
     parentId,
     recurrenceId: recurrenceId ? normalizeRecurrenceId(recurrenceId) : null,
   };
@@ -737,6 +743,9 @@ export class OfflineCalendarClient implements CalendarClient {
     }
     const merged: EventFields = { ...fields, ...(lost ?? {}) };
     if (snapshot.parentId) delete merged.recurrence;
+    // 自分が主催者でない予定 (招待された予定・主催者の分からない記録) は、参加者を付けずに
+    // 作る。付けると自分が主催者として全員に招待が送られる (review-invites の 2)。
+    if (inviteRole(snapshot) !== "organizer") delete merged.attendees;
     if (!merged.time) return;
     this.createEvent({
       ...merged,
@@ -1034,6 +1043,37 @@ export class OfflineCalendarClient implements CalendarClient {
         break;
       }
       case "error": {
+        if (
+          op.kind === "respond" &&
+          (outcome.code === "not_found" || outcome.code === "unsupported")
+        ) {
+          // 予定が無い (取り消し済みの招待など) か、出欠に対応していない古いサーバー。
+          // 返事は捨てて、同じ予定への後続 (不参加にして削除の削除) を止めない。
+          // 「復元」は出さない (作り直すと自分が主催者として招待が送られる)。
+          removeOp();
+          if (!this.followedByDelete(op)) {
+            addNotice({
+              id: randomUuid(),
+              source: "local",
+              kind: "failed",
+              calendarId: op.calendarId,
+              eventId: op.eventId,
+              recurrenceId: null,
+              title:
+                (op.target ?? this.baseEvents.get(op.eventId ?? ""))?.summary ??
+                null,
+              fields: [],
+              lost: null,
+              kept: null,
+              snapshot: null,
+              reason: outcome.code,
+              createdAt: this.now().toISOString(),
+              actions: ["dismiss"],
+              opId: null,
+            });
+          }
+          break;
+        }
         markOp("error", outcome.code);
         const kind: ConflictKind =
           outcome.code === "deleted_elsewhere"
@@ -1077,6 +1117,28 @@ export class OfflineCalendarClient implements CalendarClient {
       queue: true,
       notices: noticesChanged,
     });
+  }
+
+  /** 返事の後ろに、同じ予定 (例外の行ならその回) の削除が積まれているか。 */
+  private followedByDelete(respond: QueuedOp): boolean {
+    const target = respond.target ?? this.baseEvents.get(respond.eventId ?? "");
+    const rid =
+      target?.parentId && target.recurrenceId
+        ? normalizeRecurrenceId(target.recurrenceId)
+        : null;
+    return this.ops.some(
+      (other) =>
+        other.seq > respond.seq &&
+        ((other.kind === "delete" && other.eventId === respond.eventId) ||
+          (other.kind === "delete" &&
+            !!target?.parentId &&
+            other.eventId === target.parentId) ||
+          (other.kind === "occurrence_delete" &&
+            rid !== null &&
+            other.eventId === target?.parentId &&
+            other.recurrenceId !== null &&
+            normalizeRecurrenceId(other.recurrenceId) === rid)),
+    );
   }
 
   /** 操作が通っていたらこうなっていた予定 (復元に使う)。 */

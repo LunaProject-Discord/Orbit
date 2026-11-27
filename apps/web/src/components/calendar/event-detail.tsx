@@ -1,6 +1,5 @@
 "use client";
 
-import { inviteRole } from "@orbit/core/event-invite";
 import { cn } from "cn";
 import {
   BellIcon,
@@ -32,6 +31,7 @@ import {
 import type { PendingState } from "@/lib/calendar/conflict-labels";
 import { formatMonthDayWeekday, formatTimeRange } from "@/lib/calendar/dates";
 import { describeRule } from "@/lib/calendar/recurrence-label";
+import { canRespondTo, type RsvpAccount } from "@/lib/calendar/rsvp";
 
 const STATUS: Record<Attendee["status"], { label: string; tone: string }> = {
   accepted: { label: "参加", tone: "text-emerald-600" },
@@ -108,6 +108,8 @@ type DetailProps = {
   onDelete: (() => void) | null;
   /** 出欠を返す (返せない予定・画面では null)。 */
   onRespond?: ((status: RsvpChoice) => void) | null;
+  /** アカウントの一覧 (self の参加者がアカウントの持ち主かの判定に使う)。 */
+  accounts?: readonly RsvpAccount[] | null;
   onClose: () => void;
 };
 
@@ -121,15 +123,17 @@ function DetailBody({
   onEdit,
   onDelete,
   onRespond = null,
+  accounts = null,
   onClose,
 }: DetailProps & { item: DisplayItem }) {
   const { event, local } = item;
   // 出欠のボタン: 招待された予定で、取り消されておらず、カレンダーに書き込めるとき (7.1)。
+  // 出欠に対応していない古いサーバーと、self がアカウントの持ち主でない共有カレンダーでは出さない。
   const canRespond =
     onRespond !== null &&
     !item.readOnly &&
     event.status !== "cancelled" &&
-    inviteRole(event) === "attendee";
+    canRespondTo(event, calendar, accounts);
   const reminders = event.useDefaultReminders
     ? (calendar?.defaultReminders ?? [])
     : event.reminders;

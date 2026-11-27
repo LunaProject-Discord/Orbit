@@ -39,6 +39,12 @@ export type Calendar = {
    * 無いときは "none" として扱う (calendarScheduling)。
    */
   scheduling?: CalendarScheduling;
+  /**
+   * 出欠を返してよいかの材料 (Google の primary と自分の権限)。古いサーバーと
+   * Google 以外では無い。判定は lib/calendar/rsvp.ts の respondsAsAccount。
+   */
+  primary?: boolean | null;
+  accessRole?: string | null;
   updatedAt: string;
 };
 

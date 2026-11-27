@@ -229,7 +229,13 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
   };
 
   const insertEvent = async (
-    values: { calendarId?: string; owner?: string; sequence?: number } = {},
+    values: {
+      calendarId?: string;
+      owner?: string;
+      sequence?: number;
+      startAt?: Date;
+      endAt?: Date;
+    } = {},
     self = true,
   ) => {
     const [row] = await db
@@ -239,8 +245,8 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
         calendarId: values.calendarId ?? calendarId,
         uid: UID,
         summary: "設計レビュー (カレンダー)",
-        startAt: new Date("2026-12-10T01:00:00Z"),
-        endAt: new Date("2026-12-10T02:00:00Z"),
+        startAt: values.startAt ?? new Date("2026-12-10T01:00:00Z"),
+        endAt: values.endAt ?? new Date("2026-12-10T02:00:00Z"),
         sequence: values.sequence ?? 1,
         organizer: { email: "sato@example.com" },
       })
@@ -278,6 +284,13 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
       reply: null,
       eventId,
       eventSequence: 3,
+      eventTime: {
+        allDay: false,
+        startAt: "2026-12-10T01:00:00.000Z",
+        endAt: "2026-12-10T02:00:00.000Z",
+        startTimeZone: null,
+        endTimeZone: null,
+      },
     });
     // メモ (DESCRIPTION) は返さない。
     expect(JSON.stringify(body)).not.toContain("メモは返さない");
@@ -290,6 +303,26 @@ describe.skipIf(!adminUrl)("メールの招待の API", () => {
       method: "request",
       eventId: null,
       eventSequence: null,
+      eventTime: null,
+    });
+  });
+
+  it("REQUEST: 予定の日時がメールと違っても、カレンダーの日時を eventTime で添える", async () => {
+    const eventId = await insertEvent({
+      sequence: 4,
+      startAt: new Date("2026-12-20T05:00:00Z"),
+      endAt: new Date("2026-12-20T06:00:00Z"),
+    });
+    const messageId = await insertMessage({ content: ics("REQUEST") });
+    const { body } = await call(messageId);
+    expect(body.invite).toMatchObject({
+      eventId,
+      time: { startAt: "2026-12-10T01:00:00Z" },
+      eventTime: {
+        allDay: false,
+        startAt: "2026-12-20T05:00:00.000Z",
+        endAt: "2026-12-20T06:00:00.000Z",
+      },
     });
   });
 

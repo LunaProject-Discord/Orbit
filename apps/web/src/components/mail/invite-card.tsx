@@ -1,6 +1,5 @@
 "use client";
 
-import { inviteRole } from "@orbit/core/event-invite";
 import { cn } from "cn";
 import {
   CalendarClockIcon,
@@ -42,6 +41,12 @@ import {
   useCalendarData,
 } from "@/lib/calendar/offline";
 import { buildCalendarRoute } from "@/lib/calendar/route";
+import {
+  canRespondTo,
+  needsAccounts,
+  type RsvpAccount,
+} from "@/lib/calendar/rsvp";
+import { listAccounts } from "@/lib/offline";
 import { useOnline } from "@/lib/offline/network";
 
 /**
@@ -91,6 +96,29 @@ export function useMessageInvite(message: {
   return { invite: loaded.invite };
 }
 
+/**
+ * アカウントの一覧。渡されていればそれを使い、無ければ wanted のときだけ端末の控えから読む
+ * (self の参加者がアカウントの持ち主かを見るため)。
+ */
+function useRsvpAccounts(
+  given: readonly RsvpAccount[] | null | undefined,
+  wanted: boolean,
+): readonly RsvpAccount[] | null {
+  const [loaded, setLoaded] = useState<readonly RsvpAccount[] | null>(null);
+  const load = wanted && loaded === null;
+  useEffect(() => {
+    if (!load) return;
+    const controller = new AbortController();
+    listAccounts(controller.signal)
+      .then((list) => {
+        if (!controller.signal.aborted) setLoaded(list);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [load]);
+  return given !== undefined ? given : loaded;
+}
+
 type Shown = {
   summary: string | null;
   location: string | null;
@@ -100,18 +128,24 @@ type Shown = {
   occurrence: Occurrence;
 };
 
-function occurrenceOfInvite(invite: MessageInvite): Occurrence {
-  const time = invite.time;
+function occurrenceOfTime(
+  time: MessageInvite["time"],
+  recurrenceId: string | null,
+): Occurrence {
   return {
     eventId: "",
     masterId: "",
-    recurrenceId: invite.recurrenceId,
+    recurrenceId,
     allDay: time.allDay,
     startAt: time.allDay ? null : time.startAt,
     endAt: time.allDay ? null : time.endAt,
     startDate: time.allDay ? time.startDate : null,
     endDate: time.allDay ? time.endDate : null,
   };
+}
+
+function occurrenceOfInvite(invite: MessageInvite): Occurrence {
+  return occurrenceOfTime(invite.time, invite.recurrenceId);
 }
 
 function occurrenceOfEvent(event: CalendarEvent): Occurrence {
@@ -127,12 +161,21 @@ function occurrenceOfEvent(event: CalendarEvent): Occurrence {
   };
 }
 
-/** 招待の日時の前後 1 日 (端末のタイムゾーンでの日付)。この期間でカレンダーの予定を探す。 */
+/**
+ * 予定を探す期間。カレンダーの予定の日時 (eventTime) があればそれ、無ければ (古いサーバー)
+ * メールの日時の、前後 1 日 (端末のタイムゾーンでの日付)。
+ * メールと予定の日時がずれていても (主催者が後から動かした等)、予定を見つけられる。
+ */
 export function inviteRange(
   invite: MessageInvite,
   timeZone: string,
 ): EventRangeQuery {
-  const local = toLocal(occurrenceOfInvite(invite), timeZone);
+  const local = toLocal(
+    invite.eventTime
+      ? occurrenceOfTime(invite.eventTime, invite.recurrenceId)
+      : occurrenceOfInvite(invite),
+    timeZone,
+  );
   const first = local?.firstDay ?? Temporal.Now.plainDateISO(timeZone);
   const last = local?.lastDay ?? first;
   return {
@@ -213,6 +256,7 @@ export function InviteCard({
   invite,
   accountId,
   client: givenClient = null,
+  accounts: givenAccounts,
   timeZone: givenTimeZone,
   className,
 }: {
@@ -220,6 +264,8 @@ export function InviteCard({
   /** メールのアカウント。「カレンダーにまだ届いていません」を出すかの判定に使う。 */
   accountId: string;
   client?: CalendarClient | null;
+  /** アカウントの一覧。渡さなければ、要るときだけ読む。 */
+  accounts?: readonly RsvpAccount[] | null;
   timeZone?: string;
   className?: string;
 }) {
@@ -239,6 +285,10 @@ export function InviteCard({
   const calendar: Calendar | undefined = event
     ? calendars?.find((entry) => entry.id === event.calendarId)
     : undefined;
+  const accounts = useRsvpAccounts(
+    givenAccounts,
+    needsAccounts(calendar) && givenAccounts === undefined,
+  );
 
   // カレンダーに同じ予定があれば、表示はカレンダーの値を使う (9 章)。
   const shown: Shown = event
@@ -270,17 +320,19 @@ export function InviteCard({
   const cancelled = invite.method === "cancel";
   const reply = invite.method === "reply" ? invite.reply : null;
   const latestSequence = event?.sequence ?? invite.eventSequence;
+  // 「更新されています」は、カレンダーの予定を見つけて、その値を表示しているときだけ。
   const outdated =
     request &&
-    invite.eventId !== null &&
+    event !== null &&
     latestSequence !== null &&
     invite.sequence < latestSequence;
   const me = event?.attendees.find((attendee) => attendee.self) ?? null;
-  // ボタンを出すのは、カレンダーに同じ予定があり、自分が参加者のときだけ。
+  // ボタンを出すのは、カレンダーに同じ予定があり、自分 (アカウントの持ち主) が参加者として
+  // 返事を送れるときだけ。読み込み中 (data が無い) は押せないボタンを出しておく。
   const showButtons =
     request &&
     invite.eventId !== null &&
-    (event === null || inviteRole(event) === "attendee");
+    (event === null ? !data : canRespondTo(event, calendar, accounts));
   const buttonsDisabled =
     client === null ||
     event === null ||

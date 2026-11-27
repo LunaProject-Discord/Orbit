@@ -61,6 +61,11 @@ export type MessageInvite = {
   eventId: string | null;
   /** その予定の sequence (メールが古いかの判定用)。 */
   eventSequence: number | null;
+  /**
+   * その予定のカレンダー上の日時 (time と同じ形)。メールと日時がずれていても、端末が
+   * この日時で予定を探せるように添える。予定が無ければ null。
+   */
+  eventTime: MessageInvite["time"] | null;
 };
 
 const METHODS: Record<string, InviteMethod> = {
@@ -80,6 +85,34 @@ function invitePriority(file: {
     return 1;
   }
   return 0;
+}
+
+/** 予定の行の日時を、time と同じ形にする。 */
+function timeOfRow(row: {
+  allDay: boolean;
+  startAt: Date | null;
+  endAt: Date | null;
+  startDate: string | null;
+  endDate: string | null;
+  startTimeZone: string | null;
+  endTimeZone: string | null;
+}): MessageInvite["time"] | null {
+  if (row.allDay) {
+    if (!row.startDate) return null;
+    return {
+      allDay: true,
+      startDate: row.startDate,
+      endDate: row.endDate ?? row.startDate,
+    };
+  }
+  if (!row.startAt) return null;
+  return {
+    allDay: false,
+    startAt: row.startAt.toISOString(),
+    endAt: (row.endAt ?? row.startAt).toISOString(),
+    startTimeZone: row.startTimeZone,
+    endTimeZone: row.endTimeZone,
+  };
 }
 
 function timeOf(event: ParsedEvent): MessageInvite["time"] | null {
@@ -190,6 +223,13 @@ export function messageInviteRoutes({
           id: events.id,
           sequence: events.sequence,
           recurrenceId: events.recurrenceId,
+          allDay: events.allDay,
+          startAt: events.startAt,
+          endAt: events.endAt,
+          startDate: events.startDate,
+          endDate: events.endDate,
+          startTimeZone: events.startTimeZone,
+          endTimeZone: events.endTimeZone,
           accountId: calendars.accountId,
           source: calendars.source,
           readOnly: calendars.readOnly,
@@ -262,6 +302,7 @@ export function messageInviteRoutes({
           : null,
         eventId: found?.id ?? null,
         eventSequence: found?.sequence ?? null,
+        eventTime: found ? timeOfRow(found) : null,
       };
       return c.json({ invite });
     },

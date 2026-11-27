@@ -90,6 +90,7 @@ describe("出欠のボタン", () => {
     item: DisplayItem,
     onRespond: ((status: string) => void) | null = vi.fn(),
     cal: Calendar = calendar({ source: "google", scheduling: "server" }),
+    accounts: { id: string; email: string }[] | null = null,
   ) {
     act(() =>
       root.render(
@@ -101,6 +102,7 @@ describe("出欠のボタン", () => {
           onEdit={null}
           onDelete={null}
           onRespond={onRespond}
+          accounts={accounts}
           onClose={() => {}}
         />,
       ),
@@ -161,6 +163,38 @@ describe("出欠のボタン", () => {
   ])("%s では出さない", (_label, item) => {
     renderDetail(item);
     expect(document.body.textContent).not.toContain("出席しますか?");
+  });
+
+  it("出欠に対応していない古いサーバー (カレンダーに scheduling が無い) では出さない", () => {
+    renderDetail(itemOf(invited), vi.fn(), calendar({ source: "google" }));
+    expect(document.body.textContent).not.toContain("出席しますか?");
+  });
+
+  it("共有カレンダーでは、self がアカウントの持ち主のときだけ出す", () => {
+    const ACCOUNT = "00000000-0000-4000-8000-0000000000a1";
+    const shared = calendar({
+      source: "google",
+      scheduling: "server",
+      accountId: ACCOUNT,
+      primary: false,
+      accessRole: "writer",
+    });
+    // self の行は共有カレンダーの持ち主 (同僚)。
+    renderDetail(itemOf(invited), vi.fn(), shared, [
+      { id: ACCOUNT, email: "owner@example.com" },
+    ]);
+    expect(document.body.textContent).not.toContain("出席しますか?");
+    // アカウントの一覧がまだ無いときも出さない。
+    renderDetail(itemOf(invited), vi.fn(), shared, null);
+    expect(document.body.textContent).not.toContain("出席しますか?");
+    renderDetail(itemOf(invited), vi.fn(), shared, [
+      { id: ACCOUNT, email: "me@example.com" },
+    ]);
+    expect(document.body.textContent).toContain("出席しますか?");
+    renderDetail(itemOf(invited), vi.fn(), { ...shared, accessRole: "owner" }, [
+      { id: ACCOUNT, email: "owner@example.com" },
+    ]);
+    expect(document.body.textContent).toContain("出席しますか?");
   });
 
   it("onRespond が無ければ出さない", () => {

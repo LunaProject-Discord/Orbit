@@ -101,6 +101,7 @@ import {
   useCalendarData,
 } from "@/lib/calendar/offline";
 import { buildCalendarRoute, parseCalendarRoute } from "@/lib/calendar/route";
+import { canRespondTo } from "@/lib/calendar/rsvp";
 import { listAccounts, useOnline } from "@/lib/offline";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
@@ -506,11 +507,13 @@ export function CalendarApp({ user }: { user: User }) {
   const requestDelete = (target: DisplayItem) => {
     const item = currentItem(target) ?? target;
     const role = inviteRole(item.event);
-    if (role === "attendee") {
+    const calendar = calendarIndex.get(item.event.calendarId)?.calendar;
+    // 返事を送れる招待だけ「不参加にして削除」。古いサーバー (scheduling が無い) と、
+    // self がアカウントの持ち主でない共有カレンダーでは、ふつうの削除にする。
+    if (role === "attendee" && canRespondTo(item.event, calendar, accounts)) {
       setConfirmDelete({ item, mode: "decline" });
       return;
     }
-    const calendar = calendarIndex.get(item.event.calendarId)?.calendar;
     if (
       role === "organizer" &&
       !item.repeating &&
@@ -1117,6 +1120,7 @@ export function CalendarApp({ user }: { user: User }) {
             ? (status) => respond(selectedItem, status)
             : null
         }
+        accounts={accounts}
         onClose={() => setSelected(null)}
       />
       <EventEditor

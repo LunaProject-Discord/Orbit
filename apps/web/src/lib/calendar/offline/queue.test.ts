@@ -263,7 +263,7 @@ describe("sendOp (結果の分け方)", () => {
     ).toEqual({ type: "error", code: "unsupported" });
     expect(
       await sendOp(failing(new ApiError(404, "not_found", null)), respond),
-    ).toEqual({ type: "error", code: "deleted_elsewhere" });
+    ).toEqual({ type: "error", code: "not_found" });
   });
 
   it("送信待ちの時刻 (操作した時刻) と送る瞬間の時刻を渡す", async () => {

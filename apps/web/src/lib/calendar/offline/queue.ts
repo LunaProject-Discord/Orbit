@@ -284,9 +284,10 @@ function classify(op: QueuedOp, error: unknown): OpOutcome {
         return { type: "done", missing: true };
       case "respond":
         // ルートの無い古いサーバー (コード無し) と、予定が消えた場合を分ける。
+        // どちらも返事を捨てて後続を通す (client の settle)。
         return {
           type: "error",
-          code: code === null ? "unsupported" : "deleted_elsewhere",
+          code: code === null ? "unsupported" : "not_found",
         };
       default:
         return { type: "error", code: "deleted_elsewhere" };

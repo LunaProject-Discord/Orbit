@@ -611,4 +611,168 @@ describe("OfflineCalendarClient", () => {
     await client.pull();
     expect(server.calls).not.toContain("sync 0");
   });
+
+  describe("取り消された招待・古いサーバーへの返事 (review-invites の 2 と 6)", () => {
+    const invited = () =>
+      event({
+        id: E1,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [
+          {
+            email: "me@example.com",
+            name: null,
+            role: "required",
+            status: "needs_action",
+            self: true,
+          },
+          {
+            email: "boss@example.com",
+            name: null,
+            role: "required",
+            status: "accepted",
+            self: false,
+          },
+        ],
+      });
+
+    it("予定が消えていた返事 (404 not_found) は「閉じる」だけで、復元を出さない", async () => {
+      const server = new FakeCalendarServer();
+      server.addEvent(invited());
+      const { client } = await setup(server);
+      await activate(client);
+      // 主催者が取り消し、サーバーから消えた (端末はまだ知らない)。
+      server.events.delete(E1);
+      client.respond(E1, "accepted");
+      await client.flush();
+      expect(client.queue()).toEqual([]);
+      expect(client.conflicts()).toMatchObject([
+        {
+          kind: "failed",
+          reason: "not_found",
+          snapshot: null,
+          actions: ["dismiss"],
+          opId: null,
+        },
+      ]);
+      // 閉じても何も作らない (自分が主催者として招待が送られない)。
+      server.calls.length = 0;
+      await client.resolveConflict(client.conflicts()[0]?.id ?? "", "dismiss");
+      await client.flush();
+      expect(server.calls.some((call) => call.startsWith("create"))).toBe(
+        false,
+      );
+    });
+
+    it("不参加にして削除で予定が消えていたら、返事も削除も成功として扱う", async () => {
+      const server = new FakeCalendarServer();
+      server.addEvent(invited());
+      const { client } = await setup(server);
+      await activate(client);
+      server.events.delete(E1);
+      client.respond(E1, "declined");
+      client.deleteEvent(E1);
+      await client.flush();
+      expect(client.queue()).toEqual([]);
+      expect(client.conflicts()).toEqual([]);
+    });
+
+    it("出欠のルートが無い古いサーバー (404 コード無し) では、返事を捨てて後続の削除を通す", async () => {
+      const server = new FakeCalendarServer();
+      server.addEvent(invited());
+      const api = server.api();
+      const { client } = {
+        client: await OfflineCalendarClient.open({
+          userId: "u1",
+          store: persistentStore(),
+          api: {
+            ...api,
+            respondToEvent: async () => {
+              throw new ApiError(404, null, null);
+            },
+          },
+          isOnline: () => true,
+          retryMs: 1_000,
+        }),
+      };
+      await activate(client);
+      client.respond(E1, "declined");
+      client.deleteEvent(E1);
+      await client.flush();
+      expect(client.queue()).toEqual([]);
+      expect(client.conflicts()).toEqual([]);
+      expect(server.events.has(E1)).toBe(false);
+
+      // 削除が続かなければ、閉じるだけの記録を残す。
+      server.addEvent(invited());
+      await client.pull();
+      client.respond(E1, "accepted");
+      await client.flush();
+      expect(client.queue()).toEqual([]);
+      expect(client.conflicts()).toMatchObject([
+        { kind: "failed", reason: "unsupported", actions: ["dismiss"] },
+      ]);
+    });
+
+    const remoteDeleted = (snapshot: Record<string, unknown>) => ({
+      id: "k5",
+      calendarId: CALENDAR_ID,
+      eventId: E1,
+      kind: "remote_deleted" as const,
+      fields: [],
+      lost: null,
+      snapshot: {
+        summary: "設計レビュー",
+        time: {
+          allDay: false,
+          startAt: "2026-03-10T01:00:00.000Z",
+          endAt: "2026-03-10T02:00:00.000Z",
+          startTimeZone: "Asia/Tokyo",
+          endTimeZone: "Asia/Tokyo",
+        },
+        recurrence: { rrule: null, rdates: [], exdates: [] },
+        attendees: [
+          { email: "boss@example.com", name: null, role: "required" },
+          { email: "me@example.com", name: null, role: "required" },
+        ],
+        parentId: null,
+        recurrenceId: null,
+        ...snapshot,
+      } as never,
+      title: "設計レビュー",
+      reason: null,
+      createdAt: "2026-02-01T00:00:00.000Z",
+      resolvedAt: null,
+    });
+
+    it("主催者の分からない記録 (招待かもしれない) からの復元は、参加者を付けずに作る", async () => {
+      const server = new FakeCalendarServer();
+      server.conflicts = [remoteDeleted({})];
+      const { client } = await setup(server);
+      await activate(client);
+      expect(client.conflicts()[0]?.snapshot?.organizer).toBeNull();
+      await client.resolveConflict("k5", "restore");
+      await client.flush();
+      const created = [...server.events.values()];
+      expect(created).toHaveLength(1);
+      expect(created[0]).toMatchObject({ summary: "設計レビュー" });
+      expect(created[0]?.attendees).toEqual([]);
+      expect(server.bodies.at(-1)).not.toHaveProperty("attendees");
+    });
+
+    it("自分が主催者の記録からの復元は、参加者を付けたまま作る", async () => {
+      const server = new FakeCalendarServer();
+      server.conflicts = [
+        remoteDeleted({ organizer: { email: "me@example.com", self: true } }),
+      ];
+      const { client } = await setup(server);
+      await activate(client);
+      await client.resolveConflict("k5", "restore");
+      await client.flush();
+      const created = [...server.events.values()];
+      expect(created[0]?.attendees.map((attendee) => attendee.email)).toEqual([
+        "boss@example.com",
+        "me@example.com",
+      ]);
+    });
+  });
 });

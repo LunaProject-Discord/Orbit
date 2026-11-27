@@ -55,6 +55,40 @@ function occurrenceOf(item: CalendarEvent): Occurrence {
   };
 }
 
+/** 聞かれた期間 (端末の日付) に始まる予定だけを返す CalendarClient。 */
+function rangeClient(calendars: Calendar[], events: CalendarEvent[]) {
+  const queries: { from: string; to: string }[] = [];
+  const cache = new Map<string, EventRange>();
+  const none: never[] = [];
+  const client = {
+    subscribe: () => () => {},
+    calendars: () => calendars,
+    range: (query: { from: string; to: string }) => {
+      const key = `${query.from}|${query.to}`;
+      const cached = cache.get(key);
+      if (cached) return cached;
+      queries.push(query);
+      const inside = events.filter((item) => {
+        const day = new Date(
+          new Date(item.startAt ?? "").getTime() + 9 * 3600_000,
+        )
+          .toISOString()
+          .slice(0, 10);
+        return day >= query.from && day < query.to;
+      });
+      const data = { events: inside, occurrences: inside.map(occurrenceOf) };
+      cache.set(key, data);
+      return data;
+    },
+    pendingFor: () => none,
+    queue: () => none,
+    conflicts: () => none,
+    respond: vi.fn(),
+    storageFailed: () => false,
+  } as unknown as CalendarClient;
+  return { client, queries };
+}
+
 /** 決まった中身を返すだけの CalendarClient。 */
 function fakeClient(calendars: Calendar[], events: CalendarEvent[]) {
   const data: EventRange = { events, occurrences: events.map(occurrenceOf) };
@@ -74,7 +108,11 @@ function fakeClient(calendars: Calendar[], events: CalendarEvent[]) {
   return { client, respond };
 }
 
-const googleCalendar = calendar({ source: "google", accountId: ACCOUNT });
+const googleCalendar = calendar({
+  source: "google",
+  accountId: ACCOUNT,
+  scheduling: "server",
+});
 
 const calendarEvent = (overrides: Partial<CalendarEvent> = {}) =>
   event({
@@ -122,13 +160,18 @@ describe("メールの招待カード", () => {
     container.remove();
   });
 
-  const render = (value: MessageInvite, client: CalendarClient) =>
+  const render = (
+    value: MessageInvite,
+    client: CalendarClient,
+    accounts: { id: string; email: string }[] | null = null,
+  ) =>
     act(() =>
       root.render(
         <InviteCard
           invite={value}
           accountId={ACCOUNT}
           client={client}
+          accounts={accounts}
           timeZone="Asia/Tokyo"
         />,
       ),
@@ -219,6 +262,86 @@ describe("メールの招待カード", () => {
     const local = fakeClient([calendar()], []);
     render(invite(), local.client);
     expect(text()).not.toContain("カレンダーにまだ届いていません");
+  });
+
+  it("予定の日時がメールと 2 日以上ずれていても、eventTime の日時で予定を探してボタンを使える", () => {
+    const moved = calendarEvent({
+      sequence: 2,
+      startAt: "2026-12-20T05:00:00.000Z",
+      endAt: "2026-12-20T06:00:00.000Z",
+    });
+    const { client, queries } = rangeClient([googleCalendar], [moved]);
+    render(
+      invite({
+        eventId: EVENT_ID,
+        eventSequence: 2,
+        eventTime: {
+          allDay: false,
+          startAt: "2026-12-20T05:00:00.000Z",
+          endAt: "2026-12-20T06:00:00.000Z",
+          startTimeZone: null,
+          endTimeZone: null,
+        },
+      }),
+      client,
+    );
+    expect(queries[0]).toMatchObject({ from: "2026-12-19", to: "2026-12-22" });
+    expect(text()).toContain("12月20日");
+    expect(text()).toContain("この招待は更新されています");
+    expect(button("参加")?.disabled).toBe(false);
+  });
+
+  it("予定が見つからない (古いサーバーで日時がずれた) ときは「更新されています」もボタンも出さない", () => {
+    const moved = calendarEvent({
+      sequence: 2,
+      startAt: "2026-12-20T05:00:00.000Z",
+      endAt: "2026-12-20T06:00:00.000Z",
+    });
+    const { client } = rangeClient([googleCalendar], [moved]);
+    render(invite({ eventId: EVENT_ID, eventSequence: 2 }), client);
+    expect(text()).toContain("メールの題名");
+    expect(text()).not.toContain("この招待は更新されています");
+    expect(button("参加")).toBeUndefined();
+    expect(text()).toContain("カレンダーで開く");
+  });
+
+  it("出欠に対応していない古いサーバー (カレンダーに scheduling が無い) ではボタンを出さない", () => {
+    const old = calendar({ source: "google", accountId: ACCOUNT });
+    const { client } = fakeClient([old], [calendarEvent()]);
+    render(invite({ eventId: EVENT_ID, eventSequence: 1 }), client);
+    expect(text()).toContain("カレンダーの題名");
+    expect(button("参加")).toBeUndefined();
+  });
+
+  it("共有カレンダーで self がアカウントの持ち主でなければボタンを出さない", () => {
+    const shared = calendar({
+      source: "google",
+      accountId: ACCOUNT,
+      scheduling: "server",
+      primary: false,
+      accessRole: "writer",
+    });
+    const { client } = fakeClient([shared], [calendarEvent()]);
+    render(invite({ eventId: EVENT_ID, eventSequence: 1 }), client, [
+      { id: ACCOUNT, email: "owner@example.com" },
+    ]);
+    expect(button("参加")).toBeUndefined();
+
+    // self の参加者のアドレスがアカウントと同じなら出す。
+    render(invite({ eventId: EVENT_ID, eventSequence: 1 }), client, [
+      { id: ACCOUNT, email: "Me@Example.com" },
+    ]);
+    expect(button("参加")?.disabled).toBe(false);
+
+    // primary のカレンダーなら、アドレスが違っても出す。
+    const primary = fakeClient(
+      [{ ...shared, primary: true }],
+      [calendarEvent()],
+    );
+    render(invite({ eventId: EVENT_ID, eventSequence: 1 }), primary.client, [
+      { id: ACCOUNT, email: "owner@example.com" },
+    ]);
+    expect(button("参加")?.disabled).toBe(false);
   });
 
   it("同じ時間帯のほかの予定の件数を出す", () => {

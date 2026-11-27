@@ -2213,6 +2213,11 @@ export type MessageInvite = {
   /** カレンダーにある同じ予定 (UID が同じ)。無ければ null。 */
   eventId: string | null;
   eventSequence: number | null;
+  /**
+   * その予定のカレンダー上の日時 (time と同じ形)。予定が無ければ null。
+   * 古いサーバーは返さない (そのときはメールの日時で予定を探す)。
+   */
+  eventTime?: MessageInvite["time"] | null;
 };
 
 /** メールの招待を読む。招待として読めなければ null。 */
