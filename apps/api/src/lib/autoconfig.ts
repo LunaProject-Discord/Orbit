@@ -1,7 +1,7 @@
 import { resolveMx, resolveSrv } from "node:dns/promises";
 import { isIP } from "node:net";
+import { resolvesToPrivateAddress } from "@orbit/core";
 import { XMLParser } from "fast-xml-parser";
-import { resolvesToPrivateAddress } from "./host-check.js";
 
 /**
  * メールアドレスのドメインから、受信 (IMAP、無ければ POP3) と送信 (SMTP) の設定を自動で見つける。

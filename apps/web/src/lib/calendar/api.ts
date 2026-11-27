@@ -166,6 +166,28 @@ export async function updateCalendar(
   return ((await response.json()) as { calendar: Calendar }).calendar;
 }
 
+/** ICS の URL を購読する。取得できなければ ApiError (body.message に理由)。 */
+export async function subscribeCalendar(input: {
+  url: string;
+  name?: string;
+  color?: string | null;
+  timeZone: string;
+}): Promise<Calendar> {
+  const response = await apiFetch("/v1/calendars/subscriptions", {
+    method: "POST",
+    body: input,
+  });
+  return ((await response.json()) as { calendar: Calendar }).calendar;
+}
+
+/** 購読を今すぐ取得し直す。 */
+export async function refreshCalendar(id: string): Promise<Calendar> {
+  const response = await apiFetch(`/v1/calendars/${id}/refresh`, {
+    method: "POST",
+  });
+  return ((await response.json()) as { calendar: Calendar }).calendar;
+}
+
 export async function deleteCalendar(id: string): Promise<void> {
   await apiFetch(`/v1/calendars/${id}`, { method: "DELETE" });
 }

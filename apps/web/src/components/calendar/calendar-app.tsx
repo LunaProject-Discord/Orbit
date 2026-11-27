@@ -11,7 +11,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Temporal } from "temporal-polyfill";
-import { AddCalendarDialog } from "@/components/calendar/add-calendar-dialog";
+import {
+  AddCalendarDialog,
+  type AddCalendarInput,
+} from "@/components/calendar/add-calendar-dialog";
 import { AgendaList } from "@/components/calendar/agenda-list";
 import { CalendarSidebar } from "@/components/calendar/calendar-sidebar";
 import { calendarColor } from "@/components/calendar/colors";
@@ -27,22 +30,41 @@ import { SearchResults } from "@/components/calendar/search-results";
 import { TimeGrid } from "@/components/calendar/time-grid";
 import type { DisplayItem, SelectHandler } from "@/components/calendar/types";
 import { showNotice } from "@/components/mail/toasts";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { type Account, listAccounts, type User } from "@/lib/api";
+import {
+  type Account,
+  ApiError,
+  listAccounts,
+  NetworkError,
+  type User,
+} from "@/lib/api";
 import { navigateApp } from "@/lib/app-navigation";
 import {
   type Calendar,
   type CalendarEvent,
   createCalendar,
   createEvent,
+  deleteCalendar,
   deleteEvent,
   deleteOccurrence,
   type EventFields,
   type EventRange,
   listCalendars,
   listEvents,
+  refreshCalendar,
   searchEvents,
+  subscribeCalendar,
   updateCalendar,
   updateEvent,
   updateOccurrence,
@@ -148,6 +170,7 @@ export function CalendarApp({ user }: { user: User }) {
   const [addOpen, setAddOpen] = useState(false);
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<Calendar | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CalendarEvent[] | null>(null);
@@ -479,17 +502,59 @@ export function CalendarApp({ user }: { user: User }) {
     }
   };
 
-  const addCalendar = async (input: { name: string; color: string }) => {
+  const addCalendar = async (input: AddCalendarInput) => {
     setAddBusy(true);
     setAddError(null);
     try {
-      const created = await createCalendar({ ...input, timeZone });
+      const created =
+        input.kind === "local"
+          ? await createCalendar({
+              name: input.name,
+              color: input.color,
+              timeZone,
+            })
+          : await subscribeCalendar({
+              url: input.url,
+              name: input.name || undefined,
+              color: input.color,
+              timeZone,
+            });
       setCalendars((current) => [...(current ?? []), created]);
       setAddOpen(false);
-    } catch {
-      setAddError("追加できませんでした。もう一度お試しください。");
+      if (input.kind === "subscription") void loadRange();
+    } catch (error) {
+      setAddError(addFailure(error));
     } finally {
       setAddBusy(false);
+    }
+  };
+
+  const refreshSubscription = async (calendar: Calendar) => {
+    try {
+      const next = await refreshCalendar(calendar.id);
+      setCalendars(
+        (current) =>
+          current?.map((entry) => (entry.id === next.id ? next : entry)) ??
+          current,
+      );
+      if (next.lastError) showNotice(next.lastError);
+      else showNotice(`「${next.name}」を更新しました。`);
+      void loadRange();
+    } catch {
+      showNotice("更新できませんでした。");
+    }
+  };
+
+  const removeCalendar = async (calendar: Calendar) => {
+    try {
+      await deleteCalendar(calendar.id);
+      setCalendars(
+        (current) =>
+          current?.filter((entry) => entry.id !== calendar.id) ?? null,
+      );
+      void loadRange();
+    } catch {
+      showNotice("削除できませんでした。");
     }
   };
 
@@ -612,6 +677,8 @@ export function CalendarApp({ user }: { user: User }) {
         setAddError(null);
         setAddOpen(true);
       }}
+      onRefreshCalendar={(calendar) => void refreshSubscription(calendar)}
+      onRemoveCalendar={(calendar) => setRemoving(calendar)}
       onOpenSettings={() => navigateApp("/settings")}
       onToggleSidebar={wide ? toggleSidebar : null}
       onNavigate={() => setSidebarOpen(false)}
@@ -897,6 +964,40 @@ export function CalendarApp({ user }: { user: User }) {
         onCreate={(input) => void addCalendar(input)}
         onClose={() => setAddOpen(false)}
       />
+      <AlertDialog
+        open={removing !== null}
+        onOpenChange={(next) => {
+          if (!next) setRemoving(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {removing?.source === "ics"
+                ? `「${removing?.name}」の購読をやめますか？`
+                : `「${removing?.name}」を削除しますか？`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {removing?.source === "ics"
+                ? "このカレンダーの予定が表示されなくなります。URL を登録し直せば、また表示できます。"
+                : "このカレンダーの予定もすべて削除されます。元に戻せません。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = removing;
+                setRemoving(null);
+                if (target) void removeCalendar(target);
+              }}
+            >
+              {removing?.source === "ics" ? "購読をやめる" : "削除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -909,4 +1010,19 @@ function itemRecurrenceId(item: DisplayItem): string | null {
 /** 新しい予定の開始 (次の正時。23 時を過ぎたら 23 時)。 */
 function nextHour(now: Temporal.ZonedDateTime): number {
   return Math.min(now.hour + 1, 23) * 60;
+}
+
+/** カレンダーを足せなかった理由。購読はサーバーが理由の文を返す。 */
+function addFailure(error: unknown): string {
+  if (error instanceof NetworkError) {
+    return "サーバーに接続できませんでした。";
+  }
+  if (error instanceof ApiError) {
+    const message = (error.body as { message?: unknown } | null)?.message;
+    if (typeof message === "string") return message;
+    if (error.code === "too_many_calendars") {
+      return "これ以上カレンダーを追加できません。";
+    }
+  }
+  return "追加できませんでした。もう一度お試しください。";
 }

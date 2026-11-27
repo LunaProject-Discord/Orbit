@@ -3,8 +3,12 @@ import { zValidator } from "@hono/zod-validator";
 import {
   type EventTiming,
   expandOccurrences,
+  HOLIDAYS_VERSION,
+  holidayEvents,
+  loadSubscription,
   normalizeRecurrenceId,
   type RecurrenceException,
+  subscriptionUrlCandidates,
 } from "@orbit/core";
 import {
   calendars,
@@ -14,6 +18,7 @@ import {
   eventReminders,
   eventSearch,
   events,
+  replaceCalendarEvents,
 } from "@orbit/db";
 import {
   and,
@@ -69,6 +74,15 @@ const calendarCreate = z.object({
   name: z.string().trim().min(1).max(200),
   color: color.default(null),
   timeZone: timeZone.nullable().default(null),
+});
+
+const subscriptionCreate = z.object({
+  url: z.string().trim().min(1).max(2000),
+  /** 空なら、カレンダーに書かれた名前 (X-WR-CALNAME) か URL のホスト名。 */
+  name: z.string().trim().max(200).optional(),
+  color: color.default(null),
+  /** 浮動時刻 (タイムゾーン無し) の予定を読むときのタイムゾーン。端末のタイムゾーンを送る。 */
+  timeZone: timeZone.default("Asia/Tokyo"),
 });
 
 const calendarPatch = z
@@ -482,7 +496,15 @@ export function mergeFields(
  * 予定 (Orbit 内のカレンダー) の取得と変更。プロバイダのカレンダーは読むだけ
  * (書き戻しは各プロバイダの同期と一緒に足す)。
  */
-export function calendarRoutes({ db }: Pick<RouteDeps, "db">) {
+export function calendarRoutes({
+  db,
+  allowPrivateMailHosts = false,
+  fetchImpl,
+}: Pick<RouteDeps, "db"> &
+  Partial<Pick<RouteDeps, "allowPrivateMailHosts">> & {
+    /** ICS の取得 (テストで差し替える)。 */
+    fetchImpl?: typeof fetch;
+  }) {
   const app = new Hono<AppEnv>();
 
   const ownCalendar = async (
@@ -510,6 +532,7 @@ export function calendarRoutes({ db }: Pick<RouteDeps, "db">) {
   };
 
   app.get("/", async (c) => {
+    await ensureHolidays(db, c.var.user.id);
     const rows = await db
       .select()
       .from(calendars)
@@ -544,6 +567,135 @@ export function calendarRoutes({ db }: Pick<RouteDeps, "db">) {
     return c.json({ calendar: publicCalendar(created) }, 201);
   });
 
+  /** ICS の URL を購読する。その場で取得して、読めなければ作らない。 */
+  app.post(
+    "/subscriptions",
+    zValidator("json", subscriptionCreate),
+    async (c) => {
+      const body = c.req.valid("json");
+      const userId = c.var.user.id;
+      const candidates = subscriptionUrlCandidates(body.url);
+      if (candidates.length === 0) {
+        return c.json(
+          { error: "invalid_url", message: "URL の形式が正しくありません。" },
+          400,
+        );
+      }
+      let url = candidates[0] as string;
+      let loaded = await loadSubscription(url, {
+        allowPrivate: allowPrivateMailHosts,
+        defaultTimeZone: body.timeZone,
+        fetchImpl,
+      });
+      for (const next of candidates.slice(1)) {
+        if (loaded.status === "ok") break;
+        const retry = await loadSubscription(next, {
+          allowPrivate: allowPrivateMailHosts,
+          defaultTimeZone: body.timeZone,
+          fetchImpl,
+        });
+        if (retry.status === "ok") {
+          url = next;
+          loaded = retry;
+        }
+      }
+      if (loaded.status !== "ok") {
+        return c.json(
+          {
+            error: "fetch_failed",
+            message:
+              loaded.status === "error"
+                ? loaded.message
+                : "取得できませんでした。",
+          },
+          400,
+        );
+      }
+      const created = await db.transaction(async (tx) => {
+        const [{ total } = { total: 0 }] = await tx
+          .select({ total: sql<number>`count(*)::int` })
+          .from(calendars)
+          .where(eq(calendars.userId, userId));
+        if (total >= MAX_CALENDARS) return null;
+        const [row] = await tx
+          .insert(calendars)
+          .values({
+            userId,
+            source: "ics",
+            name:
+              body.name ||
+              loaded.calendar.name ||
+              new URL(url).hostname ||
+              "購読",
+            description: loaded.calendar.description,
+            color: body.color ?? loaded.calendar.color,
+            timeZone: loaded.calendar.timeZone ?? body.timeZone,
+            readOnly: true,
+            url,
+            etag: loaded.validator,
+            lastSyncedAt: new Date(),
+          })
+          .returning();
+        if (!row) return null;
+        const { upserted } = await replaceCalendarEvents(
+          tx,
+          { userId, calendarId: row.id },
+          loaded.calendar.events,
+        );
+        await recordChanges(tx, userId, "calendar", [row.id]);
+        await recordChanges(tx, userId, "event", upserted);
+        return row;
+      });
+      if (!created) return c.json({ error: "too_many_calendars" }, 409);
+      return c.json({ calendar: publicCalendar(created) }, 201);
+    },
+  );
+
+  /** 購読を今すぐ取得し直す。 */
+  app.post(
+    "/:id{[0-9a-fA-F-]{36}}/refresh",
+    zValidator("param", idParam),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const userId = c.var.user.id;
+      const row = await ownCalendar(db, userId, id);
+      if (!row) return c.json({ error: "not_found" }, 404);
+      if (row.source !== "ics" || !row.url) {
+        return c.json({ error: "not_subscription" }, 409);
+      }
+      const loaded = await loadSubscription(row.url, {
+        validator: row.etag,
+        allowPrivate: allowPrivateMailHosts,
+        defaultTimeZone: row.timeZone ?? "Asia/Tokyo",
+        fetchImpl,
+      });
+      const updated = await db.transaction(async (tx) => {
+        const set: Partial<typeof calendars.$inferInsert> = {
+          lastSyncedAt: new Date(),
+          lastError: loaded.status === "error" ? loaded.message : null,
+        };
+        if (loaded.status === "ok") {
+          set.etag = loaded.validator;
+          const { upserted, deleted } = await replaceCalendarEvents(
+            tx,
+            { userId, calendarId: id },
+            loaded.calendar.events,
+          );
+          await recordChanges(tx, userId, "event", upserted);
+          await recordChanges(tx, userId, "event", deleted, "delete");
+        }
+        const [next] = await tx
+          .update(calendars)
+          .set(set)
+          .where(eq(calendars.id, id))
+          .returning();
+        await recordChanges(tx, userId, "calendar", [id]);
+        return next ?? row;
+      });
+      return c.json({ calendar: publicCalendar(updated) });
+    },
+  );
+
   app.patch(
     "/:id{[0-9a-fA-F-]{36}}",
     zValidator("param", idParam),
@@ -556,12 +708,13 @@ export function calendarRoutes({ db }: Pick<RouteDeps, "db">) {
         const row = await ownCalendar(tx, userId, id);
         if (!row) return "not_found" as const;
         // 名前・説明・タイムゾーンは Orbit 内のカレンダーだけ変えられる (ほかは同期で上書きされる)。
+        // 購読の名前は Orbit が持つだけなので変えられる。
         const local = row.source === "local";
+        const renamable = local || row.source === "ics";
         if (
-          !local &&
-          (body.name !== undefined ||
-            body.description !== undefined ||
-            body.timeZone !== undefined)
+          (!renamable && body.name !== undefined) ||
+          (!local &&
+            (body.description !== undefined || body.timeZone !== undefined))
         ) {
           return "read_only" as const;
         }
@@ -580,7 +733,7 @@ export function calendarRoutes({ db }: Pick<RouteDeps, "db">) {
     },
   );
 
-  /** Orbit 内のカレンダーを消す (予定もすべて消える)。 */
+  /** Orbit 内のカレンダーか購読を消す (予定もすべて消える)。祝日は非表示にできるだけ。 */
   app.delete(
     "/:id{[0-9a-fA-F-]{36}}",
     zValidator("param", idParam),
@@ -590,7 +743,9 @@ export function calendarRoutes({ db }: Pick<RouteDeps, "db">) {
       const result = await db.transaction(async (tx) => {
         const row = await ownCalendar(tx, userId, id);
         if (!row) return "not_found" as const;
-        if (row.source !== "local") return "read_only" as const;
+        if (row.source !== "local" && row.source !== "ics") {
+          return "read_only" as const;
+        }
         const removed = await tx
           .delete(events)
           .where(eq(events.calendarId, id))
@@ -1214,4 +1369,68 @@ async function findOrCreateException(
     }
   }
   return row;
+}
+
+/**
+ * 日本の祝日のカレンダーを用意する (既定で有効)。無ければ作り、祝日のデータの版が
+ * 変わっていれば予定を入れ直す。消せないカレンダーなので、オフにするには非表示にする。
+ */
+export async function ensureHolidays(
+  db: Database,
+  userId: string,
+  today = new Date().toISOString().slice(0, 10),
+) {
+  const [current] = await db
+    .select({ id: calendars.id, etag: calendars.etag })
+    .from(calendars)
+    .where(and(eq(calendars.userId, userId), eq(calendars.source, "holidays")))
+    .limit(1);
+  // 祝日は今年の 10 年後まで入れるので、年が変わったときも入れ直す。
+  const version = `${HOLIDAYS_VERSION}/${today.slice(0, 4)}`;
+  if (current?.etag === version) return;
+  await db.transaction(async (tx) => {
+    // 同時に呼ばれても 1 つだけ作るように、利用者ごとに順番にする。
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`holidays:${userId}`}))`,
+    );
+    const [row] = await tx
+      .select({ id: calendars.id, etag: calendars.etag })
+      .from(calendars)
+      .where(
+        and(eq(calendars.userId, userId), eq(calendars.source, "holidays")),
+      )
+      .limit(1);
+    if (row?.etag === version) return;
+    let calendarId = row?.id;
+    if (!calendarId) {
+      const [created] = await tx
+        .insert(calendars)
+        .values({
+          userId,
+          source: "holidays",
+          name: "日本の祝日",
+          color: "#f43f5e",
+          timeZone: "Asia/Tokyo",
+          readOnly: true,
+          etag: version,
+          lastSyncedAt: new Date(),
+        })
+        .returning({ id: calendars.id });
+      if (!created) return;
+      calendarId = created.id;
+    } else {
+      await tx
+        .update(calendars)
+        .set({ etag: version, lastSyncedAt: new Date() })
+        .where(eq(calendars.id, calendarId));
+    }
+    const { upserted, deleted } = await replaceCalendarEvents(
+      tx,
+      { userId, calendarId },
+      holidayEvents(today),
+    );
+    await recordChanges(tx, userId, "calendar", [calendarId]);
+    await recordChanges(tx, userId, "event", upserted);
+    await recordChanges(tx, userId, "event", deleted, "delete");
+  });
 }
