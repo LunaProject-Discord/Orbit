@@ -1,6 +1,14 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, completeSsoLogin, getToken, startSsoLogin } from "./api";
+import {
+  ApiError,
+  completeSsoLink,
+  completeSsoLogin,
+  getToken,
+  pendingSsoMode,
+  startSsoLink,
+  startSsoLogin,
+} from "./api";
 
 vi.mock("@/lib/native/oauth", async (original) => ({
   ...(await original<typeof import("@/lib/native/oauth")>()),
@@ -69,5 +77,21 @@ describe("IdP (シングルサインオン) でのログイン", () => {
       ApiError,
     );
     expect(calls).toHaveLength(0);
+  });
+
+  it("結び付けで始めた合言葉は、ログインには使えない (始めた方でだけ使う)", async () => {
+    respond = () => Response.json({ url: "https://idp.example.com/auth" });
+    await startSsoLink("019aa0c2-7b3e-7c11-9d2f-0123456789ab");
+    expect(calls[0]?.url).toMatch(/\/v1\/security\/sso\/link$/);
+    expect(pendingSsoMode()).toBe("link");
+    await expect(completeSsoLogin("code", "state")).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    // 一度取り出したら消える。
+    expect(pendingSsoMode()).toBeNull();
+    await expect(completeSsoLink("code", "state")).rejects.toMatchObject({
+      code: "invalid_state",
+    });
+    expect(calls).toHaveLength(1);
   });
 });

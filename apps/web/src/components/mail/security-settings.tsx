@@ -4,6 +4,7 @@ import {
   CheckIcon,
   CopyIcon,
   KeyRoundIcon,
+  LinkIcon,
   PencilIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -55,17 +56,23 @@ import {
   deletePasskey,
   disableTwoFactor,
   fetchSecurity,
+  fetchSsoLinks,
   listPasskeys,
   NetworkError,
   type Passkey,
   regenerateBackupCodes,
   renamePasskey,
   requestEmailChange,
+  type SsoLink,
+  setPassword,
+  startSsoLink,
   startTwoFactor,
   type TwoFactorSetup,
+  unlinkSso,
 } from "@/lib/api";
 import { useDateStyle } from "@/lib/date-format-settings";
 import { type DateStyle, formatShortDate } from "@/lib/format";
+import { usesAppOAuth } from "@/lib/native/oauth";
 import {
   PasskeyAlreadyRegistered,
   PasskeyCancelled,
@@ -80,6 +87,16 @@ export type SecurityState = {
   passkeyCount: number;
   /** サーバーが利用者へメールを送れるか (メールアドレスの変更が使えるか)。 */
   mail: boolean;
+  /** パスワードを持っているか。false は IdP で作った利用者 (省略は持っている扱い)。 */
+  hasPassword?: boolean;
+};
+
+/** IdP (シングルサインオン) の結び付け。一般の利用者だけ (管理者は使えない)。 */
+export type SsoLinkClient = {
+  list: (signal?: AbortSignal) => Promise<SsoLink[]>;
+  /** IdP のログイン画面の URL。 */
+  startLink: (providerId: string) => Promise<string>;
+  unlink: (providerId: string) => Promise<void>;
 };
 
 /**
@@ -108,6 +125,10 @@ export type SecurityClient = {
   deletePasskey: (id: string) => Promise<void>;
   /** 名前などが変わったあとに、ログイン中のアカウントの情報を取り直す。 */
   refreshUser: () => Promise<void>;
+  /** パスワードを持たない利用者がパスワードを設定する。null なら使わない。 */
+  setPassword?: ((newPassword: string) => Promise<void>) | null;
+  /** null なら「ログインに使うサービス」を出さない。 */
+  sso?: SsoLinkClient | null;
 };
 
 /** 一般の利用者のログインの設定 (refreshUser は画面側で useAuth から足す)。 */
@@ -124,6 +145,8 @@ const userSecurityClient: Omit<SecurityClient, "refreshUser"> = {
   registerPasskey: (name) => registerPasskey(name),
   renamePasskey,
   deletePasskey,
+  setPassword,
+  sso: { list: fetchSsoLinks, startLink: startSsoLink, unlink: unlinkSso },
 };
 
 const SecurityClientContext = createContext<SecurityClient | null>(null);
@@ -154,6 +177,14 @@ function messageOf(error: unknown): string | null {
         return "パスワードが長すぎます。";
       case "INVALID_CODE":
         return "コードが正しくありません。認証アプリに表示されている、現在のコードを入力してください。";
+      case "PASSWORD_ALREADY_SET":
+        return "パスワードはすでに設定されています。画面を読み込み直してください。";
+      case "last_login_method":
+        return "ほかにログインの方法がないため、解除できません。先にパスワードを設定するか、パスキーを登録してください。";
+      case "provider_unavailable":
+        return "このログイン方法は現在使えません。管理者にお問い合わせください。";
+      case "provider_unreachable":
+        return "ログイン先のサービスに接続できませんでした。時間をおいてもう一度お試しください。";
       case "same_email":
         return "現在のメールアドレスと同じです。";
       case "mail_disabled":
@@ -232,12 +263,16 @@ function SecurityRows({
   const { refreshUser } = client;
   const [status, setStatus] = useState<SecurityState | null>(null);
   const [passkeys, setPasskeys] = useState<Passkey[] | null>(null);
+  const [ssoLinks, setSsoLinks] = useState<SsoLink[] | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = useState<SsoLink | null>(null);
+  const [linking, setLinking] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [dialog, setDialog] = useState<
     | null
     | "name"
     | "email"
     | "password"
+    | "set-password"
     | "two-factor-setup"
     | "two-factor-disable"
     | "backup-codes"
@@ -256,12 +291,14 @@ function SecurityRows({
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [nextStatus, nextPasskeys] = await Promise.all([
+        const [nextStatus, nextPasskeys, nextLinks] = await Promise.all([
           client.fetchStatus(signal),
           client.listPasskeys(signal),
+          client.sso ? client.sso.list(signal) : Promise.resolve(null),
         ]);
         setStatus(nextStatus);
         setPasskeys(nextPasskeys);
+        setSsoLinks(nextLinks);
         setLoadError(false);
       } catch (error) {
         if (signal?.aborted) return;
@@ -280,6 +317,23 @@ function SecurityRows({
   const close = () => setDialog(null);
   const twoFactorEnabled = status?.twoFactorEnabled ?? false;
   const mail = status?.mail ?? false;
+  /** パスワードを持たない (IdP で作った) 利用者。 */
+  const noPassword = status?.hasPassword === false && !!client.setPassword;
+
+  async function link(provider: SsoLink) {
+    if (!client.sso) return;
+    setLinking(provider.id);
+    try {
+      // 戻り先は /oauth/sso (components/sso-callback.tsx)。
+      window.location.assign(await client.sso.startLink(provider.id));
+      // アプリでは外のブラウザーで開き、この画面は残る。
+      if (usesAppOAuth()) setLinking(null);
+    } catch (cause) {
+      const message = messageOf(cause);
+      if (message) showNotice(message);
+      setLinking(null);
+    }
+  }
 
   return (
     <section className="flex flex-col gap-3">
@@ -313,13 +367,15 @@ function SecurityRows({
             description={
               status && !mail
                 ? `${email} (このサーバーはメールを送信できないため、変更できません)`
-                : email
+                : noPassword
+                  ? `${email} (パスワードを設定すると変更できます)`
+                  : email
             }
           >
             <Button
               variant="outline"
               size="sm"
-              disabled={!mail}
+              disabled={!mail || noPassword}
               onClick={() => setDialog("email")}
             >
               変更
@@ -328,14 +384,19 @@ function SecurityRows({
         )}
         <Row
           label="パスワード"
-          description={`${MIN_PASSWORD_LENGTH} 文字以上。`}
+          badge={noPassword ? <Badge variant="secondary">未設定</Badge> : null}
+          description={
+            noPassword
+              ? "設定すると、メールアドレスとパスワードでもログインでき、2 段階認証やメールアドレスの変更が使えるようになります。"
+              : `${MIN_PASSWORD_LENGTH} 文字以上。`
+          }
         >
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setDialog("password")}
+            onClick={() => setDialog(noPassword ? "set-password" : "password")}
           >
-            変更
+            {noPassword ? "設定する" : "変更"}
           </Button>
         </Row>
         <Row
@@ -347,7 +408,11 @@ function SecurityRows({
               </Badge>
             ) : null
           }
-          description="パスワードに加えて、認証アプリ (Google Authenticator、1Password など) に表示される 6 桁のコードでログインします。"
+          description={
+            noPassword && !twoFactorEnabled
+              ? "パスワードを設定すると使えます。パスワードに加えて、認証アプリに表示される 6 桁のコードでログインします。"
+              : "パスワードに加えて、認証アプリ (Google Authenticator、1Password など) に表示される 6 桁のコードでログインします。"
+          }
         >
           {twoFactorEnabled ? (
             <div className="flex flex-wrap justify-end gap-2">
@@ -370,7 +435,7 @@ function SecurityRows({
             <Button
               variant="outline"
               size="sm"
-              disabled={!status}
+              disabled={!status || noPassword}
               onClick={() => setDialog("two-factor-setup")}
             >
               設定する
@@ -435,8 +500,111 @@ function SecurityRows({
             </ul>
           )}
         </div>
+        {ssoLinks && ssoLinks.length > 0 && (
+          <div className="flex flex-col gap-3 px-3 py-2.5" data-sso-links>
+            <div className="min-w-0">
+              <span className="font-medium text-sm">
+                ログインに使うサービス
+              </span>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                結び付けると、そのサービスのアカウントで Orbit
+                にログインできます (シングルサインオン)。
+              </p>
+            </div>
+            <ul className="flex flex-col divide-y rounded-md border">
+              {ssoLinks.map((provider) => (
+                <li
+                  key={provider.id}
+                  className="flex items-center gap-2 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-2 font-medium text-sm">
+                      <span className="truncate">{provider.name}</span>
+                      {provider.linkedAt && (
+                        <Badge className="shrink-0">結び付け済み</Badge>
+                      )}
+                    </p>
+                    <p className="truncate text-muted-foreground text-xs">
+                      {provider.linkedAt
+                        ? `${formatShortDate(provider.linkedAt, dateStyle) || ""} に結び付け${provider.enabled ? "" : " ・ 管理者が無効にしています"}`
+                        : "結び付けていません"}
+                    </p>
+                  </div>
+                  {provider.linkedAt ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setUnlinkTarget(provider)}
+                    >
+                      解除
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={linking !== null}
+                      onClick={() => void link(provider)}
+                    >
+                      <LinkIcon />
+                      {linking === provider.id ? "移動中…" : "結び付ける"}
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
+      <AlertDialog
+        open={unlinkTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnlinkTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {unlinkTarget?.name} の結び付けを解除しますか？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              解除すると、{unlinkTarget?.name} のアカウントでは Orbit
+              にログインできなくなります。あとから結び付け直せます。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = unlinkTarget;
+                setUnlinkTarget(null);
+                if (!target || !client.sso) return;
+                client.sso
+                  .unlink(target.id)
+                  .then(() =>
+                    showNotice(
+                      `${target.name} の結び付けを解除しました。`,
+                      "info",
+                    ),
+                  )
+                  .catch((cause: unknown) => {
+                    const message = messageOf(cause);
+                    if (message) showNotice(message);
+                  })
+                  .finally(() => void load());
+              }}
+            >
+              解除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <SetPasswordDialog
+        open={dialog === "set-password"}
+        onClose={close}
+        onSet={() => void load()}
+      />
       <NameDialog open={dialog === "name"} currentName={name} onClose={close} />
       {email !== null && (
         <EmailDialog
@@ -930,6 +1098,110 @@ function PasswordForm(props: {
         </Button>
         <Button type="submit" disabled={busy}>
           {busy ? "変更中…" : "変更"}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+function SetPasswordDialog(props: {
+  open: boolean;
+  onClose: () => void;
+  onSet: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <FreshDialog open={props.open} busy={busy} onClose={props.onClose}>
+      <SetPasswordForm {...props} onBusy={setBusy} />
+    </FreshDialog>
+  );
+}
+
+/** パスワードを持たない利用者 (IdP で作った人) が、初めてパスワードを設定する。 */
+function SetPasswordForm(props: {
+  onClose: () => void;
+  onSet: () => void;
+  onBusy: (busy: boolean) => void;
+}) {
+  const client = useSecurityClient();
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (next !== confirm) {
+      setError("確認用のパスワードが一致しません。");
+      return;
+    }
+    if (!client.setPassword) return;
+    setError(null);
+    setBusy(true);
+    props.onBusy(true);
+    try {
+      await client.setPassword(next);
+      showNotice("パスワードを設定しました。", "info");
+      props.onBusy(false);
+      props.onSet();
+      props.onClose();
+    } catch (cause) {
+      setError(messageOf(cause));
+      setBusy(false);
+      props.onBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="contents">
+      <DialogHeader>
+        <DialogTitle>パスワードを設定</DialogTitle>
+        <DialogDescription>
+          設定すると、メールアドレスとパスワードでもログインできるようになります。
+        </DialogDescription>
+      </DialogHeader>
+      <Field
+        label="新しいパスワード"
+        hint={`${MIN_PASSWORD_LENGTH} 文字以上にしてください。`}
+      >
+        {(id) => (
+          <Input
+            id={id}
+            type="password"
+            autoComplete="new-password"
+            required
+            autoFocus
+            minLength={MIN_PASSWORD_LENGTH}
+            value={next}
+            onChange={(event) => setNext(event.target.value)}
+          />
+        )}
+      </Field>
+      <Field label="新しいパスワード (確認)">
+        {(id) => (
+          <Input
+            id={id}
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={MIN_PASSWORD_LENGTH}
+            value={confirm}
+            onChange={(event) => setConfirm(event.target.value)}
+          />
+        )}
+      </Field>
+      <ErrorText>{error}</ErrorText>
+      <DialogFooter>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={props.onClose}
+        >
+          キャンセル
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? "設定中…" : "設定"}
         </Button>
       </DialogFooter>
     </form>

@@ -153,6 +153,10 @@ export const authAccounts = pgTable(
       t.providerId,
       t.accountId,
     ),
+    // 1 人の利用者が 1 つの IdP に結び付けられるのは、1 つのアカウントだけ。
+    uniqueIndex("auth_accounts_user_sso_idx")
+      .on(t.userId, t.providerId)
+      .where(sql`${t.providerId} like 'sso:%'`),
   ],
 );
 
