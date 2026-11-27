@@ -42,7 +42,7 @@ Orbit は **接続先のサーバーが更新を決める** 作りです。
    - `latest.json` (デスクトップ版の更新の一覧と署名)
    - `SHA256SUMS` (すべてのファイルの SHA-256)
 
-デスクトップ版のインストーラーの名前は v0.3.0 から `Orbit_<版>_x64-setup.exe` などです (v0.2.0 までは `Orbit-Mail_…`)。v0.2.0 (Orbit Mail) からの自動更新では、新しいインストーラーが旧名のアプリを取り除いて入れ直します (データとログインは残る。詳しくは [desktop-app.md](desktop-app.md) の「名前を Orbit Mail から Orbit に変えたときに保っていること」)。
+デスクトップ版のインストーラーの名前は v0.2.1 から `Orbit_<版>_x64-setup.exe` などです (v0.2.0 までは `Orbit-Mail_…`)。v0.2.0 (Orbit Mail) からの自動更新では、新しいインストーラーが旧名のアプリを取り除いて入れ直します (データとログインは残る。詳しくは [desktop-app.md](desktop-app.md) の「名前を Orbit Mail から Orbit に変えたときに保っていること」)。
 
 デスクトップ版の本体の更新には、更新ファイルの署名の鍵が要ります (下の「準備」)。鍵が無いとインストーラーだけが載り、`latest.json` は作られません。Android の APK は、配布用の署名鍵 (`ANDROID_KEYSTORE_BASE64` など、[android-app.md](android-app.md)) があるときだけ載せます (上から入れ直すには毎回同じ鍵での署名が要るため)。
 
