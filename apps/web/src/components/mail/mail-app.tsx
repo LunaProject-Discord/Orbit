@@ -213,11 +213,9 @@ import {
   useQueuedSends,
   warmConversation,
 } from "@/lib/offline";
-import {
-  adjustUnreadCounts,
-  insertPendingMoves,
-  pruneSnapshots,
-} from "@/lib/pending-moves";
+import { adjustUnreadCounts, insertPendingMoves } from "@/lib/pending-moves";
+import { markRowsRead, PendingOverlay } from "@/lib/pending-overlay";
+import { createPendingShare } from "@/lib/pending-share";
 import {
   type ActionHandler,
   type ActionOptions,
@@ -309,6 +307,7 @@ import {
   setEntryHidden,
   storeCachedUnified,
 } from "@/lib/unified";
+import { adjustUnifiedCounts, overlayUnifiedRows } from "@/lib/unified-match";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { randomUuid } from "@/lib/uuid";
 import {
@@ -692,27 +691,55 @@ const MailView = memo(function MailView({
   const starred = special === "starred";
   const starredRef = useRef(starred);
   starredRef.current = starred;
-  /** 送信待ちの移動ごとの、操作したときの行の控え (移動先の一覧に先に出すのに使う)。 */
-  const moveSnapshotsRef = useRef(new Map<string, readonly MessageSummary[]>());
+  /**
+   * まだサーバーの値に表れていない操作 (このウィンドウとほかのウィンドウの送信待ち、
+   * 受け付け済みで取り直す前のもの) と、操作したときの行の控え。
+   */
+  const overlayRef = useRef<PendingOverlay>(null as unknown as PendingOverlay);
+  if (overlayRef.current === null)
+    overlayRef.current = new PendingOverlay(null);
   const pendingMailboxesRef = useRef<MailboxSummary[] | null>(null);
   pendingMailboxesRef.current = mailboxes;
+  /** 統合フォルダと、サイドバー上部の項目の並び順。 */
+  const [unified, setUnified] = useState<UnifiedState>(emptyUnifiedState);
+  const unifiedRef = useRef(unified);
+  unifiedRef.current = unified;
   /**
    * 取得した一覧に、まだサーバーへ届いていない操作を重ねる。既読やスター、移動元から
    * 外す分に加えて、移動先の一覧には移動したメールを入れる (「元に戻す」を待つ間も含む)。
+   * 統合フォルダでは、条件に当てはまらなくなった行を外し、当てはまるようになった行を入れる。
    */
   const overlayPending = useCallback(
     (rows: MessageSummary[], selection: Selection): MessageSummary[] => {
-      const pending = queueRef.current?.pending() ?? [];
-      const applied = applyActions(rows, pending);
-      pruneSnapshots(moveSnapshotsRef.current, pending);
-      // 検索結果・スター付き・統合フォルダは条件で決まるので、移動先として重ねない。
-      if (searchRef.current || starredRef.current || selection.unifiedId) {
-        return applied;
+      const sources = overlayRef.current.sources(
+        queueRef.current?.pending() ?? [],
+        "list",
+      );
+      const applied = markRowsRead(
+        applyActions(rows, sources.actions),
+        sources.markRead,
+      );
+      // 検索結果・スター付きは条件で決まるので、移動先として重ねない。
+      if (searchRef.current || starredRef.current) return applied;
+      if (selection.unifiedId) {
+        const folder = unifiedRef.current.folders.find(
+          (item) => item.id === selection.unifiedId,
+        );
+        if (!folder) return applied;
+        return overlayUnifiedRows(
+          applied,
+          sources.actions,
+          sources.snapshots,
+          folder,
+          pendingMailboxesRef.current ?? [],
+          keptRowsRef.current,
+          compareMessagesRef.current,
+        );
       }
       return insertPendingMoves(
         applied,
-        pending,
-        moveSnapshotsRef.current,
+        sources.actions,
+        sources.snapshots,
         pendingMailboxesRef.current ?? [],
         selection,
         compareMessagesRef.current,
@@ -720,8 +747,6 @@ const MailView = memo(function MailView({
     },
     [],
   );
-  /** 統合フォルダと、サイドバー上部の項目の並び順。 */
-  const [unified, setUnified] = useState<UnifiedState>(emptyUnifiedState);
   /** サーバーから統合フォルダを取得し終えたか (無くなったフォルダの URL を見分けるのに使う)。 */
   const [unifiedLoaded, setUnifiedLoaded] = useState(false);
   const [unifiedDialog, setUnifiedDialog] =
@@ -794,8 +819,12 @@ const MailView = memo(function MailView({
   }, []);
 
   const loadMailboxes = useCallback(async () => {
+    const started = Date.now();
     try {
       setMailboxes(await listAllMailboxes());
+      // 取得を始める前にサーバーが受け付けた操作は、取得した未読数に表れている。
+      overlayRef.current.fresh("mailboxes", started);
+      setPendingVersion((version) => version + 1);
       // 移動先のメニューなど、フォルダ一覧を別に持っている場所も更新する。
       refreshMailboxes();
     } catch {
@@ -820,9 +849,12 @@ const MailView = memo(function MailView({
   }, []);
 
   const loadUnified = useCallback(async () => {
+    const started = Date.now();
     try {
       const state = await listUnified();
       setUnified(state);
+      overlayRef.current.fresh("unified", started);
+      setPendingVersion((version) => version + 1);
       setUnifiedLoaded(true);
       storeCachedUnified(state);
     } catch {
@@ -1078,10 +1110,42 @@ const MailView = memo(function MailView({
   const countedMailboxes = useMemo(() => {
     void pendingVersion;
     if (!mailboxes) return mailboxes;
-    const pending = queueRef.current?.pending() ?? [];
-    pruneSnapshots(moveSnapshotsRef.current, pending);
-    return adjustUnreadCounts(mailboxes, pending, moveSnapshotsRef.current);
+    const sources = overlayRef.current.sources(
+      queueRef.current?.pending() ?? [],
+      "mailboxes",
+    );
+    const read = new Set(sources.markRead.map((entry) => entry.mailboxId));
+    const adjusted = adjustUnreadCounts(
+      mailboxes,
+      sources.actions,
+      sources.snapshots,
+    );
+    if (read.size === 0) return adjusted;
+    // 「すべて既読にする」の応答を待っているフォルダ (ほかのウィンドウで行ったものも)。
+    return adjusted.map((mailbox) =>
+      read.has(mailbox.id) && mailbox.unreadCount > 0
+        ? { ...mailbox, unreadCount: 0 }
+        : mailbox,
+    );
   }, [mailboxes, pendingVersion]);
+
+  /** 統合フォルダの未読数に、まだサーバーの値に表れていない操作を重ねたもの (サイドバー用)。 */
+  const countedUnified = useMemo(() => {
+    void pendingVersion;
+    const sources = overlayRef.current.sources(
+      queueRef.current?.pending() ?? [],
+      "unified",
+    );
+    const folders = adjustUnifiedCounts(
+      unified.folders,
+      sources.actions,
+      sources.snapshots,
+      sources.origins,
+      mailboxes ?? [],
+      sources.markRead,
+    );
+    return folders === unified.folders ? unified : { ...unified, folders };
+  }, [unified, mailboxes, pendingVersion]);
 
   // タブの題名に、受信トレイの未読数を出す。
   useEffect(() => {
@@ -1238,27 +1302,65 @@ const MailView = memo(function MailView({
   }, [draft, draftDirty]);
 
   useEffect(() => {
+    const share = createPendingShare();
+    const overlay = new PendingOverlay(share);
+    overlayRef.current = overlay;
     const queue = createActionQueue();
     queueRef.current = queue;
     setPendingActions(queue.pending().length);
+    const unsubscribeSent = queue.onSent((action) => overlay.sent(action));
     const unsubscribeCount = queue.onChange((count) => {
       setPendingActions(count);
       setPendingVersion((version) => version + 1);
+      // ほかのウィンドウにも、送信待ちの操作を知らせる。
+      overlay.publish(queue.pending());
     });
     const unsubscribe = queue.onRejected(() => {
       // 画面に先に反映した内容を取り消すため、サーバーの状態を取り直す。
       setNotice({ message: ACTION_ERROR, tone: "error" });
       void loadFirstPage(selectionRef.current, false);
       void loadMailboxes();
+      void loadUnified();
       setRefreshKey((key) => key + 1);
+      share.requestReload();
+    });
+    /** ほかのウィンドウから届いた操作のうち、もう一覧に重ねたもの。 */
+    const applied = new Set<string>();
+    const unsubscribeShare = share.subscribe((event) => {
+      if (event.type === "reload") {
+        // ほかのウィンドウで操作を取り消した。先に重ねた分を戻すため、取り直す。
+        void loadFirstPage(selectionRef.current, false);
+        void loadMailboxes();
+        void loadUnified();
+        setRefreshKey((key) => key + 1);
+        setPendingVersion((version) => version + 1);
+        return;
+      }
+      overlay.remoteSent(event.sent);
+      const fresh = share
+        .actions()
+        .map((item) => item.action)
+        .filter((action) => !applied.has(action.idempotencyKey));
+      for (const action of fresh) applied.add(action.idempotencyKey);
+      // ほかのウィンドウの操作を、取り直すのを待たずに一覧と開いている会話へ重ねる。
+      setMessages(
+        (current) => current && overlayPending(current, selectionRef.current),
+      );
+      for (const action of fresh) {
+        setThreadRows((current) => applyActionToThreads(current, action));
+      }
+      setPendingVersion((version) => version + 1);
     });
     return () => {
       unsubscribe();
+      unsubscribeSent();
       unsubscribeCount();
+      unsubscribeShare();
       queue.stop();
       queueRef.current = null;
+      overlay.close();
     };
-  }, [loadFirstPage, loadMailboxes]);
+  }, [loadFirstPage, loadMailboxes, loadUnified, overlayPending]);
 
   // 削除や移動の「元に戻す」。操作は画面にすぐ反映するが、知らせを出している間は
   // サーバーへ送らずに待ち、「元に戻す」を押されたら送らずに取り消す。
@@ -1370,13 +1472,12 @@ const MailView = memo(function MailView({
       if (input.action === "set_flags") {
         keepAffectedRows(affectedRows(messagesRef.current ?? [], messageIds));
       }
-      {
-        // 移動先の一覧や未読数に、サーバーへ届く前から反映できるよう控えておく。
-        const rows = affectedRows(messagesRef.current ?? [], messageIds);
-        if (rows.length > 0) {
-          moveSnapshotsRef.current.set(action.idempotencyKey, rows);
-        }
-      }
+      // 移動先の一覧や未読数に、サーバーへ届く前から反映できるよう控えておく。
+      overlayRef.current.record(
+        action.idempotencyKey,
+        affectedRows(messagesRef.current ?? [], messageIds),
+        selectionRef.current.unifiedId,
+      );
       setMessages((current) => current && applyActions(current, [action]));
       setThreadRows((current) => applyActionToThreads(current, action));
       if (input.action !== "set_flags") {
@@ -1406,6 +1507,9 @@ const MailView = memo(function MailView({
       setNotice({ message: UNDO_ERROR, tone: "error" });
     }
     if (cancelled.length === 0) return;
+    // ほかのウィンドウにも、先に重ねた分を戻してもらう。
+    overlayRef.current.publish(queueRef.current?.pending() ?? []);
+    overlayRef.current.requestReload();
     const now = selectionRef.current;
     if (
       now.accountId === group.selection.accountId &&
@@ -2438,7 +2542,8 @@ const MailView = memo(function MailView({
       if (request !== listRequest.current) return;
       const fetched = applyActions(
         page.messages,
-        queueRef.current?.pending() ?? [],
+        overlayRef.current.sources(queueRef.current?.pending() ?? [], "list")
+          .actions,
       );
       setMessages((current) => {
         const ids = new Set((current ?? []).map((message) => message.id));
@@ -2775,6 +2880,13 @@ const MailView = memo(function MailView({
     });
   /** フォルダの未読をすべて既読にする。画面にはすぐ反映し、失敗したらサーバーの状態に戻す。 */
   const handleMarkAllRead = (target: MailboxSummary) => {
+    // 統合フォルダの未読数とほかのウィンドウにも、応答を待たずに反映する。
+    const before =
+      countedMailboxes?.find((mailbox) => mailbox.id === target.id)
+        ?.unreadCount ?? target.unreadCount;
+    overlayRef.current.startMarkRead({ mailboxId: target.id, unread: before });
+    overlayRef.current.publish(queueRef.current?.pending() ?? []);
+    setPendingVersion((version) => version + 1);
     setMailboxes(
       (current) =>
         current?.map((mailbox) =>
@@ -2794,11 +2906,23 @@ const MailView = memo(function MailView({
             : message,
         ) ?? null,
     );
-    markMailboxRead(target.id).catch(() => {
-      setNotice({ message: MARK_READ_ERROR, tone: "error" });
-      void loadMailboxes();
-      void loadFirstPage(selectionRef.current, false);
-    });
+    markMailboxRead(target.id).then(
+      () => {
+        overlayRef.current.finishMarkRead(target.id, true);
+        overlayRef.current.publish(queueRef.current?.pending() ?? []);
+        setPendingVersion((version) => version + 1);
+      },
+      () => {
+        overlayRef.current.finishMarkRead(target.id, false);
+        overlayRef.current.publish(queueRef.current?.pending() ?? []);
+        overlayRef.current.requestReload();
+        setPendingVersion((version) => version + 1);
+        setNotice({ message: MARK_READ_ERROR, tone: "error" });
+        void loadMailboxes();
+        void loadUnified();
+        void loadFirstPage(selectionRef.current, false);
+      },
+    );
   };
   /** メールのアカウントすべてに迷惑メールのフォルダがある (迷惑メールとして扱える)。 */
   const junkAvailable = (rows: MessageSummary[]) =>
@@ -3400,7 +3524,7 @@ const MailView = memo(function MailView({
             draftCount={visibleDrafts?.length ?? 0}
             draftsSelected={draftsSelected}
             special={special}
-            unified={unified}
+            unified={countedUnified}
             selectedUnifiedId={unifiedId}
             onSelectUnified={handleSelectUnified}
             outgoingCount={outgoing.length + queuedSends.length}
@@ -3496,7 +3620,7 @@ const MailView = memo(function MailView({
             onSelectDrafts={handleSelectDrafts}
             special={special}
             onSelectSpecial={handleSelectSpecial}
-            unified={unified}
+            unified={countedUnified}
             selectedUnifiedId={unifiedId}
             onSelectUnified={handleSelectUnified}
             onReorderViews={(keys) =>

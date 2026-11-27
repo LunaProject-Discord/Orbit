@@ -296,6 +296,11 @@ export type MessageSummary = {
    * 一覧の 1 行は会話 1 つを表し、既読やスターはこれらをまとめた値、操作もこれらが対象になる。
    */
   threadMessageIds: string[];
+  /**
+   * threadMessageIds のうち未読のもの。サーバーが返す一覧にだけ入る (検索結果や、
+   * 端末に保存してあった古い内容には無い)。無いときは seen から分かる範囲で扱う。
+   */
+  unseenIds?: string[];
   /** 下書きフォルダにある、このアプリの下書きの控えなら、その下書きの ID。 */
   draftId?: string | null;
 };

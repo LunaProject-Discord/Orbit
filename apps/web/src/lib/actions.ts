@@ -31,7 +31,7 @@ const MAX_PENDING = 500;
  */
 export function applyActions(
   messages: MessageSummary[],
-  actions: MessageAction[],
+  actions: readonly MessageAction[],
 ): MessageSummary[] {
   let result = messages;
   for (const action of actions) {
@@ -42,18 +42,35 @@ export function applyActions(
       const hits = members.filter((id) => ids.has(id)).length;
       if (hits === 0) return [message];
       const all = hits === members.length;
+      const unseen = knownUnseen(message);
       if (action.action === "set_flags") {
         // 行の既読は「すべて既読」、スターは「どれかに付いている」を表す。
-        // 一部だけが対象のときは、結果が確実に決まる向きだけを反映する。
-        const seen =
+        // 一部だけが対象のときは、結果が確実に決まる向きだけを反映する
+        // (どれが未読か分かっている会話では、既読も正しく決める)。
+        let seen =
           action.seen === undefined || (action.seen && !all)
             ? message.seen
             : action.seen;
+        let unseenIds = message.unseenIds;
+        if (action.seen !== undefined && unseen) {
+          const next =
+            action.seen === true
+              ? unseen.filter((id) => !ids.has(id))
+              : members.filter((id) => ids.has(id) || unseen.includes(id));
+          unseenIds = next;
+          seen = next.length === 0;
+        } else if (action.seen !== undefined && unseenIds !== undefined) {
+          // 分からなくなった (古い内容と食い違う) 控えは捨てる。
+          unseenIds = undefined;
+        }
         const flagged =
           action.flagged === undefined || (!action.flagged && !all)
             ? message.flagged
             : action.flagged;
-        return [{ ...message, seen, flagged }];
+        const next: MessageSummary = { ...message, seen, flagged };
+        if (unseenIds === undefined) delete next.unseenIds;
+        else next.unseenIds = unseenIds;
+        return [next];
       }
       // 移動と削除では、いま見ているフォルダから無くなる。
       // 移動先がそのメッセージのあるフォルダ自身なら、何も起きない。
@@ -61,16 +78,32 @@ export function applyActions(
         return [message];
       }
       if (all) return [];
-      return [
-        {
-          ...message,
-          threadMessageIds: members.filter((id) => !ids.has(id)),
-          threadCount: Math.max(1, message.threadCount - hits),
-        },
-      ];
+      const rest: MessageSummary = {
+        ...message,
+        threadMessageIds: members.filter((id) => !ids.has(id)),
+        threadCount: Math.max(1, message.threadCount - hits),
+      };
+      if (unseen) {
+        rest.unseenIds = unseen.filter((id) => !ids.has(id));
+        rest.seen = rest.unseenIds.length === 0;
+      }
+      return [rest];
     });
   }
   return result;
+}
+
+/**
+ * 行 (会話) のうち未読のメッセージ。分からなければ null。
+ * サーバーが返した unseenIds があればそれを使い、無ければ既読の値から分かる範囲で決める。
+ */
+export function knownUnseen(row: MessageSummary): string[] | null {
+  const members = row.threadMessageIds;
+  if (row.seen) return [];
+  const listed = row.unseenIds?.filter((id) => members.includes(id));
+  if (listed && listed.length > 0) return listed;
+  if (members.length === 1) return members.slice();
+  return null;
 }
 
 function isAction(value: unknown): value is MessageAction {
@@ -114,6 +147,8 @@ export type ActionQueue = {
   cancel: (idempotencyKey: string) => boolean;
   /** サーバーに拒否されて取り消された操作を受け取る。戻り値の関数で解除する。 */
   onRejected: (listener: (action: MessageAction) => void) => () => void;
+  /** サーバーが受け付けた操作を受け取る。戻り値の関数で解除する。 */
+  onSent: (listener: (action: MessageAction) => void) => () => void;
   /** 送れていない操作の数が変わるたびに呼ぶ。戻り値の関数で解除する。 */
   onChange: (listener: (count: number) => void) => () => void;
   stop: () => void;
@@ -130,6 +165,7 @@ export function createActionQueue(
   const listeners = new Set<(action: MessageAction) => void>();
 
   const changeListeners = new Set<(count: number) => void>();
+  const sentListeners = new Set<(action: MessageAction) => void>();
 
   /** 「元に戻す」を受け付けている間、送るのを待たせている操作。 */
   const held = new Set<string>();
@@ -178,6 +214,13 @@ export function createActionQueue(
         try {
           sending = action.idempotencyKey;
           await send(action);
+          for (const listener of sentListeners) {
+            try {
+              listener(action);
+            } catch {
+              // 受け取る側の失敗で、送れた操作を送り直さない。
+            }
+          }
         } catch (error) {
           const retryable =
             error instanceof NetworkError ||
@@ -240,6 +283,10 @@ export function createActionQueue(
     onRejected(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onSent(listener) {
+      sentListeners.add(listener);
+      return () => sentListeners.delete(listener);
     },
     onChange(listener) {
       changeListeners.add(listener);
