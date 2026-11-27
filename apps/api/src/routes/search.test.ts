@@ -244,6 +244,18 @@ describe.skipIf(!adminUrl)("検索 (PostgreSQL)", () => {
     }
   });
 
+  it("索引で引く関数は、表を順に読む計画を選ばない", async () => {
+    // よく出る文字の語で、1 通ずつ mail_search_grams を計算する計画 (10 万通で 30 秒以上) を選ばないよう、
+    // mail_search_ids の中では表を順に読まない (マイグレーション 0046)。
+    const result = await db.execute<{ config: string[] | null }>(
+      sql`select proconfig as config from pg_proc where proname = 'mail_search_ids'`,
+    );
+    expect(result.rows[0]?.config).toContain("enable_seqscan=off");
+    searchIndex.ready = true;
+    // 1 文字の語 (どのメールにもある文字) でも、索引で引いて全件を返す。
+    expect(await search("e")).toHaveLength(SEEDS.length);
+  });
+
   it("候補を確かめながら探しても、次のページの続きが正しい", async () => {
     searchIndex.ready = true;
     const seen: string[] = [];

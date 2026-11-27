@@ -83,14 +83,15 @@ export function termCondition(term: SearchTerm, mode: TermMode = "index"): SQL {
     } else {
       const like =
         mode === "loose" || isExactByGrams(term, folded)
-          ? sql``
-          : sql` and ${fieldPart(doc, term.field)} like ${pattern}`;
-      // offset 0 で副問い合わせを外側と混ぜずに計画させ、必ず索引で引く
-      // (混ぜると、1 行ずつ mail_search_grams を計算する重い計画を選ぶことがある)。
+          ? sql`null::text`
+          : pattern;
+      // 索引で引くのは DB の関数 mail_search_ids (マイグレーション 0046) に任せる。
+      // 副問い合わせに直接書くと、よく出る文字の語で 1 行ずつ mail_search_grams を計算する
+      // 重い計画 (10 万通で 30 秒以上) を選ぶことがあるため、関数の中で必ず索引を使わせている。
       condition = sql`${messages.id} in (
-        select ${messageSearch.messageId} from ${messageSearch}
-        where mail_search_grams(${messageSearch.doc}) @> mail_search_query_grams(${value})${like}
-        offset 0
+        select ids.id from mail_search_ids(
+          mail_search_query_grams(${value}), ${like}, ${FIELD_PARTS[term.field]}::int
+        ) as ids(id)
       )`;
     }
   }
