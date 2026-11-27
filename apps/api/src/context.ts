@@ -37,7 +37,11 @@ export function requireUser(auth: Auth) {
     const session = await auth.api.getSession({
       headers: withoutCookies(c.req.raw.headers),
     });
-    if (!session) {
+    // 無効にされた利用者 (無効にするのと同時にログインしていた端末) は通さない。
+    const disabledAt = (
+      session?.user as { disabledAt?: Date | null } | undefined
+    )?.disabledAt;
+    if (!session || disabledAt) {
       return c.json({ error: "unauthorized" }, 401);
     }
     c.set("user", {

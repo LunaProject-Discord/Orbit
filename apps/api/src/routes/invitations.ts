@@ -7,6 +7,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Auth } from "../auth.js";
+import { passwordLoginEnabled } from "../lib/login-policy.js";
 import type { AdminEnv } from "./admin.js";
 
 /** パスワードの長さ (auth.ts の minPasswordLength と Better Auth の上限に合わせる)。 */
@@ -93,6 +94,10 @@ export function invitationPublicRoutes({ db, signUpAuth }: PublicDeps) {
         : null;
       // 無い・使用済み・期限切れは区別しない。
       if (!invitation) return c.json({ error: "invalid_invitation" }, 404);
+      // パスワードでのログインを止めているサーバーでは、パスワードで登録しても使えない。
+      if (!(await passwordLoginEnabled(db))) {
+        return c.json({ error: "password_login_disabled" }, 403);
+      }
       return c.json({
         email: invitation.email,
         expiresAt: invitation.expiresAt,
@@ -112,6 +117,9 @@ export function invitationPublicRoutes({ db, signUpAuth }: PublicDeps) {
     }
     const invitation = await findUsable(db, body.token);
     if (!invitation) return c.json({ error: "invalid_invitation" }, 404);
+    if (!(await passwordLoginEnabled(db))) {
+      return c.json({ error: "password_login_disabled" }, 403);
+    }
     if (invitation.email && invitation.email.toLowerCase() !== address) {
       return c.json({ error: "email_mismatch" }, 400);
     }

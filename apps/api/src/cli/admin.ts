@@ -6,6 +6,8 @@
  *   pnpm admin password <名前> [--reset-two-factor]   パスワードを付け直す (復旧用。パスキーも消す)
  *   pnpm admin list                                   管理者の一覧
  *   pnpm admin delete <名前>                          管理者を消す
+ *   pnpm admin password-login [on|off]                一般の利用者のパスワードでのログインを
+ *                                                     許す / 止める (引数なしで今の設定を表示。復旧用)
  *
  * 本番 (Docker) では `docker compose run --rm api node apps/api/dist/cli/admin.js create <名前> <表示名>`。
  * パスワードは環境変数 ADMIN_PASSWORD か、標準入力の 1 行目から読む
@@ -24,6 +26,7 @@ import {
 import { and, asc, eq, like } from "drizzle-orm";
 import { ADMIN_MIN_PASSWORD_LENGTH, createAdminAuth } from "../admin-auth.js";
 import { loadEnv } from "../env.js";
+import { passwordLoginEnabled, setPasswordLogin } from "../lib/login-policy.js";
 import { createAdmin } from "../routes/admin.js";
 
 const USAGE = [
@@ -32,6 +35,7 @@ const USAGE = [
   "  admin password <名前> [--reset-two-factor]",
   "  admin list",
   "  admin delete <名前>",
+  "  admin password-login [on|off]",
 ].join("\n");
 
 const args = process.argv.slice(2);
@@ -186,8 +190,33 @@ async function remove() {
   console.log(`管理者 ${admin.username} を消しました。`);
 }
 
+/**
+ * 一般の利用者のパスワードでのログインを許す・止める。IdP の設定を誤って誰もログインできなく
+ * なったときに、管理画面を使わずに戻せるようにする (管理者のログインには関係しない)。
+ */
+async function passwordLogin() {
+  const [value] = rest;
+  if (value === undefined) {
+    const enabled = await passwordLoginEnabled(db);
+    console.log(
+      `パスワードでのログイン: ${enabled ? "許可 (on)" : "停止 (off)"}`,
+    );
+    return;
+  }
+  if (value !== "on" && value !== "off") throw new Error(USAGE);
+  await setPasswordLogin(db, value === "on");
+  console.log(
+    value === "on"
+      ? "パスワードでのログインを許可しました。"
+      : "パスワードでのログインを止めました。IdP やパスキーでログインしてください。",
+  );
+}
+
 try {
   switch (command) {
+    case "password-login":
+      await passwordLogin();
+      break;
     case "create":
       await create();
       break;

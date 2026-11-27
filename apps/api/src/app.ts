@@ -19,6 +19,10 @@ import {
 } from "./lib/auth-state.js";
 import type { EventsHub } from "./lib/events-hub.js";
 import {
+  isPasswordLoginPath,
+  passwordLoginEnabled,
+} from "./lib/login-policy.js";
+import {
   createSenderIconService,
   defaultIconDeps,
 } from "./lib/sender-icons.js";
@@ -181,9 +185,22 @@ export function createApp({
     ssoRoutes({ db, auth, encryptionKey, webOrigin, clients: ssoClients }),
   );
   // Better Auth が Cookie で持つ途中の値は、X-Auth-State ヘッダーで受け渡す。
-  v1.on(["GET", "POST"], "/auth/*", async (c) =>
-    withAuthStateHeader(await auth.handler(withAuthStateCookie(c.req.raw))),
-  );
+  v1.on(["GET", "POST"], "/auth/*", async (c) => {
+    // 管理者がパスワードでのログインを止めているときは、ログインと再設定を受け付けない。
+    const path = new URL(c.req.url).pathname.slice("/v1/auth".length);
+    if (isPasswordLoginPath(path) && !(await passwordLoginEnabled(db))) {
+      return c.json(
+        {
+          code: "PASSWORD_LOGIN_DISABLED",
+          message: "password login is disabled",
+        },
+        403,
+      );
+    }
+    return withAuthStateHeader(
+      await auth.handler(withAuthStateCookie(c.req.raw)),
+    );
+  });
   v1.route("/", authFeatureRoutes({ db, mailEnabled: mailer !== null }));
 
   // Microsoft Graph から直接呼ばれる。ログインの代わりに、通知に付く合言葉で確かめる。

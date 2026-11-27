@@ -9,6 +9,7 @@ import {
   authStateToCookie,
   withAuthStateHeader,
 } from "../lib/auth-state.js";
+import { isUserDisabled } from "../lib/login-policy.js";
 import { clientAddress, createRateWindow } from "../lib/rate-window.js";
 import {
   ssoAuthorizeUrl,
@@ -122,6 +123,12 @@ export function ssoRoutes({
       );
     }
 
+    // 管理者が無効にした利用者は、IdP で確認できてもログインさせない
+    // (2 段階認証のコードを尋ねる前に断る)。
+    if (await isUserDisabled(db, result.userId)) {
+      return c.json({ error: "user_disabled" }, 403);
+    }
+
     // セッション (または 2 段階認証の途中の値) は Better Auth に作らせる。
     // 「この端末ではコードを省略する」の印だけを Cookie として渡す (既存のセッションは使わない)。
     const cookie = authStateToCookie(c.req.header(AUTH_STATE_HEADER) ?? null);
@@ -130,6 +137,10 @@ export function ssoRoutes({
       headers: new Headers(cookie ? { cookie } : {}),
       asResponse: true,
     });
+    if (response.status === 403) {
+      // 確かめた直後に無効にされた (セッションを作るときに断られた)。
+      return c.json({ error: "user_disabled" }, 403);
+    }
     if (!response.ok) {
       console.error(
         `IdP (${provider.name}) でのログインで、セッションを作れませんでした (HTTP ${response.status})`,

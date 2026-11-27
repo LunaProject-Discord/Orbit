@@ -3,11 +3,14 @@ import {
   adminPasskeys,
   adminSessions,
   adminUsers,
+  authAccounts,
   type Database,
+  passkeys,
+  ssoProviders,
   users,
 } from "@orbit/db";
 import { isAPIError } from "better-auth/api";
-import { asc, count, eq } from "drizzle-orm";
+import { asc, count, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
 import { z } from "zod";
@@ -25,6 +28,12 @@ import {
 import { withoutCookies } from "../context.js";
 import type { SetupCode } from "../lib/admin-setup.js";
 import { withAuthStateCookie, withAuthStateHeader } from "../lib/auth-state.js";
+import {
+  disableUser,
+  enableUser,
+  passwordLoginEnabled,
+  setPasswordLogin,
+} from "../lib/login-policy.js";
 import type { SsoClientResolver } from "../lib/sso-providers.js";
 import { adminSsoRoutes } from "./admin-sso.js";
 import { invitationRoutes } from "./invitations.js";
@@ -76,6 +85,36 @@ export async function countAdmins(db: Database): Promise<number> {
   const [row] = await db.select({ total: count() }).from(adminUsers);
   return row?.total ?? 0;
 }
+
+/**
+ * パスワードでのログインを止めたときの影響を見積もる数。
+ * enabledSsoProviders = 有効な IdP の数、
+ * withoutOtherMethod = 有効な IdP の結び付きもパスキーも無い (パスワードでしかログインできない)、無効にしていない利用者の数。
+ */
+export async function loginMethodCounts(
+  db: Database,
+): Promise<{ enabledSsoProviders: number; withoutOtherMethod: number }> {
+  const [providers] = await db
+    .select({ value: count() })
+    .from(ssoProviders)
+    .where(eq(ssoProviders.enabled, true));
+  const result = await db.execute<{ value: string | number }>(sql`
+    select count(*) as value from ${users} u
+    where u.disabled_at is null
+      and not exists (select 1 from ${passkeys} p where p.user_id = u.id)
+      and not exists (
+        select 1 from ${authAccounts} a
+        join ${ssoProviders} s on a.provider_id = 'sso:' || s.id::text
+        where a.user_id = u.id and s.enabled
+      )
+  `);
+  return {
+    enabledSsoProviders: providers?.value ?? 0,
+    withoutOtherMethod: Number(result.rows[0]?.value ?? 0),
+  };
+}
+
+const userParam = z.object({ id: z.uuid() });
 
 export type CreateAdminResult =
   | { ok: true; id: string; username: string }
@@ -254,6 +293,7 @@ export function adminRoutes({
         email: users.email,
         name: users.name,
         twoFactorEnabled: users.twoFactorEnabled,
+        disabledAt: users.disabledAt,
         createdAt: users.createdAt,
       })
       .from(users)
@@ -261,6 +301,66 @@ export function adminRoutes({
       .limit(500);
     return c.json({ users: rows });
   });
+
+  /**
+   * 利用者を無効にする。全端末からログアウトさせ、ログインも API も使えなくする
+   * (IdP 側で消された人などに使う)。メールなどのデータは残す。
+   */
+  authed.post(
+    "/users/:id/disable",
+    zValidator("param", userParam),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const result = await disableUser(db, id);
+      if (result === "not_found") return c.json({ error: "not_found" }, 404);
+      if (result === "ok") {
+        console.log(
+          `管理者 ${c.var.admin.username} が利用者 ${id} を無効にしました`,
+        );
+      }
+      return c.body(null, 204);
+    },
+  );
+
+  /** 無効にした利用者を戻す。端末ではログインし直してもらう。 */
+  authed.post(
+    "/users/:id/enable",
+    zValidator("param", userParam),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      if (!(await enableUser(db, id))) {
+        return c.json({ error: "not_found" }, 404);
+      }
+      console.log(
+        `管理者 ${c.var.admin.username} が利用者 ${id} を有効に戻しました`,
+      );
+      return c.body(null, 204);
+    },
+  );
+
+  /** 一般の利用者のログインの設定 (パスワードでのログインを許すか)。 */
+  authed.get("/login-settings", async (c) => {
+    return c.json({
+      passwordLogin: await passwordLoginEnabled(db),
+      ...(await loginMethodCounts(db)),
+    });
+  });
+
+  authed.put(
+    "/login-settings",
+    zValidator("json", z.object({ passwordLogin: z.boolean() })),
+    async (c) => {
+      const { passwordLogin } = c.req.valid("json");
+      await setPasswordLogin(db, passwordLogin);
+      console.log(
+        `管理者 ${c.var.admin.username} がパスワードでのログインを${passwordLogin ? "許可" : "停止"}しました`,
+      );
+      return c.json({
+        passwordLogin,
+        ...(await loginMethodCounts(db)),
+      });
+    },
+  );
 
   /** 管理者の一覧。 */
   authed.get("/admins", async (c) => {
