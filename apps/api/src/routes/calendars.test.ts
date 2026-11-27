@@ -14,6 +14,7 @@ import {
   calendars,
   createDb,
   type Database,
+  eventAttendees,
   eventConflicts,
   events,
   outbox,
@@ -266,17 +267,16 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       },
       reminders: [{ method: "display", minutes: 10 }],
       useDefaultReminders: false,
-      attendees: [{ email: "Alice@Example.com", name: "Alice" }],
     });
     expect(timed.status).toBe(201);
     const event = timed.body.event as Json;
+    // 参加者のある予定の作成は「招待と出欠」の確かめで行う (Orbit 内のカレンダーは参加者を持てない)。
     expect(event).toMatchObject({
       summary: "定例会議",
       startAt: "2026-12-01T01:00:00.000Z",
       reminders: [{ method: "display", minutes: 10 }],
-      attendees: [
-        { email: "alice@example.com", status: "needs_action", self: false },
-      ],
+      attendees: [],
+      organizer: null,
     });
     const allDay = await call("POST", "/events", {
       calendarId,
@@ -1108,12 +1108,11 @@ describe.skipIf(!adminUrl)("予定の API", () => {
       const body = {
         changes: {
           summary: "再送",
-          attendees: [{ email: "Bob@Example.com", name: "Bob" }],
+          // 参加者の再送は「招待と出欠」で確かめる (Orbit 内のカレンダーは参加者を持てない)。
           reminders: [{ method: "display", minutes: 5 }],
         },
         changedAt: {
           summary: ago(MIN),
-          attendees: ago(MIN),
           reminders: ago(MIN),
         },
         clientNow: ago(0),
@@ -1320,6 +1319,592 @@ describe.skipIf(!adminUrl)("予定の API", () => {
         conflictsAt: createdAt.toISOString(),
       });
       await db.delete(eventConflicts);
+    });
+  });
+
+  describe("招待と出欠 (段取り 8)", () => {
+    let ownerId: string;
+    let inviteAccountId: string;
+    /** Google (scheduling: server)。 */
+    let googleId: string;
+    /** 招待を自分で送らない CalDAV (scheduling: none)。 */
+    let caldavNoneId: string;
+    /** 招待を自分で送る CalDAV (scheduling: server)。 */
+    let caldavServerId: string;
+    /** 読み取り専用 (購読)。 */
+    let feedId: string;
+    let localId: string;
+    let inviteApp: Hono<AppEnv>;
+    const send = (method: string, path: string, body?: unknown) =>
+      call(method, path, body, inviteApp);
+    const MIN = 60_000;
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    type Person = {
+      email: string;
+      self?: boolean;
+      status?: "needs_action" | "accepted" | "declined" | "tentative";
+    };
+
+    /** 予定を直接入れる (同期で取り込んだ行の代わり)。 */
+    const seedEvent = async (input: {
+      calendarId: string;
+      organizer: { email: string; self?: boolean } | null;
+      attendees: Person[];
+      status?: "confirmed" | "cancelled";
+      summary?: string;
+      rrule?: string;
+    }) => {
+      const id = randomUUID();
+      const [row] = await db
+        .insert(events)
+        .values({
+          id,
+          userId: ownerId,
+          calendarId: input.calendarId,
+          uid: `${id}@remote`,
+          remoteId: `remote-${id}`,
+          etag: '"e1"',
+          summary: input.summary ?? "招待",
+          status: input.status ?? "confirmed",
+          startAt: new Date("2027-03-01T01:00:00Z"),
+          endAt: new Date("2027-03-01T02:00:00Z"),
+          startTimeZone: "Asia/Tokyo",
+          endTimeZone: "Asia/Tokyo",
+          rrule: input.rrule ?? null,
+          organizer: input.organizer,
+          fieldUpdatedAt: {},
+        })
+        .returning();
+      if (!row) throw new Error("予定を作れませんでした。");
+      if (input.attendees.length > 0) {
+        await db.insert(eventAttendees).values(
+          input.attendees.map((person) => ({
+            eventId: id,
+            email: person.email,
+            status: person.status ?? "needs_action",
+            self: person.self ?? false,
+          })),
+        );
+      }
+      return row;
+    };
+    const invitation = (calendarId = googleId) =>
+      seedEvent({
+        calendarId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [
+          { email: "boss@example.com", status: "accepted" },
+          { email: "invitee@gmail.com", self: true },
+        ],
+      });
+    const queuedFor = (eventId: string) =>
+      db
+        .select()
+        .from(outbox)
+        .where(
+          and(
+            eq(outbox.accountId, inviteAccountId),
+            sql`${outbox.payload}->>'eventId' = ${eventId}`,
+          ),
+        )
+        .orderBy(asc(outbox.createdAt), asc(outbox.id));
+    /** 参加者の [アドレス, 出欠, self] (アドレス順。行の順番は決まっていないため)。 */
+    const attendeesOf = (body: Json) =>
+      ((body.event as Json).attendees as Json[])
+        .map((item) => [item.email, item.status, item.self])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+
+    beforeAll(async () => {
+      const [owner] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, "owner@example.com"));
+      ownerId = owner?.id as string;
+      const [account] = await db
+        .insert(accounts)
+        .values({
+          userId: ownerId,
+          email: "invitee@gmail.com",
+          provider: "gmail",
+          authType: "oauth2",
+          username: "invitee@gmail.com",
+          credentialsEncrypted: "x",
+          calendarEnabled: true,
+        })
+        .returning({ id: accounts.id });
+      inviteAccountId = account?.id as string;
+      const insertCalendar = async (
+        values: Partial<typeof calendars.$inferInsert>,
+      ) => {
+        const [row] = await db
+          .insert(calendars)
+          .values({
+            userId: ownerId,
+            accountId: inviteAccountId,
+            name: "カレンダー",
+            source: "google",
+            ...values,
+          })
+          .returning({ id: calendars.id });
+        return row?.id as string;
+      };
+      googleId = await insertCalendar({ source: "google", remoteId: "inv" });
+      caldavNoneId = await insertCalendar({
+        source: "caldav",
+        remoteId: "https://dav.example.com/none/",
+        providerState: { syncCollection: true, autoSchedule: false },
+      });
+      caldavServerId = await insertCalendar({
+        source: "caldav",
+        remoteId: "https://dav.example.com/server/",
+        providerState: { autoSchedule: true },
+      });
+      feedId = await insertCalendar({
+        source: "ics",
+        accountId: null,
+        readOnly: true,
+      });
+      localId = await insertCalendar({ source: "local", accountId: null });
+      inviteApp = new Hono<AppEnv>();
+      inviteApp.use(async (c, next) => {
+        c.set("user", {
+          id: ownerId,
+          email: "owner@example.com",
+          name: "owner",
+        });
+        await next();
+      });
+      inviteApp.route(
+        "/calendars",
+        calendarRoutes({ db, writebackSources: ["google", "caldav"] }),
+      );
+    });
+
+    it("カレンダーの応答に scheduling が入る", async () => {
+      const list = await send("GET", "");
+      const byId = new Map(
+        (list.body.calendars as Json[]).map((row) => [row.id, row.scheduling]),
+      );
+      expect(byId.get(googleId)).toBe("server");
+      expect(byId.get(caldavServerId)).toBe("server");
+      expect(byId.get(caldavNoneId)).toBe("none");
+      expect(byId.get(feedId)).toBe("none");
+      expect(byId.get(localId)).toBe("none");
+    });
+
+    it("返事: 自分の行だけが変わり、outbox に 1 行。再送では増えず、古い返事は applied: false", async () => {
+      const row = await invitation();
+      const respondedAt = ago(MIN);
+      const body = { status: "accepted", respondedAt };
+      const first = await send("POST", `/events/${row.id}/respond`, body);
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({
+        applied: true,
+        notifiesOrganizer: true,
+      });
+      expect(attendeesOf(first.body)).toEqual([
+        ["boss@example.com", "accepted", false],
+        ["invitee@gmail.com", "accepted", true],
+      ]);
+      expect(
+        ((first.body.event as Json).fieldUpdatedAt as Json).myResponse,
+      ).toBe(new Date(respondedAt).toISOString());
+      const queued = await queuedFor(row.id);
+      expect(queued).toHaveLength(1);
+      expect(queued[0]).toMatchObject({
+        kind: "event_respond",
+        idempotencyKey: `event_respond:${row.id}:accepted:${respondedAt}`,
+        payload: {
+          eventId: row.id,
+          calendarId: googleId,
+          status: "accepted",
+          comment: null,
+          target: {
+            eventId: row.id,
+            remoteId: row.remoteId,
+            etag: row.etag,
+            uid: row.uid,
+            recurrenceId: null,
+            parentRemoteId: null,
+          },
+        },
+      });
+
+      // 同じ要求の再送。
+      const again = await send("POST", `/events/${row.id}/respond`, body);
+      expect(again.status).toBe(200);
+      expect(again.body.applied).toBe(false);
+      expect(await queuedFor(row.id)).toHaveLength(1);
+
+      // 先に (端末で) 行った別の返事が後から届いた。
+      const older = await send("POST", `/events/${row.id}/respond`, {
+        status: "declined",
+        respondedAt: ago(5 * MIN),
+      });
+      expect(older.body.applied).toBe(false);
+      expect(attendeesOf(older.body)[1]).toEqual([
+        "invitee@gmail.com",
+        "accepted",
+        true,
+      ]);
+      expect(await queuedFor(row.id)).toHaveLength(1);
+
+      // 返事を変える (新しい要求)。コメントも付ける。
+      const changed = await send("POST", `/events/${row.id}/respond`, {
+        status: "declined",
+        comment: "出張中です",
+        respondedAt: ago(0),
+      });
+      expect(changed.body.applied).toBe(true);
+      expect(attendeesOf(changed.body)[1]?.[1]).toBe("declined");
+      const [mine] = await db
+        .select({ comment: eventAttendees.comment })
+        .from(eventAttendees)
+        .where(
+          and(
+            eq(eventAttendees.eventId, row.id),
+            eq(eventAttendees.self, true),
+          ),
+        );
+      expect(mine?.comment).toBe("出張中です");
+      expect(await queuedFor(row.id)).toHaveLength(2);
+    });
+
+    it("時計が 1 時間進んだ端末の、先に行った返事は後の返事に負ける (clientNow で補正)", async () => {
+      const row = await invitation();
+      const now = await send("POST", `/events/${row.id}/respond`, {
+        status: "accepted",
+        respondedAt: new Date().toISOString(),
+      });
+      expect(now.body.applied).toBe(true);
+      const ahead = Date.now() + 60 * MIN;
+      // 端末の時計では「2 分前」に返事をした (補正しなければ未来 = いまに丸められて勝ってしまう)。
+      const skewed = await send("POST", `/events/${row.id}/respond`, {
+        status: "declined",
+        respondedAt: new Date(ahead - 2 * MIN).toISOString(),
+        clientNow: new Date(ahead).toISOString(),
+      });
+      expect(skewed.body.applied).toBe(false);
+      expect(attendeesOf(skewed.body)[1]?.[1]).toBe("accepted");
+    });
+
+    it("返事を断る: ほかの利用者の予定、参加者でない、主催者、取り消し済み、読み取り専用、同期が止まっている", async () => {
+      const respond = (id: string, target: Hono<AppEnv> = inviteApp) =>
+        call(
+          "POST",
+          `/events/${id}/respond`,
+          { status: "accepted", respondedAt: ago(0) },
+          target,
+        );
+      const invited = await invitation();
+      expect((await respond(invited.id, otherApp)).status).toBe(404);
+      expect((await respond(randomUUID())).status).toBe(404);
+
+      const shared = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [{ email: "someone@example.com" }],
+      });
+      expect(await respond(shared.id)).toMatchObject({
+        status: 409,
+        body: { error: "not_attendee" },
+      });
+
+      const mine = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "invitee@gmail.com", self: true },
+        attendees: [
+          { email: "invitee@gmail.com", self: true, status: "accepted" },
+          { email: "bob@example.com" },
+        ],
+      });
+      expect(await respond(mine.id)).toMatchObject({
+        status: 409,
+        body: { error: "organizer" },
+      });
+
+      const cancelled = await seedEvent({
+        calendarId: googleId,
+        status: "cancelled",
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [{ email: "invitee@gmail.com", self: true }],
+      });
+      expect(await respond(cancelled.id)).toMatchObject({
+        status: 409,
+        body: { error: "cancelled" },
+      });
+
+      const readOnly = await invitation(feedId);
+      expect(await respond(readOnly.id)).toMatchObject({
+        status: 409,
+        body: { error: "read_only" },
+      });
+
+      await db
+        .update(accounts)
+        .set({ calendarError: "認証が切れました" })
+        .where(eq(accounts.id, inviteAccountId));
+      try {
+        expect(await respond(invited.id)).toMatchObject({
+          status: 409,
+          body: { error: "calendar_sync_stopped" },
+        });
+      } finally {
+        await db
+          .update(accounts)
+          .set({ calendarError: null })
+          .where(eq(accounts.id, inviteAccountId));
+      }
+      // どれも何も積まない。
+      for (const id of [invited.id, shared.id, mine.id, cancelled.id]) {
+        expect(await queuedFor(id)).toEqual([]);
+      }
+    });
+
+    it("招待を送らない CalDAV では、記録はするが主催者に届かないことを返す", async () => {
+      const row = await invitation(caldavNoneId);
+      const result = await send("POST", `/events/${row.id}/respond`, {
+        status: "tentative",
+        respondedAt: ago(0),
+      });
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({
+        applied: true,
+        notifiesOrganizer: false,
+      });
+      expect(attendeesOf(result.body)[1]?.[1]).toBe("tentative");
+      // 自分のカレンダー (CalDAV サーバー) の PARTSTAT は書き戻す。
+      expect(await queuedFor(row.id)).toHaveLength(1);
+    });
+
+    it("主催者の印の無い古い行は、アカウントのアドレスとの比較で補う", async () => {
+      const legacy = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "Invitee@Gmail.com" },
+        attendees: [
+          { email: "invitee@gmail.com", self: true, status: "accepted" },
+          { email: "bob@example.com" },
+        ],
+      });
+      const got = await send("GET", `/events/${legacy.id}`);
+      expect((got.body.event as Json).organizer).toEqual({
+        email: "Invitee@Gmail.com",
+        self: true,
+      });
+      const other = await invitation();
+      expect(
+        ((await send("GET", `/events/${other.id}`)).body.event as Json)
+          .organizer,
+      ).toEqual({ email: "boss@example.com", self: false });
+      expect(
+        (
+          await send("POST", `/events/${legacy.id}/respond`, {
+            status: "declined",
+            respondedAt: ago(0),
+          })
+        ).body,
+      ).toEqual({ error: "organizer" });
+    });
+
+    it("参加者の変更: 主催者は通る。参加者は not_organizer。status と self は無視する", async () => {
+      const mine = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "invitee@gmail.com", self: true },
+        attendees: [
+          { email: "invitee@gmail.com", self: true, status: "accepted" },
+          { email: "bob@example.com", status: "accepted" },
+        ],
+      });
+      const changed = await send("PATCH", `/events/${mine.id}`, {
+        changes: {
+          attendees: [
+            { email: "invitee@gmail.com" },
+            { email: "Bob@Example.com" },
+            {
+              email: "Carol@Example.com",
+              name: "Carol",
+              status: "accepted",
+              self: true,
+            },
+          ],
+        },
+      });
+      expect(changed.status).toBe(200);
+      expect(attendeesOf(changed.body)).toEqual([
+        ["bob@example.com", "accepted", false],
+        ["carol@example.com", "needs_action", false],
+        ["invitee@gmail.com", "accepted", true],
+      ]);
+      expect((await queuedFor(mine.id)).map((row) => row.kind)).toEqual([
+        "event_update",
+      ]);
+
+      const invited = await invitation();
+      expect(
+        await send("PATCH", `/events/${invited.id}`, {
+          changes: { attendees: [{ email: "x@example.com" }] },
+        }),
+      ).toMatchObject({ status: 409, body: { error: "not_organizer" } });
+      const shared = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [{ email: "someone@example.com" }],
+      });
+      expect(
+        await send("PATCH", `/events/${shared.id}`, {
+          changes: { attendees: [] },
+        }),
+      ).toMatchObject({ status: 409, body: { error: "not_organizer" } });
+      expect(await queuedFor(invited.id)).toEqual([]);
+    });
+
+    it("招待された予定は、通知と予定あり / 空きだけ変えられる (同じ値の項目は無視する)", async () => {
+      const invited = await invitation();
+      expect(
+        await send("PATCH", `/events/${invited.id}`, {
+          changes: { summary: "自分用の題" },
+        }),
+      ).toMatchObject({ status: 409, body: { error: "not_organizer" } });
+      const allowed = await send("PATCH", `/events/${invited.id}`, {
+        changes: {
+          // 画面が全項目を送ってきても、いまと同じ値の項目は変えようとしていないものとして扱う。
+          summary: "招待",
+          busy: false,
+          useDefaultReminders: false,
+          reminders: [{ method: "display", minutes: 15 }],
+        },
+      });
+      expect(allowed.status).toBe(200);
+      expect(allowed.body.event).toMatchObject({
+        summary: "招待",
+        busy: false,
+        reminders: [{ method: "display", minutes: 15 }],
+      });
+      const [queued] = await queuedFor(invited.id);
+      expect((queued?.payload as Json).fields).toEqual([
+        "busy",
+        "reminders",
+        "useDefaultReminders",
+      ]);
+    });
+
+    it("回の変更でも同じ決まり。断ったときは例外の行を作らない", async () => {
+      const series = await seedEvent({
+        calendarId: googleId,
+        organizer: { email: "boss@example.com", self: false },
+        attendees: [{ email: "invitee@gmail.com", self: true }],
+        rrule: "FREQ=DAILY;COUNT=5",
+      });
+      const refused = await send(
+        "PATCH",
+        `/events/${series.id}/occurrences/2027-03-02T01:00:00Z`,
+        { changes: { location: "別の部屋" } },
+      );
+      expect(refused).toMatchObject({
+        status: 409,
+        body: { error: "not_organizer" },
+      });
+      expect(
+        await db.select().from(events).where(eq(events.parentId, series.id)),
+      ).toEqual([]);
+      const allowed = await send(
+        "PATCH",
+        `/events/${series.id}/occurrences/2027-03-02T01:00:00Z`,
+        { changes: { busy: false } },
+      );
+      expect(allowed.status).toBe(200);
+    });
+
+    it("招待を送れないカレンダー: 参加者を足すのは no_scheduling、外すのは通る", async () => {
+      const mine = await seedEvent({
+        calendarId: caldavNoneId,
+        organizer: { email: "invitee@gmail.com", self: true },
+        attendees: [
+          { email: "invitee@gmail.com", self: true, status: "accepted" },
+          { email: "bob@example.com" },
+          { email: "carol@example.com" },
+        ],
+      });
+      expect(
+        await send("PATCH", `/events/${mine.id}`, {
+          changes: {
+            attendees: [
+              { email: "invitee@gmail.com" },
+              { email: "bob@example.com" },
+              { email: "carol@example.com" },
+              { email: "dave@example.com" },
+            ],
+          },
+        }),
+      ).toMatchObject({ status: 409, body: { error: "no_scheduling" } });
+      const fewer = await send("PATCH", `/events/${mine.id}`, {
+        changes: {
+          attendees: [
+            { email: "invitee@gmail.com" },
+            { email: "bob@example.com" },
+          ],
+        },
+      });
+      expect(fewer.status).toBe(200);
+      const emptied = await send("PATCH", `/events/${mine.id}`, {
+        changes: { attendees: [] },
+      });
+      expect(emptied.status).toBe(200);
+      expect((emptied.body.event as Json).attendees).toEqual([]);
+
+      // 作成も同じ。Orbit 内のカレンダーも送れない。
+      for (const calendarId of [caldavNoneId, localId]) {
+        expect(
+          await send("POST", "/events", {
+            calendarId,
+            summary: "会議",
+            time: {
+              allDay: false,
+              startAt: "2027-03-05T10:00:00+09:00",
+              endAt: "2027-03-05T11:00:00+09:00",
+              startTimeZone: "Asia/Tokyo",
+            },
+            attendees: [{ email: "bob@example.com" }],
+          }),
+        ).toMatchObject({ status: 409, body: { error: "no_scheduling" } });
+      }
+    });
+
+    it("招待を送れるカレンダーで参加者付きで作ると、自分を仮の主催者にする", async () => {
+      for (const calendarId of [googleId, caldavServerId]) {
+        const created = await send("POST", "/events", {
+          calendarId,
+          summary: "会議",
+          time: {
+            allDay: false,
+            startAt: "2027-03-05T10:00:00+09:00",
+            endAt: "2027-03-05T11:00:00+09:00",
+            startTimeZone: "Asia/Tokyo",
+          },
+          attendees: [
+            { email: "Alice@Example.com", name: "Alice", status: "accepted" },
+          ],
+        });
+        expect(created.status).toBe(201);
+        expect(created.body.event).toMatchObject({
+          organizer: { email: "invitee@gmail.com", self: true },
+          attendees: [
+            {
+              email: "alice@example.com",
+              name: "Alice",
+              status: "needs_action",
+              self: false,
+            },
+          ],
+        });
+      }
+      // 参加者の無い予定には主催者を入れない。
+      const plain = await send("POST", "/events", {
+        calendarId: googleId,
+        summary: "ひとり",
+        time: { allDay: true, startDate: "2027-03-06", endDate: "2027-03-07" },
+      });
+      expect((plain.body.event as Json).organizer).toBeNull();
     });
   });
 });

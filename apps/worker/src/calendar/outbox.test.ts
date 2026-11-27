@@ -6,6 +6,7 @@ import {
   calendars,
   changes,
   type Database,
+  eventAttendees,
   eventConflicts,
   events,
   outbox,
@@ -75,7 +76,7 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
       .orderBy(asc(outbox.createdAt), asc(outbox.id));
   let sequence = 0;
   const enqueue = async (
-    kind: "event_create" | "event_update" | "event_delete",
+    kind: "event_create" | "event_update" | "event_delete" | "event_respond",
     payload: Record<string, unknown>,
   ) => {
     // createdAt の順番を確実にする。
@@ -614,6 +615,182 @@ describe.skipIf(!adminUrl)("予定の書き戻し", () => {
       await run();
       expect(await conflictsOf(old)).toEqual([]);
       expect(await conflictsOf(recent)).toHaveLength(1);
+    });
+  });
+
+  describe("出欠の返事 (event_respond)", () => {
+    const attendee = (
+      email: string,
+      self: boolean,
+      status: "needs_action" | "accepted" = "needs_action",
+    ) => ({ email, name: null, role: "required" as const, status, self });
+    /** 招待された予定を相手側に置いて取り込む。 */
+    const invited = async () => {
+      fake.putRemote(remoteId(), [
+        {
+          remoteId: "inv",
+          summary: "招待",
+          organizer: { email: "boss@example.com", self: false },
+          attendees: [
+            attendee("boss@example.com", false, "accepted"),
+            attendee("me@example.com", true),
+          ],
+          remoteUpdatedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+        },
+      ]);
+      await sync();
+      const [row] = await db
+        .select()
+        .from(events)
+        .where(
+          and(eq(events.calendarId, calendar.id), eq(events.remoteId, "inv")),
+        );
+      if (!row) throw new Error("予定がありません。");
+      return row;
+    };
+    /** API の返事と同じに、自分の行を変えて積む。 */
+    const respond = async (
+      row: typeof events.$inferSelect,
+      status: "accepted" | "declined",
+    ) => {
+      await db
+        .update(eventAttendees)
+        .set({ status })
+        .where(
+          and(
+            eq(eventAttendees.eventId, row.id),
+            eq(eventAttendees.self, true),
+          ),
+        );
+      return enqueue("event_respond", {
+        eventId: row.id,
+        calendarId: calendar.id,
+        status,
+        comment: null,
+        target: {
+          eventId: row.id,
+          calendarId: calendar.id,
+          remoteId: row.remoteId,
+          etag: row.etag,
+          uid: row.uid,
+          recurrenceId: null,
+          parentRemoteId: null,
+        },
+      });
+    };
+    const myStatus = async (eventId: string) => {
+      const [mine] = await db
+        .select({ status: eventAttendees.status })
+        .from(eventAttendees)
+        .where(
+          and(
+            eq(eventAttendees.eventId, eventId),
+            eq(eventAttendees.self, true),
+          ),
+        );
+      return mine?.status;
+    };
+    const remoteStatus = () =>
+      fake.remote(remoteId(), "inv")?.[0]?.attendees.find((item) => item.self)
+        ?.status;
+
+    it("返事を書き戻し、自分の行だけが変わる", async () => {
+      const row = await invited();
+      await respond(row, "accepted");
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      expect(remoteStatus()).toBe("accepted");
+      expect(await myStatus(row.id)).toBe("accepted");
+      const after = await rowOf(row.id);
+      expect(after?.etag).not.toBe(row.etag);
+      const boss = await db
+        .select({ status: eventAttendees.status })
+        .from(eventAttendees)
+        .where(
+          and(
+            eq(eventAttendees.eventId, row.id),
+            eq(eventAttendees.email, "boss@example.com"),
+          ),
+        );
+      expect(boss).toEqual([{ status: "accepted" }]);
+    });
+
+    it("競合したら新しい etag でやり直す", async () => {
+      const row = await invited();
+      await respond(row, "accepted");
+      fake.enqueue("respond", { status: "conflict" });
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      expect(
+        fake.calls.filter((call) => call.method === "respond"),
+      ).toHaveLength(2);
+      expect(remoteStatus()).toBe("accepted");
+    });
+
+    it("確定した失敗は相手側の出欠に戻し、lost の無い記録を残す", async () => {
+      const row = await invited();
+      await respond(row, "accepted");
+      fake.enqueue("respond", { status: "rejected", reason: "返事できません" });
+      expect(await run()).toMatchObject({ done: 0, failed: 1 });
+      expect(await myStatus(row.id)).toBe("needs_action");
+      const recorded = await db
+        .select()
+        .from(eventConflicts)
+        .where(eq(eventConflicts.eventId, row.id));
+      expect(recorded).toEqual([
+        expect.objectContaining({
+          kind: "write_failed",
+          fields: ["attendees"],
+          lost: null,
+          title: "招待",
+          reason: "出欠の返事を送れませんでした: 返事できません",
+        }),
+      ]);
+    });
+
+    it("不参加で返事をして削除: 行が消えていても返事を届け、続く削除は新しい etag で消す", async () => {
+      const row = await invited();
+      await respond(row, "declined");
+      // API の削除と同じに、行を消して削除を積む (古い etag のまま)。
+      await db.delete(events).where(eq(events.id, row.id));
+      await enqueue("event_delete", {
+        calendarId: calendar.id,
+        target: {
+          eventId: row.id,
+          calendarId: calendar.id,
+          remoteId: "inv",
+          etag: row.etag,
+          uid: row.uid,
+          recurrenceId: null,
+          parentRemoteId: null,
+        },
+        deletedAt: new Date().toISOString(),
+      });
+      expect(await run()).toMatchObject({ done: 2, failed: 0 });
+      const responded = fake.calls.find((call) => call.method === "respond");
+      expect(responded?.ref?.remoteId).toBe("inv");
+      const deleted = fake.calls.filter(
+        (call) => call.method === "deleteEvent",
+      );
+      // 返事で変わった etag で、1 回で消せる (取りやめにならない)。
+      expect(deleted).toHaveLength(1);
+      expect(deleted[0]?.ref?.etag).not.toBe(row.etag);
+      expect(fake.remote(remoteId(), "inv")).toBeNull();
+      expect(
+        await db
+          .select()
+          .from(eventConflicts)
+          .where(eq(eventConflicts.eventId, row.id)),
+      ).toEqual([]);
+    });
+
+    it("行が無く target も無い古い返事は、何もせず done にする", async () => {
+      await enqueue("event_respond", {
+        eventId: crypto.randomUUID(),
+        calendarId: calendar.id,
+        status: "accepted",
+        comment: null,
+      });
+      expect(await run()).toMatchObject({ done: 1, failed: 0 });
+      expect(fake.calls.some((call) => call.method === "respond")).toBe(false);
     });
   });
 });

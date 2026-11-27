@@ -1148,8 +1148,11 @@ export const eventStatus = pgEnum("event_status", [
   "cancelled",
 ]);
 
-/** 予定の主催者。 */
-export type EventPerson = { email: string; name?: string };
+/**
+ * 予定の主催者。self は自分が主催者か (Google の organizer.self、Graph の isOrganizer、
+ * CalDAV はアカウントのアドレスとの比較)。段取り 8 より前に取り込んだ行には無い。
+ */
+export type EventPerson = { email: string; name?: string; self?: boolean };
 
 /**
  * 予定。繰り返しは原本 (rrule を持つ親) と、その回だけ変えた例外 (recurrenceId を持つ子) で持つ。

@@ -1109,6 +1109,27 @@ ${hrefs.map((href) => `  <d:href>${escapeXml(href)}</d:href>`).join("\n")}
     return list;
   }
 
+  /**
+   * サーバーが招待と返事を自分で送るか (RFC 6638 の calendar-auto-schedule) を調べる。
+   * urls を順に OPTIONS で試し (カレンダーのコレクション、駄目ならホーム)、最初に答えた
+   * URL の DAV ヘッダーで決める。どれも答えなければ false (参加者を足せない側に倒す)。
+   * 認証の失敗 (CaldavAuthError) だけは投げる。
+   */
+  async supportsAutoSchedule(urls: readonly string[]): Promise<boolean> {
+    for (const url of urls) {
+      let response: CaldavResponse;
+      try {
+        response = await this.request("OPTIONS", url);
+      } catch (error) {
+        if (error instanceof CaldavAuthError) throw error;
+        continue;
+      }
+      if (response.status < 200 || response.status >= 300) continue;
+      return hasAutoSchedule(response.headers.get("dav"));
+    }
+    return false;
+  }
+
   /** リソース 1 つを取る。無ければ null。 */
   async get(url: string): Promise<CaldavResource | null> {
     const response = await this.request("GET", url, {
@@ -1170,6 +1191,17 @@ ${hrefs.map((href) => `  <d:href>${escapeXml(href)}</d:href>`).join("\n")}
       reason: `${what}を断られました (HTTP ${status}${preconditionOf(response.body)})。`,
     };
   }
+}
+
+/**
+ * OPTIONS の DAV ヘッダー ("1, 2, access-control, calendar-access, calendar-auto-schedule" の形)
+ * に calendar-auto-schedule があるか。大文字と小文字は区別しない。
+ */
+export function hasAutoSchedule(dav: string | null): boolean {
+  if (!dav) return false;
+  return dav
+    .split(",")
+    .some((token) => token.trim().toLowerCase() === "calendar-auto-schedule");
 }
 
 /** エラーの応答の本文にある CalDAV の前提条件の名前 (valid-calendar-data など)。 */

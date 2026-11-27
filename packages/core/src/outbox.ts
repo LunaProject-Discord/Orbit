@@ -235,7 +235,24 @@ export type EventRespondPayload = {
   calendarId: string;
   status: "accepted" | "tentative" | "declined";
   comment: string | null;
+  /**
+   * 受け付けた時点の、相手側での所在。「不参加で返事をして削除」では、返事を書き戻す前に
+   * 予定の行が消えるので、行が無いときはこれで返事をする。段取り 8 より前に積んだ行には無い。
+   */
+  target?: EventOutboxRef;
 };
+
+/**
+ * 出欠の返事の idempotencyKey。respondedAt は端末が付けた値 (補正の前) をそのまま使う。
+ * 同じ返事の再送は同じキーになり、二重に積まれない。
+ */
+export function eventRespondKey(
+  eventId: string,
+  status: EventRespondPayload["status"],
+  respondedAt: string,
+): string {
+  return `event_respond:${eventId}:${status}:${respondedAt}`;
+}
 
 /** 予定の書き戻しの操作。カレンダーの同期が、受け付けた順にプロバイダへ反映する。 */
 export type EventOutboxOperation =

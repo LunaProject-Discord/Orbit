@@ -59,3 +59,28 @@ export const ATTENDEE_EDITABLE_FIELDS = [
   "useDefaultReminders",
   "busy",
 ] as const;
+
+/** 自分の返事の時刻を入れる events.fieldUpdatedAt の鍵。EVENT_FIELD_NAMES には入れない。 */
+export const MY_RESPONSE_FIELD = "myResponse";
+
+/** 返事のコメントの長さの上限。 */
+export const RSVP_COMMENT_MAX = 1000;
+
+/**
+ * カレンダーが招待の連絡を送れるか (設計の 3.3)。
+ * - google、microsoft: サービスが送る。
+ * - caldav: サーバーが calendar-auto-schedule (RFC 6638) を返したときだけ。調べていなければ none。
+ * - local、ics、holidays、birthdays など: none。
+ */
+export function calendarScheduling(calendar: {
+  source: string;
+  providerState?: Record<string, unknown> | null;
+}): CalendarScheduling {
+  if (calendar.source === "google" || calendar.source === "microsoft") {
+    return "server";
+  }
+  if (calendar.source === "caldav") {
+    return calendar.providerState?.autoSchedule === true ? "server" : "none";
+  }
+  return "none";
+}
