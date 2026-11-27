@@ -62,6 +62,7 @@ import {
 } from "@/components/mail/sidebar-menus";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { BuiltinMark, UnifiedMark } from "@/components/mail/unified-mark";
+import { SidebarAddButton } from "@/components/sidebar-add-button";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -751,7 +752,7 @@ export function AccountSidebar({
       <div className="flex h-14 shrink-0 items-center gap-2 px-4 in-[[data-desktop]]:hidden">
         {headerStart}
         <span className="flex flex-1 items-center">
-          <AppSwitcher current="mail" logoClassName="h-7" className="-ml-2" />
+          <AppSwitcher current="mail" className="-ml-2" />
         </span>
       </div>
       {onCompose && (
@@ -850,18 +851,21 @@ export function AccountSidebar({
           </DndContext>
           {/* 追加のボタン。画面の下に固定せず、一覧の最後に並べる。 */}
           <div className="mt-1 flex flex-col gap-0.5">
-            <AddButton icon={<PlusIcon />} onClick={onAdd}>
+            <SidebarAddButton icon={<PlusIcon />} onClick={onAdd}>
               アカウントを追加
-            </AddButton>
-            <AddButton icon={<LayersPlusIcon />} onClick={viewActions.onCreate}>
+            </SidebarAddButton>
+            <SidebarAddButton
+              icon={<LayersPlusIcon />}
+              onClick={viewActions.onCreate}
+            >
               統合フォルダを追加
-            </AddButton>
-            <AddButton
+            </SidebarAddButton>
+            <SidebarAddButton
               icon={<ListPlusIcon />}
               onClick={() => categoryActions.onCreate()}
             >
               カテゴリを追加
-            </AddButton>
+            </SidebarAddButton>
           </div>
           <span className="sr-only" aria-live="polite">
             {announcement}
@@ -1193,30 +1197,6 @@ function UncategorizeDrop() {
       <ListXIcon className="size-4" aria-hidden="true" />
       ここに落とすとカテゴリから外します
     </div>
-  );
-}
-
-/** サイドバーの一覧の最後に並べる、追加のボタン。アイコンは上の項目のアイコンの列に揃える。 */
-function AddButton({
-  icon,
-  onClick,
-  children,
-}: {
-  icon: React.ReactNode;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <Button
-      variant="ghost"
-      onClick={onClick}
-      // ボタンには 1px の枠があるので、その分を引いてアイコンを上の項目の列に揃える。
-      // タッチ操作ではボタンの左右の余白が広がるので、同じ値に戻す。
-      className="justify-start gap-2 px-[7px] pointer-coarse:px-[7px] text-muted-foreground"
-    >
-      {icon}
-      {children}
-    </Button>
   );
 }
 

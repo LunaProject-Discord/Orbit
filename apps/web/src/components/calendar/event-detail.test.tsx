@@ -216,6 +216,28 @@ describe("出欠のボタン", () => {
     );
     expect(document.body.textContent).toContain("主催者には通知されません");
   });
+
+  it("削除は先に詳細 (吹き出し) を閉じてから進む (確認のダイアログの上に重ならない)", () => {
+    const calls: string[] = [];
+    act(() =>
+      root.render(
+        <EventDetail
+          item={itemOf(invited)}
+          anchor={anchor}
+          calendar={calendar({ source: "google", scheduling: "server" })}
+          calendarLabel="個人"
+          onEdit={null}
+          onDelete={() => calls.push("delete")}
+          onClose={() => calls.push("close")}
+        />,
+      ),
+    );
+    const remove = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="削除"]',
+    );
+    act(() => remove?.click());
+    expect(calls).toEqual(["close", "delete"]);
+  });
 });
 
 describe("rsvpNote", () => {

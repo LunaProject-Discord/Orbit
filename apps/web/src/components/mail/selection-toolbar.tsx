@@ -18,7 +18,7 @@ import {
   ToolbarButton,
   ToolbarSeparator,
   ToolbarTooltip,
-} from "@/components/mail/toolbar-button";
+} from "@/components/toolbar-button";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {

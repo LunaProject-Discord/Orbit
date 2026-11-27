@@ -34,7 +34,6 @@ import { CategorySettings } from "@/components/mail/category-settings";
 import { ComposeWindow } from "@/components/mail/compose-window";
 import { DeleteAccountDialog } from "@/components/mail/delete-account-dialog";
 import { DraftList } from "@/components/mail/draft-list";
-import { useDrawerSwipe } from "@/components/mail/drawer-swipe";
 import { FailureToast } from "@/components/mail/failure-toast";
 import {
   FolderDialogs,
@@ -259,7 +258,6 @@ import {
   type SettingsRoute,
   settingsBackground,
 } from "@/lib/settings-route";
-import { registerSheetBack } from "@/lib/sheet-back";
 import {
   isSelectAllKey,
   isTypingTarget,
@@ -329,6 +327,7 @@ import {
 } from "@/lib/unified";
 import { adjustUnifiedCounts, overlayUnifiedRows } from "@/lib/unified-match";
 import { useMediaQuery } from "@/lib/use-media-query";
+import { useSidebarDrawer } from "@/lib/use-sidebar-drawer";
 import { randomUuid } from "@/lib/uuid";
 import {
   canOpenWindows,
@@ -345,7 +344,6 @@ const SEARCH_DELAY_MS = 300;
 /** 表示を閉じて履歴を戻したあと、戻り終えた知らせ (popstate) を待つ長さ (ミリ秒)。 */
 const BACK_PENDING_TIMEOUT_MS = 1000;
 /** サイドバーを引き出して重ねる幅 (Tailwind の md 未満)。 */
-const DRAWER_QUERY = "(max-width: 767px)";
 const LIST_ERROR = "メールを読み込めませんでした。";
 const SEARCH_ERROR = "検索できませんでした。";
 const OFFLINE_LIST_ERROR =
@@ -821,8 +819,8 @@ const MailView = memo(function MailView({
   /** 開いてから内容を変えたか。変えていない新規のメールは、閉じたら残さない。 */
   const [draftDirty, setDraftDirty] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
-  // スマホ幅では、サイドバーを画面の左端からのスワイプで開き、左へのスワイプで閉じる。
-  useDrawerSwipe({
+  // スマホ幅で引き出したサイドバー: 左端からのスワイプで開閉、Esc と戻る操作で閉じる。
+  useSidebarDrawer({
     asideRef,
     backdropRef,
     open: sidebarOpen,
@@ -2616,15 +2614,6 @@ const MailView = memo(function MailView({
       });
   }
 
-  useEffect(() => {
-    if (!sidebarOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSidebarOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [sidebarOpen]);
-
   // Android の戻るボタン: 画面左上の「←」と同じく、開いている表示を 1 つ閉じる
   // (lib/native/app.ts の setAppBackHandler)。閉じるものが無ければ false。
   const appBackRef = useRef<() => boolean>(() => false);
@@ -2653,18 +2642,6 @@ const MailView = memo(function MailView({
     return false;
   };
   useEffect(() => setAppBackHandler(() => appBackRef.current()), []);
-
-  // スマホ幅で引き出したサイドバーは、戻る操作 (Android の戻るボタンなど) で閉じる。
-  // 開いたままだと、後ろの画面が戻ってしまう。
-  useEffect(() => {
-    if (!sidebarOpen || !window.matchMedia(DRAWER_QUERY).matches) return;
-    return registerSheetBack(
-      () => setSidebarOpen(false),
-      !isNativeApp(),
-      undefined,
-      "sidebar",
-    );
-  }, [sidebarOpen]);
 
   async function handleLoadMore() {
     if (!nextCursor || loadingMore) return;

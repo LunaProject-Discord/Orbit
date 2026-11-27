@@ -155,13 +155,87 @@ describe("編集画面の参加者の欄", () => {
     expect(text()).toContain("主催者の予定です");
     expect(input("タイトル")?.disabled).toBe(true);
     expect(input("場所")?.disabled).toBe(true);
-    expect(input("開始日")?.disabled).toBe(true);
+    // 日付は共通の DatePicker (読み上げの名前は「開始日: 日付」)。
+    expect(
+      document.body.querySelector<HTMLButtonElement>('[aria-label^="開始日"]')
+        ?.disabled,
+    ).toBe(true);
     expect(
       document.body
         .querySelector<HTMLElement>('[aria-label="予定あり / 空き"]')
         ?.getAttribute("data-disabled"),
     ).toBeNull();
     expect(submit()?.textContent).toBe("保存");
+  });
+});
+
+describe("編集画面の形 (Mail の作成画面にそろえる)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("上の帯に「閉じる」・題・「保存」を並べ、日付は DatePicker で選ぶ", () => {
+    const onClose = vi.fn();
+    const onSave = vi.fn();
+    act(() =>
+      root.render(
+        <EventEditor
+          open
+          title="予定を作成"
+          initial={formOf(event({}))}
+          calendars={[calendar({})]}
+          colorOf={() => "#4f46e5"}
+          timeZone="Asia/Tokyo"
+          busy={false}
+          error={null}
+          onSave={onSave}
+          onClose={onClose}
+        />,
+      ),
+    );
+    const popup = document.body.querySelector<HTMLElement>(
+      '[data-slot="dialog-content"]',
+    );
+    // スマホは全画面 (シートにしない)。
+    expect(popup?.hasAttribute("data-menu-sheet")).toBe(false);
+    expect(popup?.className).toContain("max-sm:inset-0");
+    const title = document.body.querySelector('[data-slot="dialog-title"]');
+    expect(title?.textContent).toBe("予定を作成");
+    expect(title?.className).toContain("font-semibold");
+    const bar = title?.parentElement;
+    const buttons = [...(bar?.querySelectorAll("button") ?? [])];
+    expect(
+      buttons.map(
+        (button) => button.getAttribute("aria-label") ?? button.textContent,
+      ),
+    ).toEqual(["閉じる", "保存"]);
+    act(() => buttons[0]?.click());
+    expect(onClose).toHaveBeenCalled();
+    act(() => buttons[1]?.click());
+    expect(onSave).toHaveBeenCalled();
+    // 題の入力欄はほかの入力欄と同じ高さ (h-11 の指定なし)。
+    const summary = document.body.querySelector<HTMLInputElement>(
+      '[aria-label="タイトル"]',
+    );
+    expect(summary?.className).not.toContain("h-11 text-base");
+    for (const label of ["開始日", "終了日"]) {
+      const picker = document.body.querySelector(`[aria-label^="${label}: "]`);
+      expect(picker?.tagName).toBe("BUTTON");
+    }
+    expect(document.body.querySelector('input[type="date"]')).toBeNull();
   });
 });
 

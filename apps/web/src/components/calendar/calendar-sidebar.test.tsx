@@ -142,3 +142,72 @@ describe("サイドバーのカレンダーごとの通知", () => {
     expect(item("既定の通知")).toBeUndefined();
   });
 });
+
+describe("サイドバーのまとまりの見出し (メールと同じ作り)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("名前とアドレスを 2 行に出し、印のボタンと名前のどちらでも開閉する", () => {
+    const today = Temporal.PlainDate.from("2026-11-27");
+    act(() =>
+      root.render(
+        <CalendarSidebar
+          user={{ id: "u1", email: "aoi@example.com", name: "あおい" }}
+          groups={[
+            {
+              key: "a1",
+              name: "仕事",
+              sub: "aoi@work.example.co.jp · Google",
+              error: null,
+              calendars: [calendar({ name: "仕事の予定" })],
+            },
+          ]}
+          colorOf={() => "#4f46e5"}
+          today={today}
+          selected={today}
+          selectedRange={{ from: today, to: today }}
+          busyDays={new Set()}
+          canCreate
+          onSelectDate={() => {}}
+          onCreateEvent={() => {}}
+          onToggleCalendar={() => {}}
+          onAddCalendar={() => {}}
+          onRefreshCalendar={() => {}}
+          onRemoveCalendar={() => {}}
+          onOpenSettings={() => {}}
+          onToggleSidebar={null}
+        />,
+      ),
+    );
+    const mark = container.querySelector<HTMLButtonElement>(
+      '[aria-label="仕事 のカレンダーを折りたたむ"]',
+    );
+    expect(mark).not.toBeNull();
+    const name = mark?.nextElementSibling as HTMLButtonElement;
+    const lines = [...name.querySelectorAll("span.block")].map(
+      (line) => line.textContent,
+    );
+    expect(lines).toEqual(["仕事", "aoi@work.example.co.jp · Google"]);
+    const rows = () => container.querySelectorAll('[role="checkbox"]').length;
+    expect(rows()).toBe(1);
+    act(() => mark?.click());
+    expect(rows()).toBe(0);
+    expect(name.getAttribute("aria-expanded")).toBe("false");
+    act(() => name.click());
+    expect(rows()).toBe(1);
+  });
+});

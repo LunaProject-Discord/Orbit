@@ -110,7 +110,8 @@ export function AddCalendarDialog({
         if (!next && !busy) onClose();
       }}
     >
-      <DialogContent sheet>
+      {/* 入力するフォームなので、スマホ幅でも中央のダイアログにする (Mail の「アカウントを追加」と同じ)。 */}
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>カレンダーを追加</DialogTitle>
           <DialogDescription>{DESCRIPTIONS[mode]}</DialogDescription>

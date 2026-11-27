@@ -8,7 +8,6 @@ import {
   MenuIcon,
   PlusIcon,
   SearchIcon,
-  XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -41,6 +40,8 @@ import { TimeGrid } from "@/components/calendar/time-grid";
 import type { DisplayItem, SelectHandler } from "@/components/calendar/types";
 import { SyncIndicator } from "@/components/mail/sync-indicator";
 import { NOTICE_MS, showNotice } from "@/components/mail/toasts";
+import { SearchField } from "@/components/search-field";
+import { ToolbarButton } from "@/components/toolbar-button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -52,7 +53,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { type Account, ApiError, NetworkError, type User } from "@/lib/api";
 import {
   type Calendar,
@@ -118,22 +119,31 @@ import {
   parseCalendarRoute,
 } from "@/lib/calendar/route";
 import { canRespondTo } from "@/lib/calendar/rsvp";
+import { setAppBackHandler } from "@/lib/native/app";
 import { listAccounts, useOnline } from "@/lib/offline";
+import { usePreferences } from "@/lib/preferences";
 import { openSettings } from "@/lib/settings-route";
+import { isTypingTarget, resolveShortcut } from "@/lib/shortcuts";
+import {
+  loadSidebarFolded,
+  SIDEBAR_FOLD_KEY_LABEL,
+  storeSidebarFolded,
+} from "@/lib/sidebar-fold";
 import { useMediaQuery } from "@/lib/use-media-query";
+import { useSidebarDrawer } from "@/lib/use-sidebar-drawer";
 import { randomUuid } from "@/lib/uuid";
 
-const DESKTOP_VIEWS: { view: CalendarView; label: string }[] = [
-  { view: "day", label: "日" },
-  { view: "week", label: "週" },
-  { view: "month", label: "月" },
-  { view: "agenda", label: "予定一覧" },
+const DESKTOP_VIEWS: { value: CalendarView; label: string }[] = [
+  { value: "day", label: "日" },
+  { value: "week", label: "週" },
+  { value: "month", label: "月" },
+  { value: "agenda", label: "予定一覧" },
 ];
-const MOBILE_VIEWS: { view: CalendarView; label: string }[] = [
-  { view: "day", label: "日" },
-  { view: "3day", label: "3 日" },
-  { view: "month", label: "月" },
-  { view: "agenda", label: "一覧" },
+const MOBILE_VIEWS: { value: CalendarView; label: string }[] = [
+  { value: "day", label: "日" },
+  { value: "3day", label: "3 日" },
+  { value: "month", label: "月" },
+  { value: "agenda", label: "一覧" },
 ];
 
 const SAVE_ERROR = "保存できませんでした。もう一度お試しください。";
@@ -142,14 +152,14 @@ const OFFLINE_SAVE_ERROR =
 const STORAGE_ERROR =
   "変更を端末に保存できませんでした。送り終わるまで、このタブを閉じないでください。";
 const CONFLICT_TOAST = "calendar-conflict";
-const SIDEBAR_KEY = "orbit.calendar.sidebar";
+/** 検索欄の入力 (「/」で移る先)。 */
+const SEARCH_INPUT_ID = "calendar-search-input";
+/** 検索を閉じるために履歴を戻したあと、戻れたか (popstate) を待つ長さ (ミリ秒)。Mail と同じ。 */
+const BACK_PENDING_TIMEOUT_MS = 1000;
 
-function readSidebarPreference(): boolean {
-  try {
-    return window.localStorage.getItem(SIDEBAR_KEY) !== "closed";
-  } catch {
-    return true;
-  }
+/** 検索を開いた履歴か (戻る操作で検索を閉じるために積む)。 */
+function isSearchEntry(): boolean {
+  return window.history.state?.calendarSearch === true;
 }
 
 type EditorState = {
@@ -163,6 +173,7 @@ type EditorState = {
 export function CalendarApp({ user }: { user: User }) {
   const timeZone = useMemo(() => localTimeZone(), []);
   const wide = useMediaQuery("(min-width: 1024px)");
+  // 768px 以上ではサイドバーを常に出す (Mail と同じ md)。狭い画面では左から引き出す。
   const medium = useMediaQuery("(min-width: 768px)");
   const [now, setNow] = useState(() => Temporal.Now.zonedDateTimeISO(timeZone));
   const today = now.toPlainDate();
@@ -226,19 +237,25 @@ export function CalendarApp({ user }: { user: User }) {
   /** URL から開いた詳細の位置 (押した予定の要素が無いので、画面の中ほどに置く)。 */
   const openAnchorRef = useRef<HTMLSpanElement | null>(null);
 
+  // 広い画面でサイドバーを閉じているかは、Mail の折りたたみと同じ設定に覚える (F9 で切り替え)。
   useEffect(() => {
-    setSidebarShown(readSidebarPreference());
+    setSidebarShown(!loadSidebarFolded());
   }, []);
   const toggleSidebar = () => {
     setSidebarShown((current) => {
-      try {
-        window.localStorage.setItem(SIDEBAR_KEY, current ? "closed" : "open");
-      } catch {
-        // 保存できなくても、この画面の間は切り替わる。
-      }
+      storeSidebarFolded(current);
       return !current;
     });
   };
+  const asideRef = useRef<HTMLElement>(null);
+  const backdropRef = useRef<HTMLButtonElement>(null);
+  // スマホ幅で引き出したサイドバー: 左端からのスワイプで開閉、Esc と戻る操作で閉じる (Mail と共通)。
+  useSidebarDrawer({
+    asideRef,
+    backdropRef,
+    open: sidebarOpen,
+    onOpenChange: setSidebarOpen,
+  });
 
   // 今の時刻の線を 1 分ごとに動かす。
   useEffect(() => {
@@ -258,10 +275,37 @@ export function CalendarApp({ user }: { user: User }) {
       window.history.replaceState(window.history.state, "", path);
     }
   }, [shownView, date]);
+  // 戻る操作で検索の履歴を離れたときに、URL を今の表示に書き直すため。
+  const routeRef = useRef({ view: shownView, date });
+  routeRef.current = { view: shownView, date };
+  /** 検索を開いた履歴 (isSearchEntry) の上にいるか。 */
+  const inSearchEntryRef = useRef(false);
+  const mediumRef = useRef(medium);
+  mediumRef.current = medium;
   useEffect(() => {
     const onPopState = () => {
       // 設定のダイアログの履歴では、後ろのカレンダーの表示はそのままにする。
       if (!isCalendarPath(window.location.pathname)) return;
+      // 検索は履歴に積んでいるので、戻る操作で閉じる (進む操作ではスマホの検索画面を開き直す)。
+      if (isSearchEntry()) {
+        inSearchEntryRef.current = true;
+        if (!mediumRef.current) setSearchOpen(true);
+        return;
+      }
+      if (inSearchEntryRef.current) {
+        inSearchEntryRef.current = false;
+        setSearchOpen(false);
+        setQuery("");
+        setResults(null);
+        // 表示と日付は履歴に積まない (検索中に動かしていれば、今の表示のまま)。
+        const { view: current, date: day } = routeRef.current;
+        window.history.replaceState(
+          window.history.state,
+          "",
+          buildCalendarRoute(current, day),
+        );
+        return;
+      }
       const target = parseCalendarEventRoute(
         window.location.pathname,
         window.location.search,
@@ -823,16 +867,95 @@ export function CalendarApp({ user }: { user: User }) {
     if (!client) return;
     try {
       // サーバーに届かなければ、client が端末の控えから探す。
-      setResults(await client.search(trimmed));
+      const found = await client.search(trimmed);
+      setResults(found);
+      // 広い画面の検索も、戻る操作で閉じられるよう履歴に積む (スマホは開いたときに積んである)。
+      pushSearchEntry();
     } catch {
       showNotice("検索できませんでした。");
     }
   };
+  /** 検索を開いたことを履歴に積む (戻る操作で閉じられるよう。Mail の検索画面と同じ)。 */
+  const pushSearchEntry = () => {
+    if (isSearchEntry()) return;
+    inSearchEntryRef.current = true;
+    const url = `${window.location.pathname}${window.location.search}`;
+    window.history.pushState(
+      { ...window.history.state, calendarSearch: true },
+      "",
+      url,
+    );
+  };
+  /** スマホの検索画面を開く。 */
+  const openSearch = () => {
+    setSidebarOpen(false);
+    setSearchOpen(true);
+    pushSearchEntry();
+  };
+  /** 検索を閉じる。履歴に積んだ分は戻る (popstate で閉じた状態に合わせる)。 */
   const closeSearch = () => {
     setSearchOpen(false);
     setQuery("");
     setResults(null);
+    if (!isSearchEntry()) return;
+    window.history.back();
+    // Android の WebView では戻れないことがある。そのときは、印だけ外す。
+    window.setTimeout(() => {
+      if (!isSearchEntry()) return;
+      inSearchEntryRef.current = false;
+      window.history.replaceState(
+        { ...window.history.state, calendarSearch: undefined },
+        "",
+      );
+    }, BACK_PENDING_TIMEOUT_MS);
   };
+  const searchActive = searchOpen || results !== null;
+
+  // Android の戻るボタン: 開いている検索を閉じる。引き出したサイドバーとシートは
+  // lib/sheet-back.ts が先に閉じる。表示と日付の移動は戻さない。閉じるものが無ければ false。
+  const appBackRef = useRef<() => boolean>(() => false);
+  appBackRef.current = () => {
+    if (!searchActive) return false;
+    closeSearch();
+    return true;
+  };
+  useEffect(() => setAppBackHandler(() => appBackRef.current()), []);
+
+  // ショートカットキー (Mail と同じ): F9 でサイドバー、/ で検索。
+  const { shortcuts } = usePreferences();
+  const shortcutRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  shortcutRef.current = (event) => {
+    const command = resolveShortcut(event);
+    if (command !== "toggleSidebar" && command !== "search") return;
+    if (isTypingTarget(event.target)) return;
+    if (
+      document.querySelector(
+        '[role="dialog"], [role="alertdialog"], [role="menu"]',
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    if (command === "toggleSidebar") {
+      toggleSidebar();
+      return;
+    }
+    if (!medium) {
+      if (!searchOpen) openSearch();
+      return;
+    }
+    const input = document.getElementById(SEARCH_INPUT_ID);
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+      input.select();
+    }
+  };
+  useEffect(() => {
+    if (!shortcuts) return;
+    const onKeyDown = (event: KeyboardEvent) => shortcutRef.current(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [shortcuts]);
 
   // 開いている詳細は、表示中の同じ回に持ち直す (送り終えて ID が替わっても閉じない。
   // 予定が消えたら閉じる)。
@@ -931,7 +1054,7 @@ export function CalendarApp({ user }: { user: User }) {
 
   const days = daysBetween(range.from, range.to);
   const views = medium ? DESKTOP_VIEWS : MOBILE_VIEWS;
-  const showSidebar = wide ? sidebarShown : false;
+  const showSidebar = medium && sidebarShown;
 
   const content = results ? (
     <SearchResults
@@ -973,7 +1096,7 @@ export function CalendarApp({ user }: { user: User }) {
       />
     )
   ) : shownView === "agenda" ? (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <AgendaList
         compact={!medium}
         items={items}
@@ -1031,83 +1154,81 @@ export function CalendarApp({ user }: { user: User }) {
         setSidebarOpen(false);
         openSettings();
       }}
-      onToggleSidebar={wide ? toggleSidebar : null}
+      onToggleSidebar={medium ? toggleSidebar : null}
       onNavigate={() => setSidebarOpen(false)}
     />
   );
 
   return (
     <div className="flex h-[calc(100dvh-var(--titlebar-height))] shrink-0 overflow-hidden">
-      {/* 狭い画面では、サイドバーを左から重ねて出す。 */}
-      {!wide && (
-        <>
-          <button
-            type="button"
-            aria-label="メニューを閉じる"
-            tabIndex={sidebarOpen ? 0 : -1}
-            onClick={() => setSidebarOpen(false)}
-            className={cn(
-              "fixed inset-0 top-(--titlebar-height) z-30 bg-black/30",
-              !sidebarOpen && "hidden",
-            )}
-          />
-          <aside
-            className={cn(
-              "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-[312px] max-w-[85vw] border-r transition-transform",
-              sidebarOpen ? "translate-x-0" : "invisible -translate-x-full",
-            )}
-          >
-            {sidebar}
-          </aside>
-        </>
-      )}
-      {showSidebar && (
-        <aside className="w-[312px] shrink-0 border-r">{sidebar}</aside>
-      )}
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      {/* 狭い画面では、サイドバーを左から重ねて出す (Mail と同じ作り)。 */}
+      {/* 閉じている間も置いておく (スワイプで開く途中に、開き具合に合わせて暗くするため)。 */}
+      <button
+        ref={backdropRef}
+        type="button"
+        aria-label="メニューを閉じる"
+        tabIndex={sidebarOpen ? 0 : -1}
+        onClick={() => setSidebarOpen(false)}
+        className={cn(
+          "fixed inset-0 top-(--titlebar-height) z-30 bg-black/30 md:hidden",
+          !sidebarOpen && "hidden",
+        )}
+      />
+      <aside
+        ref={asideRef}
+        id="calendar-sidebar"
+        className={cn(
+          "fixed inset-y-0 top-(--titlebar-height) left-0 z-40 w-72 max-w-[85vw] transition-transform md:translate-x-0",
+          // 広い画面で閉じたときは、帯を残さずに消す (ハンバーガーはヘッダーの左端に出す)。
+          sidebarShown ? "md:static md:z-auto md:w-64" : "md:hidden",
+          sidebarOpen
+            ? "translate-x-0"
+            : "invisible -translate-x-full md:visible",
+        )}
+      >
+        <div className="h-full border-r">{sidebar}</div>
+      </aside>
+      {/* @container/pane: 検索欄の幅を、Mail と同じく置き場所の幅で決める (狭いと虫めがねだけ)。 */}
+      <main className="@container/pane relative flex min-w-0 flex-1 flex-col">
         <span
           ref={openAnchorRef}
           aria-hidden="true"
           className="pointer-events-none absolute top-1/4 left-1/3 size-0"
         />
         {medium ? (
-          <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-            {(!wide || !sidebarShown) && (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="サイドバーを開く"
-                className="-ml-1 text-muted-foreground"
-                onClick={() => (wide ? toggleSidebar() : setSidebarOpen(true))}
+          <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+            {!showSidebar && (
+              // Mail の折りたたんだサイドバーの帯のハンバーガーと同じ位置 (x8) と大きさ。
+              <ToolbarButton
+                label="サイドバーを開く"
+                shortcut={SIDEBAR_FOLD_KEY_LABEL}
+                aria-controls="calendar-sidebar"
+                aria-expanded={false}
+                className="-ml-2"
+                onClick={toggleSidebar}
               >
-                <MenuIcon className="size-5" />
-              </Button>
+                <MenuIcon />
+              </ToolbarButton>
             )}
             <Button variant="outline" size="sm" onClick={() => goTo(today)}>
               今日
             </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="前へ"
-              className="text-muted-foreground"
+            <ToolbarButton
+              label="前へ"
               onClick={() => goTo(shiftDate(shownView, date, -1))}
             >
-              <ChevronLeftIcon className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="次へ"
-              className="text-muted-foreground"
+              <ChevronLeftIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="次へ"
               onClick={() => goTo(shiftDate(shownView, date, 1))}
             >
-              <ChevronRightIcon className="size-4" />
-            </Button>
-            <h1 className="ml-1 truncate font-display font-semibold text-xl">
+              <ChevronRightIcon />
+            </ToolbarButton>
+            <h1 className="ml-1 min-w-0 shrink truncate font-semibold text-lg">
               {results ? "検索結果" : viewTitle(shownView, date)}
             </h1>
-            <div className="ml-auto flex min-w-0 shrink items-center gap-2">
+            <div className="ml-auto flex shrink-0 items-center gap-2">
               {!showSidebar && (
                 <SyncIndicator status={syncStatus} short className="shrink-0" />
               )}
@@ -1116,149 +1237,104 @@ export function CalendarApp({ user }: { user: User }) {
                 compact={!wide}
                 onClick={() => setConflictsOpen(true)}
               />
-              <form
-                className="relative w-64 shrink"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void runSearch(query);
+              <SegmentedControl
+                label="表示"
+                items={views}
+                value={results ? null : shownView}
+                onChange={(next) => {
+                  if (results) closeSearch();
+                  changeView(next);
                 }}
-              >
-                <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  type="search"
-                  aria-label="予定を検索"
-                  placeholder="予定を検索"
-                  value={query}
-                  onChange={(event) => {
-                    setQuery(event.target.value);
-                    if (!event.target.value) setResults(null);
-                  }}
-                  className="pl-9"
-                />
-              </form>
+              />
+              {/* 検索欄は Mail と同じく右端。フォーカスすると左へ広がり、表示の切り替えに重なる。 */}
+              <SearchField
+                variant="popup"
+                inputId={SEARCH_INPUT_ID}
+                label="予定を検索"
+                placeholder="検索"
+                value={query}
+                onChange={(text) => {
+                  setQuery(text);
+                  if (!text && results) closeSearch();
+                }}
+                onSubmit={(text) => void runSearch(text)}
+              />
             </div>
-            <div className="flex shrink-0 rounded-lg bg-muted p-1">
-              {views.map((entry) => (
-                <button
-                  key={entry.view}
-                  type="button"
-                  aria-pressed={entry.view === shownView}
-                  onClick={() => {
-                    setResults(null);
-                    changeView(entry.view);
-                  }}
-                  className={cn(
-                    "flex h-7 items-center rounded-md px-3 text-sm",
-                    entry.view === shownView && !results
-                      ? "bg-background font-medium shadow-xs"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {entry.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          </header>
+        ) : searchOpen ? (
+          // スマホの検索画面。アプリバーを検索欄にする (Mail と同じ)。
+          <header className="flex h-14 shrink-0 items-center border-b px-4">
+            <SearchField
+              variant="screen"
+              inputId={SEARCH_INPUT_ID}
+              label="予定を検索"
+              placeholder="予定を検索"
+              autoFocus
+              value={query}
+              onChange={(text) => {
+                setQuery(text);
+                if (!text) setResults(null);
+              }}
+              onSubmit={(text) => void runSearch(text)}
+              onClose={closeSearch}
+              className="h-full flex-1"
+            />
+          </header>
         ) : (
           <>
-            <div className="flex h-14 shrink-0 items-center gap-1 px-2">
+            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
               <Button
                 variant="ghost"
-                size="icon"
+                size="icon-sm"
                 aria-label="メニューを開く"
+                aria-controls="calendar-sidebar"
+                aria-expanded={sidebarOpen}
                 onClick={() => setSidebarOpen(true)}
+                className="-ml-2 pointer-coarse:-ml-2.5"
               >
-                <MenuIcon className="size-5" />
+                <MenuIcon />
               </Button>
-              {searchOpen ? (
-                <form
-                  className="flex flex-1 items-center gap-1"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void runSearch(query);
-                  }}
-                >
-                  <Input
-                    autoFocus
-                    type="search"
-                    aria-label="予定を検索"
-                    placeholder="予定を検索"
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label="検索を閉じる"
-                    onClick={closeSearch}
-                  >
-                    <XIcon className="size-5" />
-                  </Button>
-                </form>
-              ) : (
-                <>
-                  <h1 className="ml-1 font-display font-semibold text-xl">
-                    {shortMonthTitle(shownView === "month" ? date : range.from)}
-                  </h1>
-                  <div className="ml-auto flex min-w-0 items-center gap-1">
-                    {!online && (
-                      <SyncIndicator
-                        status={syncStatus}
-                        short
-                        className="mr-1"
-                      />
-                    )}
-                    <ConflictsButton
-                      count={conflicts.length}
-                      compact
-                      onClick={() => setConflictsOpen(true)}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="予定を検索"
-                      onClick={() => setSearchOpen(true)}
-                    >
-                      <SearchIcon className="size-5" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      aria-label="今日へ"
-                      className="font-semibold text-xs"
-                      onClick={() => goTo(today)}
-                    >
-                      {today.day}
-                    </Button>
-                  </div>
-                </>
-              )}
+              <h1 className="min-w-0 shrink truncate font-semibold text-lg">
+                {shortMonthTitle(shownView === "month" ? date : range.from)}
+              </h1>
+              <div className="min-w-0 flex-1" />
+              <SyncIndicator status={syncStatus} short className="shrink-0" />
+              <ConflictsButton
+                count={conflicts.length}
+                compact
+                onClick={() => setConflictsOpen(true)}
+              />
+              <ToolbarButton
+                label="予定を検索"
+                shortcut="/"
+                onClick={openSearch}
+              >
+                <SearchIcon />
+              </ToolbarButton>
+              {/* 今日の日付を出した枠付きのボタン。大きさと角は Mail のアイコンボタン (40×40) と同じ。 */}
+              <ToolbarButton
+                label="今日へ"
+                variant="outline"
+                className="font-semibold text-xs"
+                onClick={() => goTo(today)}
+              >
+                {today.day}
+              </ToolbarButton>
+            </header>
+            {/* 表示の切り替えは、Mail の検索の範囲の帯と同じく、ヘッダーの下の帯に置く。 */}
+            <div className="shrink-0 border-b px-4 py-2">
+              <SegmentedControl
+                fill
+                label="表示"
+                items={views}
+                value={shownView}
+                onChange={changeView}
+              />
             </div>
-            {!results && (
-              <div className="mx-3 mb-2 grid shrink-0 grid-cols-4 rounded-lg bg-muted p-1">
-                {views.map((entry) => (
-                  <button
-                    key={entry.view}
-                    type="button"
-                    aria-pressed={entry.view === shownView}
-                    onClick={() => changeView(entry.view)}
-                    className={cn(
-                      "flex h-7 items-center justify-center rounded-md text-sm",
-                      entry.view === shownView
-                        ? "bg-background font-medium shadow-xs"
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    {entry.label}
-                  </button>
-                ))}
-              </div>
-            )}
           </>
         )}
         <div
-          className={cn("flex min-h-0 flex-1 flex-col", !medium && "border-t")}
+          className="flex min-h-0 flex-1 flex-col"
           // スワイプで前後の期間へ動かすのは、アプリ版で足す。
         >
           {content}

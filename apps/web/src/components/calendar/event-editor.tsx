@@ -20,11 +20,12 @@ import { SimpleSelect } from "@/components/calendar/simple-select";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DatePicker } from "@/components/ui/date-picker";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -277,15 +278,44 @@ export function EventEditor({
         if (!next && !busy) onClose();
       }}
     >
-      {/* 中身 (フォーム) だけをスクロールさせ、見出しと「保存」「キャンセル」はいつも見える位置に置く。
-          スマホのシートは高さの上限 (80dvh) があるので、フォームは残りの高さに縮める。 */}
-      <DialogContent sheet className="flex flex-col gap-4 sm:max-w-[560px]">
-        <DialogHeader>
-          <DialogTitle className="font-display text-lg">{title}</DialogTitle>
-        </DialogHeader>
+      {/* 広い画面は中央のダイアログ。狭い画面は Mail の作成画面と同じ全画面にし、
+          上の帯に「閉じる」・題・「保存」を並べる (compose-window.tsx と同じ作り)。
+          中身 (フォーム) だけをスクロールさせ、見出しと「保存」はいつも見える位置に置く。 */}
+      <DialogContent
+        showCloseButton={false}
+        className={cn(
+          "flex flex-col gap-4 sm:max-w-[560px]",
+          "max-sm:inset-0 max-sm:top-(--titlebar-height) max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:gap-0 max-sm:rounded-none max-sm:p-0 max-sm:ring-0 max-sm:data-closed:animate-none max-sm:data-open:animate-none",
+        )}
+      >
+        <div className="flex shrink-0 items-center gap-1 max-sm:h-14 max-sm:border-b max-sm:px-2 sm:pr-8">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="閉じる"
+            disabled={busy}
+            onClick={onClose}
+            className="sm:hidden"
+          >
+            <XIcon />
+          </Button>
+          <DialogTitle className="min-w-0 flex-1 truncate font-semibold text-base sm:text-lg">
+            {title}
+          </DialogTitle>
+          <Button
+            type="submit"
+            form={`${id}-form`}
+            disabled={!canSave || busy}
+            className="shrink-0 sm:hidden"
+          >
+            {busy && <Spinner />}
+            {invite.saveLabel}
+          </Button>
+        </div>
         <form
           id={`${id}-form`}
-          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-0.5 pb-0.5 sm:max-h-[min(70dvh,640px)]"
+          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-0.5 pb-0.5 max-sm:px-4 max-sm:pt-4 max-sm:pb-[max(1rem,env(safe-area-inset-bottom))] sm:max-h-[min(70dvh,640px)]"
           onSubmit={(event) => {
             event.preventDefault();
             if (canSave && !busy) onSave(form);
@@ -298,21 +328,21 @@ export function EventEditor({
             disabled={locked}
             value={form.summary}
             onChange={(event) => set("summary", event.target.value)}
-            className="h-11 text-base"
+            // フォームがスクロールするほど長いときに、縦に縮まないようにする。
+            className="shrink-0"
           />
           <Field icon={ClockIcon}>
             <div className="flex flex-wrap items-center gap-2">
               {/* 開始・終了をそれぞれ「日付 時刻」でまとめ、狭い画面では行ごとに折り返す */}
               <div className="flex items-center gap-2">
-                <Input
-                  type="date"
+                <DatePicker
                   aria-label="開始日"
                   disabled={locked}
                   value={form.startDate}
-                  onChange={(event) =>
-                    moveStart(event.target.value, form.startTime)
-                  }
-                  className="w-auto"
+                  onChange={(value) => {
+                    // 開始日は空にできない (「クリア」は無視する)。
+                    if (value) moveStart(value, form.startTime);
+                  }}
                 />
                 {!form.allDay && (
                   <Input
@@ -330,13 +360,13 @@ export function EventEditor({
                 <span className="text-muted-foreground">〜</span>
               </div>
               <div className="flex items-center gap-2">
-                <Input
-                  type="date"
+                <DatePicker
                   aria-label="終了日"
                   disabled={locked}
                   value={form.endDate}
-                  onChange={(event) => set("endDate", event.target.value)}
-                  className="w-auto"
+                  onChange={(value) => {
+                    if (value) set("endDate", value);
+                  }}
                 />
                 {!form.allDay && (
                   <Input
@@ -403,14 +433,12 @@ export function EventEditor({
                 // biome-ignore lint/a11y/noLabelWithoutControl: Input が中の入力になる
                 <label className="flex items-center gap-2 text-sm">
                   <span className="text-muted-foreground">終わり</span>
-                  <Input
-                    type="date"
+                  <DatePicker
                     aria-label="繰り返しの最後の日"
                     disabled={locked}
                     value={form.until}
                     min={form.startDate}
-                    onChange={(event) => set("until", event.target.value)}
-                    className="w-auto"
+                    onChange={(value) => set("until", value)}
                   />
                 </label>
               )}
@@ -670,7 +698,8 @@ export function EventEditor({
           </Field>
           {error && <p className="text-destructive text-sm">{error}</p>}
         </form>
-        <DialogFooter className="shrink-0">
+        {/* 狭い画面では「保存」を上の帯に置くので、下のボタンは出さない (Mail の作成画面と同じ)。 */}
+        <DialogFooter className="shrink-0 max-sm:hidden">
           <Button variant="outline" onClick={onClose} disabled={busy}>
             キャンセル
           </Button>
@@ -679,6 +708,19 @@ export function EventEditor({
             {invite.saveLabel}
           </Button>
         </DialogFooter>
+        {/* 広い画面の「閉じる」(共通の部品と同じ位置)。狭い画面では上の帯の × を使う。 */}
+        <DialogClose
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="absolute top-4 right-4 max-sm:hidden"
+            />
+          }
+        >
+          <XIcon />
+          <span className="sr-only">閉じる</span>
+        </DialogClose>
       </DialogContent>
     </Dialog>
   );

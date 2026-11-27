@@ -2,7 +2,6 @@
 
 import { cn } from "cn";
 import {
-  ArrowLeftIcon,
   AtSignIcon,
   CalendarIcon,
   ClockIcon,
@@ -10,7 +9,6 @@ import {
   FlagIcon,
   FolderIcon,
   PaperclipIcon,
-  SearchIcon,
   TagIcon,
   TextIcon,
   UserIcon,
@@ -29,6 +27,14 @@ import {
 import { ja } from "react-day-picker/locale";
 import { createPortal } from "react-dom";
 import { Hint } from "@/components/hint";
+import {
+  SEARCH_EXPANDED_ONLY,
+  SearchBackButton,
+  SearchFieldIcon,
+  searchFrameClass,
+  searchRootClass,
+  searchWrapperClass,
+} from "@/components/search-field";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { formatDateValue, parseDateValue } from "@/components/ui/date-picker";
@@ -994,34 +1000,9 @@ export function SearchBox({
       : null;
 
   return (
-    <search
-      className={cn(
-        "min-w-0",
-        // 狭い枠では虫めがねだけを出し、押したら左へ広げてツールバーに重ねる (Discord と同じ動き)。
-        !screen && "relative h-8 w-8 shrink-0 @3xl/pane:w-44",
-        className,
-      )}
-    >
-      <div
-        ref={wrapperRef}
-        className={cn(
-          "group/search flex min-w-0 items-center",
-          screen
-            ? "h-full gap-1"
-            : "absolute inset-y-0 right-0 z-10 w-full rounded-md bg-background transition-[width] duration-200 focus-within:w-[min(24rem,calc(100cqw-2rem))]",
-        )}
-      >
-        {screen && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="検索を閉じる"
-            onClick={onClose}
-            className="-ml-2 shrink-0 pointer-coarse:-ml-2.5"
-          >
-            <ArrowLeftIcon />
-          </Button>
-        )}
+    <search className={searchRootClass(screen, className)}>
+      <div ref={wrapperRef} className={searchWrapperClass(screen)}>
+        {screen && <SearchBackButton onClick={onClose} />}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 欄の余白 (チップの横など) を押しても入力できるようにするだけ */}
         <div
           onMouseDown={(event) => {
@@ -1029,19 +1010,9 @@ export function SearchBox({
             event.preventDefault();
             inputRef.current?.focus();
           }}
-          className={cn(
-            "flex min-w-0 flex-1 cursor-text items-center",
-            screen
-              ? "h-10 gap-1.5"
-              : "h-8 gap-1.5 overflow-hidden rounded-md border border-input bg-muted/40 pr-1 pl-2 transition-colors focus-within:border-ring focus-within:bg-background focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30",
-          )}
+          className={searchFrameClass(screen)}
         >
-          {!screen && (
-            <SearchIcon
-              className="pointer-events-none size-4 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
-          )}
+          {!screen && <SearchFieldIcon />}
           {/* チップと入力欄は、ひとまとまりで横にスクロールする。 */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: 空いている所を押したら語の入力に戻るだけ (キーボードでは ← → で移れる) */}
           <div
@@ -1313,8 +1284,7 @@ export function SearchBox({
               className={cn(
                 "ml-auto shrink-0",
                 // 虫めがねだけの狭い表示では、広げている間だけ出す。
-                !screen &&
-                  "hidden group-focus-within/search:inline-flex @3xl/pane:inline-flex",
+                !screen && SEARCH_EXPANDED_ONLY,
               )}
             >
               <XIcon />
