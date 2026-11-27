@@ -67,6 +67,23 @@ type AppShell = {
     serverUrl?: unknown;
     sessionToken?: unknown;
   }>;
+  /*
+   * 添付ファイルの保存と、別のアプリで開く (lib/native/files.ts)。
+   * beginFile で一時ファイルを作り、appendFile で中身 (base64、元データで 512KB 以下ずつ) を順に足し、
+   * saveFile (保存先を選ぶ画面を出す。やめたら false) か openFile (開けるアプリが無ければ false) を呼ぶ。
+   */
+  beginFile(): Promise<{ id: string }>;
+  appendFile(options: { id: string; data: string }): Promise<void>;
+  saveFile(options: {
+    id: string;
+    name: string;
+    mimeType: string;
+  }): Promise<{ saved: boolean }>;
+  openFile(options: {
+    id: string;
+    name: string;
+    mimeType: string;
+  }): Promise<{ opened: boolean }>;
 };
 
 // Capacitor のプラグインは、どんな名前のメソッドも端末側へ取り次ぐ Proxy になっている。

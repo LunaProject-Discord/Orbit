@@ -1,6 +1,8 @@
 // ビルドした静的ファイル (out/) のうち、オフラインで画面を開くのに必要なものの一覧を作る。
 // サービスワーカー (public/sw.js) がこの一覧を読み、端末に保存する。
 // フォントは数が多い (文字の範囲ごとに分かれている) ので一覧に入れず、使った分だけ保存させる。
+// PDF の表示 (pdf.js、public/pdfjs/) も、ワーカーだけを入れる。CMap (約 170 ファイル) などは
+// PDF を開いたときに要る分だけ取得され、サービスワーカーが保存する。
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -33,6 +35,9 @@ const files = [];
 for (const path of walk(out).sort()) {
   const name = `/${relative(out, path).split(sep).join("/")}`;
   if (name === `/${OUTPUT}` || name === "/sw.js") continue;
+  if (name.startsWith("/pdfjs/") && !name.endsWith("/pdf.worker.min.js")) {
+    continue;
+  }
   const dot = name.lastIndexOf(".");
   if (dot < 0 || !EXTENSIONS.has(name.slice(dot))) continue;
   files.push(name);

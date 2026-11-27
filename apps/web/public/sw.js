@@ -13,6 +13,15 @@ const MANIFEST_URL = "/precache-manifest.json";
 // 画面の HTML を待つ時間。これを過ぎたら、保存してあるものを先に出す。
 const NAVIGATION_TIMEOUT_MS = 4000;
 
+// 同じ URL の中身が変わらないファイル。Next.js が書き出したもの (名前に内容のハッシュが入る) と、
+// PDF の表示に使う pdf.js のファイル (パスに pdf.js の版が入る。scripts/copy-pdfjs.mjs)。
+// 一度取得したら保存したものを使うので、CMap などは開いた PDF に要った分だけがたまり、オフラインでも使える。
+function isImmutable(pathname) {
+  return (
+    pathname.startsWith("/_next/static/") || pathname.startsWith("/pdfjs/")
+  );
+}
+
 async function currentShell() {
   const names = await caches.keys();
   return names.find((name) => name.startsWith(SHELL_PREFIX)) ?? null;
@@ -39,9 +48,9 @@ function refreshShell() {
       const cache = await caches.open(name);
       try {
         for (const file of manifest.files) {
-          // 名前に内容のハッシュが入ったファイルは、前の版にあればそれを使う。
+          // 名前に内容のハッシュ (または版) が入ったファイルは、前の版にあればそれを使う。
           const reused =
-            previous && file.startsWith("/_next/static/")
+            previous && isImmutable(file)
               ? await (await caches.open(previous)).match(file)
               : null;
           if (reused) {
@@ -156,7 +165,7 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   // API (同じドメインで公開している場合は /v1/ 以下) には手を出さない。
   if (url.pathname.startsWith("/v1/") || url.pathname === MANIFEST_URL) return;
-  const immutable = url.pathname.startsWith("/_next/static/");
+  const immutable = isImmutable(url.pathname);
   const page = request.mode === "navigate" || url.pathname.endsWith(".txt");
   if (!immutable && !page) return;
   event.respondWith(

@@ -1,4 +1,4 @@
-// Web のビルド。画面の版 (ビルドした日時) を決めて画面に埋め込み、
+// Web のビルド。pdf.js のファイルを public/ へ写し、画面の版 (ビルドした日時) を決めて画面に埋め込み、
 // 書き出したあとにオフライン用の一覧 (precache-manifest.json) と
 // アプリの画面の自動更新用の一覧 (app-update/manifest.json) を作る。
 import { spawnSync } from "node:child_process";
@@ -28,6 +28,8 @@ function run(command, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+// pdf.js が実行中に取得するファイル (ワーカー、CMap など) を public/ へ写してから書き出す。
+run(process.execPath, ["scripts/copy-pdfjs.mjs"]);
 run("next", ["build"]);
 run(process.execPath, ["scripts/precache-manifest.mjs"]);
 run(process.execPath, ["scripts/app-update-manifest.mjs"]);
