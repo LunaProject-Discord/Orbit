@@ -277,13 +277,15 @@ export function EventEditor({
         if (!next && !busy) onClose();
       }}
     >
-      <DialogContent sheet className="gap-4 sm:max-w-[560px]">
+      {/* 中身 (フォーム) だけをスクロールさせ、見出しと「保存」「キャンセル」はいつも見える位置に置く。
+          スマホのシートは高さの上限 (80dvh) があるので、フォームは残りの高さに縮める。 */}
+      <DialogContent sheet className="flex flex-col gap-4 sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle className="font-display text-lg">{title}</DialogTitle>
         </DialogHeader>
         <form
           id={`${id}-form`}
-          className="flex max-h-[min(70dvh,640px)] flex-col gap-4 overflow-y-auto px-0.5 pb-0.5"
+          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-0.5 pb-0.5 sm:max-h-[min(70dvh,640px)]"
           onSubmit={(event) => {
             event.preventDefault();
             if (canSave && !busy) onSave(form);
@@ -668,7 +670,7 @@ export function EventEditor({
           </Field>
           {error && <p className="text-destructive text-sm">{error}</p>}
         </form>
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={onClose} disabled={busy}>
             キャンセル
           </Button>
