@@ -127,3 +127,25 @@ export type AttachmentReadyNotification = {
   attachmentId: string;
   error: AttachmentFetchError | null;
 };
+
+/**
+ * API → ワーカー: カレンダーを同期してほしい (書き戻しが積まれた、変更通知が届いた、など)。
+ * メールの同期を無駄に起こさないよう、CHANNEL_OUTBOX とは別のチャンネルにする。
+ */
+export const CHANNEL_CALENDAR_SYNC = "calendar_sync";
+
+/**
+ * 同期を求める理由。
+ * - outbox: 予定の書き戻しが積まれた。
+ * - push: プロバイダから変更通知 (Webhook) が届いた。
+ * - refresh: 利用者が更新を指示した。
+ * - focus: 利用者がカレンダーの画面を開いている。
+ */
+export type CalendarSyncReason = "outbox" | "push" | "refresh" | "focus";
+
+/** CHANNEL_CALENDAR_SYNC の payload。calendarId を省けば、アカウントのカレンダー全部。 */
+export type CalendarSyncNotification = {
+  accountId: string;
+  calendarId?: string;
+  reason: CalendarSyncReason;
+};

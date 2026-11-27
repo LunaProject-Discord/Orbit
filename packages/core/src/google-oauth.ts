@@ -18,6 +18,18 @@ export const GMAIL_SCOPE = "https://mail.google.com/";
 /** 要求する権限。openid と email は、ログインしたアカウントのメールアドレスを知るために使う。 */
 export const GOOGLE_SCOPES = ["openid", "email", GMAIL_SCOPE];
 
+/**
+ * カレンダーの同期に要る権限。予定の読み書きと、カレンダーの一覧の読み取り。
+ * メールの権限 (GOOGLE_SCOPES) とは別に、カレンダーを使うときだけ足して求める。
+ */
+export const GOOGLE_CALENDAR_SCOPES = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+];
+
+/** カレンダー全体の権限。これがあれば GOOGLE_CALENDAR_SCOPES の代わりになる。 */
+const GOOGLE_CALENDAR_FULL_SCOPE = "https://www.googleapis.com/auth/calendar";
+
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -36,7 +48,13 @@ export function loadGoogleOAuthConfig(
   return { clientId, clientSecret };
 }
 
-type StatePayload = { userId: string; verifier: string; expiresAt: number };
+type StatePayload = {
+  userId: string;
+  verifier: string;
+  expiresAt: number;
+  /** カレンダーの権限も求めた。 */
+  calendar?: boolean;
+};
 
 /**
  * ログイン画面の URL を作る。state には利用者 ID と PKCE の検証値を暗号化して入れ、
@@ -49,6 +67,8 @@ export function createGoogleAuthorizeUrl(options: {
   encryptionKey: Buffer;
   /** 再ログイン時など、ログイン画面に最初から入れておくメールアドレス。 */
   loginHint?: string | undefined;
+  /** true なら、メールの権限に加えてカレンダーの権限 (GOOGLE_CALENDAR_SCOPES) も求める。 */
+  calendar?: boolean;
   now?: number;
 }): string {
   const verifier = randomBytes(32).toString("base64url");
@@ -56,13 +76,18 @@ export function createGoogleAuthorizeUrl(options: {
     userId: options.userId,
     verifier,
     expiresAt: (options.now ?? Date.now()) + STATE_TTL_MS,
+    // 指定しないときは、state の中身を今までと同じにしておく。
+    ...(options.calendar ? { calendar: true } : {}),
   };
+  const scopes = options.calendar
+    ? [...GOOGLE_SCOPES, ...GOOGLE_CALENDAR_SCOPES]
+    : GOOGLE_SCOPES;
   const url = new URL(AUTHORIZE_URL);
   url.search = new URLSearchParams({
     client_id: options.config.clientId,
     response_type: "code",
     redirect_uri: options.redirectUri,
-    scope: GOOGLE_SCOPES.join(" "),
+    scope: scopes.join(" "),
     state: encryptText(
       JSON.stringify(payload),
       options.encryptionKey,
@@ -81,7 +106,7 @@ export function createGoogleAuthorizeUrl(options: {
 }
 
 /**
- * 戻ってきた state を検証し、PKCE の検証値を取り出す。
+ * 戻ってきた state を検証し、PKCE の検証値と、カレンダーの権限も求めたかを取り出す。
  * 改ざん、期限切れ、別の利用者が始めたものは null。
  */
 export function openGoogleState(options: {
@@ -89,14 +114,14 @@ export function openGoogleState(options: {
   userId: string;
   encryptionKey: Buffer;
   now?: number;
-}): { verifier: string } | null {
+}): { verifier: string; calendar: boolean } | null {
   try {
     const payload = JSON.parse(
       decryptText(options.state, options.encryptionKey, STATE_CONTEXT),
     ) as StatePayload;
     if (payload.userId !== options.userId) return null;
     if (payload.expiresAt < (options.now ?? Date.now())) return null;
-    return { verifier: payload.verifier };
+    return { verifier: payload.verifier, calendar: payload.calendar === true };
   } catch {
     return null;
   }
@@ -136,6 +161,16 @@ export class GoogleOAuthError extends Error {
 /** 利用者が Gmail へのアクセスを許可したか (同意画面では権限ごとに外せる)。 */
 export function hasGmailScope(scope: string): boolean {
   return scope.split(/\s+/).includes(GMAIL_SCOPE);
+}
+
+/**
+ * 利用者がカレンダーへのアクセスを許可したか。GOOGLE_CALENDAR_SCOPES がすべて揃っているか、
+ * カレンダー全体の権限があれば true。
+ */
+export function hasGoogleCalendarScope(scope: string): boolean {
+  const granted = new Set(scope.split(/\s+/));
+  if (granted.has(GOOGLE_CALENDAR_FULL_SCOPE)) return true;
+  return GOOGLE_CALENDAR_SCOPES.every((value) => granted.has(value));
 }
 
 type Fetch = typeof fetch;

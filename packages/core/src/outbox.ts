@@ -1,3 +1,5 @@
+import type { EventFieldName } from "./event-merge.js";
+
 /**
  * 送信待ちキュー (outbox テーブル) の payload。
  * API サーバーが操作を受け付けた時点の情報を入れ、同期ワーカーがプロバイダへ反映する。
@@ -170,3 +172,83 @@ export function mailboxNameError(
 export function accountLockKey(accountId: string): string {
   return `mail-account:${accountId}`;
 }
+
+/**
+ * カレンダーの同期と書き戻しの排他に使う勧告ロックのキー。
+ * メールのロック (accountLockKey) とは別のキーにして、メールの同期とカレンダーの同期が
+ * 互いを待たないようにする。取り方は accountLockKey と同じ。
+ */
+export function calendarLockKey(accountId: string): string {
+  return `calendar-account:${accountId}`;
+}
+
+/**
+ * 予定の書き戻しの操作の種類 (outbox.kind)。
+ * メールの同期はこれらの行を拾わず、カレンダーの同期だけが処理する。
+ */
+export const EVENT_OUTBOX_KINDS = [
+  "event_create",
+  "event_update",
+  "event_delete",
+  "event_respond",
+] as const;
+export type EventOutboxKind = (typeof EVENT_OUTBOX_KINDS)[number];
+
+/**
+ * 書き戻す予定の、相手側での所在。削除では行が先に消えるので、
+ * 反映に必要な情報をすべて持たせる。
+ */
+export type EventOutboxRef = {
+  eventId: string;
+  calendarId: string;
+  /** プロバイダでの ID。作成の書き戻し前なら null。 */
+  remoteId: string | null;
+  etag: string | null;
+  uid: string;
+  /** 例外のとき、元の回 (normalizeRecurrenceId の書き方)。 */
+  recurrenceId: string | null;
+  /** 例外のとき、原本の remoteId。 */
+  parentRemoteId: string | null;
+};
+
+/** 予定を作る。中身は実行時に DB の行から読む。 */
+export type EventCreatePayload = { eventId: string; calendarId: string };
+
+/** 予定を変える。中身は実行時に DB の行から読み、fields の項目を書き戻す。 */
+export type EventUpdatePayload = {
+  eventId: string;
+  calendarId: string;
+  fields: EventFieldName[];
+};
+
+/** 予定を消す。 */
+export type EventDeletePayload = {
+  calendarId: string;
+  target: EventOutboxRef;
+  /** 消した時刻 (ISO 8601)。 */
+  deletedAt: string;
+};
+
+/** 招待に返事をする。 */
+export type EventRespondPayload = {
+  eventId: string;
+  calendarId: string;
+  status: "accepted" | "tentative" | "declined";
+  comment: string | null;
+};
+
+/** 予定の書き戻しの操作。カレンダーの同期が、受け付けた順にプロバイダへ反映する。 */
+export type EventOutboxOperation =
+  | { kind: "event_create"; payload: EventCreatePayload }
+  | { kind: "event_update"; payload: EventUpdatePayload }
+  | { kind: "event_delete"; payload: EventDeletePayload }
+  | { kind: "event_respond"; payload: EventRespondPayload };
+
+/**
+ * Orbit から予定を書き戻せるカレンダーの source。
+ * 各プロバイダの担当は、書き戻しができた時点で、自分の source を 1 行足す。
+ * 衝突しても直しやすいよう、1 要素を 1 行で書く。
+ */
+export const CALENDAR_WRITEBACK_SOURCES: readonly string[] = [
+  // 例: "google",
+];
