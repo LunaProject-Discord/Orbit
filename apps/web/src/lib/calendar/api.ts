@@ -93,6 +93,11 @@ export type CalendarEvent = {
   exdates: string[];
   /** self は自分が主催者か (段取り 8。古いサーバー・古い控えには無い)。 */
   organizer: { email: string; name?: string; self?: boolean } | null;
+  /**
+   * アカウントの持ち主として出欠を返事してよいか (サーバーの判定)。共有カレンダーで
+   * 他人の出欠を書き換えないため。古いサーバー・古い控えでは無い。
+   */
+  canRespond?: boolean;
   sequence: number;
   conferenceUrl: string | null;
   useDefaultReminders: boolean;

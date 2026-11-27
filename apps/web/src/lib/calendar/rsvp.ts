@@ -39,10 +39,12 @@ export function serverHandlesRsvp(
  * - 材料 (primary / accessRole) の無いサーバー・カレンダー → 今までどおりよい
  */
 export function respondsAsAccount(
-  event: Pick<CalendarEvent, "attendees">,
+  event: Pick<CalendarEvent, "attendees" | "canRespond">,
   calendar: RsvpCalendar,
   accounts: readonly RsvpAccount[] | null | undefined,
 ): boolean {
+  // サーバーが判定した値があればそれに従う (calendar-identity.ts)。
+  if (typeof event.canRespond === "boolean") return event.canRespond;
   const known =
     typeof calendar.primary === "boolean" ||
     typeof calendar.accessRole === "string";
@@ -59,7 +61,7 @@ export function respondsAsAccount(
 
 /** 出欠のボタンを出すか (書き込めるか・取り消し済みかは呼ぶ側で見る)。 */
 export function canRespondTo(
-  event: Pick<CalendarEvent, "attendees" | "organizer">,
+  event: Pick<CalendarEvent, "attendees" | "organizer" | "canRespond">,
   calendar: RsvpCalendar | null | undefined,
   accounts?: readonly RsvpAccount[] | null,
 ): boolean {

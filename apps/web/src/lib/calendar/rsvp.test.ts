@@ -42,6 +42,20 @@ describe("出欠を返してよいか (review-invites の 3 と 6)", () => {
     expect(canRespondTo({ ...invited(), attendees: [] }, cal)).toBe(false);
   });
 
+  it("サーバーの canRespond があればそれに従う", () => {
+    const cal = calendar({ scheduling: "server", accountId: ACCOUNT });
+    expect(canRespondTo({ ...invited(), canRespond: false }, cal, [])).toBe(
+      false,
+    );
+    expect(
+      canRespondTo(
+        { ...invited("other@example.com"), canRespond: true },
+        { ...cal, accessRole: "writer", primary: false },
+        [],
+      ),
+    ).toBe(true);
+  });
+
   it("primary / accessRole の無いサーバー・カレンダーは今までどおり返せる", () => {
     const cal = calendar({ scheduling: "server", accountId: ACCOUNT });
     expect(canRespondTo(invited("other@example.com"), cal, [])).toBe(true);
