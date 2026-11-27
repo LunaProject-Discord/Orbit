@@ -6,6 +6,27 @@ const options = { defaultTimeZone: "Asia/Tokyo" };
 const crlf = (lines: string[]) => lines.join("\r\n");
 
 describe("parseICalendar", () => {
+  it.each([
+    ["REQUEST", "REQUEST"],
+    ["CANCEL", "CANCEL"],
+    ["reply", "REPLY"],
+    [null, null],
+  ])("METHOD (%s) を大文字で返す", (method, expected) => {
+    const calendar = parseICalendar(
+      crlf([
+        "BEGIN:VCALENDAR",
+        ...(method ? [`METHOD:${method}`] : []),
+        "BEGIN:VEVENT",
+        "UID:m@example.com",
+        "DTSTART:20261201T000000Z",
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ]),
+      options,
+    );
+    expect(calendar.method).toBe(expected);
+  });
+
   it("エスケープされたバックスラッシュを 1 つに戻す", () => {
     const calendar = parseICalendar(
       crlf([
