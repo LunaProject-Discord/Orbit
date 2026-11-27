@@ -2,14 +2,7 @@
 
 import { cn } from "cn";
 import { CopyIcon, MenuIcon, MinusIcon, SquareIcon, XIcon } from "lucide-react";
-import {
-  type MouseEvent,
-  type ReactNode,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type MouseEvent, type ReactNode, useEffect, useState } from "react";
 import { OrbitMark } from "@/components/brand/orbit-logo";
 import { Hint } from "@/components/hint";
 import {
@@ -32,132 +25,21 @@ import {
   windowTitle,
 } from "@/lib/desktop/title-bar-menu";
 
-type Caption = "minimize" | "maximize" | "restore" | "close";
-
-/** 画面の拡大率 (devicePixelRatio)。モニターを移ったときや拡大率を変えたときに追う。 */
-function useDevicePixelRatio(): number {
-  const [ratio, setRatio] = useState(1);
-  useEffect(() => {
-    let query: MediaQueryList | null = null;
-    const update = () => {
-      setRatio(window.devicePixelRatio || 1);
-      query?.removeEventListener("change", update);
-      query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
-      query.addEventListener("change", update);
-    };
-    update();
-    return () => query?.removeEventListener("change", update);
-  }, []);
-  return ratio;
-}
-
 /**
- * Windows 11 のキャプションボタンの絵 (最小化・最大化・元に戻す・閉じる)。
- * 形は OS の枠のボタン (Segoe Fluent Icons の ChromeMinimize / ChromeMaximize / ChromeRestore /
- * ChromeClose) と同じ 10px 四方。以前はそのフォントの字で描いていたが、WebView では文字として
- * 薄く細く描かれ、OS のボタンと見比べると違って見えた (あおいさんの指摘)。そこで OS と同じように、
- * 画面の画素に合わせた太さの線で描く (拡大率 125% までは 1 画素、それより大きければ比例して太くする)。
+ * Windows のキャプションボタンの字形 (Segoe Fluent Icons / Segoe MDL2 Assets)。
+ * OS の枠のボタンと同じ絵にするため、OS に入っているアイコンのフォントで描く。
+ * Windows 11 は Segoe Fluent Icons、Windows 10 は Segoe MDL2 Assets が入っている (どちらも同じ字の位置)。
+ * 一度は画素に合わせた SVG に変えたが (PR #175)、実機ではフォントの細い線の方がよいとのことで戻した
+ * (あおいさんの判断)。色だけは Windows 11 の標準色にそろえている。
  */
-function WindowsCaptionGlyph({ kind }: { kind: Caption }) {
-  const ratio = useDevicePixelRatio();
-  const ref = useRef<SVGSVGElement>(null);
-  // 拡大率が 125% などのとき、ボタンの中央が画素の途中に来て線がにじむ (薄く見える)。
-  // 絵の左上を画素の境目に合わせるよう、端数の分だけずらす。
-  useLayoutEffect(() => {
-    const svg = ref.current;
-    if (!svg) return;
-    const align = () => {
-      svg.style.translate = "";
-      const box = svg.getBoundingClientRect();
-      const dx = Math.round(box.left * ratio) / ratio - box.left;
-      const dy = Math.round(box.top * ratio) / ratio - box.top;
-      svg.style.translate = `${dx}px ${dy}px`;
-    };
-    align();
-    window.addEventListener("resize", align);
-    return () => window.removeEventListener("resize", align);
-  }, [ratio]);
-  // 以下は画面の画素で数える。
-  const size = Math.round(10 * ratio);
-  // 斜めの線 (閉じる) はにじんで細く見えるので、拡大率どおりの太さにする。
-  const stroke =
-    kind === "close"
-      ? Math.max(1, ratio)
-      : Math.max(1, Math.floor(ratio + 0.25));
-  const half = stroke / 2;
-  const radius = Math.max(1, Math.round(ratio));
-  let shape: ReactNode;
-  switch (kind) {
-    case "minimize": {
-      const y = Math.floor(size / 2) + half;
-      shape = <path d={`M0 ${y}H${size}`} />;
-      break;
-    }
-    case "maximize":
-      shape = (
-        <rect
-          x={half}
-          y={half}
-          width={size - stroke}
-          height={size - stroke}
-          rx={radius}
-        />
-      );
-      break;
-    case "restore": {
-      // 手前の四角 (左下) と、右上にずらした奥の四角の見えている部分 (上と右の辺)。
-      const offset = Math.max(2, Math.round(2 * ratio));
-      const back = radius + 0.5 * ratio;
-      shape = (
-        <>
-          <rect
-            x={half}
-            y={offset + half}
-            width={size - offset - stroke}
-            height={size - offset - stroke}
-            rx={radius}
-          />
-          <path
-            d={[
-              `M${offset + half} ${offset}`,
-              `V${half + back}`,
-              `A${back} ${back} 0 0 1 ${offset + half + back} ${half}`,
-              `H${size - half - back}`,
-              `A${back} ${back} 0 0 1 ${size - half} ${half + back}`,
-              `V${size - offset - half - back}`,
-              `A${back} ${back} 0 0 1 ${size - half - back} ${size - offset - half}`,
-              `H${size - offset}`,
-            ].join("")}
-          />
-        </>
-      );
-      break;
-    }
-    case "close":
-      shape = (
-        <path
-          d={`M${half} ${half}L${size - half} ${size - half}M${size - half} ${half}L${half} ${size - half}`}
-        />
-      );
-      break;
-  }
-  return (
-    <svg
-      ref={ref}
-      aria-hidden="true"
-      width={size / ratio}
-      height={size / ratio}
-      viewBox={`0 0 ${size} ${size}`}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={stroke}
-      // 縦横の線は画素にぴったり合わせて、OS のボタンと同じく濃くくっきり描く (斜めの線は対象外)。
-      shapeRendering={kind === "close" ? undefined : "crispEdges"}
-    >
-      {shape}
-    </svg>
-  );
-}
+const CAPTION_GLYPHS = {
+  minimize: "\uE921",
+  maximize: "\uE922",
+  restore: "\uE923",
+  close: "\uE8BB",
+} as const;
+
+type Caption = keyof typeof CAPTION_GLYPHS;
 
 /** Linux には OS 共通のアイコンのフォントが無いので、アプリのアイコンで描く。 */
 function CaptionIcon({ kind }: { kind: Caption }) {
@@ -215,7 +97,13 @@ function CaptionButton({
       )}
     >
       {windows ? (
-        <WindowsCaptionGlyph kind={kind} />
+        <span
+          aria-hidden
+          className="text-[10px] leading-none"
+          style={{ fontFamily: '"Segoe Fluent Icons", "Segoe MDL2 Assets"' }}
+        >
+          {CAPTION_GLYPHS[kind]}
+        </span>
       ) : (
         <CaptionIcon kind={kind} />
       )}
