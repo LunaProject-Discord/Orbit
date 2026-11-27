@@ -190,10 +190,13 @@ import {
 } from "@/lib/notification-actions";
 import {
   disableNotifications,
+  dismissNotifications,
+  dismissReadNotifications,
   enableNotifications,
   inboxUnreadCount,
   type NotificationActionRequest,
   type NotificationStatus,
+  notifiedMessageIds,
   onNotificationAction,
   onNotificationOpen,
   parseMailEvent,
@@ -1486,6 +1489,10 @@ const MailView = memo(function MailView({
       );
       setMessages((current) => current && applyActions(current, [action]));
       setThreadRows((current) => applyActionToThreads(current, action));
+      // 既読にした (または移動・削除した) メールの通知は、通知センターから消す。
+      if (input.action !== "set_flags" || input.seen === true) {
+        void dismissNotifications(messageIds);
+      }
       if (input.action !== "set_flags") {
         setSelectedMessageId((current) =>
           current && messageIds.includes(current) ? null : current,
@@ -1904,6 +1911,24 @@ const MailView = memo(function MailView({
     }
   }, [accounts, selectedAccountId]);
 
+  // 一覧で既読になっているメールの通知は消す (ほかの端末で既読にしたものも含む)。
+  useEffect(() => {
+    if (!messages) return;
+    let cancelled = false;
+    void notifiedMessageIds().then((ids) => {
+      if (cancelled || ids.length === 0) return;
+      const notified = new Set(ids);
+      void dismissNotifications(
+        messages.flatMap((row) =>
+          row.seen ? row.threadMessageIds.filter((id) => notified.has(id)) : [],
+        ),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [messages]);
+
   // サーバーからの変更通知で、アカウントとフォルダの一覧、表示中の一覧を取得し直す。
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1938,6 +1963,7 @@ const MailView = memo(function MailView({
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
+        void dismissReadNotifications();
         void loadAccounts();
         void loadMailboxes();
         void loadOutgoing();

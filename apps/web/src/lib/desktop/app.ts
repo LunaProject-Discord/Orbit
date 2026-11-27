@@ -118,6 +118,13 @@ export function notifyNewMail(notification: {
   return invokeDesktop<null>("notify_new_mail", notification);
 }
 
+/** 指定したメールの通知を、通知センターから消す (Windows のみ。ほかの OS では何もしない)。 */
+export function dismissDesktopNotifications(
+  messageIds: string[],
+): Promise<null> {
+  return invokeDesktop<null>("dismiss_notifications", { messageIds });
+}
+
 /** 未読数を、通知領域とタスクバー (Dock) のアイコンに出す。 */
 export function setDesktopUnreadCount(count: number): void {
   void invokeDesktop("set_unread_count", {
