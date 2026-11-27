@@ -101,14 +101,16 @@ final class CalendarNotifications {
         String recurrenceId = validRecurrenceId(data.get("recurrenceId"));
         long now = System.currentTimeMillis();
         long expiresAt = parseLong(data.get("expiresAt"));
+        // 鳴らす時刻 (新しいサーバーだけが送る。無ければ 0)。
+        long fireAt = parseLong(data.get("fireAt"));
         // 予定がもう終わっていれば出さない (電源を入れ直した端末に、昨日の通知を出さない)。
         if (expiresAt > 0 && expiresAt <= now) return;
 
         boolean reminder = "event-reminder".equals(kind) || tag.startsWith(REMINDER_TAG_PREFIX);
         if (reminder) {
-            // 端末の予約で既に出した (消した) 通知は、出し直さない。FCM の data には鳴らす時刻が無いので、
-            // 予定の終了 (expiresAt) が同じなら同じ通知とみなす (延期された予定は終了も動く)。
-            if (wasPushShown(context, tag, expiresAt, now)) {
+            // 端末の予約で既に出した (消した) 通知は、出し直さない。鳴らす時刻 (fireAt) が届けばそれで、
+            // 古いサーバーで無ければ予定の終了 (expiresAt) で同じ通知かを比べる。
+            if (wasPushShown(context, tag, fireAt, expiresAt, now)) {
                 ReminderScheduler.cancelOne(context, tag);
                 return;
             }
@@ -139,7 +141,7 @@ final class CalendarNotifications {
             addRsvpActions(context, builder, tag, eventId, recurrenceId, rsvpUrl, rsvpToken, title);
         }
         post(context, tag, builder);
-        if (reminder) rememberShown(context, tag, 0, expiresAt, now);
+        if (reminder) rememberShown(context, tag, fireAt, expiresAt, now);
     }
 
     /** 出欠をサーバーへ反映できなかったことを知らせる。押すと、その予定を開く (設計 2.4・9 章)。 */
@@ -306,9 +308,11 @@ final class CalendarNotifications {
             return expiresAt == otherExpiresAt;
         }
 
-        /** FCM (鳴らす時刻が無い) が、この記録と同じ通知か。 */
-        boolean matchesPush(long otherExpiresAt) {
-            return legacy || expiresAt == otherExpiresAt;
+        /** FCM が、この記録と同じ通知か。鳴らす時刻が両方で分かればそれで、無ければ予定の終了で比べる。 */
+        boolean matchesPush(long otherFireAt, long otherExpiresAt) {
+            if (legacy) return true;
+            if (fireAt > 0 && otherFireAt > 0) return fireAt == otherFireAt;
+            return expiresAt == otherExpiresAt;
         }
     }
 
@@ -323,10 +327,10 @@ final class CalendarNotifications {
         return record != null && record.matchesScheduled(item.fireAt, item.expiresAt);
     }
 
-    /** FCM で届いたリマインダーを、もう出したか (同じ tag で同じ予定の終了)。 */
-    static boolean wasPushShown(Context context, String tag, long expiresAt, long now) {
+    /** FCM で届いたリマインダーを、もう出したか (同じ tag で同じ鳴らす時刻、無ければ同じ予定の終了)。 */
+    static boolean wasPushShown(Context context, String tag, long fireAt, long expiresAt, long now) {
         Shown record = shownRecord(context, tag, now);
-        return record != null && record.matchesPush(expiresAt);
+        return record != null && record.matchesPush(fireAt, expiresAt);
     }
 
     private static void rememberShown(Context context, String tag, long fireAt, long expiresAt, long now) {
