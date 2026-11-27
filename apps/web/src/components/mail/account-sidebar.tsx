@@ -46,7 +46,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { OrbitLogo } from "@/components/brand/orbit-logo";
+import { AppSwitcher } from "@/components/brand/app-switcher";
 import { Hint } from "@/components/hint";
 import {
   ComposeButton,
@@ -751,7 +751,7 @@ export function AccountSidebar({
       <div className="flex h-14 shrink-0 items-center gap-2 px-4 in-[[data-desktop]]:hidden">
         {headerStart}
         <span className="flex flex-1 items-center">
-          <OrbitLogo className="h-7" />
+          <AppSwitcher current="mail" logoClassName="h-7" className="-ml-2" />
         </span>
       </div>
       {onCompose && (

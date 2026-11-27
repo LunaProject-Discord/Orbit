@@ -162,7 +162,10 @@ if (process.argv[1] === here("./build.mjs")) {
     "// assets/brand/build.mjs が作るファイル。手で書き換えない。",
     `export const MOON_PATH =\n  ${JSON.stringify(MOON)};`,
     `export const WORDMARK_ORBIT = {\n  d: ${JSON.stringify(WORDMARK.Orbit.d)},\n  width: ${WORDMARK.Orbit.width},\n};`,
-    `export const WORDMARK_MAIL = {\n  d: ${JSON.stringify(WORDMARK.Mail.d)},\n  width: ${WORDMARK.Mail.width},\n};`,
+    ...["Mail", "Calendar", "Contacts"].map(
+      (name) =>
+        `export const WORDMARK_${name.toUpperCase()} = {\n  d: ${JSON.stringify(WORDMARK[name].d)},\n  width: ${WORDMARK[name].width},\n};`,
+    ),
   ];
   writeFileSync(
     here("../../apps/web/src/components/brand/brand-data.ts"),
