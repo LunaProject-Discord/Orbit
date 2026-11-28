@@ -154,7 +154,7 @@ export function logoStacked(product, { theme = "light" } = {}) {
   const s2 = 5.7143 * k;
   const orbitBaseline = (50 + 78 * 3.8095) * k;
   const nameBaseline = 910 * k;
-  const markY = 50 * k; // 記号を少し下げる (STACKED.markY と同じ)
+  const markY = 25 * k; // 記号を少し下げる (STACKED.markY と同じ)
   const orbit = `<path transform="translate(${round(x0)} ${round(orbitBaseline)}) scale(${round(s1 * 10000) / 10000})" d="${WORDMARK.Orbit.d}" fill="${text}" opacity=".7"/>`;
   const name = `<path transform="translate(${round(x0)} ${round(nameBaseline)}) scale(${round(s2 * 10000) / 10000})" d="${WORDMARK[p.name].d}" fill="${text}"/>`;
   const width =
