@@ -262,45 +262,77 @@ export function OrbitLogo({
 }
 
 /**
+ * 2 段組みのロゴの配置 (高さ 1000 の座標)。記号の輪の上端 (50) に「Orbit」の文字の上端を、
+ * 輪の下端 (910) に製品名の並びの線 (ベースライン) をそろえる。assets/brand/build.mjs と同じ数値。
+ */
+export const STACKED = {
+  /** 記号の右端から文字までの空き。 */
+  textX: 1175,
+  orbitScale: 3.8095,
+  /** 「Orbit」の文字の上端は並びの線から 78 上 (wordmark の形の値)。 */
+  orbitBaseline: 50 + 78 * 3.8095,
+  nameScale: 5.7143,
+  nameBaseline: 910,
+} as const;
+
+/**
  * 2 段組みのロゴ (記号 + 小さめの「Orbit」の下に製品名)。横組みより幅が狭いので、
  * サイドバーのロゴの行 (信号機や開閉ボタンと並ぶ所) で使う。大きさは className の高さで決める。
+ * 文字の色は文字色に従い、「Orbit」は 70% の濃さ。
  */
 export function OrbitStackedLogo({
   className,
   product = "mail",
 }: {
   className?: string;
-  product?: OrbitBrand;
+  product?: OrbitProduct;
 }) {
-  const name = product === "orbit" ? null : WORDMARKS[product];
+  const id = useId();
+  const ink = `${id}-ink`;
+  const color = COLORS[product];
+  const name = WORDMARKS[product];
+  const width = Math.ceil(
+    STACKED.textX +
+      Math.max(
+        WORDMARK_ORBIT.width * STACKED.orbitScale,
+        name.width * STACKED.nameScale,
+      ),
+  );
   return (
-    <span
+    <svg
       role="img"
       aria-label={NAMES[product]}
-      className={cn("inline-flex h-7 items-center gap-[0.3em]", className)}
+      viewBox={`0 0 ${width} 1000`}
+      className={cn("h-6 w-auto shrink-0 fill-current", className)}
     >
-      <OrbitMark product={product} className="size-auto h-full" />
-      <span className="flex h-full flex-col justify-center gap-[6%]">
-        <svg
-          viewBox={`0 -80 ${WORDMARK_ORBIT.width} 84`}
-          aria-hidden="true"
-          className={cn(
-            "w-auto self-start fill-current",
-            name ? "h-[32%] opacity-70" : "h-[55%]",
-          )}
-        >
-          <path d={WORDMARK_ORBIT.d} />
-        </svg>
-        {name && (
-          <svg
-            viewBox={`0 -80 ${name.width} 84`}
-            aria-hidden="true"
-            className="h-[48%] w-auto self-start fill-current"
-          >
-            <path d={name.d} />
-          </svg>
-        )}
-      </span>
-    </span>
+      <defs>
+        <linearGradient id={ink} x1="0" y1="0" x2="1" y2="1">
+          <stop
+            offset="0"
+            stopColor={color.from}
+            className="dark:[stop-color:var(--orbit-tint)]"
+            style={{ ["--orbit-tint" as string]: color.tint }}
+          />
+          <stop
+            offset="1"
+            stopColor={color.to}
+            className="dark:[stop-color:var(--orbit-tint-to)]"
+            style={{ ["--orbit-tint-to" as string]: color.tintTo }}
+          />
+        </linearGradient>
+      </defs>
+      <g transform="scale(2.5) translate(-64 -64)">
+        <Glyph product={product} ink={`url(#${ink})`} />
+      </g>
+      <path
+        d={WORDMARK_ORBIT.d}
+        transform={`translate(${STACKED.textX} ${STACKED.orbitBaseline}) scale(${STACKED.orbitScale})`}
+        opacity="0.7"
+      />
+      <path
+        d={name.d}
+        transform={`translate(${STACKED.textX} ${STACKED.nameBaseline}) scale(${STACKED.nameScale})`}
+      />
+    </svg>
   );
 }

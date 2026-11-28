@@ -137,8 +137,9 @@ export function logo(product, { theme = "light" } = {}) {
 
 /**
  * 2 段組みのロゴ (記号 + 小さめの「Orbit」の下に製品名)。高さ 120。横組みより幅が狭いので、
- * サイドバーの上など横幅の限られた所で使う。比率は components/brand/orbit-logo.tsx の
- * OrbitStackedLogo と同じ (文字の箱の高さ: Orbit 32%・製品名 48%・間 6%、記号との間 17.5%)。
+ * サイドバーの上など横幅の限られた所で使う。記号の輪の上端に「Orbit」の文字の上端を、
+ * 輪の下端に製品名の並びの線をそろえる。components/brand/orbit-logo.tsx の STACKED と同じ数値
+ * (そちらは高さ 1000 の座標)。
  */
 export function logoStacked(product, { theme = "light" } = {}) {
   const p = PRODUCTS[product];
@@ -147,16 +148,17 @@ export function logoStacked(product, { theme = "light" } = {}) {
   const g = glyph(product, "url(#ink)");
   const text = dark ? "#fff" : "#000";
   const H = 120;
-  const x0 = H + 0.175 * H;
-  const box = 84; // 文字のパスの箱の高さ (上 80 + 下 4)
-  const s1 = (0.32 * H) / box;
-  const s2 = (0.48 * H) / box;
-  const top = (H - 0.86 * H) / 2;
-  const nameTop = top + 0.32 * H + 0.06 * H;
-  const orbit = `<path transform="translate(${round(x0)} ${round(top + 80 * s1)}) scale(${round(s1 * 1000) / 1000})" d="${WORDMARK.Orbit.d}" fill="${text}" opacity=".7"/>`;
-  const name = `<path transform="translate(${round(x0)} ${round(nameTop + 80 * s2)}) scale(${round(s2 * 1000) / 1000})" d="${WORDMARK[p.name].d}" fill="${text}"/>`;
-  const width = x0 + Math.max(WORDMARK.Orbit.width * s1, WORDMARK[p.name].width * s2);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.ceil(width + 4)} ${H}"><defs>${dark ? gradient("ink", p.tint, p.tintTo) : gradient("ink", p.from, p.to)}${g.defs}</defs><g transform="scale(0.3) translate(-64 -64)">${g.body}</g>${orbit}${name}</svg>\n`;
+  const k = H / 1000;
+  const x0 = 1175 * k;
+  const s1 = 3.8095 * k;
+  const s2 = 5.7143 * k;
+  const orbitBaseline = (50 + 78 * 3.8095) * k;
+  const nameBaseline = 910 * k;
+  const orbit = `<path transform="translate(${round(x0)} ${round(orbitBaseline)}) scale(${round(s1 * 10000) / 10000})" d="${WORDMARK.Orbit.d}" fill="${text}" opacity=".7"/>`;
+  const name = `<path transform="translate(${round(x0)} ${round(nameBaseline)}) scale(${round(s2 * 10000) / 10000})" d="${WORDMARK[p.name].d}" fill="${text}"/>`;
+  const width =
+    x0 + Math.max(WORDMARK.Orbit.width * s1, WORDMARK[p.name].width * s2);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.ceil(width + 4)} ${H}"><defs>${dark ? gradient("ink", p.tint, p.tintTo) : gradient("ink", p.from, p.to)}${g.defs}</defs><g transform="scale(${k * 2.5}) translate(-64 -64)">${g.body}</g>${orbit}${name}</svg>\n`;
 }
 
 if (process.argv[1] === here("./build.mjs")) {
@@ -170,10 +172,7 @@ if (process.argv[1] === here("./build.mjs")) {
       write(`${base}-mark${suffix}`, mark(product, { theme }));
       write(`${base}-logo${suffix}`, logo(product, { theme }));
       if (PRODUCTS[product].name) {
-        write(
-          `${base}-logo-stacked${suffix}`,
-          logoStacked(product, { theme }),
-        );
+        write(`${base}-logo-stacked${suffix}`, logoStacked(product, { theme }));
       }
       write(`${base}-icon${suffix}`, icon(product, { theme }));
     }
