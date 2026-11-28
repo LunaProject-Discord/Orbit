@@ -260,3 +260,47 @@ export function OrbitLogo({
     </span>
   );
 }
+
+/**
+ * 2 段組みのロゴ (記号 + 小さめの「Orbit」の下に製品名)。横組みより幅が狭いので、
+ * サイドバーのロゴの行 (信号機や開閉ボタンと並ぶ所) で使う。大きさは className の高さで決める。
+ */
+export function OrbitStackedLogo({
+  className,
+  product = "mail",
+}: {
+  className?: string;
+  product?: OrbitBrand;
+}) {
+  const name = product === "orbit" ? null : WORDMARKS[product];
+  return (
+    <span
+      role="img"
+      aria-label={NAMES[product]}
+      className={cn("inline-flex h-7 items-center gap-[0.3em]", className)}
+    >
+      <OrbitMark product={product} className="size-auto h-full" />
+      <span className="flex h-full flex-col justify-center gap-[6%]">
+        <svg
+          viewBox={`0 -80 ${WORDMARK_ORBIT.width} 84`}
+          aria-hidden="true"
+          className={cn(
+            "w-auto self-start fill-current",
+            name ? "h-[32%] opacity-70" : "h-[55%]",
+          )}
+        >
+          <path d={WORDMARK_ORBIT.d} />
+        </svg>
+        {name && (
+          <svg
+            viewBox={`0 -80 ${name.width} 84`}
+            aria-hidden="true"
+            className="h-[48%] w-auto self-start fill-current"
+          >
+            <path d={name.d} />
+          </svg>
+        )}
+      </span>
+    </span>
+  );
+}
