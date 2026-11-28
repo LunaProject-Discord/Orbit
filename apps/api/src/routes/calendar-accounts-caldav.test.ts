@@ -21,6 +21,12 @@ import {
   normalizeCaldavUrl,
 } from "./calendar-accounts-caldav.js";
 
+/**
+ * テスト用のパスワード。暗号化した値に含まれないことを確かめるので、短い文字列にしない
+ * (2 文字の "pw" は、ランダムな暗号文の base64 にたまたま含まれて落ちることがあった)。
+ */
+const PASSWORD = "caldav-test-password-7f3e9a";
+
 const adminUrl = process.env.DATABASE_URL;
 type Json = Record<string, unknown>;
 
@@ -106,7 +112,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
   const notified: string[] = [];
   const server = fakeCaldav({
     "me@icloud.com": "app-pass",
-    alice: "pw",
+    alice: PASSWORD,
   });
 
   const makeApp = (
@@ -196,7 +202,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
       provider: "generic",
       url: "dav.example.com",
       username: "alice",
-      password: "pw",
+      password: PASSWORD,
     });
     expect(result.status).toBe(201);
     const account = result.body.account as Json;
@@ -214,7 +220,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
       .from(accounts)
       .where(eq(accounts.id, account.id as string));
     expect(row?.caldavUrl).toBe("https://dav.example.com/");
-    expect(row?.credentialsEncrypted).not.toContain("pw");
+    expect(row?.credentialsEncrypted).not.toContain(PASSWORD);
     expect(
       decryptCredentials(
         row?.credentialsEncrypted as string,
@@ -223,7 +229,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
       ),
     ).toEqual({
       type: "password",
-      password: "pw",
+      password: PASSWORD,
     });
     expect(await waitNotified(account.id as string)).toBe(true);
 
@@ -231,7 +237,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
       provider: "generic",
       url: "https://dav.example.com/",
       username: "alice",
-      password: "pw",
+      password: PASSWORD,
     });
     expect(again.status).toBe(409);
   });
@@ -256,7 +262,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
         provider: "generic",
         url: "https://intranet.example.com/",
         username: "alice",
-        password: "pw",
+        password: PASSWORD,
       },
       makeApp(async (host) => host === "intranet.example.com"),
     );
@@ -270,7 +276,7 @@ describe.skipIf(!adminUrl)("CalDAV のアカウントの追加", () => {
       provider: "generic",
       url: "http://dav.example.com/",
       username: "alice",
-      password: "pw",
+      password: PASSWORD,
     });
     expect(http).toMatchObject({ status: 422, body: { error: "invalid_url" } });
     const rows = await db
