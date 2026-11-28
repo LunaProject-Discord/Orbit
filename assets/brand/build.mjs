@@ -154,11 +154,12 @@ export function logoStacked(product, { theme = "light" } = {}) {
   const s2 = 5.7143 * k;
   const orbitBaseline = (50 + 78 * 3.8095) * k;
   const nameBaseline = 910 * k;
+  const markY = 50 * k; // 記号を少し下げる (STACKED.markY と同じ)
   const orbit = `<path transform="translate(${round(x0)} ${round(orbitBaseline)}) scale(${round(s1 * 10000) / 10000})" d="${WORDMARK.Orbit.d}" fill="${text}" opacity=".7"/>`;
   const name = `<path transform="translate(${round(x0)} ${round(nameBaseline)}) scale(${round(s2 * 10000) / 10000})" d="${WORDMARK[p.name].d}" fill="${text}"/>`;
   const width =
     x0 + Math.max(WORDMARK.Orbit.width * s1, WORDMARK[p.name].width * s2);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.ceil(width + 4)} ${H}"><defs>${dark ? gradient("ink", p.tint, p.tintTo) : gradient("ink", p.from, p.to)}${g.defs}</defs><g transform="scale(${k * 2.5}) translate(-64 -64)">${g.body}</g>${orbit}${name}</svg>\n`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.ceil(width + 4)} ${H}"><defs>${dark ? gradient("ink", p.tint, p.tintTo) : gradient("ink", p.from, p.to)}${g.defs}</defs><g transform="translate(0 ${round(markY)}) scale(${k * 2.5}) translate(-64 -64)">${g.body}</g>${orbit}${name}</svg>\n`;
 }
 
 if (process.argv[1] === here("./build.mjs")) {

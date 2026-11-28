@@ -268,6 +268,8 @@ export function OrbitLogo({
 export const STACKED = {
   /** 記号の右端から文字までの空き。 */
   textX: 1175,
+  /** 記号を下へずらす量。輪の下に月がある分、目には上に寄って見えるので少し下げる。 */
+  markY: 50,
   orbitScale: 3.8095,
   /** 「Orbit」の文字の上端は並びの線から 78 上 (wordmark の形の値)。 */
   orbitBaseline: 50 + 78 * 3.8095,
@@ -321,7 +323,9 @@ export function OrbitStackedLogo({
           />
         </linearGradient>
       </defs>
-      <g transform="scale(2.5) translate(-64 -64)">
+      <g
+        transform={`translate(0 ${STACKED.markY}) scale(2.5) translate(-64 -64)`}
+      >
         <Glyph product={product} ink={`url(#${ink})`} />
       </g>
       <path
