@@ -26,8 +26,9 @@ Orbit (by Luna Project) のブランド素材です。Web (apps/web) のアイ�
   - `orbit-mail-icon-small.svg` : 32px 以下用 (線を太く、月を大きくした版)
   - `orbit-mail-mark.svg` / `-dark` : 背景なしの記号
   - `orbit-mail-logo.svg` / `-dark` : 横組みロゴ
+  - `orbit-mail-logo-stacked.svg` / `-dark` : 2 段組みロゴ (記号 + 小さめの「Orbit」の下に製品名)。横幅の限られた所 (サイドバーの上など) 用。製品名のある Mail / Calendar / Contacts だけ
   - `orbit-*.svg` : 製品のモチーフがない共通マーク、`orbit-calendar-*` / `orbit-contacts-*` : 展開案
-- `png/` — 書き出した PNG。Desktop (Tauri) とスマホアプリ (Capacitor) のアイコン生成には `orbit-mail-icon-1024.png` (角丸)、`orbit-mail-icon-square-1024.png` (iOS)、`orbit-mail-icon-maskable-1024.png` (Android) を元にする。
+- `png/` — 書き出した PNG。2 段組みロゴは `orbit-*-logo-stacked(-dark).png` (高さ 240px)。Desktop (Tauri) とスマホアプリ (Capacitor) のアイコン生成には `orbit-mail-icon-1024.png` (角丸)、`orbit-mail-icon-square-1024.png` (iOS)、`orbit-mail-icon-maskable-1024.png` (Android) を元にする。
 - `data/` — Luna Project の月のパスと、LINE Seed からパスにした文字。
 
 ## 作り直し方
@@ -40,4 +41,4 @@ convert assets/brand/png/favicon-16.png assets/brand/png/favicon-32.png assets/b
 cp assets/brand/svg/orbit-mail-icon-small.svg apps/web/src/app/icon.svg
 ```
 
-画面に直接描くロゴは `apps/web/src/components/brand/orbit-logo.tsx` (`OrbitMark` / `OrbitLogo`)。記号の数値を変えたら、この部品の数値もそろえる。
+画面に直接描くロゴは `apps/web/src/components/brand/orbit-logo.tsx` (`OrbitMark` / `OrbitLogo` / 2 段組みの `OrbitStackedLogo`)。記号の数値を変えたら、この部品の数値もそろえる。

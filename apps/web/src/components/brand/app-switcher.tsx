@@ -4,8 +4,8 @@ import { cn } from "cn";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import {
   OrbitAppIcon,
-  OrbitLogo,
   type OrbitProduct,
+  OrbitStackedLogo,
 } from "@/components/brand/orbit-logo";
 import {
   DropdownMenu,
@@ -54,11 +54,11 @@ export function AppSwitcher({
       <DropdownMenuTrigger
         aria-label="アプリを切り替える"
         className={cn(
-          "flex h-9 items-center gap-1.5 rounded-md px-2 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-sidebar-accent",
+          "flex h-9 items-center gap-1 rounded-md pr-1.5 pl-2 outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-sidebar-accent",
           className,
         )}
       >
-        <OrbitLogo product={current} className={logoClassName} />
+        <OrbitStackedLogo product={current} className={logoClassName} />
         <ChevronDownIcon className="size-4 text-muted-foreground" />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-60" align="start">

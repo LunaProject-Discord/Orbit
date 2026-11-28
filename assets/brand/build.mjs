@@ -135,6 +135,33 @@ export function logo(product, { theme = "light" } = {}) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.ceil(width + 8)} 120"><defs>${dark ? gradient("ink", p.tint, p.tintTo) : gradient("ink", p.from, p.to)}${g.defs}</defs><g transform="translate(4 4) scale(0.28) translate(-64 -64)">${g.body}</g>${orbit}${name}</svg>\n`;
 }
 
+/**
+ * 2 段組みのロゴ (記号 + 小さめの「Orbit」の下に製品名)。高さ 120。横組みより幅が狭いので、
+ * サイドバーの上など横幅の限られた所で使う。記号の輪の上端に「Orbit」の文字の上端を、
+ * 輪の下端に製品名の並びの線をそろえる。components/brand/orbit-logo.tsx の STACKED と同じ数値
+ * (そちらは高さ 1000 の座標)。
+ */
+export function logoStacked(product, { theme = "light" } = {}) {
+  const p = PRODUCTS[product];
+  if (!p.name) throw new Error("logoStacked: 製品名のあるロゴだけ");
+  const dark = theme === "dark";
+  const g = glyph(product, "url(#ink)");
+  const text = dark ? "#fff" : "#000";
+  const H = 120;
+  const k = H / 1000;
+  const x0 = 1175 * k;
+  const s1 = 3.8095 * k;
+  const s2 = 5.7143 * k;
+  const orbitBaseline = (50 + 78 * 3.8095) * k;
+  const nameBaseline = 910 * k;
+  const markY = 25 * k; // 記号を少し下げる (STACKED.markY と同じ)
+  const orbit = `<path transform="translate(${round(x0)} ${round(orbitBaseline)}) scale(${round(s1 * 10000) / 10000})" d="${WORDMARK.Orbit.d}" fill="${text}" opacity=".7"/>`;
+  const name = `<path transform="translate(${round(x0)} ${round(nameBaseline)}) scale(${round(s2 * 10000) / 10000})" d="${WORDMARK[p.name].d}" fill="${text}"/>`;
+  const width =
+    x0 + Math.max(WORDMARK.Orbit.width * s1, WORDMARK[p.name].width * s2);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.ceil(width + 4)} ${H}"><defs>${dark ? gradient("ink", p.tint, p.tintTo) : gradient("ink", p.from, p.to)}${g.defs}</defs><g transform="translate(0 ${round(markY)}) scale(${k * 2.5}) translate(-64 -64)">${g.body}</g>${orbit}${name}</svg>\n`;
+}
+
 if (process.argv[1] === here("./build.mjs")) {
   const out = here("./svg/");
   mkdirSync(out, { recursive: true });
@@ -145,6 +172,9 @@ if (process.argv[1] === here("./build.mjs")) {
       const suffix = theme === "dark" ? "-dark" : "";
       write(`${base}-mark${suffix}`, mark(product, { theme }));
       write(`${base}-logo${suffix}`, logo(product, { theme }));
+      if (PRODUCTS[product].name) {
+        write(`${base}-logo-stacked${suffix}`, logoStacked(product, { theme }));
+      }
       write(`${base}-icon${suffix}`, icon(product, { theme }));
     }
     write(

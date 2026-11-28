@@ -67,15 +67,6 @@
     --sidebar-width: 16rem;
   }
 
-  /*
-   * macOS のデスクトップ版は、サイドバーのロゴの行の左端に信号機ボタンが入る。「信号機・開閉ボタン・ロゴ ⌄」を
-   * 1 行に収めるため、サイドバーを広げる。ロゴ 24px で「Orbit Calendar ⌄」の右端は x≈304 なので、
-   * 右の余白 16px を足して 20rem が最小 (18rem では矢印がはみ出す。2026-11-28 実測)。
-   */
-  html[data-desktop="macos"] {
-    --sidebar-width: 20rem;
-  }
-
   html[data-desktop] {
     --desktop-bar-height: 2.25rem;
     --titlebar-height: var(--desktop-bar-height);

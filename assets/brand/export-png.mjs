@@ -37,6 +37,14 @@ const jobs = [
   ],
   ["orbit-mail-logo", 1200, here("./png/orbit-mail-logo.png")],
   ["orbit-mail-logo-dark", 1200, here("./png/orbit-mail-logo-dark.png")],
+  // 2 段組みのロゴ (高さ 240px)
+  ...["mail", "calendar", "contacts"].flatMap((product) =>
+    ["", "-dark"].map((suffix) => [
+      `orbit-${product}-logo-stacked${suffix}`,
+      null,
+      here(`./png/orbit-${product}-logo-stacked${suffix}.png`),
+    ]),
+  ),
 ];
 
 mkdirSync(here("./png/"), { recursive: true });
@@ -46,7 +54,7 @@ const page = await browser.newPage();
 for (const [name, width, output] of jobs) {
   const svg = readFileSync(here(`./svg/${name}.svg`), "utf8");
   await page.setContent(
-    `<style>html,body{margin:0;background:transparent}svg{display:block;width:${width}px;height:auto}</style>${svg}`,
+    `<style>html,body{margin:0;background:transparent}svg{display:block;${width ? `width:${width}px;height:auto` : "height:240px;width:auto"}}</style>${svg}`,
   );
   await page.locator("svg").screenshot({ path: output, omitBackground: true });
 }
